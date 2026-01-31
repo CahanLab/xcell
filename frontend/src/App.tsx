@@ -1,6 +1,7 @@
 import { useStore } from './store'
 import { useSchema, useEmbedding, useColorBy, useDataActions } from './hooks/useData'
 import ScatterPlot from './components/ScatterPlot'
+import GenePanel from './components/GenePanel'
 
 const styles = {
   container: {
@@ -49,6 +50,11 @@ const styles = {
     fontSize: '13px',
     color: '#888',
   },
+  body: {
+    flex: 1,
+    display: 'flex',
+    overflow: 'hidden',
+  },
   main: {
     flex: 1,
     position: 'relative' as const,
@@ -76,7 +82,7 @@ const styles = {
   legend: {
     position: 'absolute' as const,
     bottom: '20px',
-    right: '20px',
+    left: '20px',
     padding: '12px',
     backgroundColor: 'rgba(22, 33, 62, 0.9)',
     borderRadius: '8px',
@@ -101,6 +107,27 @@ const styles = {
     height: '12px',
     borderRadius: '2px',
   },
+  expressionLegend: {
+    position: 'absolute' as const,
+    bottom: '20px',
+    left: '20px',
+    padding: '12px',
+    backgroundColor: 'rgba(22, 33, 62, 0.9)',
+    borderRadius: '8px',
+  },
+  colorBar: {
+    width: '120px',
+    height: '12px',
+    borderRadius: '2px',
+    background: 'linear-gradient(to right, rgb(68,1,84), rgb(59,82,139), rgb(33,145,140), rgb(94,201,98), rgb(253,231,37))',
+    marginBottom: '4px',
+  },
+  colorBarLabels: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontSize: '10px',
+    color: '#888',
+  },
 }
 
 // Color palette (must match ScatterPlot)
@@ -117,7 +144,7 @@ const CATEGORY_COLORS = [
   'rgb(23, 190, 207)',
 ]
 
-function Legend({ colorBy }: { colorBy: { name: string; categories?: string[]; dtype: string } }) {
+function CategoryLegend({ colorBy }: { colorBy: { name: string; categories?: string[]; dtype: string } }) {
   if (colorBy.dtype !== 'category' || !colorBy.categories) {
     return null
   }
@@ -140,8 +167,21 @@ function Legend({ colorBy }: { colorBy: { name: string; categories?: string[]; d
   )
 }
 
+function ExpressionLegend({ gene, min, max }: { gene: string; min: number; max: number }) {
+  return (
+    <div style={styles.expressionLegend}>
+      <div style={styles.legendTitle}>{gene}</div>
+      <div style={styles.colorBar} />
+      <div style={styles.colorBarLabels}>
+        <span>{min.toFixed(2)}</span>
+        <span>{max.toFixed(2)}</span>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
-  const { isLoading, error, selectedEmbedding, selectedColorColumn } = useStore()
+  const { isLoading, error, selectedEmbedding, selectedColorColumn, colorMode, expressionData, selectedGenes } = useStore()
   const schema = useSchema()
   const embedding = useEmbedding()
   const colorBy = useColorBy()
@@ -171,10 +211,10 @@ export default function App() {
               </div>
 
               <div style={styles.controlGroup}>
-                <span style={styles.label}>Color by:</span>
+                <span style={styles.label}>Color by metadata:</span>
                 <select
                   style={styles.select}
-                  value={selectedColorColumn || ''}
+                  value={colorMode === 'metadata' ? selectedColorColumn || '' : ''}
                   onChange={(e) => selectColorColumn(e.target.value || null)}
                 >
                   <option value="">None</option>
@@ -194,28 +234,44 @@ export default function App() {
         </div>
       </header>
 
-      <main style={styles.main}>
-        {isLoading && <div style={styles.loading}>Loading...</div>}
+      <div style={styles.body}>
+        <main style={styles.main}>
+          {isLoading && <div style={styles.loading}>Loading...</div>}
 
-        {error && (
-          <div style={styles.error}>
-            <strong>Error:</strong> {error}
-          </div>
-        )}
+          {error && (
+            <div style={styles.error}>
+              <strong>Error:</strong> {error}
+            </div>
+          )}
 
-        {embedding && !error && (
-          <>
-            <ScatterPlot embedding={embedding} colorBy={colorBy} />
-            {colorBy && <Legend colorBy={colorBy} />}
-          </>
-        )}
+          {embedding && !error && (
+            <>
+              <ScatterPlot
+                embedding={embedding}
+                colorBy={colorBy}
+                expressionData={expressionData}
+                colorMode={colorMode}
+              />
+              {colorMode === 'metadata' && colorBy && <CategoryLegend colorBy={colorBy} />}
+              {colorMode === 'expression' && expressionData && (
+                <ExpressionLegend
+                  gene={selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
+                  min={expressionData.min}
+                  max={expressionData.max}
+                />
+              )}
+            </>
+          )}
 
-        {!embedding && !isLoading && !error && (
-          <div style={styles.loading}>
-            No data loaded. Start the backend with an h5ad file.
-          </div>
-        )}
-      </main>
+          {!embedding && !isLoading && !error && (
+            <div style={styles.loading}>
+              No data loaded. Start the backend with an h5ad file.
+            </div>
+          )}
+        </main>
+
+        <GenePanel />
+      </div>
     </div>
   )
 }

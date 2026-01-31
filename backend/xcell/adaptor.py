@@ -169,6 +169,147 @@ class DataAdaptor:
         """
         return self.adata.var.index.tolist()
 
+    def search_genes(self, query: str, limit: int = 20) -> list[str]:
+        """Search for genes by name prefix.
+
+        Args:
+            query: Search query (case-insensitive prefix match)
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching gene names
+        """
+        query_lower = query.lower()
+        gene_names = self.adata.var.index.tolist()
+
+        # Find genes that start with the query (case-insensitive)
+        matches = [g for g in gene_names if g.lower().startswith(query_lower)]
+
+        # If not enough prefix matches, also include substring matches
+        if len(matches) < limit:
+            substring_matches = [
+                g for g in gene_names
+                if query_lower in g.lower() and g not in matches
+            ]
+            matches.extend(substring_matches)
+
+        return matches[:limit]
+
+    def get_expression(self, gene: str) -> dict[str, Any]:
+        """Get expression values for a single gene across all cells.
+
+        Args:
+            gene: Gene name
+
+        Returns:
+            Dictionary containing:
+            - gene: The gene name
+            - values: List of expression values for each cell
+            - min: Minimum expression value
+            - max: Maximum expression value
+
+        Raises:
+            KeyError: If gene not found in .var
+        """
+        if gene not in self.adata.var.index:
+            raise KeyError(f"Gene '{gene}' not found in dataset")
+
+        # Get gene index
+        gene_idx = self.adata.var.index.get_loc(gene)
+
+        # Get expression values from X matrix
+        # Handle both dense and sparse matrices
+        X = self.adata.X
+        if hasattr(X, 'toarray'):
+            # Sparse matrix
+            values = X[:, gene_idx].toarray().flatten()
+        else:
+            # Dense matrix
+            values = X[:, gene_idx].flatten()
+
+        # Convert to regular Python floats and handle NaN
+        values_list = []
+        for v in values:
+            if np.isnan(v):
+                values_list.append(None)
+            else:
+                values_list.append(float(v))
+
+        # Calculate min/max excluding None values
+        valid_values = [v for v in values_list if v is not None]
+        min_val = min(valid_values) if valid_values else 0
+        max_val = max(valid_values) if valid_values else 0
+
+        return {
+            "gene": gene,
+            "values": values_list,
+            "min": min_val,
+            "max": max_val,
+        }
+
+    def get_multi_gene_expression(self, genes: list[str]) -> dict[str, Any]:
+        """Get mean expression values for multiple genes across all cells.
+
+        Args:
+            genes: List of gene names
+
+        Returns:
+            Dictionary containing:
+            - genes: List of gene names used
+            - values: List of mean expression values for each cell
+            - min: Minimum mean expression value
+            - max: Maximum mean expression value
+
+        Raises:
+            KeyError: If any gene not found in .var
+        """
+        # Validate all genes exist
+        missing = [g for g in genes if g not in self.adata.var.index]
+        if missing:
+            raise KeyError(f"Genes not found: {missing}")
+
+        if len(genes) == 0:
+            return {
+                "genes": [],
+                "values": [0.0] * self.n_cells,
+                "min": 0.0,
+                "max": 0.0,
+            }
+
+        # Get gene indices
+        gene_indices = [self.adata.var.index.get_loc(g) for g in genes]
+
+        # Get expression values
+        X = self.adata.X
+        if hasattr(X, 'toarray'):
+            # Sparse matrix
+            expr_matrix = X[:, gene_indices].toarray()
+        else:
+            # Dense matrix
+            expr_matrix = X[:, gene_indices]
+
+        # Calculate mean expression across genes
+        mean_expr = np.nanmean(expr_matrix, axis=1)
+
+        # Convert to Python floats
+        values_list = []
+        for v in mean_expr:
+            if np.isnan(v):
+                values_list.append(None)
+            else:
+                values_list.append(float(v))
+
+        valid_values = [v for v in values_list if v is not None]
+        min_val = min(valid_values) if valid_values else 0
+        max_val = max(valid_values) if valid_values else 0
+
+        return {
+            "genes": genes,
+            "values": values_list,
+            "min": min_val,
+            "max": max_val,
+        }
+
     # =========================================================================
     # Future scanpy integration methods (stubs for now)
     # =========================================================================

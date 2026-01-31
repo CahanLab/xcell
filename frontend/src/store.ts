@@ -20,15 +20,37 @@ export interface ObsColumnData {
   categories?: string[]
 }
 
+export interface ExpressionData {
+  gene?: string
+  genes?: string[]
+  values: (number | null)[]
+  min: number
+  max: number
+}
+
+export interface GeneSet {
+  name: string
+  genes: string[]
+}
+
+// Color mode: what determines cell colors
+export type ColorMode = 'none' | 'metadata' | 'expression'
+
 interface AppState {
   // Data
   schema: Schema | null
   embedding: EmbeddingData | null
   colorBy: ObsColumnData | null
+  expressionData: ExpressionData | null
+
+  // Gene management
+  geneSets: GeneSet[]
+  selectedGenes: string[]  // Currently selected genes for expression coloring
 
   // UI State
   selectedEmbedding: string | null
   selectedColorColumn: string | null
+  colorMode: ColorMode
   isLoading: boolean
   error: string | null
 
@@ -36,10 +58,21 @@ interface AppState {
   setSchema: (schema: Schema) => void
   setEmbedding: (embedding: EmbeddingData) => void
   setColorBy: (colorBy: ObsColumnData | null) => void
+  setExpressionData: (data: ExpressionData | null) => void
   setSelectedEmbedding: (name: string) => void
   setSelectedColorColumn: (name: string | null) => void
+  setColorMode: (mode: ColorMode) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
+
+  // Gene set actions
+  addGeneSet: (name: string, genes: string[]) => void
+  removeGeneSet: (name: string) => void
+  addGenesToSet: (setName: string, genes: string[]) => void
+  removeGenesFromSet: (setName: string, genes: string[]) => void
+  renameGeneSet: (oldName: string, newName: string) => void
+  setSelectedGenes: (genes: string[]) => void
+  clearSelectedGenes: () => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -47,8 +80,12 @@ export const useStore = create<AppState>((set) => ({
   schema: null,
   embedding: null,
   colorBy: null,
+  expressionData: null,
+  geneSets: [],
+  selectedGenes: [],
   selectedEmbedding: null,
   selectedColorColumn: null,
+  colorMode: 'none',
   isLoading: false,
   error: null,
 
@@ -56,8 +93,49 @@ export const useStore = create<AppState>((set) => ({
   setSchema: (schema) => set({ schema }),
   setEmbedding: (embedding) => set({ embedding }),
   setColorBy: (colorBy) => set({ colorBy }),
+  setExpressionData: (data) => set({ expressionData: data }),
   setSelectedEmbedding: (name) => set({ selectedEmbedding: name }),
   setSelectedColorColumn: (name) => set({ selectedColorColumn: name }),
+  setColorMode: (mode) => set({ colorMode: mode }),
   setLoading: (loading) => set({ isLoading: loading }),
   setError: (error) => set({ error }),
+
+  // Gene set actions
+  addGeneSet: (name, genes) =>
+    set((state) => ({
+      geneSets: [...state.geneSets, { name, genes }],
+    })),
+
+  removeGeneSet: (name) =>
+    set((state) => ({
+      geneSets: state.geneSets.filter((gs) => gs.name !== name),
+    })),
+
+  addGenesToSet: (setName, genes) =>
+    set((state) => ({
+      geneSets: state.geneSets.map((gs) =>
+        gs.name === setName
+          ? { ...gs, genes: [...new Set([...gs.genes, ...genes])] }
+          : gs
+      ),
+    })),
+
+  removeGenesFromSet: (setName, genes) =>
+    set((state) => ({
+      geneSets: state.geneSets.map((gs) =>
+        gs.name === setName
+          ? { ...gs, genes: gs.genes.filter((g) => !genes.includes(g)) }
+          : gs
+      ),
+    })),
+
+  renameGeneSet: (oldName, newName) =>
+    set((state) => ({
+      geneSets: state.geneSets.map((gs) =>
+        gs.name === oldName ? { ...gs, name: newName } : gs
+      ),
+    })),
+
+  setSelectedGenes: (genes) => set({ selectedGenes: genes }),
+  clearSelectedGenes: () => set({ selectedGenes: [], expressionData: null, colorMode: 'none' }),
 }))

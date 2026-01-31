@@ -1,10 +1,10 @@
-import { useEffect, useCallback } from 'react'
-import { useStore, Schema, EmbeddingData, ObsColumnData } from '../store'
+import { useEffect, useCallback, useState } from 'react'
+import { useStore, Schema, EmbeddingData, ObsColumnData, ExpressionData } from '../store'
 
 const API_BASE = '/api'
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url)
+async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(url, options)
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }))
     throw new Error(error.detail || `HTTP ${response.status}`)
@@ -52,9 +52,13 @@ export function useEmbedding() {
 }
 
 export function useColorBy() {
-  const { selectedColorColumn, colorBy, setColorBy, setLoading, setError } = useStore()
+  const { selectedColorColumn, colorBy, colorMode, setColorBy, setLoading, setError } = useStore()
 
   useEffect(() => {
+    // Only fetch metadata color if in metadata mode
+    if (colorMode !== 'metadata') {
+      return
+    }
     if (!selectedColorColumn) {
       setColorBy(null)
       return
@@ -66,13 +70,22 @@ export function useColorBy() {
       .then(setColorBy)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
-  }, [selectedColorColumn, colorBy, setColorBy, setLoading, setError])
+  }, [selectedColorColumn, colorBy, colorMode, setColorBy, setLoading, setError])
 
   return colorBy
 }
 
 export function useDataActions() {
-  const { setSelectedEmbedding, setSelectedColorColumn } = useStore()
+  const {
+    setSelectedEmbedding,
+    setSelectedColorColumn,
+    setColorMode,
+    setExpressionData,
+    setSelectedGenes,
+    clearSelectedGenes,
+    setLoading,
+    setError,
+  } = useStore()
 
   const selectEmbedding = useCallback(
     (name: string) => {
@@ -84,9 +97,106 @@ export function useDataActions() {
   const selectColorColumn = useCallback(
     (name: string | null) => {
       setSelectedColorColumn(name)
+      if (name) {
+        setColorMode('metadata')
+        setSelectedGenes([])
+        setExpressionData(null)
+      } else {
+        setColorMode('none')
+      }
     },
-    [setSelectedColorColumn]
+    [setSelectedColorColumn, setColorMode, setSelectedGenes, setExpressionData]
   )
 
-  return { selectEmbedding, selectColorColumn }
+  const colorByGene = useCallback(
+    async (gene: string) => {
+      setLoading(true)
+      try {
+        const data = await fetchJson<ExpressionData>(`${API_BASE}/expression/${encodeURIComponent(gene)}`)
+        setExpressionData(data)
+        setSelectedGenes([gene])
+        setColorMode('expression')
+        setSelectedColorColumn(null)
+      } catch (err) {
+        setError((err as Error).message)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError]
+  )
+
+  const colorByGenes = useCallback(
+    async (genes: string[]) => {
+      if (genes.length === 0) {
+        clearSelectedGenes()
+        return
+      }
+      if (genes.length === 1) {
+        return colorByGene(genes[0])
+      }
+
+      setLoading(true)
+      try {
+        const data = await fetchJson<ExpressionData>(`${API_BASE}/expression/multi`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(genes),
+        })
+        setExpressionData(data)
+        setSelectedGenes(genes)
+        setColorMode('expression')
+        setSelectedColorColumn(null)
+      } catch (err) {
+        setError((err as Error).message)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene]
+  )
+
+  const clearExpressionColor = useCallback(() => {
+    clearSelectedGenes()
+  }, [clearSelectedGenes])
+
+  return {
+    selectEmbedding,
+    selectColorColumn,
+    colorByGene,
+    colorByGenes,
+    clearExpressionColor,
+  }
+}
+
+// Hook for gene search
+export function useGeneSearch() {
+  const [results, setResults] = useState<string[]>([])
+  const [isSearching, setIsSearching] = useState(false)
+
+  const searchGenes = useCallback(async (query: string) => {
+    if (!query || query.length < 1) {
+      setResults([])
+      return
+    }
+
+    setIsSearching(true)
+    try {
+      const data = await fetchJson<{ genes: string[] }>(
+        `${API_BASE}/genes/search?q=${encodeURIComponent(query)}&limit=20`
+      )
+      setResults(data.genes)
+    } catch (err) {
+      console.error('Gene search failed:', err)
+      setResults([])
+    } finally {
+      setIsSearching(false)
+    }
+  }, [])
+
+  const clearResults = useCallback(() => {
+    setResults([])
+  }, [])
+
+  return { results, isSearching, searchGenes, clearResults }
 }

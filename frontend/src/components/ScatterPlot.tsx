@@ -2,11 +2,13 @@ import { useMemo } from 'react'
 import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView } from '@deck.gl/core'
-import { EmbeddingData, ObsColumnData } from '../store'
+import { EmbeddingData, ObsColumnData, ExpressionData, ColorMode } from '../store'
 
 interface ScatterPlotProps {
   embedding: EmbeddingData
   colorBy: ObsColumnData | null
+  expressionData: ExpressionData | null
+  colorMode: ColorMode
 }
 
 // Color palette for categorical data (similar to d3 category10)
@@ -26,14 +28,48 @@ const CATEGORY_COLORS: [number, number, number][] = [
 // Default color when no color column selected
 const DEFAULT_COLOR: [number, number, number, number] = [100, 149, 237, 200] // cornflower blue
 
+// Viridis-like color scale for expression data (dark purple -> blue -> green -> yellow)
+function viridisColor(t: number): [number, number, number] {
+  // Simplified viridis interpolation
+  if (t < 0.25) {
+    const s = t / 0.25
+    return [
+      Math.round(68 + s * (59 - 68)),
+      Math.round(1 + s * (82 - 1)),
+      Math.round(84 + s * (139 - 84)),
+    ]
+  } else if (t < 0.5) {
+    const s = (t - 0.25) / 0.25
+    return [
+      Math.round(59 + s * (33 - 59)),
+      Math.round(82 + s * (145 - 82)),
+      Math.round(139 + s * (140 - 139)),
+    ]
+  } else if (t < 0.75) {
+    const s = (t - 0.5) / 0.25
+    return [
+      Math.round(33 + s * (94 - 33)),
+      Math.round(145 + s * (201 - 145)),
+      Math.round(140 + s * (98 - 140)),
+    ]
+  } else {
+    const s = (t - 0.75) / 0.25
+    return [
+      Math.round(94 + s * (253 - 94)),
+      Math.round(201 + s * (231 - 201)),
+      Math.round(98 + s * (37 - 98)),
+    ]
+  }
+}
+
 function interpolateColor(t: number): [number, number, number] {
-  // Blue to red gradient for numeric data
+  // Blue to red gradient for numeric metadata
   const r = Math.round(255 * t)
   const b = Math.round(255 * (1 - t))
   return [r, 50, b]
 }
 
-export default function ScatterPlot({ embedding, colorBy }: ScatterPlotProps) {
+export default function ScatterPlot({ embedding, colorBy, expressionData, colorMode }: ScatterPlotProps) {
   // Compute bounds and colors
   const { bounds, data, getColor } = useMemo(() => {
     const coords = embedding.coordinates
@@ -71,50 +107,60 @@ export default function ScatterPlot({ embedding, colorBy }: ScatterPlotProps) {
       index,
     }))
 
-    // Create color function based on colorBy
+    // Create color function based on colorMode
     let getColor: (d: { index: number }) => [number, number, number, number]
 
-    if (!colorBy) {
-      getColor = () => DEFAULT_COLOR
-    } else if (colorBy.dtype === 'category') {
-      getColor = (d) => {
-        const value = colorBy.values[d.index] as number
-        const color = CATEGORY_COLORS[value % CATEGORY_COLORS.length]
-        return [...color, 200] as [number, number, number, number]
-      }
-    } else if (colorBy.dtype === 'numeric') {
-      // Normalize numeric values for color mapping
-      const values = colorBy.values.filter((v) => v !== null) as number[]
-      const min = Math.min(...values)
-      const max = Math.max(...values)
+    if (colorMode === 'expression' && expressionData) {
+      // Color by gene expression using viridis-like scale
+      const { values, min, max } = expressionData
       const range = max - min || 1
 
       getColor = (d) => {
-        const value = colorBy.values[d.index]
-        if (value === null) return [128, 128, 128, 100] // Gray for null
-        const t = ((value as number) - min) / range
-        const color = interpolateColor(t)
-        return [...color, 200] as [number, number, number, number]
+        const value = values[d.index]
+        if (value === null || value === undefined) {
+          return [128, 128, 128, 100] // Gray for null/missing
+        }
+        const t = (value - min) / range
+        const color = viridisColor(t)
+        return [...color, 220] as [number, number, number, number]
+      }
+    } else if (colorMode === 'metadata' && colorBy) {
+      if (colorBy.dtype === 'category') {
+        getColor = (d) => {
+          const value = colorBy.values[d.index] as number
+          const color = CATEGORY_COLORS[value % CATEGORY_COLORS.length]
+          return [...color, 200] as [number, number, number, number]
+        }
+      } else if (colorBy.dtype === 'numeric') {
+        // Normalize numeric values for color mapping
+        const values = colorBy.values.filter((v) => v !== null) as number[]
+        const min = Math.min(...values)
+        const max = Math.max(...values)
+        const range = max - min || 1
+
+        getColor = (d) => {
+          const value = colorBy.values[d.index]
+          if (value === null) return [128, 128, 128, 100] // Gray for null
+          const t = ((value as number) - min) / range
+          const color = interpolateColor(t)
+          return [...color, 200] as [number, number, number, number]
+        }
+      } else {
+        getColor = () => DEFAULT_COLOR
       }
     } else {
       getColor = () => DEFAULT_COLOR
     }
 
     return { bounds, data, getColor }
-  }, [embedding, colorBy])
+  }, [embedding, colorBy, expressionData, colorMode])
 
   // Calculate view to fit all points
   const view = useMemo(() => {
-    const width = bounds.maxX - bounds.minX
-    const height = bounds.maxY - bounds.minY
-    const centerX = (bounds.minX + bounds.maxX) / 2
-    const centerY = (bounds.minY + bounds.maxY) / 2
-    const zoom = Math.log2(Math.min(800 / width, 600 / height))
-
     return new OrthographicView({
       id: 'main',
     })
-  }, [bounds])
+  }, [])
 
   const initialViewState = useMemo(() => {
     const width = bounds.maxX - bounds.minX
@@ -140,7 +186,7 @@ export default function ScatterPlot({ embedding, colorBy }: ScatterPlotProps) {
       radiusMaxPixels: 10,
       pickable: true,
       updateTriggers: {
-        getFillColor: [colorBy?.name, colorBy?.values],
+        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes],
       },
     }),
   ]

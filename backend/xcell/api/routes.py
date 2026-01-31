@@ -88,3 +88,88 @@ def health_check():
         "n_cells": adaptor.n_cells,
         "n_genes": adaptor.n_genes,
     }
+
+
+# =========================================================================
+# Gene endpoints
+# =========================================================================
+
+
+@router.get("/genes")
+def get_genes():
+    """Get all gene names in the dataset.
+
+    Returns:
+        JSON object containing:
+        - genes: Array of all gene names
+        - count: Total number of genes
+    """
+    adaptor = get_adaptor()
+    genes = adaptor.get_gene_names()
+    return {
+        "genes": genes,
+        "count": len(genes),
+    }
+
+
+@router.get("/genes/search")
+def search_genes(q: str, limit: int = 20):
+    """Search for genes by name.
+
+    Args:
+        q: Search query (prefix or substring match)
+        limit: Maximum number of results (default 20)
+
+    Returns:
+        JSON object containing:
+        - query: The search query
+        - genes: Array of matching gene names
+    """
+    adaptor = get_adaptor()
+    matches = adaptor.search_genes(q, limit=limit)
+    return {
+        "query": q,
+        "genes": matches,
+    }
+
+
+@router.get("/expression/{gene}")
+def get_expression(gene: str):
+    """Get expression values for a single gene.
+
+    Args:
+        gene: Gene name
+
+    Returns:
+        JSON object containing:
+        - gene: The gene name
+        - values: Array of expression values for each cell
+        - min: Minimum expression value
+        - max: Maximum expression value
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.get_expression(gene)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/expression/multi")
+def get_multi_expression(genes: list[str]):
+    """Get mean expression values for multiple genes.
+
+    Args:
+        genes: List of gene names in request body
+
+    Returns:
+        JSON object containing:
+        - genes: List of gene names used
+        - values: Array of mean expression values for each cell
+        - min: Minimum mean expression value
+        - max: Maximum mean expression value
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.get_multi_gene_expression(genes)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))

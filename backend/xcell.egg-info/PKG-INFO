@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: xcell
+Version: 0.1.0
+Summary: Modern web app for scRNA-seq and spatial transcriptomics exploration
+Author: XCell Team
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.104.0
+Requires-Dist: uvicorn[standard]>=0.24.0
+Requires-Dist: anndata>=0.10.0
+Requires-Dist: scanpy>=1.9.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: pandas>=2.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: httpx>=0.25.0; extra == "dev"

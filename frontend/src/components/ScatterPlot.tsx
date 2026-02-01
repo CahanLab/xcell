@@ -2,7 +2,7 @@ import { useMemo, useState, useRef, useCallback, useEffect } from 'react'
 import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
-import { EmbeddingData, ObsColumnData, ExpressionData, ColorMode, InteractionMode } from '../store'
+import { useStore, EmbeddingData, ObsColumnData, ExpressionData, ColorMode, InteractionMode, ColorScale, DisplayPreferences } from '../store'
 
 interface ScatterPlotProps {
   embedding: EmbeddingData
@@ -31,38 +31,90 @@ const CATEGORY_COLORS: [number, number, number][] = [
 const DEFAULT_COLOR: [number, number, number, number] = [100, 149, 237, 200]
 const SELECTED_COLOR: [number, number, number, number] = [255, 255, 0, 255]
 
-function viridisColor(t: number): [number, number, number] {
-  if (t < 0.25) {
-    const s = t / 0.25
-    return [
-      Math.round(68 + s * (59 - 68)),
-      Math.round(1 + s * (82 - 1)),
-      Math.round(84 + s * (139 - 84)),
-    ]
-  } else if (t < 0.5) {
-    const s = (t - 0.25) / 0.25
-    return [
-      Math.round(59 + s * (33 - 59)),
-      Math.round(82 + s * (145 - 82)),
-      Math.round(139 + s * (140 - 139)),
-    ]
-  } else if (t < 0.75) {
-    const s = (t - 0.5) / 0.25
-    return [
-      Math.round(33 + s * (94 - 33)),
-      Math.round(145 + s * (201 - 145)),
-      Math.round(140 + s * (98 - 140)),
-    ]
-  } else {
-    const s = (t - 0.75) / 0.25
-    return [
-      Math.round(94 + s * (253 - 94)),
-      Math.round(201 + s * (231 - 201)),
-      Math.round(98 + s * (37 - 98)),
-    ]
-  }
+// Linear interpolation helper
+function lerp(a: number, b: number, t: number): number {
+  return Math.round(a + (b - a) * t)
 }
 
+// Interpolate between color stops
+function interpolateStops(
+  t: number,
+  stops: { pos: number; color: [number, number, number] }[]
+): [number, number, number] {
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (t >= stops[i].pos && t <= stops[i + 1].pos) {
+      const localT = (t - stops[i].pos) / (stops[i + 1].pos - stops[i].pos)
+      return [
+        lerp(stops[i].color[0], stops[i + 1].color[0], localT),
+        lerp(stops[i].color[1], stops[i + 1].color[1], localT),
+        lerp(stops[i].color[2], stops[i + 1].color[2], localT),
+      ]
+    }
+  }
+  return stops[stops.length - 1].color
+}
+
+// Color scale definitions
+const COLOR_SCALES: Record<ColorScale, { pos: number; color: [number, number, number] }[]> = {
+  viridis: [
+    { pos: 0, color: [68, 1, 84] },
+    { pos: 0.25, color: [59, 82, 139] },
+    { pos: 0.5, color: [33, 145, 140] },
+    { pos: 0.75, color: [94, 201, 98] },
+    { pos: 1, color: [253, 231, 37] },
+  ],
+  plasma: [
+    { pos: 0, color: [13, 8, 135] },
+    { pos: 0.25, color: [126, 3, 168] },
+    { pos: 0.5, color: [204, 71, 120] },
+    { pos: 0.75, color: [248, 149, 64] },
+    { pos: 1, color: [240, 249, 33] },
+  ],
+  magma: [
+    { pos: 0, color: [0, 0, 4] },
+    { pos: 0.25, color: [81, 18, 124] },
+    { pos: 0.5, color: [183, 55, 121] },
+    { pos: 0.75, color: [252, 137, 97] },
+    { pos: 1, color: [252, 253, 191] },
+  ],
+  inferno: [
+    { pos: 0, color: [0, 0, 4] },
+    { pos: 0.2, color: [66, 10, 104] },
+    { pos: 0.4, color: [147, 38, 103] },
+    { pos: 0.6, color: [221, 81, 58] },
+    { pos: 0.8, color: [252, 165, 10] },
+    { pos: 1, color: [252, 255, 164] },
+  ],
+  cividis: [
+    { pos: 0, color: [0, 32, 81] },
+    { pos: 0.33, color: [82, 95, 110] },
+    { pos: 0.66, color: [152, 136, 62] },
+    { pos: 1, color: [253, 234, 69] },
+  ],
+  coolwarm: [
+    { pos: 0, color: [59, 76, 192] },
+    { pos: 0.25, color: [112, 146, 208] },
+    { pos: 0.5, color: [197, 197, 197] },
+    { pos: 0.75, color: [230, 128, 103] },
+    { pos: 1, color: [180, 4, 38] },
+  ],
+  blues: [
+    { pos: 0, color: [247, 251, 255] },
+    { pos: 0.5, color: [107, 174, 214] },
+    { pos: 1, color: [8, 48, 107] },
+  ],
+  reds: [
+    { pos: 0, color: [255, 245, 240] },
+    { pos: 0.5, color: [251, 106, 74] },
+    { pos: 1, color: [103, 0, 13] },
+  ],
+}
+
+function getColorFromScale(t: number, scale: ColorScale): [number, number, number] {
+  return interpolateStops(t, COLOR_SCALES[scale])
+}
+
+// For continuous metadata (not expression)
 function interpolateColor(t: number): [number, number, number] {
   const r = Math.round(255 * t)
   const b = Math.round(255 * (1 - t))
@@ -96,12 +148,17 @@ export default function ScatterPlot({
   const [isDrawing, setIsDrawing] = useState(false)
   const [viewState, setViewState] = useState<OrthographicViewState | null>(null)
 
+  // Get display preferences from store
+  const displayPreferences = useStore((state) => state.displayPreferences)
+
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
 
   // Compute bounds and colors
   const { bounds, data, getColor } = useMemo(() => {
     const coords = embedding.coordinates
+    const opacity = Math.round(displayPreferences.pointOpacity * 255)
+
     if (coords.length === 0) {
       return {
         bounds: { minX: 0, maxX: 1, minY: 0, maxY: 1 },
@@ -138,6 +195,7 @@ export default function ScatterPlot({
     if (colorMode === 'expression' && expressionData) {
       const { values, min, max } = expressionData
       const range = max - min || 1
+      const colorScale = displayPreferences.colorScale
 
       getColor = (d) => {
         if (selectedSet.size > 0 && selectedSet.has(d.index)) {
@@ -145,11 +203,11 @@ export default function ScatterPlot({
         }
         const value = values[d.index]
         if (value === null || value === undefined) {
-          return [128, 128, 128, 100]
+          return [128, 128, 128, Math.round(opacity * 0.5)]
         }
         const t = (value - min) / range
-        const color = viridisColor(t)
-        return [...color, 220] as [number, number, number, number]
+        const color = getColorFromScale(t, colorScale)
+        return [...color, opacity] as [number, number, number, number]
       }
     } else if (colorMode === 'metadata' && colorBy) {
       if (colorBy.dtype === 'category') {
@@ -159,7 +217,7 @@ export default function ScatterPlot({
           }
           const value = colorBy.values[d.index] as number
           const color = CATEGORY_COLORS[value % CATEGORY_COLORS.length]
-          return [...color, 200] as [number, number, number, number]
+          return [...color, opacity] as [number, number, number, number]
         }
       } else if (colorBy.dtype === 'numeric') {
         const values = colorBy.values.filter((v) => v !== null) as number[]
@@ -172,17 +230,17 @@ export default function ScatterPlot({
             return SELECTED_COLOR
           }
           const value = colorBy.values[d.index]
-          if (value === null) return [128, 128, 128, 100]
+          if (value === null) return [128, 128, 128, Math.round(opacity * 0.5)]
           const t = ((value as number) - min) / range
           const color = interpolateColor(t)
-          return [...color, 200] as [number, number, number, number]
+          return [...color, opacity] as [number, number, number, number]
         }
       } else {
         getColor = (d) => {
           if (selectedSet.size > 0 && selectedSet.has(d.index)) {
             return SELECTED_COLOR
           }
-          return DEFAULT_COLOR
+          return [DEFAULT_COLOR[0], DEFAULT_COLOR[1], DEFAULT_COLOR[2], opacity]
         }
       }
     } else {
@@ -190,12 +248,12 @@ export default function ScatterPlot({
         if (selectedSet.size > 0 && selectedSet.has(d.index)) {
           return SELECTED_COLOR
         }
-        return DEFAULT_COLOR
+        return [DEFAULT_COLOR[0], DEFAULT_COLOR[1], DEFAULT_COLOR[2], opacity]
       }
     }
 
     return { bounds, data, getColor }
-  }, [embedding, colorBy, expressionData, colorMode, selectedSet])
+  }, [embedding, colorBy, expressionData, colorMode, selectedSet, displayPreferences])
 
   // Initialize view state when bounds change
   useEffect(() => {
@@ -303,19 +361,23 @@ export default function ScatterPlot({
     return `M ${screenPoints.join(' L ')} Z`
   }, [lassoPoints, viewState])
 
+  const baseRadius = displayPreferences.pointSize
+  const selectedRadius = baseRadius + 2
+
   const layers = [
     new ScatterplotLayer({
       id: 'scatterplot',
       data,
       getPosition: (d) => d.position,
-      getRadius: (d) => (selectedSet.has(d.index) ? 5 : 3),
+      getRadius: (d) => (selectedSet.has(d.index) ? selectedRadius : baseRadius),
       getFillColor: getColor,
-      radiusMinPixels: 2,
-      radiusMaxPixels: 12,
+      radiusUnits: 'pixels',
+      radiusMinPixels: 1,
+      radiusMaxPixels: 20,
       pickable: true,
       updateTriggers: {
-        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices],
-        getRadius: [selectedCellIndices],
+        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.pointOpacity],
+        getRadius: [selectedCellIndices, displayPreferences.pointSize],
       },
     }),
   ]
@@ -325,7 +387,12 @@ export default function ScatterPlot({
   return (
     <div
       ref={containerRef}
-      style={{ position: 'relative', width: '100%', height: '100%' }}
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        backgroundColor: displayPreferences.backgroundColor,
+      }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -341,7 +408,7 @@ export default function ScatterPlot({
         }}
         controller={interactionMode === 'pan'}
         layers={layers}
-        style={{ position: 'absolute', width: '100%', height: '100%' }}
+        style={{ position: 'absolute', width: '100%', height: '100%', background: 'transparent' }}
         getCursor={() => (interactionMode === 'lasso' ? 'crosshair' : 'grab')}
       />
 

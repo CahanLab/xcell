@@ -1,6 +1,9 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useStore, GeneSet } from '../store'
 import { useGeneSearch, useDataActions } from '../hooks/useData'
+
+// Drag data type for genes
+const GENE_DRAG_TYPE = 'application/x-gene'
 
 const styles = {
   panel: {
@@ -179,12 +182,83 @@ const styles = {
     borderRadius: '4px',
     cursor: 'pointer',
   },
+  searchResults: {
+    marginTop: '8px',
+    backgroundColor: '#0a0f1a',
+    borderRadius: '4px',
+    maxHeight: '180px',
+    overflowY: 'auto' as const,
+  },
+  searchResultsHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '6px 10px',
+    borderBottom: '1px solid #1a1a2e',
+    fontSize: '11px',
+    color: '#888',
+  },
+  searchResultItem: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '6px 10px',
+    fontSize: '12px',
+    color: '#ccc',
+    cursor: 'grab',
+    borderBottom: '1px solid #0f3460',
+    transition: 'background-color 0.1s',
+  },
+  searchResultItemSelected: {
+    backgroundColor: '#1a3a5c',
+    color: '#fff',
+  },
+  searchResultItemHover: {
+    backgroundColor: '#0f3460',
+  },
+  searchResultCheckbox: {
+    marginRight: '8px',
+    cursor: 'pointer',
+  },
+  dragHint: {
+    fontSize: '10px',
+    color: '#666',
+    padding: '6px 10px',
+    textAlign: 'center' as const,
+  },
+  dropZone: {
+    border: '2px dashed transparent',
+    transition: 'all 0.2s',
+  },
+  dropZoneActive: {
+    border: '2px dashed #e94560',
+    backgroundColor: 'rgba(233, 69, 96, 0.1)',
+  },
+  selectionActions: {
+    display: 'flex',
+    gap: '4px',
+    padding: '6px 10px',
+    borderTop: '1px solid #1a1a2e',
+  },
+  smallActionButton: {
+    padding: '4px 8px',
+    fontSize: '10px',
+    backgroundColor: '#0f3460',
+    color: '#aaa',
+    border: 'none',
+    borderRadius: '3px',
+    cursor: 'pointer',
+  },
 }
 
-function GeneSearch({ onSelectGene }: { onSelectGene: (gene: string) => void }) {
+interface GeneSearchProps {
+  onColorByGene: (gene: string) => void
+  selectedSearchGenes: Set<string>
+  setSelectedSearchGenes: React.Dispatch<React.SetStateAction<Set<string>>>
+}
+
+function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes }: GeneSearchProps) {
   const [query, setQuery] = useState('')
-  const [showDropdown, setShowDropdown] = useState(false)
-  const [hoveredIndex, setHoveredIndex] = useState(-1)
+  const [hoveredGene, setHoveredGene] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { results, searchGenes, clearResults } = useGeneSearch()
 
@@ -195,60 +269,111 @@ function GeneSearch({ onSelectGene }: { onSelectGene: (gene: string) => void }) 
     return () => clearTimeout(timer)
   }, [query, searchGenes])
 
-  const handleSelect = (gene: string) => {
-    onSelectGene(gene)
+  const handleClearSearch = () => {
     setQuery('')
     clearResults()
-    setShowDropdown(false)
+    setSelectedSearchGenes(new Set())
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      setHoveredIndex((i) => Math.min(i + 1, results.length - 1))
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setHoveredIndex((i) => Math.max(i - 1, 0))
-    } else if (e.key === 'Enter' && hoveredIndex >= 0 && results[hoveredIndex]) {
-      handleSelect(results[hoveredIndex])
-    } else if (e.key === 'Escape') {
-      setShowDropdown(false)
-      clearResults()
-    }
+  const toggleGeneSelection = (gene: string) => {
+    setSelectedSearchGenes((prev) => {
+      const next = new Set(prev)
+      if (next.has(gene)) {
+        next.delete(gene)
+      } else {
+        next.add(gene)
+      }
+      return next
+    })
+  }
+
+  const selectAll = () => {
+    setSelectedSearchGenes(new Set(results))
+  }
+
+  const selectNone = () => {
+    setSelectedSearchGenes(new Set())
+  }
+
+  const handleDragStart = (e: React.DragEvent, gene: string) => {
+    // If dragging a non-selected gene, just drag that one
+    // If dragging a selected gene, drag all selected genes
+    const genesToDrag = selectedSearchGenes.has(gene)
+      ? Array.from(selectedSearchGenes)
+      : [gene]
+
+    e.dataTransfer.setData(GENE_DRAG_TYPE, JSON.stringify(genesToDrag))
+    e.dataTransfer.effectAllowed = 'copy'
   }
 
   return (
-    <div style={styles.searchContainer}>
-      <input
-        ref={inputRef}
-        type="text"
-        placeholder="Search genes..."
-        value={query}
-        onChange={(e) => {
-          setQuery(e.target.value)
-          setShowDropdown(true)
-          setHoveredIndex(-1)
-        }}
-        onFocus={() => setShowDropdown(true)}
-        onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
-        onKeyDown={handleKeyDown}
-        style={styles.searchInput}
-      />
-      {showDropdown && results.length > 0 && (
-        <div style={styles.dropdown}>
-          {results.map((gene, i) => (
-            <div
-              key={gene}
-              style={{
-                ...styles.dropdownItem,
-                ...(i === hoveredIndex ? styles.dropdownItemHover : {}),
-              }}
-              onMouseEnter={() => setHoveredIndex(i)}
-              onMouseDown={() => handleSelect(gene)}
-            >
-              {gene}
+    <div>
+      <div style={styles.searchContainer}>
+        <input
+          ref={inputRef}
+          type="text"
+          placeholder="Search genes..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={styles.searchInput}
+        />
+      </div>
+
+      {results.length > 0 && (
+        <div style={styles.searchResults}>
+          <div style={styles.searchResultsHeader}>
+            <span>{results.length} results</span>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button style={styles.smallActionButton} onClick={selectAll}>
+                All
+              </button>
+              <button style={styles.smallActionButton} onClick={selectNone}>
+                None
+              </button>
+              <button style={styles.smallActionButton} onClick={handleClearSearch}>
+                Clear
+              </button>
             </div>
-          ))}
+          </div>
+
+          {results.map((gene) => {
+            const isSelected = selectedSearchGenes.has(gene)
+            const isHovered = hoveredGene === gene
+            return (
+              <div
+                key={gene}
+                draggable
+                onDragStart={(e) => handleDragStart(e, gene)}
+                style={{
+                  ...styles.searchResultItem,
+                  ...(isSelected ? styles.searchResultItemSelected : {}),
+                  ...(isHovered && !isSelected ? styles.searchResultItemHover : {}),
+                }}
+                onMouseEnter={() => setHoveredGene(gene)}
+                onMouseLeave={() => setHoveredGene(null)}
+              >
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => toggleGeneSelection(gene)}
+                  style={styles.searchResultCheckbox}
+                />
+                <span
+                  style={{ flex: 1, cursor: 'pointer' }}
+                  onClick={() => onColorByGene(gene)}
+                  title="Click to color by expression"
+                >
+                  {gene}
+                </span>
+              </div>
+            )
+          })}
+
+          {selectedSearchGenes.size > 0 && (
+            <div style={styles.dragHint}>
+              Drag {selectedSearchGenes.size} selected gene{selectedSearchGenes.size > 1 ? 's' : ''} to a gene set
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -260,20 +385,68 @@ function GeneSetComponent({
   onColorByGene,
   onColorBySet,
   activeGenes,
+  onAddGenes,
 }: {
   geneSet: GeneSet
   onColorByGene: (gene: string) => void
   onColorBySet: (genes: string[]) => void
   activeGenes: string[]
+  onAddGenes: (setName: string, genes: string[]) => void
 }) {
   const [expanded, setExpanded] = useState(true)
   const [hoveredGene, setHoveredGene] = useState<string | null>(null)
+  const [isDragOver, setIsDragOver] = useState(false)
   const { removeGeneSet, removeGenesFromSet } = useStore()
 
   const isActive = (gene: string) => activeGenes.includes(gene)
 
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes(GENE_DRAG_TYPE)) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+      setIsDragOver(true)
+    }
+  }, [])
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragOver(false)
+  }, [])
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      setIsDragOver(false)
+
+      const data = e.dataTransfer.getData(GENE_DRAG_TYPE)
+      if (data) {
+        try {
+          const genes = JSON.parse(data) as string[]
+          onAddGenes(geneSet.name, genes)
+        } catch (err) {
+          console.error('Failed to parse dropped genes:', err)
+        }
+      }
+    },
+    [geneSet.name, onAddGenes]
+  )
+
+  // Make genes within the set draggable too
+  const handleGeneDragStart = (e: React.DragEvent, gene: string) => {
+    e.dataTransfer.setData(GENE_DRAG_TYPE, JSON.stringify([gene]))
+    e.dataTransfer.effectAllowed = 'copy'
+  }
+
   return (
-    <div style={styles.geneSet}>
+    <div
+      style={{
+        ...styles.geneSet,
+        ...styles.dropZone,
+        ...(isDragOver ? styles.dropZoneActive : {}),
+      }}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div style={styles.geneSetHeader} onClick={() => setExpanded(!expanded)}>
         <div>
           <span style={styles.geneSetName}>{geneSet.name}</span>
@@ -308,10 +481,13 @@ function GeneSetComponent({
           {geneSet.genes.map((gene) => (
             <div
               key={gene}
+              draggable
+              onDragStart={(e) => handleGeneDragStart(e, gene)}
               style={{
                 ...styles.gene,
                 ...(isActive(gene) ? styles.geneActive : {}),
                 ...(hoveredGene === gene && !isActive(gene) ? styles.geneHover : {}),
+                cursor: 'grab',
               }}
               onMouseEnter={() => setHoveredGene(gene)}
               onMouseLeave={() => setHoveredGene(null)}
@@ -334,6 +510,11 @@ function GeneSetComponent({
           ))}
         </div>
       )}
+      {expanded && geneSet.genes.length === 0 && (
+        <div style={{ ...styles.dragHint, padding: '12px 10px' }}>
+          Drag genes here to add
+        </div>
+      )}
     </div>
   )
 }
@@ -343,18 +524,20 @@ export default function GenePanel() {
   const { colorByGene, colorByGenes, clearExpressionColor } = useDataActions()
   const [newSetName, setNewSetName] = useState('')
   const [showNewSetInput, setShowNewSetInput] = useState(false)
+  const [selectedSearchGenes, setSelectedSearchGenes] = useState<Set<string>>(new Set())
 
-  const handleAddGene = (gene: string) => {
-    // If there's a "Search Results" set, add to it, otherwise create one
-    const searchResultsSet = geneSets.find((gs) => gs.name === 'Search Results')
-    if (searchResultsSet) {
-      addGenesToSet('Search Results', [gene])
-    } else {
-      addGeneSet('Search Results', [gene])
-    }
-    // Also color by this gene
-    colorByGene(gene)
-  }
+  const handleAddGenesToSet = useCallback(
+    (setName: string, genes: string[]) => {
+      addGenesToSet(setName, genes)
+      // Clear selection after adding
+      setSelectedSearchGenes((prev) => {
+        const next = new Set(prev)
+        genes.forEach((g) => next.delete(g))
+        return next
+      })
+    },
+    [addGenesToSet]
+  )
 
   const handleCreateSet = () => {
     if (newSetName.trim()) {
@@ -368,7 +551,11 @@ export default function GenePanel() {
     <div style={styles.panel}>
       <div style={styles.header}>
         <div style={styles.title}>Genes</div>
-        <GeneSearch onSelectGene={handleAddGene} />
+        <GeneSearch
+          onColorByGene={colorByGene}
+          selectedSearchGenes={selectedSearchGenes}
+          setSelectedSearchGenes={setSelectedSearchGenes}
+        />
       </div>
 
       {selectedGenes.length > 0 && (
@@ -416,7 +603,7 @@ export default function GenePanel() {
 
           {geneSets.length === 0 ? (
             <div style={styles.emptyState}>
-              Search for genes above to add them to a set
+              Create a gene set, then drag genes from search results to add them
             </div>
           ) : (
             geneSets.map((gs) => (
@@ -426,6 +613,7 @@ export default function GenePanel() {
                 onColorByGene={colorByGene}
                 onColorBySet={colorByGenes}
                 activeGenes={selectedGenes}
+                onAddGenes={handleAddGenesToSet}
               />
             ))
           )}

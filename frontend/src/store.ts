@@ -39,6 +39,17 @@ export type ColorMode = 'none' | 'metadata' | 'expression'
 // Interaction mode for the scatter plot
 export type InteractionMode = 'pan' | 'lasso'
 
+// Color scale options for expression data
+export type ColorScale = 'viridis' | 'plasma' | 'magma' | 'inferno' | 'cividis' | 'coolwarm' | 'blues' | 'reds'
+
+// Display preferences
+export interface DisplayPreferences {
+  pointSize: number  // Base point size (1-10)
+  backgroundColor: string  // Hex color
+  colorScale: ColorScale  // Color scale for expression data
+  pointOpacity: number  // 0-1
+}
+
 interface AppState {
   // Data
   schema: Schema | null
@@ -60,6 +71,9 @@ interface AppState {
   colorMode: ColorMode
   isLoading: boolean
   error: string | null
+
+  // Display preferences
+  displayPreferences: DisplayPreferences
 
   // Actions
   setSchema: (schema: Schema) => void
@@ -86,6 +100,9 @@ interface AppState {
   addToSelection: (indices: number[]) => void
   clearSelection: () => void
   setInteractionMode: (mode: InteractionMode) => void
+
+  // Display preferences actions
+  setDisplayPreferences: (prefs: Partial<DisplayPreferences>) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -103,6 +120,12 @@ export const useStore = create<AppState>((set) => ({
   colorMode: 'none',
   isLoading: false,
   error: null,
+  displayPreferences: {
+    pointSize: 3,
+    backgroundColor: '#1a1a2e',
+    colorScale: 'viridis',
+    pointOpacity: 0.85,
+  },
 
   // Actions
   setSchema: (schema) => set({ schema }),
@@ -162,4 +185,10 @@ export const useStore = create<AppState>((set) => ({
     })),
   clearSelection: () => set({ selectedCellIndices: [] }),
   setInteractionMode: (mode) => set({ interactionMode: mode }),
+
+  // Display preferences
+  setDisplayPreferences: (prefs) =>
+    set((state) => ({
+      displayPreferences: { ...state.displayPreferences, ...prefs },
+    })),
 }))

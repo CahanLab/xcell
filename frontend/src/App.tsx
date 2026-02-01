@@ -4,6 +4,7 @@ import { useSchema, useEmbedding, useColorBy, useDataActions } from './hooks/use
 import ScatterPlot from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
+import DisplaySettings from './components/DisplaySettings'
 
 const styles = {
   container: {
@@ -164,7 +165,6 @@ const styles = {
     width: '120px',
     height: '12px',
     borderRadius: '2px',
-    background: 'linear-gradient(to right, rgb(68,1,84), rgb(59,82,139), rgb(33,145,140), rgb(94,201,98), rgb(253,231,37))',
     marginBottom: '4px',
   },
   colorBarLabels: {
@@ -211,11 +211,25 @@ function CategoryLegend({ colorBy }: { colorBy: { name: string; categories?: str
   )
 }
 
+const COLOR_SCALE_GRADIENTS: Record<string, string> = {
+  viridis: 'linear-gradient(to right, rgb(68,1,84), rgb(59,82,139), rgb(33,145,140), rgb(94,201,98), rgb(253,231,37))',
+  plasma: 'linear-gradient(to right, rgb(13,8,135), rgb(126,3,168), rgb(204,71,120), rgb(248,149,64), rgb(240,249,33))',
+  magma: 'linear-gradient(to right, rgb(0,0,4), rgb(81,18,124), rgb(183,55,121), rgb(252,137,97), rgb(252,253,191))',
+  inferno: 'linear-gradient(to right, rgb(0,0,4), rgb(66,10,104), rgb(147,38,103), rgb(221,81,58), rgb(252,165,10), rgb(252,255,164))',
+  cividis: 'linear-gradient(to right, rgb(0,32,81), rgb(82,95,110), rgb(152,136,62), rgb(253,234,69))',
+  coolwarm: 'linear-gradient(to right, rgb(59,76,192), rgb(112,146,208), rgb(197,197,197), rgb(230,128,103), rgb(180,4,38))',
+  blues: 'linear-gradient(to right, rgb(247,251,255), rgb(107,174,214), rgb(8,48,107))',
+  reds: 'linear-gradient(to right, rgb(255,245,240), rgb(251,106,74), rgb(103,0,13))',
+}
+
 function ExpressionLegend({ gene, min, max }: { gene: string; min: number; max: number }) {
+  const colorScale = useStore((state) => state.displayPreferences.colorScale)
+  const gradient = COLOR_SCALE_GRADIENTS[colorScale] || COLOR_SCALE_GRADIENTS.viridis
+
   return (
     <div style={styles.expressionLegend}>
       <div style={styles.legendTitle}>{gene}</div>
-      <div style={styles.colorBar} />
+      <div style={{ ...styles.colorBar, background: gradient }} />
       <div style={styles.colorBarLabels}>
         <span>{min.toFixed(2)}</span>
         <span>{max.toFixed(2)}</span>
@@ -330,6 +344,8 @@ export default function App() {
               >
                 <span>&#10022;</span> Lasso
               </button>
+
+              <DisplaySettings />
 
               {selectedCellIndices.length > 0 && (
                 <div style={styles.selectionInfo}>

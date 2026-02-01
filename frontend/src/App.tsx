@@ -2,6 +2,7 @@ import { useStore } from './store'
 import { useSchema, useEmbedding, useColorBy, useDataActions } from './hooks/useData'
 import ScatterPlot from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
+import CellPanel from './components/CellPanel'
 
 const styles = {
   container: {
@@ -49,6 +50,13 @@ const styles = {
   stats: {
     fontSize: '13px',
     color: '#888',
+  },
+  coloringInfo: {
+    fontSize: '12px',
+    color: '#e94560',
+    backgroundColor: '#0f3460',
+    padding: '4px 10px',
+    borderRadius: '4px',
   },
   body: {
     flex: 1,
@@ -180,12 +188,43 @@ function ExpressionLegend({ gene, min, max }: { gene: string; min: number; max: 
   )
 }
 
+function ContinuousLegend({ name, min, max }: { name: string; min: number; max: number }) {
+  return (
+    <div style={styles.expressionLegend}>
+      <div style={styles.legendTitle}>{name}</div>
+      <div
+        style={{
+          ...styles.colorBar,
+          background: 'linear-gradient(to right, rgb(0,50,255), rgb(255,50,0))',
+        }}
+      />
+      <div style={styles.colorBarLabels}>
+        <span>{min.toFixed(2)}</span>
+        <span>{max.toFixed(2)}</span>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const { isLoading, error, selectedEmbedding, selectedColorColumn, colorMode, expressionData, selectedGenes } = useStore()
   const schema = useSchema()
   const embedding = useEmbedding()
   const colorBy = useColorBy()
-  const { selectEmbedding, selectColorColumn } = useDataActions()
+  const { selectEmbedding } = useDataActions()
+
+  // Determine what's being used for coloring
+  const getColoringLabel = () => {
+    if (colorMode === 'expression' && selectedGenes.length > 0) {
+      return selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes`
+    }
+    if (colorMode === 'metadata' && selectedColorColumn) {
+      return selectedColorColumn
+    }
+    return null
+  }
+
+  const coloringLabel = getColoringLabel()
 
   return (
     <div style={styles.container}>
@@ -210,21 +249,11 @@ export default function App() {
                 </select>
               </div>
 
-              <div style={styles.controlGroup}>
-                <span style={styles.label}>Color by metadata:</span>
-                <select
-                  style={styles.select}
-                  value={colorMode === 'metadata' ? selectedColorColumn || '' : ''}
-                  onChange={(e) => selectColorColumn(e.target.value || null)}
-                >
-                  <option value="">None</option>
-                  {schema.obs_columns.map((col) => (
-                    <option key={col} value={col}>
-                      {col} ({schema.obs_dtypes[col]})
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {coloringLabel && (
+                <div style={styles.coloringInfo}>
+                  Coloring: {coloringLabel}
+                </div>
+              )}
 
               <span style={styles.stats}>
                 {schema.n_cells.toLocaleString()} cells &middot; {schema.n_genes.toLocaleString()} genes
@@ -235,6 +264,8 @@ export default function App() {
       </header>
 
       <div style={styles.body}>
+        <CellPanel />
+
         <main style={styles.main}>
           {isLoading && <div style={styles.loading}>Loading...</div>}
 
@@ -252,7 +283,16 @@ export default function App() {
                 expressionData={expressionData}
                 colorMode={colorMode}
               />
-              {colorMode === 'metadata' && colorBy && <CategoryLegend colorBy={colorBy} />}
+              {colorMode === 'metadata' && colorBy && colorBy.dtype === 'category' && (
+                <CategoryLegend colorBy={colorBy} />
+              )}
+              {colorMode === 'metadata' && colorBy && colorBy.dtype === 'numeric' && (
+                <ContinuousLegend
+                  name={colorBy.name}
+                  min={Math.min(...(colorBy.values.filter((v) => v !== null) as number[]))}
+                  max={Math.max(...(colorBy.values.filter((v) => v !== null) as number[]))}
+                />
+              )}
               {colorMode === 'expression' && expressionData && (
                 <ExpressionLegend
                   gene={selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}

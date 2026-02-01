@@ -58,6 +58,47 @@ def get_embedding(name: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+# =========================================================================
+# Cell metadata (obs) endpoints
+# Note: Specific routes must come BEFORE parameterized routes
+# =========================================================================
+
+
+@router.get("/obs/summaries")
+def get_all_obs_summaries():
+    """Get summary statistics for all cell metadata columns.
+
+    Returns:
+        Array of summary objects for each obs column.
+    """
+    adaptor = get_adaptor()
+    return adaptor.get_all_obs_summaries()
+
+
+@router.get("/obs/summary/{column}")
+def get_obs_summary(column: str):
+    """Get summary statistics for a cell metadata column.
+
+    For categorical columns: returns categories with cell counts.
+    For numeric columns: returns min, max, mean.
+
+    Args:
+        column: Name of the column in .obs
+
+    Returns:
+        JSON object containing:
+        - name: The column name
+        - dtype: Data type ('category', 'numeric', or 'string')
+        - For categorical: categories (array of {value, count} objects)
+        - For numeric: min, max, mean
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.get_obs_column_summary(column)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.get("/obs/{column}")
 def get_obs_column(column: str):
     """Get cell metadata column values.

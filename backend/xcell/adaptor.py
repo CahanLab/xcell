@@ -310,6 +310,75 @@ class DataAdaptor:
             "max": max_val,
         }
 
+    def get_obs_column_summary(self, name: str) -> dict[str, Any]:
+        """Get summary statistics for a cell metadata column.
+
+        For categorical columns: returns categories with cell counts.
+        For numeric columns: returns min, max, mean.
+
+        Args:
+            name: Name of the column in .obs
+
+        Returns:
+            Dictionary containing:
+            - name: The column name
+            - dtype: Data type ('category', 'numeric', or 'string')
+            - For categorical: categories (list of {value, count} objects)
+            - For numeric: min, max, mean
+
+        Raises:
+            KeyError: If column name not found in .obs
+        """
+        if name not in self.adata.obs.columns:
+            raise KeyError(f"Column '{name}' not found. Available: {list(self.adata.obs.columns)}")
+
+        series = self.adata.obs[name]
+        dtype = series.dtype
+
+        result: dict[str, Any] = {
+            "name": name,
+        }
+
+        if pd.api.types.is_categorical_dtype(dtype):
+            result["dtype"] = "category"
+            # Get value counts
+            value_counts = series.value_counts()
+            result["categories"] = [
+                {"value": str(val), "count": int(count)}
+                for val, count in value_counts.items()
+            ]
+        elif pd.api.types.is_numeric_dtype(dtype):
+            result["dtype"] = "numeric"
+            result["min"] = float(series.min()) if not pd.isna(series.min()) else None
+            result["max"] = float(series.max()) if not pd.isna(series.max()) else None
+            result["mean"] = float(series.mean()) if not pd.isna(series.mean()) else None
+        else:
+            result["dtype"] = "string"
+            # For string columns, get unique values with counts
+            value_counts = series.value_counts()
+            result["categories"] = [
+                {"value": str(val), "count": int(count)}
+                for val, count in value_counts.head(50).items()  # Limit to 50 for strings
+            ]
+
+        return result
+
+    def get_all_obs_summaries(self) -> list[dict[str, Any]]:
+        """Get summary statistics for all cell metadata columns.
+
+        Returns:
+            List of summary dictionaries for each obs column.
+        """
+        summaries = []
+        for col in self.adata.obs.columns:
+            try:
+                summary = self.get_obs_column_summary(col)
+                summaries.append(summary)
+            except Exception:
+                # Skip columns that fail
+                pass
+        return summaries
+
     # =========================================================================
     # Future scanpy integration methods (stubs for now)
     # =========================================================================

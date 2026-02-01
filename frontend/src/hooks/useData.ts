@@ -200,3 +200,35 @@ export function useGeneSearch() {
 
   return { results, isSearching, searchGenes, clearResults }
 }
+
+// Types for obs summaries
+export interface CategoryValue {
+  value: string
+  count: number
+}
+
+export interface ObsSummary {
+  name: string
+  dtype: 'category' | 'numeric' | 'string'
+  categories?: CategoryValue[]
+  min?: number
+  max?: number
+  mean?: number
+}
+
+// Hook for fetching all obs summaries
+export function useObsSummaries() {
+  const [summaries, setSummaries] = useState<ObsSummary[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setIsLoading(true)
+    fetchJson<ObsSummary[]>(`${API_BASE}/obs/summaries`)
+      .then(setSummaries)
+      .catch((err) => setError(err.message))
+      .finally(() => setIsLoading(false))
+  }, [])
+
+  return { summaries, isLoading, error }
+}

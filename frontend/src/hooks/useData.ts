@@ -221,6 +221,7 @@ export function useObsSummaries() {
   const [summaries, setSummaries] = useState<ObsSummary[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [refreshCounter, setRefreshCounter] = useState(0)
 
   useEffect(() => {
     setIsLoading(true)
@@ -228,7 +229,59 @@ export function useObsSummaries() {
       .then(setSummaries)
       .catch((err) => setError(err.message))
       .finally(() => setIsLoading(false))
+  }, [refreshCounter])
+
+  const refresh = useCallback(() => {
+    setRefreshCounter((c) => c + 1)
   }, [])
 
-  return { summaries, isLoading, error }
+  return { summaries, isLoading, error, refresh }
+}
+
+// Annotation API functions
+export async function createAnnotation(name: string, defaultValue: string = 'unassigned'): Promise<ObsSummary> {
+  return fetchJson<ObsSummary>(`${API_BASE}/annotations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, default_value: defaultValue }),
+  })
+}
+
+export async function addLabelToAnnotation(annotationName: string, label: string): Promise<ObsSummary> {
+  return fetchJson<ObsSummary>(`${API_BASE}/annotations/${encodeURIComponent(annotationName)}/labels`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  })
+}
+
+export async function labelCells(
+  annotationName: string,
+  label: string,
+  cellIndices: number[]
+): Promise<ObsSummary> {
+  return fetchJson<ObsSummary>(`${API_BASE}/annotations/${encodeURIComponent(annotationName)}/label-cells`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, cell_indices: cellIndices }),
+  })
+}
+
+export async function deleteAnnotation(name: string): Promise<void> {
+  await fetchJson<{ status: string }>(`${API_BASE}/annotations/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
+}
+
+export async function exportAnnotations(columns?: string[]): Promise<string> {
+  const response = await fetch(`${API_BASE}/annotations/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ columns: columns || null }),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+  return response.text()
 }

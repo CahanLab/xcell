@@ -36,6 +36,9 @@ export interface GeneSet {
 // Color mode: what determines cell colors
 export type ColorMode = 'none' | 'metadata' | 'expression'
 
+// Interaction mode for the scatter plot
+export type InteractionMode = 'pan' | 'lasso'
+
 interface AppState {
   // Data
   schema: Schema | null
@@ -46,6 +49,10 @@ interface AppState {
   // Gene management
   geneSets: GeneSet[]
   selectedGenes: string[]  // Currently selected genes for expression coloring
+
+  // Cell selection
+  selectedCellIndices: number[]  // Indices of selected cells
+  interactionMode: InteractionMode  // Current interaction mode
 
   // UI State
   selectedEmbedding: string | null
@@ -73,6 +80,12 @@ interface AppState {
   renameGeneSet: (oldName: string, newName: string) => void
   setSelectedGenes: (genes: string[]) => void
   clearSelectedGenes: () => void
+
+  // Cell selection actions
+  setSelectedCellIndices: (indices: number[]) => void
+  addToSelection: (indices: number[]) => void
+  clearSelection: () => void
+  setInteractionMode: (mode: InteractionMode) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -83,6 +96,8 @@ export const useStore = create<AppState>((set) => ({
   expressionData: null,
   geneSets: [],
   selectedGenes: [],
+  selectedCellIndices: [],
+  interactionMode: 'pan',
   selectedEmbedding: null,
   selectedColorColumn: null,
   colorMode: 'none',
@@ -138,4 +153,13 @@ export const useStore = create<AppState>((set) => ({
 
   setSelectedGenes: (genes) => set({ selectedGenes: genes }),
   clearSelectedGenes: () => set({ selectedGenes: [], expressionData: null, colorMode: 'none' }),
+
+  // Cell selection actions
+  setSelectedCellIndices: (indices) => set({ selectedCellIndices: indices }),
+  addToSelection: (indices) =>
+    set((state) => ({
+      selectedCellIndices: [...new Set([...state.selectedCellIndices, ...indices])],
+    })),
+  clearSelection: () => set({ selectedCellIndices: [] }),
+  setInteractionMode: (mode) => set({ interactionMode: mode }),
 }))

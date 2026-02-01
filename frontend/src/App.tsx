@@ -1,3 +1,4 @@
+import { useCallback, useEffect } from 'react'
 import { useStore } from './store'
 import { useSchema, useEmbedding, useColorBy, useDataActions } from './hooks/useData'
 import ScatterPlot from './components/ScatterPlot'
@@ -26,7 +27,7 @@ const styles = {
   },
   controls: {
     display: 'flex',
-    gap: '20px',
+    gap: '16px',
     alignItems: 'center',
   },
   controlGroup: {
@@ -57,6 +58,42 @@ const styles = {
     backgroundColor: '#0f3460',
     padding: '4px 10px',
     borderRadius: '4px',
+  },
+  toolButton: {
+    padding: '6px 12px',
+    fontSize: '13px',
+    backgroundColor: '#0f3460',
+    color: '#aaa',
+    border: '1px solid #1a1a2e',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+  toolButtonActive: {
+    backgroundColor: '#e94560',
+    color: '#fff',
+    borderColor: '#e94560',
+  },
+  selectionInfo: {
+    fontSize: '12px',
+    color: '#ffd700',
+    backgroundColor: '#0f3460',
+    padding: '4px 10px',
+    borderRadius: '4px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  clearButton: {
+    padding: '2px 6px',
+    fontSize: '11px',
+    backgroundColor: 'transparent',
+    color: '#ffd700',
+    border: '1px solid #ffd700',
+    borderRadius: '3px',
+    cursor: 'pointer',
   },
   body: {
     flex: 1,
@@ -138,7 +175,6 @@ const styles = {
   },
 }
 
-// Color palette (must match ScatterPlot)
 const CATEGORY_COLORS = [
   'rgb(31, 119, 180)',
   'rgb(255, 127, 14)',
@@ -207,13 +243,48 @@ function ContinuousLegend({ name, min, max }: { name: string; min: number; max: 
 }
 
 export default function App() {
-  const { isLoading, error, selectedEmbedding, selectedColorColumn, colorMode, expressionData, selectedGenes } = useStore()
+  const {
+    isLoading,
+    error,
+    selectedEmbedding,
+    selectedColorColumn,
+    colorMode,
+    expressionData,
+    selectedGenes,
+    interactionMode,
+    selectedCellIndices,
+    setInteractionMode,
+    setSelectedCellIndices,
+    clearSelection,
+  } = useStore()
+
   const schema = useSchema()
   const embedding = useEmbedding()
   const colorBy = useColorBy()
   const { selectEmbedding } = useDataActions()
 
-  // Determine what's being used for coloring
+  // Handle escape key to exit lasso mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setInteractionMode('pan')
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [setInteractionMode])
+
+  const handleSelectionComplete = useCallback(
+    (indices: number[]) => {
+      setSelectedCellIndices(indices)
+    },
+    [setSelectedCellIndices]
+  )
+
+  const toggleLassoMode = useCallback(() => {
+    setInteractionMode(interactionMode === 'lasso' ? 'pan' : 'lasso')
+  }, [interactionMode, setInteractionMode])
+
   const getColoringLabel = () => {
     if (colorMode === 'expression' && selectedGenes.length > 0) {
       return selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes`
@@ -249,6 +320,26 @@ export default function App() {
                 </select>
               </div>
 
+              <button
+                style={{
+                  ...styles.toolButton,
+                  ...(interactionMode === 'lasso' ? styles.toolButtonActive : {}),
+                }}
+                onClick={toggleLassoMode}
+                title="Toggle lasso selection (Escape to exit)"
+              >
+                <span>&#10022;</span> Lasso
+              </button>
+
+              {selectedCellIndices.length > 0 && (
+                <div style={styles.selectionInfo}>
+                  {selectedCellIndices.length.toLocaleString()} cells selected
+                  <button style={styles.clearButton} onClick={clearSelection}>
+                    Clear
+                  </button>
+                </div>
+              )}
+
               {coloringLabel && (
                 <div style={styles.coloringInfo}>
                   Coloring: {coloringLabel}
@@ -282,6 +373,9 @@ export default function App() {
                 colorBy={colorBy}
                 expressionData={expressionData}
                 colorMode={colorMode}
+                interactionMode={interactionMode}
+                selectedCellIndices={selectedCellIndices}
+                onSelectionComplete={handleSelectionComplete}
               />
               {colorMode === 'metadata' && colorBy && colorBy.dtype === 'category' && (
                 <CategoryLegend colorBy={colorBy} />

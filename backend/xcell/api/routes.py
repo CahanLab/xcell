@@ -214,3 +214,124 @@ def get_multi_expression(genes: list[str]):
         return adaptor.get_multi_gene_expression(genes)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# =========================================================================
+# Annotation management endpoints
+# =========================================================================
+
+from pydantic import BaseModel
+from fastapi.responses import PlainTextResponse
+
+
+class CreateAnnotationRequest(BaseModel):
+    name: str
+    default_value: str = "unassigned"
+
+
+class AddLabelRequest(BaseModel):
+    label: str
+
+
+class LabelCellsRequest(BaseModel):
+    label: str
+    cell_indices: list[int]
+
+
+class ExportAnnotationsRequest(BaseModel):
+    columns: list[str] | None = None
+
+
+@router.post("/annotations")
+def create_annotation(request: CreateAnnotationRequest):
+    """Create a new categorical annotation column.
+
+    Args:
+        name: Name of the new annotation
+        default_value: Default value for all cells (default: "unassigned")
+
+    Returns:
+        Summary of the new annotation column
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.create_annotation(request.name, request.default_value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/annotations/{name}/labels")
+def add_label_to_annotation(name: str, request: AddLabelRequest):
+    """Add a new label to an annotation column.
+
+    Args:
+        name: Name of the annotation column
+        label: New label to add
+
+    Returns:
+        Updated annotation summary
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.add_label_to_annotation(name, request.label)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/annotations/{name}/label-cells")
+def label_cells(name: str, request: LabelCellsRequest):
+    """Assign a label to specific cells.
+
+    Args:
+        name: Name of the annotation column
+        label: Label to assign
+        cell_indices: List of cell indices to label
+
+    Returns:
+        Updated annotation summary
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.label_cells(name, request.label, request.cell_indices)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/annotations/{name}")
+def delete_annotation(name: str):
+    """Delete an annotation column.
+
+    Args:
+        name: Name of the annotation column to delete
+
+    Returns:
+        Success message
+    """
+    adaptor = get_adaptor()
+    try:
+        adaptor.delete_annotation(name)
+        return {"status": "ok", "message": f"Deleted annotation '{name}'"}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/annotations/export")
+def export_annotations(request: ExportAnnotationsRequest):
+    """Export cell annotations as TSV.
+
+    Args:
+        columns: List of column names to export. If null, exports all.
+
+    Returns:
+        TSV file as text
+    """
+    adaptor = get_adaptor()
+    try:
+        tsv = adaptor.export_annotations(request.columns)
+        return PlainTextResponse(
+            content=tsv,
+            media_type="text/tab-separated-values",
+            headers={"Content-Disposition": "attachment; filename=annotations.tsv"}
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=str(e))

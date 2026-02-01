@@ -380,6 +380,140 @@ class DataAdaptor:
         return summaries
 
     # =========================================================================
+    # User annotation methods
+    # =========================================================================
+
+    def create_annotation(self, name: str, default_value: str = "unassigned") -> dict[str, Any]:
+        """Create a new categorical annotation column.
+
+        Args:
+            name: Name of the new annotation column
+            default_value: Default value for all cells
+
+        Returns:
+            Dictionary with the new column summary
+
+        Raises:
+            ValueError: If column already exists
+        """
+        if name in self.adata.obs.columns:
+            raise ValueError(f"Annotation '{name}' already exists")
+
+        # Create categorical column with default value
+        self.adata.obs[name] = pd.Categorical(
+            [default_value] * self.n_cells,
+            categories=[default_value]
+        )
+
+        return self.get_obs_column_summary(name)
+
+    def add_label_to_annotation(self, annotation: str, label: str) -> dict[str, Any]:
+        """Add a new label/category to an existing annotation column.
+
+        Args:
+            annotation: Name of the annotation column
+            label: New label to add
+
+        Returns:
+            Updated column summary
+
+        Raises:
+            KeyError: If annotation doesn't exist
+        """
+        if annotation not in self.adata.obs.columns:
+            raise KeyError(f"Annotation '{annotation}' not found")
+
+        series = self.adata.obs[annotation]
+        if not pd.api.types.is_categorical_dtype(series):
+            raise ValueError(f"Annotation '{annotation}' is not categorical")
+
+        # Add new category if it doesn't exist
+        if label not in series.cat.categories:
+            self.adata.obs[annotation] = series.cat.add_categories([label])
+
+        return self.get_obs_column_summary(annotation)
+
+    def label_cells(
+        self, annotation: str, label: str, cell_indices: list[int]
+    ) -> dict[str, Any]:
+        """Assign a label to specific cells in an annotation column.
+
+        Args:
+            annotation: Name of the annotation column
+            label: Label to assign
+            cell_indices: List of cell indices to label
+
+        Returns:
+            Updated column summary
+
+        Raises:
+            KeyError: If annotation doesn't exist
+        """
+        if annotation not in self.adata.obs.columns:
+            raise KeyError(f"Annotation '{annotation}' not found")
+
+        series = self.adata.obs[annotation]
+        if not pd.api.types.is_categorical_dtype(series):
+            raise ValueError(f"Annotation '{annotation}' is not categorical")
+
+        # Add label as category if needed
+        if label not in series.cat.categories:
+            self.adata.obs[annotation] = series.cat.add_categories([label])
+
+        # Assign label to specified cells
+        self.adata.obs.iloc[cell_indices, self.adata.obs.columns.get_loc(annotation)] = label
+
+        return self.get_obs_column_summary(annotation)
+
+    def delete_annotation(self, name: str) -> None:
+        """Delete an annotation column.
+
+        Args:
+            name: Name of the annotation column to delete
+
+        Raises:
+            KeyError: If annotation doesn't exist
+        """
+        if name not in self.adata.obs.columns:
+            raise KeyError(f"Annotation '{name}' not found")
+
+        self.adata.obs.drop(columns=[name], inplace=True)
+
+    def get_user_annotations(self) -> list[str]:
+        """Get list of user-created annotation columns.
+
+        For now, returns all categorical columns. In the future,
+        could track which columns were created by users.
+
+        Returns:
+            List of annotation column names
+        """
+        return [
+            col for col in self.adata.obs.columns
+            if pd.api.types.is_categorical_dtype(self.adata.obs[col])
+        ]
+
+    def export_annotations(self, columns: list[str] | None = None) -> str:
+        """Export cell annotations as TSV string.
+
+        Args:
+            columns: List of column names to export. If None, exports all.
+
+        Returns:
+            TSV-formatted string with cell indices and annotation values
+        """
+        if columns is None:
+            df = self.adata.obs.copy()
+        else:
+            # Validate columns exist
+            missing = [c for c in columns if c not in self.adata.obs.columns]
+            if missing:
+                raise KeyError(f"Columns not found: {missing}")
+            df = self.adata.obs[columns].copy()
+
+        return df.to_csv(sep="\t")
+
+    # =========================================================================
     # Future scanpy integration methods (stubs for now)
     # =========================================================================
 

@@ -6,7 +6,7 @@ import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
 import DisplaySettings from './components/DisplaySettings'
 import DiffExpModal from './components/DiffExpModal'
-import LinePanel from './components/LinePanel'
+import ShapeManager from './components/ShapeManager'
 
 const styles = {
   container: {
@@ -367,12 +367,12 @@ export default function App() {
   }, [drawnLines.length, setInteractionMode])
 
   const handleSaveLine = useCallback(() => {
-    if (pendingLinePoints && newLineName.trim()) {
-      addLine(newLineName.trim(), pendingLinePoints)
+    if (pendingLinePoints && newLineName.trim() && selectedEmbedding) {
+      addLine(newLineName.trim(), pendingLinePoints, selectedEmbedding)
       setPendingLinePoints(null)
       setNewLineName('')
     }
-  }, [pendingLinePoints, newLineName, addLine])
+  }, [pendingLinePoints, newLineName, selectedEmbedding, addLine])
 
   const handleCancelLine = useCallback(() => {
     setPendingLinePoints(null)
@@ -457,7 +457,16 @@ export default function App() {
       </header>
 
       <div style={styles.body}>
-        <CellPanel />
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}>
+          <CellPanel />
+          <ShapeManager />
+        </div>
 
         <main style={styles.main}>
           {isLoading && <div style={styles.loading}>Loading...</div>}
@@ -480,11 +489,9 @@ export default function App() {
                 onSelectionComplete={handleSelectionComplete}
                 onLineDrawn={handleLineDrawn}
               />
-              {/* Line panel - bottom left */}
-              <LinePanel />
 
-              {/* Embedding selector - bottom left (shifts right if lines exist) */}
-              {schema && schema.embeddings.length > 1 && drawnLines.length === 0 && (
+              {/* Embedding selector - bottom left */}
+              {schema && schema.embeddings.length > 1 && (
                 <div style={styles.embeddingSelector}>
                   <span style={styles.embeddingLabel}>Embedding:</span>
                   <select

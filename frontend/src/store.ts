@@ -58,12 +58,15 @@ export interface ComparisonState {
 // Color mode: what determines cell colors
 export type ColorMode = 'none' | 'metadata' | 'expression'
 
-// Drawn line for trajectory/gradient analysis
+// Drawn line/shape for trajectory/gradient analysis
 export interface DrawnLine {
   id: string
   name: string
+  embeddingName: string  // Which embedding this was drawn on
   points: [number, number][]  // Raw points in data coordinates
   smoothedPoints: [number, number][] | null  // Smoothed version (if applied)
+  visible: boolean  // Whether to display on the embedding
+  projections: CellProjection[]  // Cells projected onto this line
 }
 
 // Cell projection onto a line
@@ -136,10 +139,9 @@ interface AppState {
   cellSortOrder: number[] | null  // Custom sort order for rendering (indices), null = default order
   cellSortVersion: number  // Incremented when sort is triggered
 
-  // Drawn lines for trajectory analysis
+  // Drawn lines/shapes for trajectory analysis
   drawnLines: DrawnLine[]
-  activeLineId: string | null
-  cellProjections: CellProjection[] | null  // Projections of active cells onto active line
+  activeLineId: string | null  // Currently selected line for editing/smoothing
   lineSmoothingParams: LineSmoothingParams
 
   // Actions
@@ -196,15 +198,16 @@ interface AppState {
   sortCellsByExpression: () => void  // Sort cells so high-expression renders on top
   resetCellOrder: () => void  // Reset to default order
 
-  // Line drawing actions
-  addLine: (name: string, points: [number, number][]) => void
+  // Line/shape drawing actions
+  addLine: (name: string, points: [number, number][], embeddingName: string) => void
   removeLine: (id: string) => void
   setActiveLine: (id: string | null) => void
   renameLine: (id: string, name: string) => void
   smoothLine: (id: string) => void
   setLineSmoothingParams: (params: Partial<LineSmoothingParams>) => void
-  projectCellsOntoLine: () => void
-  clearProjections: () => void
+  setLineVisibility: (id: string, visible: boolean) => void
+  projectSelectedCellsOntoLine: (lineId: string) => void  // Project currently selected cells onto a specific line
+  clearLineProjections: (lineId: string) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -245,7 +248,6 @@ export const useStore = create<AppState>((set) => ({
   cellSortVersion: 0,
   drawnLines: [],
   activeLineId: null,
-  cellProjections: null,
   lineSmoothingParams: {
     windowSize: 5,
     iterations: 2,
@@ -414,11 +416,19 @@ export const useStore = create<AppState>((set) => ({
 
   resetCellOrder: () => set({ cellSortOrder: null, cellSortVersion: 0 }),
 
-  // Line drawing actions
-  addLine: (name, points) =>
+  // Line/shape drawing actions
+  addLine: (name, points, embeddingName) =>
     set((state) => {
       const id = `line_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-      const newLine: DrawnLine = { id, name, points, smoothedPoints: null }
+      const newLine: DrawnLine = {
+        id,
+        name,
+        embeddingName,
+        points,
+        smoothedPoints: null,
+        visible: true,
+        projections: [],
+      }
       return {
         drawnLines: [...state.drawnLines, newLine],
         activeLineId: id,  // Auto-select newly drawn line
@@ -429,11 +439,10 @@ export const useStore = create<AppState>((set) => ({
     set((state) => ({
       drawnLines: state.drawnLines.filter((l) => l.id !== id),
       activeLineId: state.activeLineId === id ? null : state.activeLineId,
-      cellProjections: state.activeLineId === id ? null : state.cellProjections,
     })),
 
   setActiveLine: (id) =>
-    set({ activeLineId: id, cellProjections: null }),
+    set({ activeLineId: id }),
 
   renameLine: (id, name) =>
     set((state) => ({
@@ -476,10 +485,15 @@ export const useStore = create<AppState>((set) => ({
       lineSmoothingParams: { ...state.lineSmoothingParams, ...params },
     })),
 
-  projectCellsOntoLine: () =>
+  setLineVisibility: (id, visible) =>
+    set((state) => ({
+      drawnLines: state.drawnLines.map((l) => (l.id === id ? { ...l, visible } : l)),
+    })),
+
+  projectSelectedCellsOntoLine: (lineId) =>
     set((state) => {
-      const line = state.drawnLines.find((l) => l.id === state.activeLineId)
-      if (!line || !state.embedding) return {}
+      const line = state.drawnLines.find((l) => l.id === lineId)
+      if (!line || !state.embedding || state.selectedCellIndices.length === 0) return {}
 
       const linePoints = line.smoothedPoints || line.points
       if (linePoints.length < 2) return {}
@@ -493,13 +507,16 @@ export const useStore = create<AppState>((set) => ({
       }
       const totalLength = cumulativeDistances[cumulativeDistances.length - 1]
 
-      // Project each active cell onto the line
-      const projections: CellProjection[] = []
+      // Get existing projection cell indices to avoid duplicates
+      const existingCellIndices = new Set(line.projections.map((p) => p.cellIndex))
+
+      // Project each selected cell onto the line
+      const newProjections: CellProjection[] = []
       const coords = state.embedding.coordinates
 
-      for (let cellIndex = 0; cellIndex < coords.length; cellIndex++) {
-        // Skip masked cells
-        if (state.activeCellMask && !state.activeCellMask[cellIndex]) continue
+      for (const cellIndex of state.selectedCellIndices) {
+        // Skip if already projected
+        if (existingCellIndices.has(cellIndex)) continue
 
         const [cx, cy] = coords[cellIndex]
         let minDist = Infinity
@@ -535,15 +552,27 @@ export const useStore = create<AppState>((set) => ({
           }
         }
 
-        projections.push({
+        newProjections.push({
           cellIndex,
           positionOnLine: bestPosition,
           distanceToLine: minDist,
         })
       }
 
-      return { cellProjections: projections }
+      // Merge new projections with existing ones
+      return {
+        drawnLines: state.drawnLines.map((l) =>
+          l.id === lineId
+            ? { ...l, projections: [...l.projections, ...newProjections] }
+            : l
+        ),
+      }
     }),
 
-  clearProjections: () => set({ cellProjections: null }),
+  clearLineProjections: (lineId) =>
+    set((state) => ({
+      drawnLines: state.drawnLines.map((l) =>
+        l.id === lineId ? { ...l, projections: [] } : l
+      ),
+    })),
 }))

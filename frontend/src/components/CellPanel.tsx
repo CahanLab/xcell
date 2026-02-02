@@ -13,7 +13,8 @@ import {
 const styles = {
   panel: {
     width: '280px',
-    height: '100%',
+    flex: '1 1 auto',
+    minHeight: '200px',
     backgroundColor: '#16213e',
     borderRight: '1px solid #0f3460',
     display: 'flex',
@@ -430,13 +431,14 @@ interface CategoryColumnProps {
   isActive: boolean
   onColorBy: () => void
   onSetGroup: (categoryValue: string, groupNumber: 1 | 2) => void
+  onSelectCells: (categoryValue: string) => void
   group1Categories: Set<string>
   group2Categories: Set<string>
   onHide: () => void
   onRename: (newName: string) => void
 }
 
-function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup, group1Categories, group2Categories, onHide, onRename }: CategoryColumnProps) {
+function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup, onSelectCells, group1Categories, group2Categories, onHide, onRename }: CategoryColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -549,7 +551,11 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup,
             const isGroup2 = group2Categories.has(catKey)
             return (
               <div key={cat.value} style={styles.categoryItem}>
-                <span style={styles.categoryName} title={cat.value}>
+                <span
+                  style={{ ...styles.categoryName, cursor: 'pointer' }}
+                  title={`${cat.value}\nClick to select these cells`}
+                  onClick={() => onSelectCells(cat.value)}
+                >
                   {cat.value}
                 </span>
                 <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -714,6 +720,7 @@ export default function CellPanel() {
     colorMode,
     selectedColorColumn,
     selectedCellIndices,
+    setSelectedCellIndices,
     clearSelection,
     comparison,
     setComparisonGroup1,
@@ -857,6 +864,40 @@ export default function CellPanel() {
     [setComparisonGroup1, setComparisonGroup2]
   )
 
+  // Select cells by category value
+  const handleSelectCellsByCategory = useCallback(
+    (columnName: string, categoryValue: string) => {
+      fetch(`/api/obs/${encodeURIComponent(columnName)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          const indices: number[] = []
+          const categories = data.categories || []
+          const categoryIndex = categories.indexOf(categoryValue)
+
+          if (data.dtype === 'category' && categoryIndex >= 0) {
+            data.values.forEach((val: number, idx: number) => {
+              if (val === categoryIndex) {
+                indices.push(idx)
+              }
+            })
+          } else {
+            data.values.forEach((val: string, idx: number) => {
+              if (val === categoryValue) {
+                indices.push(idx)
+              }
+            })
+          }
+
+          setSelectedCellIndices(indices)
+        })
+        .catch((err) => {
+          console.error('Failed to fetch category data:', err)
+          alert('Failed to select cells from category')
+        })
+    },
+    [setSelectedCellIndices]
+  )
+
   // Handle running comparison
   const handleRunComparison = useCallback(async () => {
     try {
@@ -977,6 +1018,9 @@ export default function CellPanel() {
                   onColorBy={() => handleColorBy(summary.name)}
                   onSetGroup={(categoryValue, groupNumber) =>
                     handleSetCategoryAsGroup(summary.name, categoryValue, groupNumber)
+                  }
+                  onSelectCells={(categoryValue) =>
+                    handleSelectCellsByCategory(summary.name, categoryValue)
                   }
                   group1Categories={group1Categories}
                   group2Categories={group2Categories}

@@ -435,23 +435,25 @@ export default function ScatterPlot({
     return `M ${screenPoints.join(' L ')}`
   }, [linePoints, dataToScreen])
 
-  // Convert stored lines to SVG paths
+  // Filter and convert stored lines to SVG paths (only for current embedding and visible)
   const storedLinePaths = useMemo(() => {
-    return drawnLines.map((line) => {
-      const points = line.smoothedPoints || line.points
-      if (points.length < 2) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId }
-      const screenPoints = dataToScreen(points)
-      if (screenPoints.length === 0) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId }
-      return {
-        id: line.id,
-        name: line.name,
-        path: `M ${screenPoints.join(' L ')}`,
-        isActive: line.id === activeLineId,
-        startPoint: screenPoints[0],
-        endPoint: screenPoints[screenPoints.length - 1],
-      }
-    })
-  }, [drawnLines, activeLineId, dataToScreen])
+    return drawnLines
+      .filter((line) => line.embeddingName === embedding.name && line.visible)
+      .map((line) => {
+        const points = line.smoothedPoints || line.points
+        if (points.length < 2) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId }
+        const screenPoints = dataToScreen(points)
+        if (screenPoints.length === 0) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId }
+        return {
+          id: line.id,
+          name: line.name,
+          path: `M ${screenPoints.join(' L ')}`,
+          isActive: line.id === activeLineId,
+          startPoint: screenPoints[0],
+          endPoint: screenPoints[screenPoints.length - 1],
+        }
+      })
+  }, [drawnLines, activeLineId, dataToScreen, embedding.name])
 
   const baseRadius = displayPreferences.pointSize
   const selectedRadius = baseRadius + 2

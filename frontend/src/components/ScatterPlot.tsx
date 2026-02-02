@@ -12,6 +12,7 @@ interface ScatterPlotProps {
   interactionMode: InteractionMode
   selectedCellIndices: number[]
   onSelectionComplete: (indices: number[]) => void
+  onLineDrawn: (points: [number, number][]) => void
 }
 
 // Color palette for categorical data (similar to d3 category10)
@@ -142,17 +143,21 @@ export default function ScatterPlot({
   interactionMode,
   selectedCellIndices,
   onSelectionComplete,
+  onLineDrawn,
 }: ScatterPlotProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [lassoPoints, setLassoPoints] = useState<[number, number][]>([])
+  const [linePoints, setLinePoints] = useState<[number, number][]>([])
   const [isDrawing, setIsDrawing] = useState(false)
   const [viewState, setViewState] = useState<OrthographicViewState | null>(null)
 
-  // Get display preferences, cell masking, and sort state from store
+  // Get display preferences, cell masking, sort state, and drawn lines from store
   const displayPreferences = useStore((state) => state.displayPreferences)
   const activeCellMask = useStore((state) => state.activeCellMask)
   const showMaskedCells = useStore((state) => state.showMaskedCells)
   const cellSortOrder = useStore((state) => state.cellSortOrder)
+  const drawnLines = useStore((state) => state.drawnLines)
+  const activeLineId = useStore((state) => state.activeLineId)
 
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
@@ -334,50 +339,70 @@ export default function ScatterPlot({
     return [dataX, dataY]
   }, [viewState])
 
-  // Handle lasso drawing
+  // Handle lasso and line drawing
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (interactionMode !== 'lasso') return
-
-    const point = screenToData(e.clientX, e.clientY)
-    if (point) {
-      setIsDrawing(true)
-      setLassoPoints([point])
+    if (interactionMode === 'lasso') {
+      const point = screenToData(e.clientX, e.clientY)
+      if (point) {
+        setIsDrawing(true)
+        setLassoPoints([point])
+      }
+    } else if (interactionMode === 'draw') {
+      const point = screenToData(e.clientX, e.clientY)
+      if (point) {
+        setIsDrawing(true)
+        setLinePoints([point])
+      }
     }
   }, [interactionMode, screenToData])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!isDrawing || interactionMode !== 'lasso') return
+    if (!isDrawing) return
 
     const point = screenToData(e.clientX, e.clientY)
-    if (point) {
+    if (!point) return
+
+    if (interactionMode === 'lasso') {
       setLassoPoints((prev) => [...prev, point])
+    } else if (interactionMode === 'draw') {
+      setLinePoints((prev) => [...prev, point])
     }
   }, [isDrawing, interactionMode, screenToData])
 
   const handleMouseUp = useCallback(() => {
-    if (!isDrawing || lassoPoints.length < 3) {
+    if (!isDrawing) return
+
+    if (interactionMode === 'lasso') {
+      if (lassoPoints.length < 3) {
+        setIsDrawing(false)
+        setLassoPoints([])
+        return
+      }
+
+      // Find all points inside the polygon
+      const selectedIndices: number[] = []
+      for (let i = 0; i < embedding.coordinates.length; i++) {
+        const [x, y] = embedding.coordinates[i]
+        if (pointInPolygon(x, y, lassoPoints)) {
+          selectedIndices.push(i)
+        }
+      }
+
+      onSelectionComplete(selectedIndices)
       setIsDrawing(false)
       setLassoPoints([])
-      return
-    }
-
-    // Find all points inside the polygon
-    const selectedIndices: number[] = []
-    for (let i = 0; i < embedding.coordinates.length; i++) {
-      const [x, y] = embedding.coordinates[i]
-      if (pointInPolygon(x, y, lassoPoints)) {
-        selectedIndices.push(i)
+    } else if (interactionMode === 'draw') {
+      if (linePoints.length >= 2) {
+        onLineDrawn(linePoints)
       }
+      setIsDrawing(false)
+      setLinePoints([])
     }
+  }, [isDrawing, interactionMode, lassoPoints, linePoints, embedding.coordinates, onSelectionComplete, onLineDrawn])
 
-    onSelectionComplete(selectedIndices)
-    setIsDrawing(false)
-    setLassoPoints([])
-  }, [isDrawing, lassoPoints, embedding.coordinates, onSelectionComplete])
-
-  // Convert lasso points to SVG path
-  const lassoPath = useMemo(() => {
-    if (lassoPoints.length < 2 || !containerRef.current || !viewState) return ''
+  // Convert data points to screen coordinates
+  const dataToScreen = useCallback((points: [number, number][]): string[] => {
+    if (!containerRef.current || !viewState) return []
 
     const rect = containerRef.current.getBoundingClientRect()
     const width = rect.width
@@ -387,14 +412,46 @@ export default function ScatterPlot({
     const zoom = typeof zoomValue === 'number' ? zoomValue : (zoomValue?.[0] ?? 0)
     const scale = Math.pow(2, zoom)
 
-    const screenPoints = lassoPoints.map(([dataX, dataY]) => {
+    return points.map(([dataX, dataY]) => {
       const screenX = (dataX - target[0]) * scale + width / 2
       const screenY = (dataY - target[1]) * scale + height / 2
       return `${screenX},${screenY}`
     })
+  }, [viewState])
 
+  // Convert lasso points to SVG path
+  const lassoPath = useMemo(() => {
+    if (lassoPoints.length < 2) return ''
+    const screenPoints = dataToScreen(lassoPoints)
+    if (screenPoints.length === 0) return ''
     return `M ${screenPoints.join(' L ')} Z`
-  }, [lassoPoints, viewState])
+  }, [lassoPoints, dataToScreen])
+
+  // Convert line points to SVG path (open, not closed)
+  const linePath = useMemo(() => {
+    if (linePoints.length < 2) return ''
+    const screenPoints = dataToScreen(linePoints)
+    if (screenPoints.length === 0) return ''
+    return `M ${screenPoints.join(' L ')}`
+  }, [linePoints, dataToScreen])
+
+  // Convert stored lines to SVG paths
+  const storedLinePaths = useMemo(() => {
+    return drawnLines.map((line) => {
+      const points = line.smoothedPoints || line.points
+      if (points.length < 2) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId }
+      const screenPoints = dataToScreen(points)
+      if (screenPoints.length === 0) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId }
+      return {
+        id: line.id,
+        name: line.name,
+        path: `M ${screenPoints.join(' L ')}`,
+        isActive: line.id === activeLineId,
+        startPoint: screenPoints[0],
+        endPoint: screenPoints[screenPoints.length - 1],
+      }
+    })
+  }, [drawnLines, activeLineId, dataToScreen])
 
   const baseRadius = displayPreferences.pointSize
   const selectedRadius = baseRadius + 2
@@ -458,21 +515,57 @@ export default function ScatterPlot({
         controller={interactionMode === 'pan'}
         layers={layers}
         style={{ position: 'absolute', width: '100%', height: '100%', background: 'transparent' }}
-        getCursor={() => (interactionMode === 'lasso' ? 'crosshair' : 'grab')}
+        getCursor={() => (interactionMode === 'lasso' || interactionMode === 'draw' ? 'crosshair' : 'grab')}
       />
 
-      {/* Lasso SVG overlay */}
-      {isDrawing && lassoPoints.length > 1 && (
-        <svg
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            pointerEvents: 'none',
-          }}
-        >
+      {/* SVG overlay for lasso, lines, and stored lines */}
+      <svg
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+        }}
+      >
+        {/* Stored lines */}
+        {storedLinePaths.map((line) => line.path && (
+          <g key={line.id}>
+            <path
+              d={line.path}
+              fill="none"
+              stroke={line.isActive ? '#4ecdc4' : '#888'}
+              strokeWidth={line.isActive ? 3 : 2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={line.isActive ? 1 : 0.5}
+            />
+            {/* Direction arrow at end */}
+            {line.endPoint && line.isActive && (
+              <circle
+                cx={line.endPoint.split(',')[0]}
+                cy={line.endPoint.split(',')[1]}
+                r={6}
+                fill="#4ecdc4"
+              />
+            )}
+            {/* Start indicator */}
+            {line.startPoint && line.isActive && (
+              <circle
+                cx={line.startPoint.split(',')[0]}
+                cy={line.startPoint.split(',')[1]}
+                r={4}
+                fill="none"
+                stroke="#4ecdc4"
+                strokeWidth={2}
+              />
+            )}
+          </g>
+        ))}
+
+        {/* Currently drawing lasso */}
+        {isDrawing && interactionMode === 'lasso' && lassoPoints.length > 1 && (
           <path
             d={lassoPath}
             fill="rgba(233, 69, 96, 0.2)"
@@ -480,8 +573,20 @@ export default function ScatterPlot({
             strokeWidth={2}
             strokeDasharray="5,5"
           />
-        </svg>
-      )}
+        )}
+
+        {/* Currently drawing line */}
+        {isDrawing && interactionMode === 'draw' && linePoints.length > 1 && (
+          <path
+            d={linePath}
+            fill="none"
+            stroke="#4ecdc4"
+            strokeWidth={3}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        )}
+      </svg>
 
       {/* Lasso mode indicator */}
       {interactionMode === 'lasso' && (
@@ -500,6 +605,26 @@ export default function ScatterPlot({
           }}
         >
           Lasso Mode: Click and drag to select cells
+        </div>
+      )}
+
+      {/* Draw mode indicator */}
+      {interactionMode === 'draw' && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            padding: '6px 12px',
+            backgroundColor: 'rgba(78, 205, 196, 0.9)',
+            color: 'white',
+            borderRadius: 4,
+            fontSize: 12,
+            fontWeight: 500,
+          }}
+        >
+          Draw Mode: Click and drag to draw a line
         </div>
       )}
     </div>

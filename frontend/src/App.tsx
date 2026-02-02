@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useStore } from './store'
 import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations } from './hooks/useData'
 import ScatterPlot from './components/ScatterPlot'
@@ -6,6 +6,7 @@ import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
 import DisplaySettings from './components/DisplaySettings'
 import DiffExpModal from './components/DiffExpModal'
+import LinePanel from './components/LinePanel'
 
 const styles = {
   container: {
@@ -319,6 +320,8 @@ export default function App() {
     sortCellsByExpression,
     resetCellOrder,
     displayPreferences,
+    drawnLines,
+    addLine,
   } = useStore()
 
   const schema = useSchema()
@@ -326,11 +329,16 @@ export default function App() {
   const colorBy = useColorBy()
   const { selectEmbedding } = useDataActions()
 
-  // Handle escape key to exit lasso mode
+  // State for line naming dialog
+  const [pendingLinePoints, setPendingLinePoints] = useState<[number, number][] | null>(null)
+  const [newLineName, setNewLineName] = useState('')
+
+  // Handle escape key to exit lasso/draw mode
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setInteractionMode('pan')
+        setPendingLinePoints(null)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -347,6 +355,29 @@ export default function App() {
   const toggleLassoMode = useCallback(() => {
     setInteractionMode(interactionMode === 'lasso' ? 'pan' : 'lasso')
   }, [interactionMode, setInteractionMode])
+
+  const toggleDrawMode = useCallback(() => {
+    setInteractionMode(interactionMode === 'draw' ? 'pan' : 'draw')
+  }, [interactionMode, setInteractionMode])
+
+  const handleLineDrawn = useCallback((points: [number, number][]) => {
+    setPendingLinePoints(points)
+    setNewLineName(`Line ${drawnLines.length + 1}`)
+    setInteractionMode('pan')
+  }, [drawnLines.length, setInteractionMode])
+
+  const handleSaveLine = useCallback(() => {
+    if (pendingLinePoints && newLineName.trim()) {
+      addLine(newLineName.trim(), pendingLinePoints)
+      setPendingLinePoints(null)
+      setNewLineName('')
+    }
+  }, [pendingLinePoints, newLineName, addLine])
+
+  const handleCancelLine = useCallback(() => {
+    setPendingLinePoints(null)
+    setNewLineName('')
+  }, [])
 
   const handleExport = useCallback(async () => {
     try {
@@ -389,6 +420,17 @@ export default function App() {
                 title="Toggle lasso selection (Escape to exit)"
               >
                 <span>&#10022;</span> Lasso
+              </button>
+
+              <button
+                style={{
+                  ...styles.toolButton,
+                  ...(interactionMode === 'draw' ? { ...styles.toolButtonActive, backgroundColor: '#4ecdc4' } : {}),
+                }}
+                onClick={toggleDrawMode}
+                title="Draw a line for trajectory analysis (Escape to exit)"
+              >
+                <span>&#9998;</span> Draw
               </button>
 
               <DisplaySettings />
@@ -436,9 +478,13 @@ export default function App() {
                 interactionMode={interactionMode}
                 selectedCellIndices={selectedCellIndices}
                 onSelectionComplete={handleSelectionComplete}
+                onLineDrawn={handleLineDrawn}
               />
-              {/* Embedding selector - bottom left */}
-              {schema && schema.embeddings.length > 1 && (
+              {/* Line panel - bottom left */}
+              <LinePanel />
+
+              {/* Embedding selector - bottom left (shifts right if lines exist) */}
+              {schema && schema.embeddings.length > 1 && drawnLines.length === 0 && (
                 <div style={styles.embeddingSelector}>
                   <span style={styles.embeddingLabel}>Embedding:</span>
                   <select
@@ -501,6 +547,90 @@ export default function App() {
       </div>
 
       <DiffExpModal />
+
+      {/* Line naming dialog */}
+      {pendingLinePoints && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          onClick={handleCancelLine}
+        >
+          <div
+            style={{
+              backgroundColor: '#16213e',
+              border: '1px solid #0f3460',
+              borderRadius: '8px',
+              padding: '20px',
+              minWidth: '300px',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: '14px', fontWeight: 600, color: '#4ecdc4', marginBottom: '16px' }}>
+              Save Line
+            </div>
+            <input
+              type="text"
+              value={newLineName}
+              onChange={(e) => setNewLineName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveLine()}
+              placeholder="Line name..."
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                fontSize: '14px',
+                backgroundColor: '#0f3460',
+                color: '#eee',
+                border: '1px solid #1a1a2e',
+                borderRadius: '4px',
+                marginBottom: '16px',
+                outline: 'none',
+              }}
+            />
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={handleCancelLine}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '13px',
+                  backgroundColor: '#0f3460',
+                  color: '#aaa',
+                  border: '1px solid #1a1a2e',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveLine}
+                disabled={!newLineName.trim()}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '13px',
+                  backgroundColor: '#4ecdc4',
+                  color: '#000',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

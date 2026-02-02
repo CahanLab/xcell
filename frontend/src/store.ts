@@ -58,8 +58,29 @@ export interface ComparisonState {
 // Color mode: what determines cell colors
 export type ColorMode = 'none' | 'metadata' | 'expression'
 
+// Drawn line for trajectory/gradient analysis
+export interface DrawnLine {
+  id: string
+  name: string
+  points: [number, number][]  // Raw points in data coordinates
+  smoothedPoints: [number, number][] | null  // Smoothed version (if applied)
+}
+
+// Cell projection onto a line
+export interface CellProjection {
+  cellIndex: number
+  positionOnLine: number  // 0 = start, 1 = end (normalized)
+  distanceToLine: number  // Perpendicular distance to nearest point on line
+}
+
+// Smoothing parameters for lines
+export interface LineSmoothingParams {
+  windowSize: number  // Moving average window size
+  iterations: number  // Number of smoothing passes
+}
+
 // Interaction mode for the scatter plot
-export type InteractionMode = 'pan' | 'lasso'
+export type InteractionMode = 'pan' | 'lasso' | 'draw'
 
 // Color scale options for expression data
 export type ColorScale = 'viridis' | 'plasma' | 'magma' | 'inferno' | 'cividis' | 'coolwarm' | 'blues' | 'reds'
@@ -115,6 +136,12 @@ interface AppState {
   cellSortOrder: number[] | null  // Custom sort order for rendering (indices), null = default order
   cellSortVersion: number  // Incremented when sort is triggered
 
+  // Drawn lines for trajectory analysis
+  drawnLines: DrawnLine[]
+  activeLineId: string | null
+  cellProjections: CellProjection[] | null  // Projections of active cells onto active line
+  lineSmoothingParams: LineSmoothingParams
+
   // Actions
   setSchema: (schema: Schema) => void
   setEmbedding: (embedding: EmbeddingData) => void
@@ -168,6 +195,16 @@ interface AppState {
   // Cell ordering actions
   sortCellsByExpression: () => void  // Sort cells so high-expression renders on top
   resetCellOrder: () => void  // Reset to default order
+
+  // Line drawing actions
+  addLine: (name: string, points: [number, number][]) => void
+  removeLine: (id: string) => void
+  setActiveLine: (id: string | null) => void
+  renameLine: (id: string, name: string) => void
+  smoothLine: (id: string) => void
+  setLineSmoothingParams: (params: Partial<LineSmoothingParams>) => void
+  projectCellsOntoLine: () => void
+  clearProjections: () => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -206,6 +243,13 @@ export const useStore = create<AppState>((set) => ({
   showMaskedCells: true,
   cellSortOrder: null,
   cellSortVersion: 0,
+  drawnLines: [],
+  activeLineId: null,
+  cellProjections: null,
+  lineSmoothingParams: {
+    windowSize: 5,
+    iterations: 2,
+  },
 
   // Actions
   setSchema: (schema) => set({ schema }),
@@ -369,4 +413,137 @@ export const useStore = create<AppState>((set) => ({
     }),
 
   resetCellOrder: () => set({ cellSortOrder: null, cellSortVersion: 0 }),
+
+  // Line drawing actions
+  addLine: (name, points) =>
+    set((state) => {
+      const id = `line_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      const newLine: DrawnLine = { id, name, points, smoothedPoints: null }
+      return {
+        drawnLines: [...state.drawnLines, newLine],
+        activeLineId: id,  // Auto-select newly drawn line
+      }
+    }),
+
+  removeLine: (id) =>
+    set((state) => ({
+      drawnLines: state.drawnLines.filter((l) => l.id !== id),
+      activeLineId: state.activeLineId === id ? null : state.activeLineId,
+      cellProjections: state.activeLineId === id ? null : state.cellProjections,
+    })),
+
+  setActiveLine: (id) =>
+    set({ activeLineId: id, cellProjections: null }),
+
+  renameLine: (id, name) =>
+    set((state) => ({
+      drawnLines: state.drawnLines.map((l) => (l.id === id ? { ...l, name } : l)),
+    })),
+
+  smoothLine: (id) =>
+    set((state) => {
+      const line = state.drawnLines.find((l) => l.id === id)
+      if (!line || line.points.length < 3) return {}
+
+      const { windowSize, iterations } = state.lineSmoothingParams
+      let smoothed = [...line.points] as [number, number][]
+
+      // Apply moving average smoothing multiple times
+      for (let iter = 0; iter < iterations; iter++) {
+        const newSmoothed: [number, number][] = []
+        for (let i = 0; i < smoothed.length; i++) {
+          const halfWindow = Math.floor(windowSize / 2)
+          let sumX = 0, sumY = 0, count = 0
+          for (let j = Math.max(0, i - halfWindow); j <= Math.min(smoothed.length - 1, i + halfWindow); j++) {
+            sumX += smoothed[j][0]
+            sumY += smoothed[j][1]
+            count++
+          }
+          newSmoothed.push([sumX / count, sumY / count])
+        }
+        smoothed = newSmoothed
+      }
+
+      return {
+        drawnLines: state.drawnLines.map((l) =>
+          l.id === id ? { ...l, smoothedPoints: smoothed } : l
+        ),
+      }
+    }),
+
+  setLineSmoothingParams: (params) =>
+    set((state) => ({
+      lineSmoothingParams: { ...state.lineSmoothingParams, ...params },
+    })),
+
+  projectCellsOntoLine: () =>
+    set((state) => {
+      const line = state.drawnLines.find((l) => l.id === state.activeLineId)
+      if (!line || !state.embedding) return {}
+
+      const linePoints = line.smoothedPoints || line.points
+      if (linePoints.length < 2) return {}
+
+      // Compute cumulative distances along the line
+      const cumulativeDistances: number[] = [0]
+      for (let i = 1; i < linePoints.length; i++) {
+        const dx = linePoints[i][0] - linePoints[i - 1][0]
+        const dy = linePoints[i][1] - linePoints[i - 1][1]
+        cumulativeDistances.push(cumulativeDistances[i - 1] + Math.sqrt(dx * dx + dy * dy))
+      }
+      const totalLength = cumulativeDistances[cumulativeDistances.length - 1]
+
+      // Project each active cell onto the line
+      const projections: CellProjection[] = []
+      const coords = state.embedding.coordinates
+
+      for (let cellIndex = 0; cellIndex < coords.length; cellIndex++) {
+        // Skip masked cells
+        if (state.activeCellMask && !state.activeCellMask[cellIndex]) continue
+
+        const [cx, cy] = coords[cellIndex]
+        let minDist = Infinity
+        let bestPosition = 0
+
+        // Find closest point on each line segment
+        for (let i = 0; i < linePoints.length - 1; i++) {
+          const [x1, y1] = linePoints[i]
+          const [x2, y2] = linePoints[i + 1]
+
+          // Project point onto line segment
+          const dx = x2 - x1
+          const dy = y2 - y1
+          const segmentLength = Math.sqrt(dx * dx + dy * dy)
+
+          if (segmentLength === 0) continue
+
+          // Parameter t for projection (clamped to [0, 1] for segment)
+          let t = ((cx - x1) * dx + (cy - y1) * dy) / (segmentLength * segmentLength)
+          t = Math.max(0, Math.min(1, t))
+
+          // Closest point on segment
+          const projX = x1 + t * dx
+          const projY = y1 + t * dy
+
+          // Distance from cell to closest point
+          const dist = Math.sqrt((cx - projX) * (cx - projX) + (cy - projY) * (cy - projY))
+
+          if (dist < minDist) {
+            minDist = dist
+            // Position along the entire line (normalized 0-1)
+            bestPosition = (cumulativeDistances[i] + t * segmentLength) / totalLength
+          }
+        }
+
+        projections.push({
+          cellIndex,
+          positionOnLine: bestPosition,
+          distanceToLine: minDist,
+        })
+      }
+
+      return { cellProjections: projections }
+    }),
+
+  clearProjections: () => set({ cellProjections: null }),
 }))

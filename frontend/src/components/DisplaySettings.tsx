@@ -227,14 +227,14 @@ export default function DisplaySettings() {
                 <div style={styles.sliderContainer}>
                   <input
                     type="range"
-                    min="1"
+                    min="0.5"
                     max="10"
-                    step="0.5"
+                    step="0.1"
                     value={displayPreferences.pointSize}
                     onChange={handlePointSizeChange}
                     style={styles.slider}
                   />
-                  <span style={styles.sliderValue}>{displayPreferences.pointSize}</span>
+                  <span style={styles.sliderValue}>{displayPreferences.pointSize.toFixed(1)}</span>
                 </div>
               </div>
 

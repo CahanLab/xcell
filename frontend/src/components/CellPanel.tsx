@@ -720,7 +720,6 @@ export default function CellPanel() {
     setComparisonGroup2,
     clearComparison,
     setDiffExpModalOpen,
-    colorBy,
     hiddenColumns,
     columnDisplayNames,
     hideColumn,
@@ -805,69 +804,63 @@ export default function CellPanel() {
   // Set a category's cells as a comparison group
   const handleSetCategoryAsGroup = useCallback(
     (columnName: string, categoryValue: string, groupNumber: 1 | 2) => {
-      // Find the column data to get cell indices for this category
-      const summary = summaries.find((s) => s.name === columnName)
-      if (!summary || !colorBy) {
-        // Need to fetch the column data to get indices
-        // For now, we'll fetch the obs column data
-        fetch(`/api/obs/${encodeURIComponent(columnName)}`)
-          .then((res) => res.json())
-          .then((data) => {
-            const indices: number[] = []
-            const categories = data.categories || []
-            const categoryIndex = categories.indexOf(categoryValue)
+      // Fetch the column data to get cell indices for this category
+      fetch(`/api/obs/${encodeURIComponent(columnName)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          const indices: number[] = []
+          const categories = data.categories || []
+          const categoryIndex = categories.indexOf(categoryValue)
 
-            if (data.dtype === 'category' && categoryIndex >= 0) {
-              // Values are category codes (indices into categories array)
-              data.values.forEach((val: number, idx: number) => {
-                if (val === categoryIndex) {
-                  indices.push(idx)
-                }
-              })
-            } else {
-              // Values are direct strings
-              data.values.forEach((val: string, idx: number) => {
-                if (val === categoryValue) {
-                  indices.push(idx)
-                }
-              })
-            }
+          if (data.dtype === 'category' && categoryIndex >= 0) {
+            // Values are category codes (indices into categories array)
+            data.values.forEach((val: number, idx: number) => {
+              if (val === categoryIndex) {
+                indices.push(idx)
+              }
+            })
+          } else {
+            // Values are direct strings
+            data.values.forEach((val: string, idx: number) => {
+              if (val === categoryValue) {
+                indices.push(idx)
+              }
+            })
+          }
 
-            const label = `${columnName}: ${categoryValue}`
-            const catKey = `${columnName}:${categoryValue}`
+          const label = `${categoryValue}`
+          const catKey = `${columnName}:${categoryValue}`
 
-            if (groupNumber === 1) {
-              setComparisonGroup1(indices, label)
-              setGroup1Categories(new Set([catKey]))
-              setGroup2Categories((prev) => {
-                const next = new Set(prev)
-                next.delete(catKey)
-                return next
-              })
-            } else {
-              setComparisonGroup2(indices, label)
-              setGroup2Categories(new Set([catKey]))
-              setGroup1Categories((prev) => {
-                const next = new Set(prev)
-                next.delete(catKey)
-                return next
-              })
-            }
-          })
-          .catch((err) => {
-            console.error('Failed to fetch category data:', err)
-            alert('Failed to set group from category')
-          })
-        return
-      }
+          if (groupNumber === 1) {
+            setComparisonGroup1(indices, label)
+            setGroup1Categories(new Set([catKey]))
+            setGroup2Categories((prev) => {
+              const next = new Set(prev)
+              next.delete(catKey)
+              return next
+            })
+          } else {
+            setComparisonGroup2(indices, label)
+            setGroup2Categories(new Set([catKey]))
+            setGroup1Categories((prev) => {
+              const next = new Set(prev)
+              next.delete(catKey)
+              return next
+            })
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to fetch category data:', err)
+          alert('Failed to set group from category')
+        })
     },
-    [summaries, colorBy, setComparisonGroup1, setComparisonGroup2]
+    [setComparisonGroup1, setComparisonGroup2]
   )
 
   // Handle running comparison
   const handleRunComparison = useCallback(async () => {
     try {
-      await runComparison(10)
+      await runComparison(25)
     } catch (err) {
       alert(`Differential expression failed: ${(err as Error).message}`)
     }
@@ -1127,7 +1120,7 @@ export default function CellPanel() {
               style={{ ...styles.smallButton, flex: 1 }}
               onClick={() => setDiffExpModalOpen(true)}
             >
-              Results
+              Options
             </button>
             <button
               style={{ ...styles.smallButton, ...styles.dangerButton }}

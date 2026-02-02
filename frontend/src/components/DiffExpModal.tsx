@@ -243,7 +243,7 @@ export default function DiffExpModal() {
     clearComparison,
   } = useStore()
   const { runComparison } = useDiffExp()
-  const [topN, setTopN] = useState(50)
+  const [topN, setTopN] = useState(25)
 
   const handleClose = useCallback(() => {
     setDiffExpModalOpen(false)

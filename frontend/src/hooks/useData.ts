@@ -290,7 +290,7 @@ export async function exportAnnotations(columns?: string[]): Promise<string> {
 export async function runDiffExp(
   group1: number[],
   group2: number[],
-  topN: number = 10
+  topN: number = 25
 ): Promise<DiffExpResult> {
   return fetchJson<DiffExpResult>(`${API_BASE}/diffexp`, {
     method: 'POST',
@@ -311,7 +311,7 @@ export function useDiffExp() {
     activeCellMask,
   } = useStore()
 
-  const runComparison = useCallback(async (topN: number = 10) => {
+  const runComparison = useCallback(async (topN: number = 25) => {
     if (!comparison.group1 || !comparison.group2) {
       throw new Error('Both groups must be set before running comparison')
     }

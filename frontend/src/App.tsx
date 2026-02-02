@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from 'react'
 import { useStore } from './store'
-import { useSchema, useEmbedding, useColorBy, useDataActions } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations } from './hooks/useData'
 import ScatterPlot from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
@@ -22,15 +22,36 @@ const styles = {
     backgroundColor: '#16213e',
     borderBottom: '1px solid #0f3460',
   },
+  titleGroup: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '12px',
+  },
   title: {
     fontSize: '20px',
     fontWeight: 600,
     color: '#e94560',
   },
+  statsInline: {
+    fontSize: '11px',
+    color: '#666',
+  },
   controls: {
     display: 'flex',
-    gap: '16px',
+    gap: '12px',
     alignItems: 'center',
+  },
+  exportButton: {
+    padding: '6px 10px',
+    fontSize: '12px',
+    backgroundColor: '#0f3460',
+    color: '#aaa',
+    border: '1px solid #1a1a2e',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
   },
   controlGroup: {
     display: 'flex',
@@ -129,7 +150,7 @@ const styles = {
   legend: {
     position: 'absolute' as const,
     bottom: '20px',
-    left: '20px',
+    right: '20px',
     padding: '12px',
     backgroundColor: 'rgba(22, 33, 62, 0.9)',
     borderRadius: '8px',
@@ -157,10 +178,34 @@ const styles = {
   expressionLegend: {
     position: 'absolute' as const,
     bottom: '20px',
-    left: '20px',
+    right: '20px',
     padding: '12px',
     backgroundColor: 'rgba(22, 33, 62, 0.9)',
     borderRadius: '8px',
+  },
+  embeddingSelector: {
+    position: 'absolute' as const,
+    bottom: '20px',
+    left: '20px',
+    padding: '8px 12px',
+    backgroundColor: 'rgba(22, 33, 62, 0.9)',
+    borderRadius: '8px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  embeddingLabel: {
+    fontSize: '11px',
+    color: '#888',
+  },
+  embeddingSelect: {
+    padding: '4px 8px',
+    fontSize: '12px',
+    backgroundColor: '#0f3460',
+    color: '#eee',
+    border: '1px solid #1a1a2e',
+    borderRadius: '4px',
+    cursor: 'pointer',
   },
   colorBar: {
     width: '120px',
@@ -262,7 +307,6 @@ export default function App() {
     isLoading,
     error,
     selectedEmbedding,
-    selectedColorColumn,
     colorMode,
     expressionData,
     selectedGenes,
@@ -300,41 +344,38 @@ export default function App() {
     setInteractionMode(interactionMode === 'lasso' ? 'pan' : 'lasso')
   }, [interactionMode, setInteractionMode])
 
-  const getColoringLabel = () => {
-    if (colorMode === 'expression' && selectedGenes.length > 0) {
-      return selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes`
+  const handleExport = useCallback(async () => {
+    try {
+      const tsv = await exportAnnotations()
+      const blob = new Blob([tsv], { type: 'text/tab-separated-values' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'cell_annotations.tsv'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      alert(`Failed to export: ${(err as Error).message}`)
     }
-    if (colorMode === 'metadata' && selectedColorColumn) {
-      return selectedColorColumn
-    }
-    return null
-  }
-
-  const coloringLabel = getColoringLabel()
+  }, [])
 
   return (
     <div style={styles.container}>
       <header style={styles.header}>
-        <h1 style={styles.title}>XCell</h1>
+        <div style={styles.titleGroup}>
+          <h1 style={styles.title}>XCell</h1>
+          {schema && (
+            <span style={styles.statsInline}>
+              {schema.n_cells.toLocaleString()} cells · {schema.n_genes.toLocaleString()} genes
+            </span>
+          )}
+        </div>
 
         <div style={styles.controls}>
           {schema && (
             <>
-              <div style={styles.controlGroup}>
-                <span style={styles.label}>Embedding:</span>
-                <select
-                  style={styles.select}
-                  value={selectedEmbedding || ''}
-                  onChange={(e) => selectEmbedding(e.target.value)}
-                >
-                  {schema.embeddings.map((emb) => (
-                    <option key={emb} value={emb}>
-                      {emb}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
               <button
                 style={{
                   ...styles.toolButton,
@@ -348,6 +389,14 @@ export default function App() {
 
               <DisplaySettings />
 
+              <button
+                style={styles.exportButton}
+                onClick={handleExport}
+                title="Export annotations as TSV"
+              >
+                Export
+              </button>
+
               {selectedCellIndices.length > 0 && (
                 <div style={styles.selectionInfo}>
                   {selectedCellIndices.length.toLocaleString()} cells selected
@@ -356,16 +405,6 @@ export default function App() {
                   </button>
                 </div>
               )}
-
-              {coloringLabel && (
-                <div style={styles.coloringInfo}>
-                  Coloring: {coloringLabel}
-                </div>
-              )}
-
-              <span style={styles.stats}>
-                {schema.n_cells.toLocaleString()} cells &middot; {schema.n_genes.toLocaleString()} genes
-              </span>
             </>
           )}
         </div>
@@ -394,6 +433,24 @@ export default function App() {
                 selectedCellIndices={selectedCellIndices}
                 onSelectionComplete={handleSelectionComplete}
               />
+              {/* Embedding selector - bottom left */}
+              {schema && schema.embeddings.length > 1 && (
+                <div style={styles.embeddingSelector}>
+                  <span style={styles.embeddingLabel}>Embedding:</span>
+                  <select
+                    style={styles.embeddingSelect}
+                    value={selectedEmbedding || ''}
+                    onChange={(e) => selectEmbedding(e.target.value)}
+                  >
+                    {schema.embeddings.map((emb) => (
+                      <option key={emb} value={emb}>
+                        {emb}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {/* Legends - bottom right */}
               {colorMode === 'metadata' && colorBy && colorBy.dtype === 'category' && (
                 <CategoryLegend colorBy={colorBy} />
               )}

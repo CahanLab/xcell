@@ -7,7 +7,6 @@ import {
   useDataActions,
   createAnnotation,
   labelCells,
-  exportAnnotations,
   useDiffExp,
 } from '../hooks/useData'
 
@@ -356,6 +355,73 @@ const styles = {
     borderRadius: '4px',
     marginBottom: '4px',
   },
+  maskBar: {
+    padding: '12px 16px',
+    backgroundColor: '#1a2744',
+    borderTop: '1px solid #0f3460',
+  },
+  maskTitle: {
+    fontSize: '11px',
+    fontWeight: 600,
+    color: '#e94560',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.5px',
+    marginBottom: '8px',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  maskInfo: {
+    fontSize: '12px',
+    color: '#aaa',
+    marginBottom: '8px',
+  },
+  maskButtons: {
+    display: 'flex',
+    gap: '8px',
+  },
+  toggleRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    marginTop: '8px',
+    fontSize: '12px',
+    color: '#aaa',
+  },
+  toggle: {
+    width: '32px',
+    height: '18px',
+    backgroundColor: '#0f3460',
+    borderRadius: '9px',
+    position: 'relative' as const,
+    cursor: 'pointer',
+    transition: 'background-color 0.2s',
+  },
+  toggleActive: {
+    backgroundColor: '#4ecdc4',
+  },
+  toggleKnob: {
+    position: 'absolute' as const,
+    top: '2px',
+    left: '2px',
+    width: '14px',
+    height: '14px',
+    backgroundColor: '#fff',
+    borderRadius: '50%',
+    transition: 'left 0.2s',
+  },
+  toggleKnobActive: {
+    left: '16px',
+  },
+  maskActionButton: {
+    padding: '4px 8px',
+    fontSize: '10px',
+    backgroundColor: '#0f3460',
+    color: '#aaa',
+    border: '1px solid #1a1a2e',
+    borderRadius: '3px',
+    cursor: 'pointer',
+  },
 }
 
 interface CategoryColumnProps {
@@ -660,6 +726,14 @@ export default function CellPanel() {
     hideColumn,
     showColumn,
     setColumnDisplayName,
+    schema,
+    activeCellMask,
+    showMaskedCells,
+    setActiveCellsFromSelection,
+    addSelectionToActive,
+    removeSelectionFromActive,
+    resetActiveCells,
+    setShowMaskedCells,
   } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
   const { selectColorColumn } = useDataActions()
@@ -837,25 +911,6 @@ export default function CellPanel() {
     }
   }, [selectedAnnotation, newLabel, selectedCellIndices, clearSelection, refresh])
 
-  const handleExport = useCallback(async () => {
-    try {
-      const tsv = await exportAnnotations()
-      // Create download
-      const blob = new Blob([tsv], { type: 'text/tab-separated-values' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'cell_annotations.tsv'
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-    } catch (err) {
-      console.error('Failed to export annotations:', err)
-      alert(`Failed to export: ${(err as Error).message}`)
-    }
-  }, [])
-
   if (isLoading) {
     return (
       <div style={styles.panel}>
@@ -992,14 +1047,45 @@ export default function CellPanel() {
         {visibleSummaries.length === 0 && hiddenSummaries.length === 0 && (
           <div style={styles.emptyState}>No cell metadata available</div>
         )}
-
-        {/* Export button */}
-        <div style={{ padding: '8px 16px', borderTop: '1px solid #0f3460', marginTop: '8px' }}>
-          <button style={styles.exportButton} onClick={handleExport}>
-            Export All Annotations (TSV)
-          </button>
-        </div>
       </div>
+
+      {/* Cell Mask Status Bar */}
+      {activeCellMask && (
+        <div style={styles.maskBar}>
+          <div style={styles.maskTitle}>
+            <span>Cell Mask</span>
+          </div>
+          <div style={styles.maskInfo}>
+            {activeCellMask.filter(Boolean).length.toLocaleString()} of{' '}
+            {schema?.n_cells.toLocaleString()} cells active
+          </div>
+          <div style={styles.toggleRow}>
+            <div
+              style={{
+                ...styles.toggle,
+                ...(showMaskedCells ? styles.toggleActive : {}),
+              }}
+              onClick={() => setShowMaskedCells(!showMaskedCells)}
+            >
+              <div
+                style={{
+                  ...styles.toggleKnob,
+                  ...(showMaskedCells ? styles.toggleKnobActive : {}),
+                }}
+              />
+            </div>
+            <span>Show masked cells</span>
+          </div>
+          <div style={{ ...styles.maskButtons, marginTop: '8px' }}>
+            <button
+              style={{ ...styles.smallButton, ...styles.dangerButton, flex: 1 }}
+              onClick={resetActiveCells}
+            >
+              Reset Mask
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Comparison Status Bar */}
       {(hasGroup1 || hasGroup2) && (
@@ -1087,6 +1173,31 @@ export default function CellPanel() {
               onClick={() => handleSetSelectionAsGroup(2)}
             >
               Set as Group 2
+            </button>
+          </div>
+
+          {/* Cell masking buttons */}
+          <div style={{ ...styles.selectionGroupButtons, borderTop: '1px solid #0f3460', paddingTop: '10px' }}>
+            <button
+              style={{ ...styles.maskActionButton, flex: 1 }}
+              onClick={setActiveCellsFromSelection}
+              title="Set selection as the only active cells"
+            >
+              Set Active
+            </button>
+            <button
+              style={{ ...styles.maskActionButton, flex: 1 }}
+              onClick={addSelectionToActive}
+              title="Add selection to active cells"
+            >
+              Add to Active
+            </button>
+            <button
+              style={{ ...styles.maskActionButton, flex: 1 }}
+              onClick={removeSelectionFromActive}
+              title="Remove selection from active cells"
+            >
+              Remove
             </button>
           </div>
 

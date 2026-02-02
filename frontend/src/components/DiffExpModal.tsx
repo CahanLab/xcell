@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { useStore, DiffExpGene } from '../store'
 import { useDiffExp } from '../hooks/useData'
 
@@ -162,6 +162,29 @@ const styles = {
     color: '#aaa',
     fontSize: '14px',
   },
+  settingRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    marginBottom: '16px',
+    padding: '8px 12px',
+    backgroundColor: '#0f3460',
+    borderRadius: '6px',
+  },
+  settingLabel: {
+    fontSize: '13px',
+    color: '#aaa',
+  },
+  settingInput: {
+    width: '70px',
+    padding: '4px 8px',
+    fontSize: '13px',
+    backgroundColor: '#0a0f1a',
+    color: '#eee',
+    border: '1px solid #1a1a2e',
+    borderRadius: '4px',
+    textAlign: 'center' as const,
+  },
 }
 
 function formatPValue(pval: number): string {
@@ -220,6 +243,7 @@ export default function DiffExpModal() {
     clearComparison,
   } = useStore()
   const { runComparison } = useDiffExp()
+  const [topN, setTopN] = useState(50)
 
   const handleClose = useCallback(() => {
     setDiffExpModalOpen(false)
@@ -254,11 +278,11 @@ export default function DiffExpModal() {
 
   const handleRunComparison = useCallback(async () => {
     try {
-      await runComparison(10)
+      await runComparison(topN)
     } catch (err) {
       alert(`Differential expression failed: ${(err as Error).message}`)
     }
-  }, [runComparison])
+  }, [runComparison, topN])
 
   if (!isDiffExpModalOpen) return null
 
@@ -297,6 +321,21 @@ export default function DiffExpModal() {
               )}
             </div>
           </div>
+
+          {/* Top N setting */}
+          {!hasResults && (
+            <div style={styles.settingRow}>
+              <span style={styles.settingLabel}>Top genes per group:</span>
+              <input
+                type="number"
+                min="1"
+                max="500"
+                value={topN}
+                onChange={(e) => setTopN(Math.max(1, Math.min(500, parseInt(e.target.value) || 50)))}
+                style={styles.settingInput}
+              />
+            </div>
+          )}
 
           {/* Loading state */}
           {isDiffExpLoading && (

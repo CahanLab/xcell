@@ -308,6 +308,7 @@ export function useDiffExp() {
     setDiffExpResult,
     setDiffExpLoading,
     setDiffExpModalOpen,
+    activeCellMask,
   } = useStore()
 
   const runComparison = useCallback(async (topN: number = 10) => {
@@ -315,9 +316,22 @@ export function useDiffExp() {
       throw new Error('Both groups must be set before running comparison')
     }
 
+    // Filter out masked cells if mask is active
+    let group1 = comparison.group1
+    let group2 = comparison.group2
+
+    if (activeCellMask) {
+      group1 = group1.filter((i) => activeCellMask[i])
+      group2 = group2.filter((i) => activeCellMask[i])
+
+      if (group1.length === 0 || group2.length === 0) {
+        throw new Error('After filtering masked cells, one or both groups are empty')
+      }
+    }
+
     setDiffExpLoading(true)
     try {
-      const result = await runDiffExp(comparison.group1, comparison.group2, topN)
+      const result = await runDiffExp(group1, group2, topN)
       setDiffExpResult(result)
       setDiffExpModalOpen(true)
       return result
@@ -327,7 +341,7 @@ export function useDiffExp() {
     } finally {
       setDiffExpLoading(false)
     }
-  }, [comparison.group1, comparison.group2, setDiffExpLoading, setDiffExpResult, setDiffExpModalOpen])
+  }, [comparison.group1, comparison.group2, activeCellMask, setDiffExpLoading, setDiffExpResult, setDiffExpModalOpen])
 
   return {
     comparison,

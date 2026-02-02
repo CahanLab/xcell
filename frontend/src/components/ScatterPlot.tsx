@@ -148,21 +148,20 @@ export default function ScatterPlot({
   const [isDrawing, setIsDrawing] = useState(false)
   const [viewState, setViewState] = useState<OrthographicViewState | null>(null)
 
-  // Get display preferences from store
+  // Get display preferences and cell masking state from store
   const displayPreferences = useStore((state) => state.displayPreferences)
+  const activeCellMask = useStore((state) => state.activeCellMask)
+  const showMaskedCells = useStore((state) => state.showMaskedCells)
 
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
 
-  // Compute bounds and data from embedding only (so view doesn't reset on color changes)
-  const { bounds, data } = useMemo(() => {
+  // Compute bounds from embedding only (so view doesn't reset on color/mask changes)
+  const bounds = useMemo(() => {
     const coords = embedding.coordinates
 
     if (coords.length === 0) {
-      return {
-        bounds: { minX: 0, maxX: 1, minY: 0, maxY: 1 },
-        data: [],
-      }
+      return { minX: 0, maxX: 1, minY: 0, maxY: 1 }
     }
 
     let minX = Infinity, maxX = -Infinity
@@ -176,24 +175,41 @@ export default function ScatterPlot({
 
     const padX = (maxX - minX) * 0.05
     const padY = (maxY - minY) * 0.05
-    const bounds = {
+    return {
       minX: minX - padX,
       maxX: maxX + padX,
       minY: minY - padY,
       maxY: maxY + padY,
     }
+  }, [embedding])
 
-    const data = coords.map((coord, index) => ({
+  // Compute data, filtering out masked cells if showMaskedCells is false
+  const data = useMemo(() => {
+    const coords = embedding.coordinates
+    const allData = coords.map((coord, index) => ({
       position: coord,
       index,
     }))
 
-    return { bounds, data }
-  }, [embedding])
+    // If no mask or showing masked cells, return all data
+    if (!activeCellMask || showMaskedCells) {
+      return allData
+    }
+
+    // Filter out masked (inactive) cells
+    return allData.filter((d) => activeCellMask[d.index])
+  }, [embedding, activeCellMask, showMaskedCells])
 
   // Compute color function separately (so it can change without affecting view state)
   const getColor = useMemo(() => {
     const opacity = Math.round(displayPreferences.pointOpacity * 255)
+    const maskedOpacity = Math.round(opacity * 0.3) // 30% opacity for masked cells
+    const maskedColor: [number, number, number, number] = [100, 100, 100, maskedOpacity]
+
+    // Helper to check if cell is masked (inactive)
+    const isMasked = (index: number): boolean => {
+      return activeCellMask !== null && !activeCellMask[index]
+    }
 
     if (colorMode === 'expression' && expressionData) {
       const { values, min, max } = expressionData
@@ -201,6 +217,10 @@ export default function ScatterPlot({
       const colorScale = displayPreferences.colorScale
 
       return (d: { index: number }): [number, number, number, number] => {
+        // Show masked cells as gray (when showMaskedCells is true, they're in the data)
+        if (isMasked(d.index)) {
+          return maskedColor
+        }
         if (selectedSet.size > 0 && selectedSet.has(d.index)) {
           return SELECTED_COLOR
         }
@@ -215,6 +235,9 @@ export default function ScatterPlot({
     } else if (colorMode === 'metadata' && colorBy) {
       if (colorBy.dtype === 'category') {
         return (d: { index: number }): [number, number, number, number] => {
+          if (isMasked(d.index)) {
+            return maskedColor
+          }
           if (selectedSet.size > 0 && selectedSet.has(d.index)) {
             return SELECTED_COLOR
           }
@@ -229,6 +252,9 @@ export default function ScatterPlot({
         const range = max - min || 1
 
         return (d: { index: number }): [number, number, number, number] => {
+          if (isMasked(d.index)) {
+            return maskedColor
+          }
           if (selectedSet.size > 0 && selectedSet.has(d.index)) {
             return SELECTED_COLOR
           }
@@ -243,12 +269,15 @@ export default function ScatterPlot({
 
     // Default color function
     return (d: { index: number }): [number, number, number, number] => {
+      if (isMasked(d.index)) {
+        return maskedColor
+      }
       if (selectedSet.size > 0 && selectedSet.has(d.index)) {
         return SELECTED_COLOR
       }
       return [DEFAULT_COLOR[0], DEFAULT_COLOR[1], DEFAULT_COLOR[2], opacity]
     }
-  }, [colorBy, expressionData, colorMode, selectedSet, displayPreferences])
+  }, [colorBy, expressionData, colorMode, selectedSet, displayPreferences, activeCellMask])
 
   // Initialize view state when bounds change
   useEffect(() => {
@@ -360,21 +389,35 @@ export default function ScatterPlot({
 
   const baseRadius = displayPreferences.pointSize
   const selectedRadius = baseRadius + 2
+  const maskedRadius = Math.max(1, baseRadius / 3) // 1/3 size for masked cells
+
+  // Helper to get radius for a point
+  const getRadius = (d: { index: number }): number => {
+    // Masked cells are smaller
+    if (activeCellMask !== null && !activeCellMask[d.index]) {
+      return maskedRadius
+    }
+    // Selected cells are larger
+    if (selectedSet.has(d.index)) {
+      return selectedRadius
+    }
+    return baseRadius
+  }
 
   const layers = [
     new ScatterplotLayer({
       id: 'scatterplot',
       data,
       getPosition: (d) => d.position,
-      getRadius: (d) => (selectedSet.has(d.index) ? selectedRadius : baseRadius),
+      getRadius,
       getFillColor: getColor,
       radiusUnits: 'pixels',
       radiusMinPixels: 1,
       radiusMaxPixels: 20,
       pickable: true,
       updateTriggers: {
-        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.pointOpacity],
-        getRadius: [selectedCellIndices, displayPreferences.pointSize],
+        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.pointOpacity, activeCellMask],
+        getRadius: [selectedCellIndices, displayPreferences.pointSize, activeCellMask],
       },
     }),
   ]

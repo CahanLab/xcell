@@ -107,6 +107,10 @@ interface AppState {
   hiddenColumns: Set<string>  // Column names to hide from cell panel
   columnDisplayNames: Record<string, string>  // Map of original name → display name
 
+  // Cell masking - null means all cells are active (no mask)
+  activeCellMask: boolean[] | null
+  showMaskedCells: boolean  // Whether to display masked (inactive) cells
+
   // Actions
   setSchema: (schema: Schema) => void
   setEmbedding: (embedding: EmbeddingData) => void
@@ -149,6 +153,13 @@ interface AppState {
   showColumn: (name: string) => void
   setColumnDisplayName: (originalName: string, displayName: string) => void
   clearColumnDisplayName: (originalName: string) => void
+
+  // Cell masking actions
+  setActiveCellsFromSelection: () => void  // Set current selection as active cells
+  addSelectionToActive: () => void  // Add current selection to active cells
+  removeSelectionFromActive: () => void  // Remove current selection from active cells
+  resetActiveCells: () => void  // Clear mask, make all cells active
+  setShowMaskedCells: (show: boolean) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -183,6 +194,8 @@ export const useStore = create<AppState>((set) => ({
   isDiffExpModalOpen: false,
   hiddenColumns: new Set<string>(),
   columnDisplayNames: {},
+  activeCellMask: null,
+  showMaskedCells: true,
 
   // Actions
   setSchema: (schema) => set({ schema }),
@@ -288,4 +301,45 @@ export const useStore = create<AppState>((set) => ({
       delete next[originalName]
       return { columnDisplayNames: next }
     }),
+
+  // Cell masking actions
+  setActiveCellsFromSelection: () =>
+    set((state) => {
+      if (state.selectedCellIndices.length === 0 || !state.schema) return {}
+      const mask = new Array(state.schema.n_cells).fill(false)
+      state.selectedCellIndices.forEach((i) => {
+        mask[i] = true
+      })
+      return { activeCellMask: mask }
+    }),
+
+  addSelectionToActive: () =>
+    set((state) => {
+      if (state.selectedCellIndices.length === 0 || !state.schema) return {}
+      // If no mask exists, all cells are currently active - create mask with all true
+      const mask = state.activeCellMask
+        ? [...state.activeCellMask]
+        : new Array(state.schema.n_cells).fill(true)
+      state.selectedCellIndices.forEach((i) => {
+        mask[i] = true
+      })
+      return { activeCellMask: mask }
+    }),
+
+  removeSelectionFromActive: () =>
+    set((state) => {
+      if (state.selectedCellIndices.length === 0 || !state.schema) return {}
+      // If no mask exists, all cells are currently active - create mask with all true first
+      const mask = state.activeCellMask
+        ? [...state.activeCellMask]
+        : new Array(state.schema.n_cells).fill(true)
+      state.selectedCellIndices.forEach((i) => {
+        mask[i] = false
+      })
+      return { activeCellMask: mask }
+    }),
+
+  resetActiveCells: () => set({ activeCellMask: null }),
+
+  setShowMaskedCells: (show) => set({ showMaskedCells: show }),
 }))

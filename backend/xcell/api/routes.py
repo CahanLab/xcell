@@ -335,3 +335,60 @@ def export_annotations(request: ExportAnnotationsRequest):
         )
     except KeyError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
+# Differential expression endpoints
+# =========================================================================
+
+
+class DiffExpRequest(BaseModel):
+    """Request model for differential expression analysis."""
+    group1: list[int]
+    group2: list[int]
+    top_n: int = 10
+
+
+class DiffExpGene(BaseModel):
+    """A single gene result from differential expression."""
+    gene: str
+    log2fc: float
+    pval: float
+    pval_adj: float
+
+
+class DiffExpResponse(BaseModel):
+    """Response model for differential expression analysis."""
+    positive: list[DiffExpGene]
+    negative: list[DiffExpGene]
+    group1_count: int
+    group2_count: int
+
+
+@router.post("/diffexp", response_model=DiffExpResponse)
+def run_diffexp(request: DiffExpRequest):
+    """Run differential expression analysis between two cell groups.
+
+    Uses Welch's t-test to identify differentially expressed genes.
+
+    Args:
+        group1: List of cell indices for group 1
+        group2: List of cell indices for group 2
+        top_n: Number of top genes to return for each direction (default: 10)
+
+    Returns:
+        JSON object containing:
+        - positive: Top N genes upregulated in group1
+        - negative: Top N genes upregulated in group2
+        - group1_count: Number of cells in group 1
+        - group2_count: Number of cells in group 2
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_diffexp(
+            group1_indices=request.group1,
+            group2_indices=request.group2,
+            top_n=request.top_n,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

@@ -13,6 +13,8 @@ import anndata
 import numpy as np
 import pandas as pd
 
+from .diffexp import compute_diffexp
+
 
 class DataAdaptor:
     """Wraps an AnnData object and provides accessor methods.
@@ -512,6 +514,58 @@ class DataAdaptor:
             df = self.adata.obs[columns].copy()
 
         return df.to_csv(sep="\t")
+
+    # =========================================================================
+    # Differential expression analysis
+    # =========================================================================
+
+    def run_diffexp(
+        self,
+        group1_indices: list[int],
+        group2_indices: list[int],
+        top_n: int = 10,
+    ) -> dict[str, Any]:
+        """Run differential expression analysis between two cell groups.
+
+        Uses scanpy's rank_genes_groups with Wilcoxon rank-sum test.
+
+        Args:
+            group1_indices: Cell indices for group 1
+            group2_indices: Cell indices for group 2
+            top_n: Number of top genes to return for each direction
+
+        Returns:
+            Dictionary containing:
+            - positive: Top N genes upregulated in group1
+            - negative: Top N genes upregulated in group2
+            - group1_count: Number of cells in group 1
+            - group2_count: Number of cells in group 2
+
+        Raises:
+            ValueError: If indices are invalid or groups too small
+        """
+        # Validate indices
+        max_idx = self.n_cells - 1
+        for idx in group1_indices:
+            if idx < 0 or idx > max_idx:
+                raise ValueError(f"Invalid cell index: {idx}")
+        for idx in group2_indices:
+            if idx < 0 or idx > max_idx:
+                raise ValueError(f"Invalid cell index: {idx}")
+
+        # Check for overlap
+        set1 = set(group1_indices)
+        set2 = set(group2_indices)
+        overlap = set1 & set2
+        if overlap:
+            raise ValueError(f"Groups have {len(overlap)} overlapping cells")
+
+        return compute_diffexp(
+            adata=self.adata,
+            group1_indices=group1_indices,
+            group2_indices=group2_indices,
+            top_n=top_n,
+        )
 
     # =========================================================================
     # Future scanpy integration methods (stubs for now)

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useStore } from '../store'
 import {
   useObsSummaries,
@@ -6,10 +6,9 @@ import {
   CategoryValue,
   useDataActions,
   createAnnotation,
-  addLabelToAnnotation,
   labelCells,
-  deleteAnnotation,
   exportAnnotations,
+  useDiffExp,
 } from '../hooks/useData'
 
 const styles = {
@@ -241,20 +240,178 @@ const styles = {
     cursor: 'pointer',
     marginTop: '8px',
   },
+  groupButton: {
+    padding: '2px 5px',
+    fontSize: '10px',
+    backgroundColor: 'transparent',
+    color: '#666',
+    border: '1px solid #444',
+    borderRadius: '3px',
+    cursor: 'pointer',
+    marginLeft: '4px',
+  },
+  groupButtonActive1: {
+    backgroundColor: '#4ecdc4',
+    color: '#000',
+    borderColor: '#4ecdc4',
+  },
+  groupButtonActive2: {
+    backgroundColor: '#ff6b6b',
+    color: '#fff',
+    borderColor: '#ff6b6b',
+  },
+  comparisonBar: {
+    padding: '12px 16px',
+    backgroundColor: '#1a2744',
+    borderTop: '1px solid #0f3460',
+  },
+  comparisonTitle: {
+    fontSize: '11px',
+    fontWeight: 600,
+    color: '#e94560',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.5px',
+    marginBottom: '8px',
+  },
+  comparisonGroups: {
+    display: 'flex',
+    gap: '12px',
+    marginBottom: '10px',
+  },
+  comparisonGroup: {
+    flex: 1,
+    fontSize: '12px',
+  },
+  comparisonLabel: {
+    color: '#888',
+    fontSize: '10px',
+    marginBottom: '2px',
+  },
+  comparisonValue: {
+    color: '#ddd',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  comparisonCount: {
+    color: '#666',
+    fontSize: '11px',
+  },
+  comparisonButtons: {
+    display: 'flex',
+    gap: '8px',
+  },
+  selectionGroupButtons: {
+    display: 'flex',
+    gap: '8px',
+    marginBottom: '10px',
+  },
+  columnActions: {
+    display: 'flex',
+    gap: '2px',
+    marginLeft: '4px',
+  },
+  columnActionButton: {
+    padding: '2px 4px',
+    fontSize: '10px',
+    backgroundColor: 'transparent',
+    color: '#666',
+    border: 'none',
+    borderRadius: '2px',
+    cursor: 'pointer',
+    opacity: 0.6,
+  },
+  columnNameInput: {
+    padding: '2px 6px',
+    fontSize: '13px',
+    backgroundColor: '#0f3460',
+    color: '#eee',
+    border: '1px solid #1a1a2e',
+    borderRadius: '4px',
+    outline: 'none',
+    flex: 1,
+    minWidth: 0,
+  },
+  hiddenSection: {
+    padding: '8px 16px',
+    borderTop: '1px solid #0f3460',
+  },
+  hiddenTitle: {
+    fontSize: '11px',
+    fontWeight: 600,
+    color: '#666',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.5px',
+    marginBottom: '8px',
+    cursor: 'pointer',
+  },
+  hiddenItem: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '4px 8px',
+    fontSize: '12px',
+    color: '#888',
+    backgroundColor: '#0a0f1a',
+    borderRadius: '4px',
+    marginBottom: '4px',
+  },
 }
 
 interface CategoryColumnProps {
   summary: ObsSummary
+  displayName: string
   isActive: boolean
   onColorBy: () => void
+  onSetGroup: (categoryValue: string, groupNumber: 1 | 2) => void
+  group1Categories: Set<string>
+  group2Categories: Set<string>
+  onHide: () => void
+  onRename: (newName: string) => void
 }
 
-function CategoryColumn({ summary, isActive, onColorBy }: CategoryColumnProps) {
+function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup, group1Categories, group2Categories, onHide, onRename }: CategoryColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editName, setEditName] = useState(displayName)
+  const editInputRef = useRef<HTMLInputElement>(null)
 
   const categories = summary.categories || []
   const totalCount = categories.reduce((sum, c) => sum + c.count, 0)
+
+  // Create a key for this category column to track group assignments
+  const getCategoryKey = (catValue: string) => `${summary.name}:${catValue}`
+
+  useEffect(() => {
+    if (isEditing && editInputRef.current) {
+      editInputRef.current.focus()
+      editInputRef.current.select()
+    }
+  }, [isEditing])
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditName(displayName)
+    setIsEditing(true)
+  }
+
+  const handleEditSubmit = () => {
+    const trimmedName = editName.trim()
+    if (trimmedName && trimmedName !== displayName) {
+      onRename(trimmedName)
+    }
+    setIsEditing(false)
+  }
+
+  const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleEditSubmit()
+    } else if (e.key === 'Escape') {
+      setIsEditing(false)
+      setEditName(displayName)
+    }
+  }
 
   return (
     <div style={styles.column}>
@@ -266,13 +423,44 @@ function CategoryColumn({ summary, isActive, onColorBy }: CategoryColumnProps) {
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => !isEditing && setExpanded(!expanded)}
       >
         <span style={styles.expandIcon}>{expanded ? '▼' : '▶'}</span>
-        <span style={styles.columnName} title={summary.name}>
-          {summary.name}
-        </span>
+        {isEditing ? (
+          <input
+            ref={editInputRef}
+            type="text"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            onBlur={handleEditSubmit}
+            onKeyDown={handleEditKeyDown}
+            onClick={(e) => e.stopPropagation()}
+            style={styles.columnNameInput}
+          />
+        ) : (
+          <span
+            style={styles.columnName}
+            title={`${displayName}${displayName !== summary.name ? ` (${summary.name})` : ''}\nDouble-click to rename`}
+            onDoubleClick={handleDoubleClick}
+          >
+            {displayName}
+          </span>
+        )}
         <span style={styles.columnMeta}>({categories.length})</span>
+        {hovered && !isEditing && (
+          <div style={styles.columnActions}>
+            <button
+              style={styles.columnActionButton}
+              onClick={(e) => {
+                e.stopPropagation()
+                onHide()
+              }}
+              title="Hide this column"
+            >
+              Hide
+            </button>
+          </div>
+        )}
         <button
           style={{
             ...styles.colorButton,
@@ -289,16 +477,49 @@ function CategoryColumn({ summary, isActive, onColorBy }: CategoryColumnProps) {
       </div>
       {expanded && (
         <div style={styles.categoryList}>
-          {categories.map((cat: CategoryValue) => (
-            <div key={cat.value} style={styles.categoryItem}>
-              <span style={styles.categoryName} title={cat.value}>
-                {cat.value}
-              </span>
-              <span style={styles.categoryCount}>
-                {cat.count.toLocaleString()} ({((cat.count / totalCount) * 100).toFixed(1)}%)
-              </span>
-            </div>
-          ))}
+          {categories.map((cat: CategoryValue) => {
+            const catKey = getCategoryKey(cat.value)
+            const isGroup1 = group1Categories.has(catKey)
+            const isGroup2 = group2Categories.has(catKey)
+            return (
+              <div key={cat.value} style={styles.categoryItem}>
+                <span style={styles.categoryName} title={cat.value}>
+                  {cat.value}
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center' }}>
+                  <button
+                    style={{
+                      ...styles.groupButton,
+                      ...(isGroup1 ? styles.groupButtonActive1 : {}),
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onSetGroup(cat.value, 1)
+                    }}
+                    title="Set as Group 1 for comparison"
+                  >
+                    G1
+                  </button>
+                  <button
+                    style={{
+                      ...styles.groupButton,
+                      ...(isGroup2 ? styles.groupButtonActive2 : {}),
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onSetGroup(cat.value, 2)
+                    }}
+                    title="Set as Group 2 for comparison"
+                  >
+                    G2
+                  </button>
+                  <span style={styles.categoryCount}>
+                    {cat.count.toLocaleString()} ({((cat.count / totalCount) * 100).toFixed(1)}%)
+                  </span>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
@@ -307,12 +528,48 @@ function CategoryColumn({ summary, isActive, onColorBy }: CategoryColumnProps) {
 
 interface ContinuousColumnProps {
   summary: ObsSummary
+  displayName: string
   isActive: boolean
   onColorBy: () => void
+  onHide: () => void
+  onRename: (newName: string) => void
 }
 
-function ContinuousColumn({ summary, isActive, onColorBy }: ContinuousColumnProps) {
+function ContinuousColumn({ summary, displayName, isActive, onColorBy, onHide, onRename }: ContinuousColumnProps) {
   const [hovered, setHovered] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editName, setEditName] = useState(displayName)
+  const editInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (isEditing && editInputRef.current) {
+      editInputRef.current.focus()
+      editInputRef.current.select()
+    }
+  }, [isEditing])
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditName(displayName)
+    setIsEditing(true)
+  }
+
+  const handleEditSubmit = () => {
+    const trimmedName = editName.trim()
+    if (trimmedName && trimmedName !== displayName) {
+      onRename(trimmedName)
+    }
+    setIsEditing(false)
+  }
+
+  const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleEditSubmit()
+    } else if (e.key === 'Escape') {
+      setIsEditing(false)
+      setEditName(displayName)
+    }
+  }
 
   return (
     <div style={styles.column}>
@@ -326,9 +583,40 @@ function ContinuousColumn({ summary, isActive, onColorBy }: ContinuousColumnProp
         onMouseLeave={() => setHovered(false)}
       >
         <span style={styles.expandIcon}></span>
-        <span style={styles.columnName} title={summary.name}>
-          {summary.name}
-        </span>
+        {isEditing ? (
+          <input
+            ref={editInputRef}
+            type="text"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            onBlur={handleEditSubmit}
+            onKeyDown={handleEditKeyDown}
+            onClick={(e) => e.stopPropagation()}
+            style={styles.columnNameInput}
+          />
+        ) : (
+          <span
+            style={styles.columnName}
+            title={`${displayName}${displayName !== summary.name ? ` (${summary.name})` : ''}\nDouble-click to rename`}
+            onDoubleClick={handleDoubleClick}
+          >
+            {displayName}
+          </span>
+        )}
+        {hovered && !isEditing && (
+          <div style={styles.columnActions}>
+            <button
+              style={styles.columnActionButton}
+              onClick={(e) => {
+                e.stopPropagation()
+                onHide()
+              }}
+              title="Hide this column"
+            >
+              Hide
+            </button>
+          </div>
+        )}
         <button
           style={{
             ...styles.colorButton,
@@ -356,9 +644,26 @@ function ContinuousColumn({ summary, isActive, onColorBy }: ContinuousColumnProp
 }
 
 export default function CellPanel() {
-  const { colorMode, selectedColorColumn, selectedCellIndices, clearSelection } = useStore()
+  const {
+    colorMode,
+    selectedColorColumn,
+    selectedCellIndices,
+    clearSelection,
+    comparison,
+    setComparisonGroup1,
+    setComparisonGroup2,
+    clearComparison,
+    setDiffExpModalOpen,
+    colorBy,
+    hiddenColumns,
+    columnDisplayNames,
+    hideColumn,
+    showColumn,
+    setColumnDisplayName,
+  } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
   const { selectColorColumn } = useDataActions()
+  const { runComparison, isDiffExpLoading } = useDiffExp()
 
   // State for creating new annotation
   const [newAnnotationName, setNewAnnotationName] = useState('')
@@ -372,13 +677,32 @@ export default function CellPanel() {
   // State for collapsible sections
   const [categoricalExpanded, setCategoricalExpanded] = useState(true)
   const [continuousExpanded, setContinuousExpanded] = useState(true)
+  const [hiddenExpanded, setHiddenExpanded] = useState(false)
 
-  // Separate categorical and continuous columns
-  const categoricalColumns = summaries.filter((s) => s.dtype === 'category' || s.dtype === 'string')
-  const continuousColumns = summaries.filter((s) => s.dtype === 'numeric')
+  // Track which categories are set as groups (for highlighting buttons)
+  const [group1Categories, setGroup1Categories] = useState<Set<string>>(new Set())
+  const [group2Categories, setGroup2Categories] = useState<Set<string>>(new Set())
+
+  // Get display name for a column
+  const getDisplayName = useCallback((originalName: string) => {
+    return columnDisplayNames[originalName] || originalName
+  }, [columnDisplayNames])
+
+  // Filter out hidden columns
+  const visibleSummaries = summaries.filter((s) => !hiddenColumns.has(s.name))
+  const hiddenSummaries = summaries.filter((s) => hiddenColumns.has(s.name))
+
+  // Separate categorical and continuous columns (from visible only)
+  const categoricalColumns = visibleSummaries.filter((s) => s.dtype === 'category' || s.dtype === 'string')
+  const continuousColumns = visibleSummaries.filter((s) => s.dtype === 'numeric')
 
   // Get user-created annotations (for now, show all categorical)
   const userAnnotations = categoricalColumns
+
+  // Check if comparison groups are set
+  const hasGroup1 = comparison.group1 !== null && comparison.group1.length > 0
+  const hasGroup2 = comparison.group2 !== null && comparison.group2.length > 0
+  const canCompare = hasGroup1 && hasGroup2
 
   const handleColorBy = (columnName: string) => {
     if (colorMode === 'metadata' && selectedColorColumn === columnName) {
@@ -387,6 +711,100 @@ export default function CellPanel() {
       selectColorColumn(columnName)
     }
   }
+
+  // Set selected cells as a comparison group
+  const handleSetSelectionAsGroup = useCallback(
+    (groupNumber: 1 | 2) => {
+      if (selectedCellIndices.length === 0) return
+      const label = `Selection (${selectedCellIndices.length} cells)`
+      if (groupNumber === 1) {
+        setComparisonGroup1([...selectedCellIndices], label)
+        setGroup1Categories(new Set())
+      } else {
+        setComparisonGroup2([...selectedCellIndices], label)
+        setGroup2Categories(new Set())
+      }
+    },
+    [selectedCellIndices, setComparisonGroup1, setComparisonGroup2]
+  )
+
+  // Set a category's cells as a comparison group
+  const handleSetCategoryAsGroup = useCallback(
+    (columnName: string, categoryValue: string, groupNumber: 1 | 2) => {
+      // Find the column data to get cell indices for this category
+      const summary = summaries.find((s) => s.name === columnName)
+      if (!summary || !colorBy) {
+        // Need to fetch the column data to get indices
+        // For now, we'll fetch the obs column data
+        fetch(`/api/obs/${encodeURIComponent(columnName)}`)
+          .then((res) => res.json())
+          .then((data) => {
+            const indices: number[] = []
+            const categories = data.categories || []
+            const categoryIndex = categories.indexOf(categoryValue)
+
+            if (data.dtype === 'category' && categoryIndex >= 0) {
+              // Values are category codes (indices into categories array)
+              data.values.forEach((val: number, idx: number) => {
+                if (val === categoryIndex) {
+                  indices.push(idx)
+                }
+              })
+            } else {
+              // Values are direct strings
+              data.values.forEach((val: string, idx: number) => {
+                if (val === categoryValue) {
+                  indices.push(idx)
+                }
+              })
+            }
+
+            const label = `${columnName}: ${categoryValue}`
+            const catKey = `${columnName}:${categoryValue}`
+
+            if (groupNumber === 1) {
+              setComparisonGroup1(indices, label)
+              setGroup1Categories(new Set([catKey]))
+              setGroup2Categories((prev) => {
+                const next = new Set(prev)
+                next.delete(catKey)
+                return next
+              })
+            } else {
+              setComparisonGroup2(indices, label)
+              setGroup2Categories(new Set([catKey]))
+              setGroup1Categories((prev) => {
+                const next = new Set(prev)
+                next.delete(catKey)
+                return next
+              })
+            }
+          })
+          .catch((err) => {
+            console.error('Failed to fetch category data:', err)
+            alert('Failed to set group from category')
+          })
+        return
+      }
+    },
+    [summaries, colorBy, setComparisonGroup1, setComparisonGroup2]
+  )
+
+  // Handle running comparison
+  const handleRunComparison = useCallback(async () => {
+    try {
+      await runComparison(10)
+    } catch (err) {
+      alert(`Differential expression failed: ${(err as Error).message}`)
+    }
+  }, [runComparison])
+
+  // Clear comparison and reset category highlights
+  const handleClearComparison = useCallback(() => {
+    clearComparison()
+    setGroup1Categories(new Set())
+    setGroup2Categories(new Set())
+  }, [clearComparison])
 
   const handleCreateAnnotation = useCallback(async () => {
     if (!newAnnotationName.trim()) return
@@ -402,20 +820,6 @@ export default function CellPanel() {
       setIsCreating(false)
     }
   }, [newAnnotationName, refresh])
-
-  const handleDeleteAnnotation = useCallback(
-    async (name: string) => {
-      if (!confirm(`Delete annotation "${name}"?`)) return
-      try {
-        await deleteAnnotation(name)
-        refresh()
-      } catch (err) {
-        console.error('Failed to delete annotation:', err)
-        alert(`Failed to delete annotation: ${(err as Error).message}`)
-      }
-    },
-    [refresh]
-  )
 
   const handleLabelCells = useCallback(async () => {
     if (!selectedAnnotation || !newLabel.trim() || selectedCellIndices.length === 0) return
@@ -520,8 +924,16 @@ export default function CellPanel() {
                 <CategoryColumn
                   key={summary.name}
                   summary={summary}
+                  displayName={getDisplayName(summary.name)}
                   isActive={colorMode === 'metadata' && selectedColorColumn === summary.name}
                   onColorBy={() => handleColorBy(summary.name)}
+                  onSetGroup={(categoryValue, groupNumber) =>
+                    handleSetCategoryAsGroup(summary.name, categoryValue, groupNumber)
+                  }
+                  group1Categories={group1Categories}
+                  group2Categories={group2Categories}
+                  onHide={() => hideColumn(summary.name)}
+                  onRename={(newName) => setColumnDisplayName(summary.name, newName)}
                 />
               ))}
           </div>
@@ -542,14 +954,42 @@ export default function CellPanel() {
                 <ContinuousColumn
                   key={summary.name}
                   summary={summary}
+                  displayName={getDisplayName(summary.name)}
                   isActive={colorMode === 'metadata' && selectedColorColumn === summary.name}
                   onColorBy={() => handleColorBy(summary.name)}
+                  onHide={() => hideColumn(summary.name)}
+                  onRename={(newName) => setColumnDisplayName(summary.name, newName)}
                 />
               ))}
           </div>
         )}
 
-        {summaries.length === 0 && (
+        {/* Hidden Columns - collapsible */}
+        {hiddenSummaries.length > 0 && (
+          <div style={styles.hiddenSection}>
+            <div
+              style={styles.hiddenTitle}
+              onClick={() => setHiddenExpanded(!hiddenExpanded)}
+            >
+              <span style={styles.sectionToggle}>{hiddenExpanded ? '▼' : '▶'}</span>
+              Hidden ({hiddenSummaries.length})
+            </div>
+            {hiddenExpanded &&
+              hiddenSummaries.map((summary) => (
+                <div key={summary.name} style={styles.hiddenItem}>
+                  <span>{getDisplayName(summary.name)}</span>
+                  <button
+                    style={styles.smallButton}
+                    onClick={() => showColumn(summary.name)}
+                  >
+                    Show
+                  </button>
+                </div>
+              ))}
+          </div>
+        )}
+
+        {visibleSummaries.length === 0 && hiddenSummaries.length === 0 && (
           <div style={styles.emptyState}>No cell metadata available</div>
         )}
 
@@ -561,21 +1001,103 @@ export default function CellPanel() {
         </div>
       </div>
 
+      {/* Comparison Status Bar */}
+      {(hasGroup1 || hasGroup2) && (
+        <div style={styles.comparisonBar}>
+          <div style={styles.comparisonTitle}>Comparison</div>
+          <div style={styles.comparisonGroups}>
+            <div style={styles.comparisonGroup}>
+              <div style={{ ...styles.comparisonLabel, color: '#4ecdc4' }}>Group 1</div>
+              <div style={styles.comparisonValue}>
+                {comparison.group1Label || 'Not set'}
+              </div>
+              {hasGroup1 && (
+                <div style={styles.comparisonCount}>
+                  {comparison.group1?.length.toLocaleString()} cells
+                </div>
+              )}
+            </div>
+            <div style={styles.comparisonGroup}>
+              <div style={{ ...styles.comparisonLabel, color: '#ff6b6b' }}>Group 2</div>
+              <div style={styles.comparisonValue}>
+                {comparison.group2Label || 'Not set'}
+              </div>
+              {hasGroup2 && (
+                <div style={styles.comparisonCount}>
+                  {comparison.group2?.length.toLocaleString()} cells
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={styles.comparisonButtons}>
+            <button
+              style={{ ...styles.smallButton, ...styles.primaryButton, flex: 1 }}
+              onClick={handleRunComparison}
+              disabled={!canCompare || isDiffExpLoading}
+            >
+              {isDiffExpLoading ? 'Running...' : 'Compare'}
+            </button>
+            <button
+              style={{ ...styles.smallButton, flex: 1 }}
+              onClick={() => setDiffExpModalOpen(true)}
+            >
+              Results
+            </button>
+            <button
+              style={{ ...styles.smallButton, ...styles.dangerButton }}
+              onClick={handleClearComparison}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Selection Actions - shown when cells are selected */}
       {selectedCellIndices.length > 0 && (
         <div style={styles.selectionActions}>
           <div style={styles.selectionHeader}>
-            Label {selectedCellIndices.length.toLocaleString()} selected cells
+            {selectedCellIndices.length.toLocaleString()} cells selected
+          </div>
+
+          {/* Set as comparison group buttons */}
+          <div style={styles.selectionGroupButtons}>
+            <button
+              style={{
+                ...styles.smallButton,
+                flex: 1,
+                ...(comparison.group1?.length === selectedCellIndices.length &&
+                comparison.group1Label?.includes('Selection')
+                  ? styles.groupButtonActive1
+                  : {}),
+              }}
+              onClick={() => handleSetSelectionAsGroup(1)}
+            >
+              Set as Group 1
+            </button>
+            <button
+              style={{
+                ...styles.smallButton,
+                flex: 1,
+                ...(comparison.group2?.length === selectedCellIndices.length &&
+                comparison.group2Label?.includes('Selection')
+                  ? styles.groupButtonActive2
+                  : {}),
+              }}
+              onClick={() => handleSetSelectionAsGroup(2)}
+            >
+              Set as Group 2
+            </button>
           </div>
 
           {/* Select annotation to label */}
-          <div style={styles.inputRow}>
+          <div style={{ ...styles.inputRow, marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #0f3460' }}>
             <select
               style={{ ...styles.input, cursor: 'pointer' }}
               value={selectedAnnotation || ''}
               onChange={(e) => setSelectedAnnotation(e.target.value || null)}
             >
-              <option value="">Select annotation...</option>
+              <option value="">Label with annotation...</option>
               {userAnnotations.map((ann) => (
                 <option key={ann.name} value={ann.name}>
                   {ann.name}

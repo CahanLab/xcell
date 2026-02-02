@@ -2,7 +2,7 @@ import { useMemo, useState, useRef, useCallback, useEffect } from 'react'
 import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
-import { useStore, EmbeddingData, ObsColumnData, ExpressionData, ColorMode, InteractionMode, ColorScale, DisplayPreferences } from '../store'
+import { useStore, EmbeddingData, ObsColumnData, ExpressionData, ColorMode, InteractionMode, ColorScale } from '../store'
 
 interface ScatterPlotProps {
   embedding: EmbeddingData
@@ -154,16 +154,14 @@ export default function ScatterPlot({
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
 
-  // Compute bounds and colors
-  const { bounds, data, getColor } = useMemo(() => {
+  // Compute bounds and data from embedding only (so view doesn't reset on color changes)
+  const { bounds, data } = useMemo(() => {
     const coords = embedding.coordinates
-    const opacity = Math.round(displayPreferences.pointOpacity * 255)
 
     if (coords.length === 0) {
       return {
         bounds: { minX: 0, maxX: 1, minY: 0, maxY: 1 },
         data: [],
-        getColor: () => DEFAULT_COLOR,
       }
     }
 
@@ -190,14 +188,19 @@ export default function ScatterPlot({
       index,
     }))
 
-    let getColor: (d: { index: number }) => [number, number, number, number]
+    return { bounds, data }
+  }, [embedding])
+
+  // Compute color function separately (so it can change without affecting view state)
+  const getColor = useMemo(() => {
+    const opacity = Math.round(displayPreferences.pointOpacity * 255)
 
     if (colorMode === 'expression' && expressionData) {
       const { values, min, max } = expressionData
       const range = max - min || 1
       const colorScale = displayPreferences.colorScale
 
-      getColor = (d) => {
+      return (d: { index: number }): [number, number, number, number] => {
         if (selectedSet.size > 0 && selectedSet.has(d.index)) {
           return SELECTED_COLOR
         }
@@ -211,7 +214,7 @@ export default function ScatterPlot({
       }
     } else if (colorMode === 'metadata' && colorBy) {
       if (colorBy.dtype === 'category') {
-        getColor = (d) => {
+        return (d: { index: number }): [number, number, number, number] => {
           if (selectedSet.size > 0 && selectedSet.has(d.index)) {
             return SELECTED_COLOR
           }
@@ -225,7 +228,7 @@ export default function ScatterPlot({
         const max = Math.max(...values)
         const range = max - min || 1
 
-        getColor = (d) => {
+        return (d: { index: number }): [number, number, number, number] => {
           if (selectedSet.size > 0 && selectedSet.has(d.index)) {
             return SELECTED_COLOR
           }
@@ -235,25 +238,17 @@ export default function ScatterPlot({
           const color = interpolateColor(t)
           return [...color, opacity] as [number, number, number, number]
         }
-      } else {
-        getColor = (d) => {
-          if (selectedSet.size > 0 && selectedSet.has(d.index)) {
-            return SELECTED_COLOR
-          }
-          return [DEFAULT_COLOR[0], DEFAULT_COLOR[1], DEFAULT_COLOR[2], opacity]
-        }
-      }
-    } else {
-      getColor = (d) => {
-        if (selectedSet.size > 0 && selectedSet.has(d.index)) {
-          return SELECTED_COLOR
-        }
-        return [DEFAULT_COLOR[0], DEFAULT_COLOR[1], DEFAULT_COLOR[2], opacity]
       }
     }
 
-    return { bounds, data, getColor }
-  }, [embedding, colorBy, expressionData, colorMode, selectedSet, displayPreferences])
+    // Default color function
+    return (d: { index: number }): [number, number, number, number] => {
+      if (selectedSet.size > 0 && selectedSet.has(d.index)) {
+        return SELECTED_COLOR
+      }
+      return [DEFAULT_COLOR[0], DEFAULT_COLOR[1], DEFAULT_COLOR[2], opacity]
+    }
+  }, [colorBy, expressionData, colorMode, selectedSet, displayPreferences])
 
   // Initialize view state when bounds change
   useEffect(() => {
@@ -287,7 +282,8 @@ export default function ScatterPlot({
 
     // Get view state
     const target = viewState.target as [number, number, number]
-    const zoom = viewState.zoom || 0
+    const zoomValue = viewState.zoom
+    const zoom = typeof zoomValue === 'number' ? zoomValue : (zoomValue?.[0] ?? 0)
 
     // Calculate scale
     const scale = Math.pow(2, zoom)
@@ -349,7 +345,8 @@ export default function ScatterPlot({
     const width = rect.width
     const height = rect.height
     const target = viewState.target as [number, number, number]
-    const zoom = viewState.zoom || 0
+    const zoomValue = viewState.zoom
+    const zoom = typeof zoomValue === 'number' ? zoomValue : (zoomValue?.[0] ?? 0)
     const scale = Math.pow(2, zoom)
 
     const screenPoints = lassoPoints.map(([dataX, dataY]) => {

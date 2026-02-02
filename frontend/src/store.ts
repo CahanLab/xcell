@@ -33,6 +33,28 @@ export interface GeneSet {
   genes: string[]
 }
 
+// Differential expression types
+export interface DiffExpGene {
+  gene: string
+  log2fc: number
+  pval: number
+  pval_adj: number
+}
+
+export interface DiffExpResult {
+  positive: DiffExpGene[]
+  negative: DiffExpGene[]
+  group1_count: number
+  group2_count: number
+}
+
+export interface ComparisonState {
+  group1: number[] | null
+  group2: number[] | null
+  group1Label: string | null
+  group2Label: string | null
+}
+
 // Color mode: what determines cell colors
 export type ColorMode = 'none' | 'metadata' | 'expression'
 
@@ -75,6 +97,16 @@ interface AppState {
   // Display preferences
   displayPreferences: DisplayPreferences
 
+  // Comparison state for differential expression
+  comparison: ComparisonState
+  diffExpResult: DiffExpResult | null
+  isDiffExpLoading: boolean
+  isDiffExpModalOpen: boolean
+
+  // Cell panel column management
+  hiddenColumns: Set<string>  // Column names to hide from cell panel
+  columnDisplayNames: Record<string, string>  // Map of original name → display name
+
   // Actions
   setSchema: (schema: Schema) => void
   setEmbedding: (embedding: EmbeddingData) => void
@@ -103,6 +135,20 @@ interface AppState {
 
   // Display preferences actions
   setDisplayPreferences: (prefs: Partial<DisplayPreferences>) => void
+
+  // Comparison actions
+  setComparisonGroup1: (indices: number[], label: string) => void
+  setComparisonGroup2: (indices: number[], label: string) => void
+  clearComparison: () => void
+  setDiffExpResult: (result: DiffExpResult | null) => void
+  setDiffExpLoading: (loading: boolean) => void
+  setDiffExpModalOpen: (open: boolean) => void
+
+  // Column management actions
+  hideColumn: (name: string) => void
+  showColumn: (name: string) => void
+  setColumnDisplayName: (originalName: string, displayName: string) => void
+  clearColumnDisplayName: (originalName: string) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -126,6 +172,17 @@ export const useStore = create<AppState>((set) => ({
     colorScale: 'viridis',
     pointOpacity: 0.85,
   },
+  comparison: {
+    group1: null,
+    group2: null,
+    group1Label: null,
+    group2Label: null,
+  },
+  diffExpResult: null,
+  isDiffExpLoading: false,
+  isDiffExpModalOpen: false,
+  hiddenColumns: new Set<string>(),
+  columnDisplayNames: {},
 
   // Actions
   setSchema: (schema) => set({ schema }),
@@ -191,4 +248,44 @@ export const useStore = create<AppState>((set) => ({
     set((state) => ({
       displayPreferences: { ...state.displayPreferences, ...prefs },
     })),
+
+  // Comparison actions
+  setComparisonGroup1: (indices, label) =>
+    set((state) => ({
+      comparison: { ...state.comparison, group1: indices, group1Label: label },
+    })),
+  setComparisonGroup2: (indices, label) =>
+    set((state) => ({
+      comparison: { ...state.comparison, group2: indices, group2Label: label },
+    })),
+  clearComparison: () =>
+    set({
+      comparison: { group1: null, group2: null, group1Label: null, group2Label: null },
+      diffExpResult: null,
+    }),
+  setDiffExpResult: (result) => set({ diffExpResult: result }),
+  setDiffExpLoading: (loading) => set({ isDiffExpLoading: loading }),
+  setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
+
+  // Column management actions
+  hideColumn: (name) =>
+    set((state) => ({
+      hiddenColumns: new Set([...state.hiddenColumns, name]),
+    })),
+  showColumn: (name) =>
+    set((state) => {
+      const next = new Set(state.hiddenColumns)
+      next.delete(name)
+      return { hiddenColumns: next }
+    }),
+  setColumnDisplayName: (originalName, displayName) =>
+    set((state) => ({
+      columnDisplayNames: { ...state.columnDisplayNames, [originalName]: displayName },
+    })),
+  clearColumnDisplayName: (originalName) =>
+    set((state) => {
+      const next = { ...state.columnDisplayNames }
+      delete next[originalName]
+      return { columnDisplayNames: next }
+    }),
 }))

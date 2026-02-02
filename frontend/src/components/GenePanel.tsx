@@ -396,7 +396,41 @@ function GeneSetComponent({
   const [expanded, setExpanded] = useState(true)
   const [hoveredGene, setHoveredGene] = useState<string | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)
-  const { removeGeneSet, removeGenesFromSet } = useStore()
+  const [isEditing, setIsEditing] = useState(false)
+  const [editName, setEditName] = useState(geneSet.name)
+  const editInputRef = useRef<HTMLInputElement>(null)
+  const { removeGeneSet, removeGenesFromSet, renameGeneSet } = useStore()
+
+  // Focus input when editing starts
+  useEffect(() => {
+    if (isEditing && editInputRef.current) {
+      editInputRef.current.focus()
+      editInputRef.current.select()
+    }
+  }, [isEditing])
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditName(geneSet.name)
+    setIsEditing(true)
+  }
+
+  const handleEditSubmit = () => {
+    const trimmedName = editName.trim()
+    if (trimmedName && trimmedName !== geneSet.name) {
+      renameGeneSet(geneSet.name, trimmedName)
+    }
+    setIsEditing(false)
+  }
+
+  const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleEditSubmit()
+    } else if (e.key === 'Escape') {
+      setIsEditing(false)
+      setEditName(geneSet.name)
+    }
+  }
 
   const isActive = (gene: string) => activeGenes.includes(gene)
 
@@ -447,10 +481,36 @@ function GeneSetComponent({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div style={styles.geneSetHeader} onClick={() => setExpanded(!expanded)}>
-        <div>
-          <span style={styles.geneSetName}>{geneSet.name}</span>
-          <span style={styles.geneSetCount}>({geneSet.genes.length})</span>
+      <div style={styles.geneSetHeader} onClick={() => !isEditing && setExpanded(!expanded)}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {isEditing ? (
+            <input
+              ref={editInputRef}
+              type="text"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onBlur={handleEditSubmit}
+              onKeyDown={handleEditKeyDown}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                ...styles.searchInput,
+                padding: '2px 6px',
+                fontSize: '13px',
+                width: '100%',
+              }}
+            />
+          ) : (
+            <>
+              <span
+                style={styles.geneSetName}
+                onDoubleClick={handleDoubleClick}
+                title="Double-click to rename"
+              >
+                {geneSet.name}
+              </span>
+              <span style={styles.geneSetCount}>({geneSet.genes.length})</span>
+            </>
+          )}
         </div>
         <div style={styles.geneSetActions}>
           <button

@@ -5,6 +5,7 @@ import ScatterPlot from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
 import DisplaySettings from './components/DisplaySettings'
+import DiffExpModal from './components/DiffExpModal'
 
 const styles = {
   container: {
@@ -422,6 +423,8 @@ export default function App() {
 
         <GenePanel />
       </div>
+
+      <DiffExpModal />
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState } from 'react'
-import { useStore, Schema, EmbeddingData, ObsColumnData, ExpressionData } from '../store'
+import { useStore, Schema, EmbeddingData, ObsColumnData, ExpressionData, DiffExpResult } from '../store'
 
 const API_BASE = '/api'
 
@@ -284,4 +284,55 @@ export async function exportAnnotations(columns?: string[]): Promise<string> {
     throw new Error(error.detail || `HTTP ${response.status}`)
   }
   return response.text()
+}
+
+// Differential expression API function
+export async function runDiffExp(
+  group1: number[],
+  group2: number[],
+  topN: number = 10
+): Promise<DiffExpResult> {
+  return fetchJson<DiffExpResult>(`${API_BASE}/diffexp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group1, group2, top_n: topN }),
+  })
+}
+
+// Hook for differential expression
+export function useDiffExp() {
+  const {
+    comparison,
+    diffExpResult,
+    isDiffExpLoading,
+    setDiffExpResult,
+    setDiffExpLoading,
+    setDiffExpModalOpen,
+  } = useStore()
+
+  const runComparison = useCallback(async (topN: number = 10) => {
+    if (!comparison.group1 || !comparison.group2) {
+      throw new Error('Both groups must be set before running comparison')
+    }
+
+    setDiffExpLoading(true)
+    try {
+      const result = await runDiffExp(comparison.group1, comparison.group2, topN)
+      setDiffExpResult(result)
+      setDiffExpModalOpen(true)
+      return result
+    } catch (err) {
+      setDiffExpResult(null)
+      throw err
+    } finally {
+      setDiffExpLoading(false)
+    }
+  }, [comparison.group1, comparison.group2, setDiffExpLoading, setDiffExpResult, setDiffExpModalOpen])
+
+  return {
+    comparison,
+    diffExpResult,
+    isDiffExpLoading,
+    runComparison,
+  }
 }

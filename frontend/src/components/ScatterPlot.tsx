@@ -148,10 +148,11 @@ export default function ScatterPlot({
   const [isDrawing, setIsDrawing] = useState(false)
   const [viewState, setViewState] = useState<OrthographicViewState | null>(null)
 
-  // Get display preferences and cell masking state from store
+  // Get display preferences, cell masking, and sort state from store
   const displayPreferences = useStore((state) => state.displayPreferences)
   const activeCellMask = useStore((state) => state.activeCellMask)
   const showMaskedCells = useStore((state) => state.showMaskedCells)
+  const cellSortOrder = useStore((state) => state.cellSortOrder)
 
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
@@ -183,13 +184,21 @@ export default function ScatterPlot({
     }
   }, [embedding])
 
-  // Compute data, filtering out masked cells if showMaskedCells is false
+  // Compute data, filtering out masked cells if showMaskedCells is false, and applying sort order
   const data = useMemo(() => {
     const coords = embedding.coordinates
-    const allData = coords.map((coord, index) => ({
+    let allData = coords.map((coord, index) => ({
       position: coord,
       index,
     }))
+
+    // Apply sort order if set (reorder so high-expression cells render on top)
+    if (cellSortOrder) {
+      allData = cellSortOrder.map((originalIndex) => ({
+        position: coords[originalIndex],
+        index: originalIndex,
+      }))
+    }
 
     // If no mask or showing masked cells, return all data
     if (!activeCellMask || showMaskedCells) {
@@ -198,7 +207,7 @@ export default function ScatterPlot({
 
     // Filter out masked (inactive) cells
     return allData.filter((d) => activeCellMask[d.index])
-  }, [embedding, activeCellMask, showMaskedCells])
+  }, [embedding, activeCellMask, showMaskedCells, cellSortOrder])
 
   // Compute color function separately (so it can change without affecting view state)
   const getColor = useMemo(() => {

@@ -111,6 +111,10 @@ interface AppState {
   activeCellMask: boolean[] | null
   showMaskedCells: boolean  // Whether to display masked (inactive) cells
 
+  // Cell ordering for z-stacking
+  cellSortOrder: number[] | null  // Custom sort order for rendering (indices), null = default order
+  cellSortVersion: number  // Incremented when sort is triggered
+
   // Actions
   setSchema: (schema: Schema) => void
   setEmbedding: (embedding: EmbeddingData) => void
@@ -160,6 +164,10 @@ interface AppState {
   removeSelectionFromActive: () => void  // Remove current selection from active cells
   resetActiveCells: () => void  // Clear mask, make all cells active
   setShowMaskedCells: (show: boolean) => void
+
+  // Cell ordering actions
+  sortCellsByExpression: () => void  // Sort cells so high-expression renders on top
+  resetCellOrder: () => void  // Reset to default order
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -196,6 +204,8 @@ export const useStore = create<AppState>((set) => ({
   columnDisplayNames: {},
   activeCellMask: null,
   showMaskedCells: true,
+  cellSortOrder: null,
+  cellSortVersion: 0,
 
   // Actions
   setSchema: (schema) => set({ schema }),
@@ -342,4 +352,21 @@ export const useStore = create<AppState>((set) => ({
   resetActiveCells: () => set({ activeCellMask: null }),
 
   setShowMaskedCells: (show) => set({ showMaskedCells: show }),
+
+  // Cell ordering actions
+  sortCellsByExpression: () =>
+    set((state) => {
+      if (!state.expressionData || !state.schema) return {}
+      const values = state.expressionData.values
+      // Create array of indices and sort by expression value (ascending, so high values render last/on top)
+      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+      indices.sort((a, b) => {
+        const va = values[a] ?? -Infinity
+        const vb = values[b] ?? -Infinity
+        return va - vb  // Ascending: low values first, high values last (on top)
+      })
+      return { cellSortOrder: indices, cellSortVersion: state.cellSortVersion + 1 }
+    }),
+
+  resetCellOrder: () => set({ cellSortOrder: null, cellSortVersion: 0 }),
 }))

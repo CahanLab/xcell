@@ -219,6 +219,22 @@ const styles = {
     fontSize: '10px',
     color: '#888',
   },
+  stackButton: {
+    marginTop: '8px',
+    padding: '4px 8px',
+    fontSize: '10px',
+    backgroundColor: '#0f3460',
+    color: '#aaa',
+    border: '1px solid #1a1a2e',
+    borderRadius: '3px',
+    cursor: 'pointer',
+    width: '100%',
+  },
+  stackButtonActive: {
+    backgroundColor: '#4ecdc4',
+    color: '#000',
+    borderColor: '#4ecdc4',
+  },
 }
 
 const CATEGORY_COLORS = [
@@ -268,22 +284,6 @@ const COLOR_SCALE_GRADIENTS: Record<string, string> = {
   reds: 'linear-gradient(to right, rgb(255,245,240), rgb(251,106,74), rgb(103,0,13))',
 }
 
-function ExpressionLegend({ gene, min, max }: { gene: string; min: number; max: number }) {
-  const colorScale = useStore((state) => state.displayPreferences.colorScale)
-  const gradient = COLOR_SCALE_GRADIENTS[colorScale] || COLOR_SCALE_GRADIENTS.viridis
-
-  return (
-    <div style={styles.expressionLegend}>
-      <div style={styles.legendTitle}>{gene}</div>
-      <div style={{ ...styles.colorBar, background: gradient }} />
-      <div style={styles.colorBarLabels}>
-        <span>{min.toFixed(2)}</span>
-        <span>{max.toFixed(2)}</span>
-      </div>
-    </div>
-  )
-}
-
 function ContinuousLegend({ name, min, max }: { name: string; min: number; max: number }) {
   return (
     <div style={styles.expressionLegend}>
@@ -315,6 +315,10 @@ export default function App() {
     setInteractionMode,
     setSelectedCellIndices,
     clearSelection,
+    cellSortOrder,
+    sortCellsByExpression,
+    resetCellOrder,
+    displayPreferences,
   } = useStore()
 
   const schema = useSchema()
@@ -462,11 +466,26 @@ export default function App() {
                 />
               )}
               {colorMode === 'expression' && expressionData && (
-                <ExpressionLegend
-                  gene={selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
-                  min={expressionData.min}
-                  max={expressionData.max}
-                />
+                <div style={styles.expressionLegend}>
+                  <div style={styles.legendTitle}>
+                    {selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
+                  </div>
+                  <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
+                  <div style={styles.colorBarLabels}>
+                    <span>{expressionData.min.toFixed(2)}</span>
+                    <span>{expressionData.max.toFixed(2)}</span>
+                  </div>
+                  <button
+                    style={{
+                      ...styles.stackButton,
+                      ...(cellSortOrder ? styles.stackButtonActive : {}),
+                    }}
+                    onClick={cellSortOrder ? resetCellOrder : sortCellsByExpression}
+                    title={cellSortOrder ? 'Reset to default cell order' : 'Sort cells so high-expression cells render on top'}
+                  >
+                    {cellSortOrder ? 'Reset Order' : 'Stack by Expression'}
+                  </button>
+                </div>
               )}
             </>
           )}

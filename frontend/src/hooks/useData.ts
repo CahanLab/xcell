@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState } from 'react'
-import { useStore, Schema, EmbeddingData, ObsColumnData, ExpressionData, DiffExpResult } from '../store'
+import { useStore, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult } from '../store'
 
 const API_BASE = '/api'
 
@@ -75,16 +75,111 @@ export function useColorBy() {
   return colorBy
 }
 
+// Hook to re-fetch expression data when transform setting changes
+export function useExpressionTransformEffect() {
+  const {
+    selectedGenes,
+    colorMode,
+    displayPreferences,
+    setExpressionData,
+    setLoading,
+    setError,
+  } = useStore()
+
+  useEffect(() => {
+    // Only re-fetch if we're in expression mode and have genes selected
+    if (colorMode !== 'expression' || selectedGenes.length === 0) {
+      return
+    }
+
+    const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined
+
+    const fetchExpression = async () => {
+      setLoading(true)
+      try {
+        if (selectedGenes.length === 1) {
+          const url = transform
+            ? `${API_BASE}/expression/${encodeURIComponent(selectedGenes[0])}?transform=${transform}`
+            : `${API_BASE}/expression/${encodeURIComponent(selectedGenes[0])}`
+          const data = await fetchJson<ExpressionData>(url)
+          setExpressionData(data)
+        } else {
+          const data = await fetchJson<ExpressionData>(`${API_BASE}/expression/multi`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ genes: selectedGenes, transform }),
+          })
+          setExpressionData(data)
+        }
+      } catch (err) {
+        setError((err as Error).message)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchExpression()
+  }, [displayPreferences.expressionTransform]) // Only re-run when transform changes
+}
+
+// Hook to re-fetch bivariate data when transform setting changes
+export function useBivariateTransformEffect() {
+  const {
+    bivariateData,
+    colorMode,
+    displayPreferences,
+    setBivariateData,
+    setLoading,
+    setError,
+  } = useStore()
+
+  useEffect(() => {
+    // Only re-fetch if we're in bivariate mode and have data
+    if (colorMode !== 'bivariate' || !bivariateData) {
+      return
+    }
+
+    const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined
+    const { genes1, genes2 } = bivariateData
+
+    const fetchBivariate = async () => {
+      setLoading(true)
+      try {
+        const data = await fetchJson<BivariateExpressionData>(`${API_BASE}/expression/bivariate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            genes1,
+            genes2,
+            transform,
+            clip_percentiles: [0, 99],
+          }),
+        })
+        setBivariateData(data)
+      } catch (err) {
+        setError((err as Error).message)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchBivariate()
+  }, [displayPreferences.expressionTransform]) // Only re-run when transform changes
+}
+
 export function useDataActions() {
   const {
     setSelectedEmbedding,
     setSelectedColorColumn,
     setColorMode,
     setExpressionData,
+    setBivariateData,
     setSelectedGenes,
     clearSelectedGenes,
+    clearBivariateMode,
     setLoading,
     setError,
+    displayPreferences,
   } = useStore()
 
   const selectEmbedding = useCallback(
@@ -109,10 +204,15 @@ export function useDataActions() {
   )
 
   const colorByGene = useCallback(
-    async (gene: string) => {
+    async (gene: string, transform?: string) => {
       setLoading(true)
       try {
-        const data = await fetchJson<ExpressionData>(`${API_BASE}/expression/${encodeURIComponent(gene)}`)
+        // Use provided transform or fall back to display preferences
+        const effectiveTransform = transform ?? (displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined)
+        const url = effectiveTransform
+          ? `${API_BASE}/expression/${encodeURIComponent(gene)}?transform=${effectiveTransform}`
+          : `${API_BASE}/expression/${encodeURIComponent(gene)}`
+        const data = await fetchJson<ExpressionData>(url)
         setExpressionData(data)
         setSelectedGenes([gene])
         setColorMode('expression')
@@ -123,25 +223,27 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError]
+    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, displayPreferences.expressionTransform]
   )
 
   const colorByGenes = useCallback(
-    async (genes: string[]) => {
+    async (genes: string[], transform?: string) => {
       if (genes.length === 0) {
         clearSelectedGenes()
         return
       }
       if (genes.length === 1) {
-        return colorByGene(genes[0])
+        return colorByGene(genes[0], transform)
       }
 
       setLoading(true)
       try {
+        // Use provided transform or fall back to display preferences
+        const effectiveTransform = transform ?? (displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined)
         const data = await fetchJson<ExpressionData>(`${API_BASE}/expression/multi`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(genes),
+          body: JSON.stringify({ genes, transform: effectiveTransform }),
         })
         setExpressionData(data)
         setSelectedGenes(genes)
@@ -153,12 +255,49 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene]
+    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform]
   )
 
   const clearExpressionColor = useCallback(() => {
     clearSelectedGenes()
   }, [clearSelectedGenes])
+
+  const colorByBivariate = useCallback(
+    async (genes1: string[], genes2: string[]) => {
+      if (genes1.length === 0 || genes2.length === 0) {
+        return
+      }
+
+      setLoading(true)
+      try {
+        const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined
+        const data = await fetchJson<BivariateExpressionData>(`${API_BASE}/expression/bivariate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            genes1,
+            genes2,
+            transform,
+            clip_percentiles: [0, 99],
+          }),
+        })
+        setBivariateData(data)
+        setColorMode('bivariate')
+        setSelectedColorColumn(null)
+        setExpressionData(null)
+        setSelectedGenes([])
+      } catch (err) {
+        setError((err as Error).message)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [setLoading, setBivariateData, setColorMode, setSelectedColorColumn, setExpressionData, setSelectedGenes, setError, displayPreferences.expressionTransform]
+  )
+
+  const clearBivariateColor = useCallback(() => {
+    clearBivariateMode()
+  }, [clearBivariateMode])
 
   return {
     selectEmbedding,
@@ -166,6 +305,8 @@ export function useDataActions() {
     colorByGene,
     colorByGenes,
     clearExpressionColor,
+    colorByBivariate,
+    clearBivariateColor,
   }
 }
 

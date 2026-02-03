@@ -1,6 +1,8 @@
 """API routes for XCell."""
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 
 from xcell.adaptor import DataAdaptor
 
@@ -175,11 +177,13 @@ def search_genes(q: str, limit: int = 20):
 
 
 @router.get("/expression/{gene}")
-def get_expression(gene: str):
+def get_expression(gene: str, transform: str | None = None):
     """Get expression values for a single gene.
 
     Args:
         gene: Gene name
+        transform: Optional transformation to apply. Supported values:
+            - "log1p": Apply normalize_total followed by log1p transformation
 
     Returns:
         JSON object containing:
@@ -187,20 +191,29 @@ def get_expression(gene: str):
         - values: Array of expression values for each cell
         - min: Minimum expression value
         - max: Maximum expression value
+        - transform: The transformation applied (if any)
     """
     adaptor = get_adaptor()
     try:
-        return adaptor.get_expression(gene)
+        return adaptor.get_expression(gene, transform=transform)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
+class MultiExpressionRequest(BaseModel):
+    """Request model for multi-gene expression."""
+    genes: list[str]
+    transform: str | None = None
+
+
 @router.post("/expression/multi")
-def get_multi_expression(genes: list[str]):
+def get_multi_expression(request: MultiExpressionRequest):
     """Get mean expression values for multiple genes.
 
     Args:
-        genes: List of gene names in request body
+        genes: List of gene names
+        transform: Optional transformation to apply. Supported values:
+            - "log1p": Apply normalize_total followed by log1p transformation
 
     Returns:
         JSON object containing:
@@ -208,20 +221,56 @@ def get_multi_expression(genes: list[str]):
         - values: Array of mean expression values for each cell
         - min: Minimum mean expression value
         - max: Maximum mean expression value
+        - transform: The transformation applied (if any)
     """
     adaptor = get_adaptor()
     try:
-        return adaptor.get_multi_gene_expression(genes)
+        return adaptor.get_multi_gene_expression(request.genes, transform=request.transform)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+class BivariateExpressionRequest(BaseModel):
+    """Request model for bivariate gene expression."""
+    genes1: list[str]
+    genes2: list[str]
+    transform: str | None = None
+    clip_percentiles: tuple[float, float] = (0, 99)
+
+
+@router.post("/expression/bivariate")
+def get_bivariate_expression(request: BivariateExpressionRequest):
+    """Get normalized expression for two gene sets for bivariate visualization.
+
+    Args:
+        genes1: List of gene names for set 1 (maps to red/x-axis)
+        genes2: List of gene names for set 2 (maps to blue/y-axis)
+        transform: Optional transformation ('log1p' for normalize_total + log1p)
+        clip_percentiles: Tuple of (low, high) percentiles for clipping
+
+    Returns:
+        JSON object containing:
+        - genes1: List of gene names for set 1
+        - genes2: List of gene names for set 2
+        - values1: Normalized [0,1] expression values for gene set 1
+        - values2: Normalized [0,1] expression values for gene set 2
+        - transform: The transformation applied (if any)
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.get_bivariate_expression(
+            genes1=request.genes1,
+            genes2=request.genes2,
+            transform=request.transform,
+            clip_percentiles=request.clip_percentiles,
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # =========================================================================
 # Annotation management endpoints
 # =========================================================================
-
-from pydantic import BaseModel
-from fastapi.responses import PlainTextResponse
 
 
 class CreateAnnotationRequest(BaseModel):
@@ -392,3 +441,96 @@ def run_diffexp(request: DiffExpRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
+# Line / trajectory endpoints
+# =========================================================================
+
+
+class LineData(BaseModel):
+    """Data for a single drawn line."""
+    name: str
+    embeddingName: str
+    points: list[list[float]]
+    smoothedPoints: list[list[float]] | None = None
+
+
+class SetLinesRequest(BaseModel):
+    """Request model for setting lines."""
+    lines: list[LineData]
+
+
+@router.post("/lines")
+def set_lines(request: SetLinesRequest):
+    """Store drawn lines from the frontend.
+
+    These lines will be included in h5ad exports with:
+    - Line metadata in .uns['xcell_lines']
+    - Cell projections in .obsm['X_{line_name}_projection']
+
+    Args:
+        lines: List of line objects with name, embedding, and points
+
+    Returns:
+        Confirmation with line count
+    """
+    adaptor = get_adaptor()
+    # Convert Pydantic models to dicts
+    lines_data = [line.model_dump() for line in request.lines]
+    adaptor.set_lines(lines_data)
+    return {"status": "ok", "line_count": len(lines_data)}
+
+
+@router.get("/lines")
+def get_lines():
+    """Get currently stored lines.
+
+    Returns:
+        List of stored line objects
+    """
+    adaptor = get_adaptor()
+    return {"lines": adaptor.get_lines()}
+
+
+# =========================================================================
+# Export endpoints
+# =========================================================================
+
+from fastapi.responses import FileResponse
+import tempfile
+import os
+
+
+@router.get("/export/h5ad")
+def export_h5ad():
+    """Export the current AnnData object as an h5ad file.
+
+    This includes:
+    - Any new annotation columns that were created
+    - Drawn lines stored in .uns['xcell_lines']
+    - Cell projections onto lines in .obsm['X_{line_name}_projection']
+
+    Returns:
+        The h5ad file as a download
+    """
+    adaptor = get_adaptor()
+    try:
+        # Create a temporary file
+        fd, temp_path = tempfile.mkstemp(suffix='.h5ad')
+        os.close(fd)
+
+        # Get adata with lines and projections included
+        adata_export = adaptor.prepare_export_with_lines()
+
+        # Write to the temp file
+        adata_export.write_h5ad(temp_path)
+
+        return FileResponse(
+            path=temp_path,
+            filename="xcell_export.h5ad",
+            media_type="application/octet-stream",
+            background=None,  # Don't delete file in background task
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

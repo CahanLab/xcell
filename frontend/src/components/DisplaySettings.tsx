@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useStore, ColorScale } from '../store'
+import { useStore, ColorScale, ExpressionTransform } from '../store'
 
 const styles = {
   container: {
@@ -114,6 +114,45 @@ const styles = {
     borderRadius: '2px',
     marginTop: '8px',
   },
+  toggleContainer: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  toggle: {
+    position: 'relative' as const,
+    width: '40px',
+    height: '20px',
+    backgroundColor: '#0f3460',
+    borderRadius: '10px',
+    cursor: 'pointer',
+    transition: 'background-color 0.2s',
+  },
+  toggleActive: {
+    backgroundColor: '#e94560',
+  },
+  toggleKnob: {
+    position: 'absolute' as const,
+    top: '2px',
+    left: '2px',
+    width: '16px',
+    height: '16px',
+    backgroundColor: '#eee',
+    borderRadius: '50%',
+    transition: 'transform 0.2s',
+  },
+  toggleKnobActive: {
+    transform: 'translateX(20px)',
+  },
+  toggleLabel: {
+    fontSize: '12px',
+    color: '#aaa',
+  },
+  toggleDescription: {
+    fontSize: '10px',
+    color: '#666',
+    marginTop: '4px',
+  },
 }
 
 const BACKGROUND_PRESETS = [
@@ -190,7 +229,14 @@ export default function DisplaySettings() {
     setDisplayPreferences({ colorScale: e.target.value as ColorScale })
   }
 
+  const handleTransformToggle = () => {
+    const newTransform: ExpressionTransform =
+      displayPreferences.expressionTransform === 'none' ? 'log1p' : 'none'
+    setDisplayPreferences({ expressionTransform: newTransform })
+  }
+
   const currentScale = COLOR_SCALES.find((s) => s.value === displayPreferences.colorScale)
+  const isTransformEnabled = displayPreferences.expressionTransform === 'log1p'
 
   return (
     <div style={styles.container}>
@@ -304,6 +350,32 @@ export default function DisplaySettings() {
                     }}
                   />
                 )}
+              </div>
+
+              {/* Expression Transform */}
+              <div style={styles.settingGroup}>
+                <div style={styles.toggleContainer}>
+                  <div>
+                    <span style={styles.toggleLabel}>Normalize + Log1p</span>
+                    <div style={styles.toggleDescription}>
+                      Apply count depth scaling and log(x+1)
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      ...styles.toggle,
+                      ...(isTransformEnabled ? styles.toggleActive : {}),
+                    }}
+                    onClick={handleTransformToggle}
+                  >
+                    <div
+                      style={{
+                        ...styles.toggleKnob,
+                        ...(isTransformEnabled ? styles.toggleKnobActive : {}),
+                      }}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </div>

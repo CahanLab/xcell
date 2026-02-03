@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useStore } from './store'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect } from './hooks/useData'
 import ScatterPlot from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
@@ -310,15 +310,14 @@ export default function App() {
     selectedEmbedding,
     colorMode,
     expressionData,
+    bivariateData,
     selectedGenes,
     interactionMode,
     selectedCellIndices,
     setInteractionMode,
     setSelectedCellIndices,
     clearSelection,
-    cellSortOrder,
-    sortCellsByExpression,
-    resetCellOrder,
+    // cellSortOrder, sortCellsByExpression, resetCellOrder - now auto-applied
     displayPreferences,
     drawnLines,
     addLine,
@@ -329,9 +328,17 @@ export default function App() {
   const colorBy = useColorBy()
   const { selectEmbedding } = useDataActions()
 
+  // Re-fetch expression data when transform setting changes
+  useExpressionTransformEffect()
+  useBivariateTransformEffect()
+
   // State for line naming dialog
   const [pendingLinePoints, setPendingLinePoints] = useState<[number, number][] | null>(null)
   const [newLineName, setNewLineName] = useState('')
+
+  // State for export modal
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false)
+  const [exportLoading, setExportLoading] = useState<string | null>(null)
 
   // Handle escape key to exit lasso/draw mode
   useEffect(() => {
@@ -379,7 +386,54 @@ export default function App() {
     setNewLineName('')
   }, [])
 
-  const handleExport = useCallback(async () => {
+  const geneSets = useStore((state) => state.geneSets)
+
+  const handleExportH5ad = useCallback(async () => {
+    setExportLoading('h5ad')
+    try {
+      // First, send drawn lines to backend so they can be included in export
+      if (drawnLines.length > 0) {
+        const linesPayload = drawnLines.map((line) => ({
+          name: line.name,
+          embeddingName: line.embeddingName,
+          points: line.points,
+          smoothedPoints: line.smoothedPoints,
+        }))
+        const linesResponse = await fetch('/api/lines', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lines: linesPayload }),
+        })
+        if (!linesResponse.ok) {
+          console.warn('Failed to send lines to backend, continuing with export')
+        }
+      }
+
+      // Now export h5ad
+      const response = await fetch('/api/export/h5ad')
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(error.detail || `HTTP ${response.status}`)
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'xcell_export.h5ad'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      setIsExportModalOpen(false)
+    } catch (err) {
+      alert(`Failed to export h5ad: ${(err as Error).message}`)
+    } finally {
+      setExportLoading(null)
+    }
+  }, [drawnLines])
+
+  const handleExportMetadata = useCallback(async () => {
+    setExportLoading('metadata')
     try {
       const tsv = await exportAnnotations()
       const blob = new Blob([tsv], { type: 'text/tab-separated-values' })
@@ -391,10 +445,39 @@ export default function App() {
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
+      setIsExportModalOpen(false)
     } catch (err) {
-      alert(`Failed to export: ${(err as Error).message}`)
+      alert(`Failed to export metadata: ${(err as Error).message}`)
+    } finally {
+      setExportLoading(null)
     }
   }, [])
+
+  const handleExportGeneSets = useCallback(() => {
+    setExportLoading('genesets')
+    try {
+      if (geneSets.length === 0) {
+        alert('No gene sets to export')
+        return
+      }
+      // Export as JSON
+      const data = JSON.stringify(geneSets, null, 2)
+      const blob = new Blob([data], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'gene_sets.json'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      setIsExportModalOpen(false)
+    } catch (err) {
+      alert(`Failed to export gene sets: ${(err as Error).message}`)
+    } finally {
+      setExportLoading(null)
+    }
+  }, [geneSets])
 
   return (
     <div style={styles.container}>
@@ -437,8 +520,8 @@ export default function App() {
 
               <button
                 style={styles.exportButton}
-                onClick={handleExport}
-                title="Export annotations as TSV"
+                onClick={() => setIsExportModalOpen(true)}
+                title="Export data"
               >
                 Export
               </button>
@@ -483,6 +566,7 @@ export default function App() {
                 embedding={embedding}
                 colorBy={colorBy}
                 expressionData={expressionData}
+                bivariateData={bivariateData}
                 colorMode={colorMode}
                 interactionMode={interactionMode}
                 selectedCellIndices={selectedCellIndices}
@@ -522,12 +606,18 @@ export default function App() {
                 <div style={styles.expressionLegend}>
                   <div style={styles.legendTitle}>
                     {selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
+                    {expressionData.transform === 'log1p' && (
+                      <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
+                        (log1p)
+                      </span>
+                    )}
                   </div>
                   <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
                   <div style={styles.colorBarLabels}>
                     <span>{expressionData.min.toFixed(2)}</span>
                     <span>{expressionData.max.toFixed(2)}</span>
                   </div>
+                  {/* Stack by Expression button - now auto-applied, UI hidden
                   <button
                     style={{
                       ...styles.stackButton,
@@ -538,6 +628,66 @@ export default function App() {
                   >
                     {cellSortOrder ? 'Reset Order' : 'Stack by Expression'}
                   </button>
+                  */}
+                </div>
+              )}
+              {colorMode === 'bivariate' && bivariateData && (
+                <div style={styles.expressionLegend}>
+                  <div style={styles.legendTitle}>
+                    Bivariate Expression
+                    {bivariateData.transform === 'log1p' && (
+                      <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
+                        (log1p)
+                      </span>
+                    )}
+                  </div>
+                  {/* 2D bivariate colormap */}
+                  <div style={{
+                    width: '80px',
+                    height: '80px',
+                    background: 'linear-gradient(to top, linear-gradient(to right, #f0f0f0, #e31a1c), linear-gradient(to right, #1f78b4, #ffff00))',
+                    marginBottom: '4px',
+                    position: 'relative',
+                  }}>
+                    {/* Render a canvas-like gradient using CSS */}
+                    <div style={{
+                      position: 'absolute',
+                      inset: 0,
+                      background: `
+                        linear-gradient(to top,
+                          rgba(31, 120, 180, 0) 0%,
+                          rgba(31, 120, 180, 1) 100%
+                        ),
+                        linear-gradient(to right,
+                          #f0f0f0 0%,
+                          #e31a1c 100%
+                        )
+                      `,
+                      mixBlendMode: 'normal',
+                    }} />
+                    <div style={{
+                      position: 'absolute',
+                      inset: 0,
+                      background: `
+                        linear-gradient(to top,
+                          transparent 0%,
+                          #ffff00 100%
+                        )
+                      `,
+                      mixBlendMode: 'overlay',
+                      opacity: 0.8,
+                    }} />
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#888' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ color: '#e31a1c' }}>→</span>
+                      <span>{bivariateData.genes1.length === 1 ? bivariateData.genes1[0] : `${bivariateData.genes1.length} genes`}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ color: '#1f78b4' }}>↑</span>
+                      <span>{bivariateData.genes2.length === 1 ? bivariateData.genes2[0] : `${bivariateData.genes2.length} genes`}</span>
+                    </div>
+                  </div>
                 </div>
               )}
             </>
@@ -554,6 +704,136 @@ export default function App() {
       </div>
 
       <DiffExpModal />
+
+      {/* Export modal */}
+      {isExportModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          onClick={() => setIsExportModalOpen(false)}
+        >
+          <div
+            style={{
+              backgroundColor: '#16213e',
+              border: '1px solid #0f3460',
+              borderRadius: '8px',
+              padding: '24px',
+              minWidth: '360px',
+              maxWidth: '400px',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: '16px', fontWeight: 600, color: '#e94560', marginBottom: '20px' }}>
+              Export Data
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {/* Export H5AD */}
+              <button
+                onClick={handleExportH5ad}
+                disabled={exportLoading !== null}
+                style={{
+                  padding: '12px 16px',
+                  fontSize: '14px',
+                  backgroundColor: '#0f3460',
+                  color: '#eee',
+                  border: '1px solid #1a1a2e',
+                  borderRadius: '6px',
+                  cursor: exportLoading !== null ? 'wait' : 'pointer',
+                  textAlign: 'left',
+                  opacity: exportLoading !== null && exportLoading !== 'h5ad' ? 0.5 : 1,
+                }}
+              >
+                <div style={{ fontWeight: 500, marginBottom: '4px' }}>
+                  {exportLoading === 'h5ad' ? 'Exporting...' : 'AnnData (.h5ad)'}
+                </div>
+                <div style={{ fontSize: '12px', color: '#888' }}>
+                  Full dataset with any new annotation columns
+                </div>
+              </button>
+
+              {/* Export Cell Metadata */}
+              <button
+                onClick={handleExportMetadata}
+                disabled={exportLoading !== null}
+                style={{
+                  padding: '12px 16px',
+                  fontSize: '14px',
+                  backgroundColor: '#0f3460',
+                  color: '#eee',
+                  border: '1px solid #1a1a2e',
+                  borderRadius: '6px',
+                  cursor: exportLoading !== null ? 'wait' : 'pointer',
+                  textAlign: 'left',
+                  opacity: exportLoading !== null && exportLoading !== 'metadata' ? 0.5 : 1,
+                }}
+              >
+                <div style={{ fontWeight: 500, marginBottom: '4px' }}>
+                  {exportLoading === 'metadata' ? 'Exporting...' : 'Cell Metadata (.tsv)'}
+                </div>
+                <div style={{ fontSize: '12px', color: '#888' }}>
+                  All cell annotations as tab-separated values
+                </div>
+              </button>
+
+              {/* Export Gene Sets */}
+              <button
+                onClick={handleExportGeneSets}
+                disabled={exportLoading !== null || geneSets.length === 0}
+                style={{
+                  padding: '12px 16px',
+                  fontSize: '14px',
+                  backgroundColor: '#0f3460',
+                  color: geneSets.length === 0 ? '#666' : '#eee',
+                  border: '1px solid #1a1a2e',
+                  borderRadius: '6px',
+                  cursor: exportLoading !== null || geneSets.length === 0 ? 'not-allowed' : 'pointer',
+                  textAlign: 'left',
+                  opacity: exportLoading !== null && exportLoading !== 'genesets' ? 0.5 : 1,
+                }}
+              >
+                <div style={{ fontWeight: 500, marginBottom: '4px' }}>
+                  {exportLoading === 'genesets' ? 'Exporting...' : 'Gene Sets (.json)'}
+                </div>
+                <div style={{ fontSize: '12px', color: '#666' }}>
+                  {geneSets.length === 0
+                    ? 'No gene sets defined'
+                    : `${geneSets.length} gene set${geneSets.length === 1 ? '' : 's'}`
+                  }
+                </div>
+              </button>
+            </div>
+
+            <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setIsExportModalOpen(false)}
+                disabled={exportLoading !== null}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '13px',
+                  backgroundColor: 'transparent',
+                  color: '#aaa',
+                  border: '1px solid #0f3460',
+                  borderRadius: '4px',
+                  cursor: exportLoading !== null ? 'wait' : 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Line naming dialog */}
       {pendingLinePoints && (

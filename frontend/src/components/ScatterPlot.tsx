@@ -2,12 +2,13 @@ import { useMemo, useState, useRef, useCallback, useEffect } from 'react'
 import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
-import { useStore, EmbeddingData, ObsColumnData, ExpressionData, ColorMode, InteractionMode, ColorScale } from '../store'
+import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, ColorScale } from '../store'
 
 interface ScatterPlotProps {
   embedding: EmbeddingData
   colorBy: ObsColumnData | null
   expressionData: ExpressionData | null
+  bivariateData: BivariateExpressionData | null
   colorMode: ColorMode
   interactionMode: InteractionMode
   selectedCellIndices: number[]
@@ -115,6 +116,28 @@ function getColorFromScale(t: number, scale: ColorScale): [number, number, numbe
   return interpolateStops(t, COLOR_SCALES[scale])
 }
 
+// Bivariate colormap corner colors (matches STUF defaults)
+const BIVARIATE_CORNERS = {
+  c00: [240, 240, 240] as [number, number, number],  // Low/Low - Gray
+  c10: [227, 26, 28] as [number, number, number],    // High gene1/Low gene2 - Red
+  c01: [31, 120, 180] as [number, number, number],   // Low gene1/High gene2 - Blue
+  c11: [255, 255, 0] as [number, number, number],    // High/High - Yellow
+}
+
+// Bilinear interpolation for bivariate coloring
+function getBivariateColor(
+  u: number,  // Normalized gene set 1 value [0,1]
+  v: number,  // Normalized gene set 2 value [0,1]
+): [number, number, number] {
+  const { c00, c10, c01, c11 } = BIVARIATE_CORNERS
+  // Bilinear interpolation: blend four corner colors based on (u, v) position
+  return [
+    Math.round(c00[0] * (1 - u) * (1 - v) + c10[0] * u * (1 - v) + c01[0] * (1 - u) * v + c11[0] * u * v),
+    Math.round(c00[1] * (1 - u) * (1 - v) + c10[1] * u * (1 - v) + c01[1] * (1 - u) * v + c11[1] * u * v),
+    Math.round(c00[2] * (1 - u) * (1 - v) + c10[2] * u * (1 - v) + c01[2] * (1 - u) * v + c11[2] * u * v),
+  ]
+}
+
 // For continuous metadata (not expression)
 function interpolateColor(t: number): [number, number, number] {
   const r = Math.round(255 * t)
@@ -139,6 +162,7 @@ export default function ScatterPlot({
   embedding,
   colorBy,
   expressionData,
+  bivariateData,
   colorMode,
   interactionMode,
   selectedCellIndices,
@@ -225,7 +249,22 @@ export default function ScatterPlot({
       return activeCellMask !== null && !activeCellMask[index]
     }
 
-    if (colorMode === 'expression' && expressionData) {
+    if (colorMode === 'bivariate' && bivariateData) {
+      const { values1, values2 } = bivariateData
+
+      return (d: { index: number }): [number, number, number, number] => {
+        if (isMasked(d.index)) {
+          return maskedColor
+        }
+        if (selectedSet.size > 0 && selectedSet.has(d.index)) {
+          return SELECTED_COLOR
+        }
+        const u = values1[d.index] ?? 0
+        const v = values2[d.index] ?? 0
+        const color = getBivariateColor(u, v)
+        return [...color, opacity] as [number, number, number, number]
+      }
+    } else if (colorMode === 'expression' && expressionData) {
       const { values, min, max } = expressionData
       const range = max - min || 1
       const colorScale = displayPreferences.colorScale
@@ -291,7 +330,7 @@ export default function ScatterPlot({
       }
       return [DEFAULT_COLOR[0], DEFAULT_COLOR[1], DEFAULT_COLOR[2], opacity]
     }
-  }, [colorBy, expressionData, colorMode, selectedSet, displayPreferences, activeCellMask])
+  }, [colorBy, expressionData, bivariateData, colorMode, selectedSet, displayPreferences, activeCellMask])
 
   // Initialize view state when bounds change
   useEffect(() => {

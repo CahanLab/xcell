@@ -580,11 +580,13 @@ function GeneSetComponent({
 }
 
 export default function GenePanel() {
-  const { geneSets, selectedGenes, addGeneSet, addGenesToSet } = useStore()
-  const { colorByGene, colorByGenes, clearExpressionColor } = useDataActions()
+  const { geneSets, selectedGenes, bivariateData, colorMode, addGeneSet, addGenesToSet } = useStore()
+  const { colorByGene, colorByGenes, clearExpressionColor, colorByBivariate, clearBivariateColor } = useDataActions()
   const [newSetName, setNewSetName] = useState('')
   const [showNewSetInput, setShowNewSetInput] = useState(false)
   const [selectedSearchGenes, setSelectedSearchGenes] = useState<Set<string>>(new Set())
+  const [bivariateSet1, setBivariateSet1] = useState<string | null>(null)
+  const [bivariateSet2, setBivariateSet2] = useState<string | null>(null)
 
   const handleAddGenesToSet = useCallback(
     (setName: string, genes: string[]) => {
@@ -618,12 +620,23 @@ export default function GenePanel() {
         />
       </div>
 
-      {selectedGenes.length > 0 && (
+      {selectedGenes.length > 0 && colorMode === 'expression' && (
         <div style={styles.selectedGenesBar}>
           <span style={styles.selectedGenesText}>
             Coloring by: {selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
           </span>
           <button style={styles.clearButton} onClick={clearExpressionColor}>
+            Clear
+          </button>
+        </div>
+      )}
+
+      {colorMode === 'bivariate' && bivariateData && (
+        <div style={styles.selectedGenesBar}>
+          <span style={styles.selectedGenesText}>
+            Bivariate: {bivariateData.genes1.length} × {bivariateData.genes2.length} genes
+          </span>
+          <button style={styles.clearButton} onClick={clearBivariateColor}>
             Clear
           </button>
         </div>
@@ -678,6 +691,99 @@ export default function GenePanel() {
             ))
           )}
         </div>
+
+        {/* Bivariate Mode Section */}
+        {geneSets.length >= 2 && (
+          <div style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <span style={styles.sectionTitle}>Bivariate Coloring</span>
+            </div>
+            <div style={{
+              backgroundColor: '#0f3460',
+              borderRadius: '4px',
+              padding: '12px',
+            }}>
+              <div style={{ marginBottom: '8px' }}>
+                <label style={{ fontSize: '11px', color: '#888', display: 'block', marginBottom: '4px' }}>
+                  Set 1 <span style={{ color: '#e31a1c' }}>(→ Red)</span>
+                </label>
+                <select
+                  value={bivariateSet1 || ''}
+                  onChange={(e) => setBivariateSet1(e.target.value || null)}
+                  style={{
+                    width: '100%',
+                    padding: '6px 8px',
+                    fontSize: '12px',
+                    backgroundColor: '#1a1a2e',
+                    color: '#eee',
+                    border: '1px solid #0f3460',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="">Select gene set...</option>
+                  {geneSets.filter(gs => gs.genes.length > 0 && gs.name !== bivariateSet2).map((gs) => (
+                    <option key={gs.name} value={gs.name}>
+                      {gs.name} ({gs.genes.length} genes)
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ fontSize: '11px', color: '#888', display: 'block', marginBottom: '4px' }}>
+                  Set 2 <span style={{ color: '#1f78b4' }}>(↑ Blue)</span>
+                </label>
+                <select
+                  value={bivariateSet2 || ''}
+                  onChange={(e) => setBivariateSet2(e.target.value || null)}
+                  style={{
+                    width: '100%',
+                    padding: '6px 8px',
+                    fontSize: '12px',
+                    backgroundColor: '#1a1a2e',
+                    color: '#eee',
+                    border: '1px solid #0f3460',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="">Select gene set...</option>
+                  {geneSets.filter(gs => gs.genes.length > 0 && gs.name !== bivariateSet1).map((gs) => (
+                    <option key={gs.name} value={gs.name}>
+                      {gs.name} ({gs.genes.length} genes)
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                onClick={() => {
+                  const set1 = geneSets.find(gs => gs.name === bivariateSet1)
+                  const set2 = geneSets.find(gs => gs.name === bivariateSet2)
+                  if (set1 && set2) {
+                    colorByBivariate(set1.genes, set2.genes)
+                  }
+                }}
+                disabled={!bivariateSet1 || !bivariateSet2}
+                style={{
+                  width: '100%',
+                  padding: '8px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  backgroundColor: bivariateSet1 && bivariateSet2 ? '#4ecdc4' : '#1a1a2e',
+                  color: bivariateSet1 && bivariateSet2 ? '#000' : '#666',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: bivariateSet1 && bivariateSet2 ? 'pointer' : 'not-allowed',
+                }}
+              >
+                Apply Bivariate Coloring
+              </button>
+              <div style={{ fontSize: '10px', color: '#666', marginTop: '8px', textAlign: 'center' }}>
+                Colors cells by expression of both gene sets simultaneously
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -26,6 +26,15 @@ export interface ExpressionData {
   values: (number | null)[]
   min: number
   max: number
+  transform?: string  // 'log1p' if transformation was applied
+}
+
+export interface BivariateExpressionData {
+  genes1: string[]
+  genes2: string[]
+  values1: number[]  // Normalized [0,1] for gene set 1
+  values2: number[]  // Normalized [0,1] for gene set 2
+  transform?: string
 }
 
 export interface GeneSet {
@@ -56,7 +65,7 @@ export interface ComparisonState {
 }
 
 // Color mode: what determines cell colors
-export type ColorMode = 'none' | 'metadata' | 'expression'
+export type ColorMode = 'none' | 'metadata' | 'expression' | 'bivariate'
 
 // Drawn line/shape for trajectory/gradient analysis
 export interface DrawnLine {
@@ -88,12 +97,16 @@ export type InteractionMode = 'pan' | 'lasso' | 'draw'
 // Color scale options for expression data
 export type ColorScale = 'viridis' | 'plasma' | 'magma' | 'inferno' | 'cividis' | 'coolwarm' | 'blues' | 'reds'
 
+// Expression transform options
+export type ExpressionTransform = 'none' | 'log1p'
+
 // Display preferences
 export interface DisplayPreferences {
   pointSize: number  // Base point size (1-10)
   backgroundColor: string  // Hex color
   colorScale: ColorScale  // Color scale for expression data
   pointOpacity: number  // 0-1
+  expressionTransform: ExpressionTransform  // Transformation for expression values
 }
 
 interface AppState {
@@ -102,6 +115,9 @@ interface AppState {
   embedding: EmbeddingData | null
   colorBy: ObsColumnData | null
   expressionData: ExpressionData | null
+
+  // Bivariate expression data
+  bivariateData: BivariateExpressionData | null
 
   // Gene management
   geneSets: GeneSet[]
@@ -149,6 +165,8 @@ interface AppState {
   setEmbedding: (embedding: EmbeddingData) => void
   setColorBy: (colorBy: ObsColumnData | null) => void
   setExpressionData: (data: ExpressionData | null) => void
+  setBivariateData: (data: BivariateExpressionData | null) => void
+  clearBivariateMode: () => void
   setSelectedEmbedding: (name: string) => void
   setSelectedColorColumn: (name: string | null) => void
   setColorMode: (mode: ColorMode) => void
@@ -196,6 +214,7 @@ interface AppState {
 
   // Cell ordering actions
   sortCellsByExpression: () => void  // Sort cells so high-expression renders on top
+  sortCellsByBivariate: () => void  // Sort cells so high-bivariate product renders on top
   resetCellOrder: () => void  // Reset to default order
 
   // Line/shape drawing actions
@@ -216,6 +235,7 @@ export const useStore = create<AppState>((set) => ({
   embedding: null,
   colorBy: null,
   expressionData: null,
+  bivariateData: null,
   geneSets: [],
   selectedGenes: [],
   selectedCellIndices: [],
@@ -230,6 +250,7 @@ export const useStore = create<AppState>((set) => ({
     backgroundColor: '#1a1a2e',
     colorScale: 'viridis',
     pointOpacity: 0.85,
+    expressionTransform: 'none',
   },
   comparison: {
     group1: null,
@@ -257,7 +278,45 @@ export const useStore = create<AppState>((set) => ({
   setSchema: (schema) => set({ schema }),
   setEmbedding: (embedding) => set({ embedding }),
   setColorBy: (colorBy) => set({ colorBy }),
-  setExpressionData: (data) => set({ expressionData: data }),
+  setExpressionData: (data) =>
+    set((state) => {
+      if (!data || !state.schema) {
+        return { expressionData: data, cellSortOrder: null, cellSortVersion: 0 }
+      }
+      // Auto-sort by expression (ascending, so high values render last/on top)
+      const values = data.values
+      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+      indices.sort((a, b) => {
+        const va = values[a] ?? -Infinity
+        const vb = values[b] ?? -Infinity
+        return va - vb
+      })
+      return {
+        expressionData: data,
+        cellSortOrder: indices,
+        cellSortVersion: state.cellSortVersion + 1,
+      }
+    }),
+  setBivariateData: (data) =>
+    set((state) => {
+      if (!data || !state.schema) {
+        return { bivariateData: data, cellSortOrder: null, cellSortVersion: 0 }
+      }
+      // Auto-sort by product of both values (ascending, so high values render last/on top)
+      const { values1, values2 } = data
+      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+      indices.sort((a, b) => {
+        const prodA = (values1[a] ?? 0) * (values2[a] ?? 0)
+        const prodB = (values1[b] ?? 0) * (values2[b] ?? 0)
+        return prodA - prodB
+      })
+      return {
+        bivariateData: data,
+        cellSortOrder: indices,
+        cellSortVersion: state.cellSortVersion + 1,
+      }
+    }),
+  clearBivariateMode: () => set({ bivariateData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 }),
   setSelectedEmbedding: (name) => set({ selectedEmbedding: name }),
   setSelectedColorColumn: (name) => set({ selectedColorColumn: name }),
   setColorMode: (mode) => set({ colorMode: mode }),
@@ -301,7 +360,7 @@ export const useStore = create<AppState>((set) => ({
     })),
 
   setSelectedGenes: (genes) => set({ selectedGenes: genes }),
-  clearSelectedGenes: () => set({ selectedGenes: [], expressionData: null, colorMode: 'none' }),
+  clearSelectedGenes: () => set({ selectedGenes: [], expressionData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 }),
 
   // Cell selection actions
   setSelectedCellIndices: (indices) => set({ selectedCellIndices: indices }),
@@ -410,6 +469,20 @@ export const useStore = create<AppState>((set) => ({
         const va = values[a] ?? -Infinity
         const vb = values[b] ?? -Infinity
         return va - vb  // Ascending: low values first, high values last (on top)
+      })
+      return { cellSortOrder: indices, cellSortVersion: state.cellSortVersion + 1 }
+    }),
+
+  sortCellsByBivariate: () =>
+    set((state) => {
+      if (!state.bivariateData || !state.schema) return {}
+      const { values1, values2 } = state.bivariateData
+      // Sort by product of both normalized values (ascending, so high values render last/on top)
+      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+      indices.sort((a, b) => {
+        const prodA = (values1[a] ?? 0) * (values2[a] ?? 0)
+        const prodB = (values1[b] ?? 0) * (values2[b] ?? 0)
+        return prodA - prodB  // Ascending: low values first, high values last (on top)
       })
       return { cellSortOrder: indices, cellSortVersion: state.cellSortVersion + 1 }
     }),

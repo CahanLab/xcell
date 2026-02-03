@@ -12,6 +12,7 @@ from typing import Any
 import anndata
 import numpy as np
 import pandas as pd
+import scanpy as sc
 
 from .diffexp import compute_diffexp
 
@@ -37,11 +38,33 @@ class DataAdaptor:
         """
         self.filepath = Path(filepath)
         self.adata = anndata.read_h5ad(self.filepath)
+        self._normalized_adata: anndata.AnnData | None = None
+        self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
 
     @property
     def n_cells(self) -> int:
         """Number of cells (observations) in the dataset."""
         return self.adata.n_obs
+
+    @property
+    def normalized_adata(self) -> anndata.AnnData:
+        """Get normalized and log1p-transformed version of the data.
+
+        Lazily computes and caches a copy of the AnnData with:
+        - sc.pp.normalize_total (count depth scaling)
+        - sc.pp.log1p transformation
+
+        Returns:
+            AnnData object with normalized expression values
+        """
+        if self._normalized_adata is None:
+            # Create a copy to avoid modifying original data
+            self._normalized_adata = self.adata.copy()
+            # Apply count depth normalization (scales each cell to same total counts)
+            sc.pp.normalize_total(self._normalized_adata)
+            # Apply log1p transformation: log(x + 1)
+            sc.pp.log1p(self._normalized_adata)
+        return self._normalized_adata
 
     @property
     def n_genes(self) -> int:
@@ -197,11 +220,14 @@ class DataAdaptor:
 
         return matches[:limit]
 
-    def get_expression(self, gene: str) -> dict[str, Any]:
+    def get_expression(self, gene: str, transform: str | None = None) -> dict[str, Any]:
         """Get expression values for a single gene across all cells.
 
         Args:
             gene: Gene name
+            transform: Optional transformation to apply. Supported values:
+                - None: Raw expression values
+                - "log1p": Apply normalize_total followed by log1p transformation
 
         Returns:
             Dictionary containing:
@@ -209,6 +235,7 @@ class DataAdaptor:
             - values: List of expression values for each cell
             - min: Minimum expression value
             - max: Maximum expression value
+            - transform: The transformation applied (if any)
 
         Raises:
             KeyError: If gene not found in .var
@@ -219,9 +246,15 @@ class DataAdaptor:
         # Get gene index
         gene_idx = self.adata.var.index.get_loc(gene)
 
+        # Select data source based on transform
+        if transform == "log1p":
+            adata_source = self.normalized_adata
+        else:
+            adata_source = self.adata
+
         # Get expression values from X matrix
         # Handle both dense and sparse matrices
-        X = self.adata.X
+        X = adata_source.X
         if hasattr(X, 'toarray'):
             # Sparse matrix
             values = X[:, gene_idx].toarray().flatten()
@@ -242,18 +275,24 @@ class DataAdaptor:
         min_val = min(valid_values) if valid_values else 0
         max_val = max(valid_values) if valid_values else 0
 
-        return {
+        result = {
             "gene": gene,
             "values": values_list,
             "min": min_val,
             "max": max_val,
         }
+        if transform:
+            result["transform"] = transform
+        return result
 
-    def get_multi_gene_expression(self, genes: list[str]) -> dict[str, Any]:
+    def get_multi_gene_expression(self, genes: list[str], transform: str | None = None) -> dict[str, Any]:
         """Get mean expression values for multiple genes across all cells.
 
         Args:
             genes: List of gene names
+            transform: Optional transformation to apply. Supported values:
+                - None: Raw expression values
+                - "log1p": Apply normalize_total followed by log1p transformation
 
         Returns:
             Dictionary containing:
@@ -261,6 +300,7 @@ class DataAdaptor:
             - values: List of mean expression values for each cell
             - min: Minimum mean expression value
             - max: Maximum mean expression value
+            - transform: The transformation applied (if any)
 
         Raises:
             KeyError: If any gene not found in .var
@@ -281,8 +321,14 @@ class DataAdaptor:
         # Get gene indices
         gene_indices = [self.adata.var.index.get_loc(g) for g in genes]
 
+        # Select data source based on transform
+        if transform == "log1p":
+            adata_source = self.normalized_adata
+        else:
+            adata_source = self.adata
+
         # Get expression values
-        X = self.adata.X
+        X = adata_source.X
         if hasattr(X, 'toarray'):
             # Sparse matrix
             expr_matrix = X[:, gene_indices].toarray()
@@ -305,12 +351,110 @@ class DataAdaptor:
         min_val = min(valid_values) if valid_values else 0
         max_val = max(valid_values) if valid_values else 0
 
-        return {
+        result = {
             "genes": genes,
             "values": values_list,
             "min": min_val,
             "max": max_val,
         }
+        if transform:
+            result["transform"] = transform
+        return result
+
+    def get_bivariate_expression(
+        self,
+        genes1: list[str],
+        genes2: list[str],
+        transform: str | None = None,
+        clip_percentiles: tuple[float, float] = (0, 100),
+    ) -> dict[str, Any]:
+        """Get normalized expression values for two gene sets for bivariate coloring.
+
+        For each gene set, expression values are:
+        1. Optionally log1p transformed (if transform='log1p')
+        2. Clipped to specified percentiles
+        3. Min-max normalized to [0, 1] for each gene
+        4. Averaged across genes in the set
+
+        Args:
+            genes1: List of gene names for the first set (maps to red/x-axis)
+            genes2: List of gene names for the second set (maps to blue/y-axis)
+            transform: Optional transformation ('log1p' for normalize_total + log1p)
+            clip_percentiles: Tuple of (low, high) percentiles for clipping
+
+        Returns:
+            Dictionary containing:
+            - genes1: List of gene names for set 1
+            - genes2: List of gene names for set 2
+            - values1: Normalized [0,1] expression values for gene set 1
+            - values2: Normalized [0,1] expression values for gene set 2
+            - transform: The transformation applied (if any)
+
+        Raises:
+            KeyError: If any gene not found in .var
+        """
+        # Validate all genes exist
+        all_genes = genes1 + genes2
+        missing = [g for g in all_genes if g not in self.adata.var.index]
+        if missing:
+            raise KeyError(f"Genes not found: {missing}")
+
+        if len(genes1) == 0 or len(genes2) == 0:
+            raise ValueError("Both gene sets must contain at least one gene")
+
+        # Select data source based on transform
+        if transform == "log1p":
+            adata_source = self.normalized_adata
+        else:
+            adata_source = self.adata
+
+        def summarize_geneset(genes: list[str]) -> list[float]:
+            """Summarize expression for a gene set with normalization."""
+            normalized_arrays = []
+
+            for gene in genes:
+                gene_idx = adata_source.var.index.get_loc(gene)
+                X = adata_source.X
+
+                # Get expression values
+                if hasattr(X, 'toarray'):
+                    values = X[:, gene_idx].toarray().flatten()
+                else:
+                    values = X[:, gene_idx].flatten()
+
+                # Clip to percentiles
+                lo, hi = np.percentile(values[~np.isnan(values)], clip_percentiles)
+
+                values = np.clip(values, lo, hi)
+
+                # Min-max normalize to [0, 1]
+                if hi > lo:
+                    normalized = (values - lo) / (hi - lo)
+                else:
+                    normalized = np.zeros_like(values)
+
+                normalized_arrays.append(normalized)
+
+            # Stack and compute mean across genes
+            stacked = np.vstack(normalized_arrays).T  # Shape: (n_cells, n_genes)
+            mean_values = np.nanmean(stacked, axis=1)
+
+            # Convert to Python floats
+            return [float(v) if not np.isnan(v) else 0.0 for v in mean_values]
+
+        values1 = summarize_geneset(genes1)
+        values2 = summarize_geneset(genes2)
+
+        result = {
+            "genes1": genes1,
+            "genes2": genes2,
+            "values1": values1,
+            "values2": values2,
+        }
+        if transform:
+            result["transform"] = transform
+
+        return result
 
     def get_obs_column_summary(self, name: str) -> dict[str, Any]:
         """Get summary statistics for a cell metadata column.
@@ -566,6 +710,182 @@ class DataAdaptor:
             group2_indices=group2_indices,
             top_n=top_n,
         )
+
+    # =========================================================================
+    # Drawn lines / trajectory methods
+    # =========================================================================
+
+    def set_lines(self, lines: list[dict[str, Any]]) -> None:
+        """Store drawn lines from the frontend.
+
+        Args:
+            lines: List of line objects with keys:
+                - name: Line name
+                - embeddingName: Which embedding this was drawn on
+                - points: Raw line points [[x, y], ...]
+                - smoothedPoints: Smoothed line points (optional)
+        """
+        self._drawn_lines = lines
+
+    def get_lines(self) -> list[dict[str, Any]]:
+        """Get stored drawn lines."""
+        return self._drawn_lines
+
+    def _project_cells_onto_line(
+        self,
+        line_points: list[list[float]],
+        embedding_coords: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Project all cells onto a line and compute position/distance.
+
+        Uses the smoothed line if available, otherwise raw points.
+        For each cell, finds the closest point on the polyline and computes:
+        - Position along line (0 = start, 1 = end, normalized by arc length)
+        - Perpendicular distance to the line
+
+        Args:
+            line_points: List of [x, y] points defining the line
+            embedding_coords: Embedding coordinates for all cells (n_cells x 2)
+
+        Returns:
+            Tuple of (positions, distances) arrays, each of shape (n_cells,)
+        """
+        if len(line_points) < 2:
+            return np.zeros(len(embedding_coords)), np.full(len(embedding_coords), np.nan)
+
+        line_pts = np.array(line_points)
+        n_cells = len(embedding_coords)
+
+        # Compute cumulative arc length along line
+        segment_lengths = np.sqrt(np.sum(np.diff(line_pts, axis=0) ** 2, axis=1))
+        cumulative_lengths = np.concatenate([[0], np.cumsum(segment_lengths)])
+        total_length = cumulative_lengths[-1]
+
+        positions = np.zeros(n_cells)
+        distances = np.zeros(n_cells)
+
+        for i, cell_pt in enumerate(embedding_coords):
+            best_dist = np.inf
+            best_pos = 0.0
+
+            # Check each line segment
+            for j in range(len(line_pts) - 1):
+                p1 = line_pts[j]
+                p2 = line_pts[j + 1]
+                seg_vec = p2 - p1
+                seg_len_sq = np.dot(seg_vec, seg_vec)
+
+                if seg_len_sq < 1e-12:
+                    # Degenerate segment
+                    t = 0.0
+                else:
+                    # Project point onto segment
+                    t = max(0, min(1, np.dot(cell_pt - p1, seg_vec) / seg_len_sq))
+
+                # Closest point on this segment
+                closest = p1 + t * seg_vec
+                dist = np.sqrt(np.sum((cell_pt - closest) ** 2))
+
+                if dist < best_dist:
+                    best_dist = dist
+                    # Position along total line
+                    if total_length > 1e-12:
+                        best_pos = (cumulative_lengths[j] + t * segment_lengths[j]) / total_length
+                    else:
+                        best_pos = 0.0
+
+            positions[i] = best_pos
+            distances[i] = best_dist
+
+        return positions, distances
+
+    def compute_line_projections(self) -> dict[str, dict[str, np.ndarray]]:
+        """Compute cell projections for all stored lines.
+
+        Returns:
+            Dictionary mapping line name to {positions, distances} arrays
+        """
+        projections = {}
+
+        for line in self._drawn_lines:
+            embedding_name = line.get('embeddingName', '')
+            line_name = line.get('name', 'unnamed')
+
+            # Get the appropriate embedding coordinates
+            if embedding_name not in self.adata.obsm:
+                continue
+
+            coords = self.adata.obsm[embedding_name][:, :2]
+
+            # Use smoothed points if available, otherwise raw points
+            line_points = line.get('smoothedPoints') or line.get('points', [])
+            if not line_points:
+                continue
+
+            positions, distances = self._project_cells_onto_line(line_points, coords)
+            projections[line_name] = {
+                'positions': positions,
+                'distances': distances,
+            }
+
+        return projections
+
+    def prepare_export_with_lines(self) -> anndata.AnnData:
+        """Prepare AnnData for export, including line data.
+
+        Stores line metadata as JSON string in .uns['xcell_lines_json'] and
+        cell projections in .obsm['X_{line_name}_projection'].
+
+        The JSON contains an array of line objects with:
+        - name: Line name
+        - embedding: Embedding name the line was drawn on
+        - points: Array of [x, y] coordinates
+        - smoothed_points: Array of smoothed [x, y] coordinates (if exists)
+
+        Returns:
+            Copy of adata with lines and projections added
+        """
+        import json
+
+        # Work with a copy to avoid modifying the live data
+        adata_export = self.adata.copy()
+
+        if not self._drawn_lines:
+            return adata_export
+
+        # Store line metadata as JSON string (h5ad-safe)
+        line_metadata = []
+        for line in self._drawn_lines:
+            line_info = {
+                'name': line.get('name', 'unnamed'),
+                'embedding': line.get('embeddingName', ''),
+                'points': line.get('points', []),
+            }
+            smoothed = line.get('smoothedPoints')
+            if smoothed:
+                line_info['smoothed_points'] = smoothed
+            line_metadata.append(line_info)
+
+        adata_export.uns['xcell_lines_json'] = json.dumps(line_metadata)
+
+        # Compute and store projections
+        projections = self.compute_line_projections()
+
+        for line_name, proj_data in projections.items():
+            # Sanitize line name for use as key (replace spaces, special chars)
+            safe_name = line_name.replace(' ', '_').replace('-', '_')
+            safe_name = ''.join(c for c in safe_name if c.isalnum() or c == '_')
+
+            key = f'X_{safe_name}_projection'
+
+            # Store as n_cells x 2 matrix: [position, distance]
+            proj_matrix = np.column_stack([
+                proj_data['positions'],
+                proj_data['distances'],
+            ])
+            adata_export.obsm[key] = proj_matrix
+
+        return adata_export
 
     # =========================================================================
     # Future scanpy integration methods (stubs for now)

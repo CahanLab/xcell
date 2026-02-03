@@ -6,6 +6,7 @@ import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
 import DisplaySettings from './components/DisplaySettings'
 import DiffExpModal from './components/DiffExpModal'
+import ScanpyModal from './components/ScanpyModal'
 import ShapeManager from './components/ShapeManager'
 
 const styles = {
@@ -321,6 +322,7 @@ export default function App() {
     displayPreferences,
     drawnLines,
     addLine,
+    setScanpyModalOpen,
   } = useStore()
 
   const schema = useSchema()
@@ -516,6 +518,14 @@ export default function App() {
                 <span>&#9998;</span> Draw
               </button>
 
+              <button
+                style={styles.toolButton}
+                onClick={() => setScanpyModalOpen(true)}
+                title="Run scanpy analysis functions"
+              >
+                Scanpy
+              </button>
+
               <DisplaySettings />
 
               <button
@@ -704,6 +714,7 @@ export default function App() {
       </div>
 
       <DiffExpModal />
+      <ScanpyModal />
 
       {/* Export modal */}
       {isExportModalOpen && (

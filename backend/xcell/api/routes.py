@@ -494,6 +494,224 @@ def get_lines():
 
 
 # =========================================================================
+# Scanpy analysis endpoints
+# =========================================================================
+
+
+class FilterGenesRequest(BaseModel):
+    min_counts: int | None = None
+    max_counts: int | None = None
+    min_cells: int | None = None
+    max_cells: int | None = None
+
+
+class FilterCellsRequest(BaseModel):
+    min_counts: int | None = None
+    max_counts: int | None = None
+    min_genes: int | None = None
+    max_genes: int | None = None
+
+
+class NormalizeTotalRequest(BaseModel):
+    target_sum: float | None = None
+
+
+class PcaRequest(BaseModel):
+    n_comps: int = 50
+    svd_solver: str = 'arpack'
+
+
+class NeighborsRequest(BaseModel):
+    n_neighbors: int = 15
+    n_pcs: int | None = None
+    metric: str = 'euclidean'
+
+
+class UmapRequest(BaseModel):
+    min_dist: float = 0.5
+    spread: float = 1.0
+    n_components: int = 2
+
+
+class LeidenRequest(BaseModel):
+    resolution: float = 1.0
+    key_added: str = 'leiden'
+
+
+@router.get("/scanpy/history")
+def get_action_history():
+    """Get the history of scanpy operations performed.
+
+    Returns:
+        List of action records with timestamps
+    """
+    adaptor = get_adaptor()
+    return {"history": adaptor.get_action_history()}
+
+
+@router.get("/scanpy/prerequisites/{action}")
+def check_prerequisites(action: str):
+    """Check if prerequisites are met for a scanpy action.
+
+    Args:
+        action: The scanpy action to check
+
+    Returns:
+        Dict with satisfied (bool) and missing prerequisites
+    """
+    adaptor = get_adaptor()
+    return adaptor.check_prerequisites(action)
+
+
+@router.post("/scanpy/filter_genes")
+def run_filter_genes(request: FilterGenesRequest):
+    """Filter genes based on counts or number of cells expressing.
+
+    Returns:
+        Before/after gene counts
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_filter_genes(
+            min_counts=request.min_counts,
+            max_counts=request.max_counts,
+            min_cells=request.min_cells,
+            max_cells=request.max_cells,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/filter_cells")
+def run_filter_cells(request: FilterCellsRequest):
+    """Filter cells based on counts or number of genes expressed.
+
+    Returns:
+        Before/after cell counts
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_filter_cells(
+            min_counts=request.min_counts,
+            max_counts=request.max_counts,
+            min_genes=request.min_genes,
+            max_genes=request.max_genes,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/normalize_total")
+def run_normalize_total(request: NormalizeTotalRequest):
+    """Normalize total counts per cell.
+
+    Returns:
+        Operation status
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_normalize_total(target_sum=request.target_sum)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/log1p")
+def run_log1p():
+    """Apply log1p transformation.
+
+    Returns:
+        Operation status
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_log1p()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/pca")
+def run_pca(request: PcaRequest):
+    """Run PCA dimensionality reduction.
+
+    Returns:
+        Operation status and variance explained
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_pca(
+            n_comps=request.n_comps,
+            svd_solver=request.svd_solver,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/neighbors")
+def run_neighbors(request: NeighborsRequest):
+    """Compute neighborhood graph.
+
+    Requires: PCA must be computed first.
+
+    Returns:
+        Operation status
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_neighbors(
+            n_neighbors=request.n_neighbors,
+            n_pcs=request.n_pcs,
+            metric=request.metric,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scanpy/umap")
+def run_umap(request: UmapRequest):
+    """Compute UMAP embedding.
+
+    Requires: Neighbors must be computed first.
+
+    Returns:
+        Operation status and embedding name
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_umap(
+            min_dist=request.min_dist,
+            spread=request.spread,
+            n_components=request.n_components,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scanpy/leiden")
+def run_leiden(request: LeidenRequest):
+    """Run Leiden clustering.
+
+    Requires: Neighbors must be computed first.
+
+    Returns:
+        Operation status and cluster info
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_leiden(
+            resolution=request.resolution,
+            key_added=request.key_added,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =========================================================================
 # Export endpoints
 # =========================================================================
 

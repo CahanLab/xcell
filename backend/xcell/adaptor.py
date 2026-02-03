@@ -40,6 +40,7 @@ class DataAdaptor:
         self.adata = anndata.read_h5ad(self.filepath)
         self._normalized_adata: anndata.AnnData | None = None
         self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
+        self._action_history: list[dict[str, Any]] = []  # Track scanpy operations
 
     @property
     def n_cells(self) -> int:
@@ -888,25 +889,317 @@ class DataAdaptor:
         return adata_export
 
     # =========================================================================
-    # Future scanpy integration methods (stubs for now)
+    # Scanpy analysis methods
     # =========================================================================
 
-    # def run_pca(self, n_comps: int = 50, **kwargs):
-    #     """Run PCA dimensionality reduction."""
-    #     import scanpy as sc
-    #     sc.tl.pca(self.adata, n_comps=n_comps, **kwargs)
+    def get_action_history(self) -> list[dict[str, Any]]:
+        """Get the history of scanpy operations performed."""
+        return self._action_history
 
-    # def run_umap(self, **kwargs):
-    #     """Run UMAP embedding."""
-    #     import scanpy as sc
-    #     sc.tl.umap(self.adata, **kwargs)
+    def _log_action(self, action: str, params: dict[str, Any], result: dict[str, Any]) -> None:
+        """Log a scanpy action to the history."""
+        import datetime
+        self._action_history.append({
+            'action': action,
+            'params': params,
+            'result': result,
+            'timestamp': datetime.datetime.now().isoformat(),
+        })
 
-    # def run_leiden(self, resolution: float = 1.0, **kwargs):
-    #     """Run Leiden clustering."""
-    #     import scanpy as sc
-    #     sc.tl.leiden(self.adata, resolution=resolution, **kwargs)
+    def check_prerequisites(self, action: str) -> dict[str, Any]:
+        """Check if prerequisites are met for a scanpy action.
 
-    # def run_diffexp(self, groupby: str, groups: list[str] | None = None, **kwargs):
-    #     """Run differential expression analysis."""
-    #     import scanpy as sc
-    #     sc.tl.rank_genes_groups(self.adata, groupby=groupby, groups=groups, **kwargs)
+        Args:
+            action: The scanpy action to check
+
+        Returns:
+            Dict with 'satisfied' (bool) and 'missing' (list of missing prereqs)
+        """
+        prereqs = {
+            'filter_genes': [],
+            'filter_cells': [],
+            'normalize_total': [],
+            'log1p': [],
+            'pca': [],
+            'neighbors': ['pca'],
+            'umap': ['neighbors'],
+            'leiden': ['neighbors'],
+        }
+
+        required = prereqs.get(action, [])
+        missing = []
+
+        for prereq in required:
+            if prereq == 'pca':
+                if 'X_pca' not in self.adata.obsm:
+                    missing.append('pca')
+            elif prereq == 'neighbors':
+                if 'connectivities' not in self.adata.obsp:
+                    missing.append('neighbors')
+
+        return {
+            'satisfied': len(missing) == 0,
+            'missing': missing,
+        }
+
+    def run_filter_genes(
+        self,
+        min_counts: int | None = None,
+        max_counts: int | None = None,
+        min_cells: int | None = None,
+        max_cells: int | None = None,
+    ) -> dict[str, Any]:
+        """Filter genes based on counts or number of cells expressing.
+
+        Args:
+            min_counts: Minimum total counts for a gene
+            max_counts: Maximum total counts for a gene
+            min_cells: Minimum number of cells expressing the gene
+            max_cells: Maximum number of cells expressing the gene
+
+        Returns:
+            Dict with before/after gene counts
+        """
+        n_genes_before = self.n_genes
+
+        # Build kwargs for scanpy
+        kwargs = {}
+        if min_counts is not None:
+            kwargs['min_counts'] = min_counts
+        if max_counts is not None:
+            kwargs['max_counts'] = max_counts
+        if min_cells is not None:
+            kwargs['min_cells'] = min_cells
+        if max_cells is not None:
+            kwargs['max_cells'] = max_cells
+
+        if kwargs:
+            sc.pp.filter_genes(self.adata, **kwargs)
+
+        n_genes_after = self.n_genes
+
+        # Invalidate normalized cache since data changed
+        self._normalized_adata = None
+
+        result = {
+            'n_genes_before': n_genes_before,
+            'n_genes_after': n_genes_after,
+            'n_genes_removed': n_genes_before - n_genes_after,
+        }
+        self._log_action('filter_genes', kwargs, result)
+        return result
+
+    def run_filter_cells(
+        self,
+        min_counts: int | None = None,
+        max_counts: int | None = None,
+        min_genes: int | None = None,
+        max_genes: int | None = None,
+    ) -> dict[str, Any]:
+        """Filter cells based on counts or number of genes expressed.
+
+        Args:
+            min_counts: Minimum total counts for a cell
+            max_counts: Maximum total counts for a cell
+            min_genes: Minimum number of genes expressed in the cell
+            max_genes: Maximum number of genes expressed in the cell
+
+        Returns:
+            Dict with before/after cell counts
+        """
+        n_cells_before = self.n_cells
+
+        kwargs = {}
+        if min_counts is not None:
+            kwargs['min_counts'] = min_counts
+        if max_counts is not None:
+            kwargs['max_counts'] = max_counts
+        if min_genes is not None:
+            kwargs['min_genes'] = min_genes
+        if max_genes is not None:
+            kwargs['max_genes'] = max_genes
+
+        if kwargs:
+            sc.pp.filter_cells(self.adata, **kwargs)
+
+        n_cells_after = self.n_cells
+
+        # Invalidate normalized cache since data changed
+        self._normalized_adata = None
+
+        result = {
+            'n_cells_before': n_cells_before,
+            'n_cells_after': n_cells_after,
+            'n_cells_removed': n_cells_before - n_cells_after,
+        }
+        self._log_action('filter_cells', kwargs, result)
+        return result
+
+    def run_normalize_total(
+        self,
+        target_sum: float | None = None,
+    ) -> dict[str, Any]:
+        """Normalize total counts per cell.
+
+        Args:
+            target_sum: Target sum of counts per cell. If None, uses median.
+
+        Returns:
+            Dict with operation status
+        """
+        kwargs = {}
+        if target_sum is not None:
+            kwargs['target_sum'] = target_sum
+
+        sc.pp.normalize_total(self.adata, **kwargs)
+
+        # Invalidate normalized cache
+        self._normalized_adata = None
+
+        result = {'status': 'completed', 'target_sum': target_sum}
+        self._log_action('normalize_total', kwargs, result)
+        return result
+
+    def run_log1p(self) -> dict[str, Any]:
+        """Apply log1p transformation to the data.
+
+        Returns:
+            Dict with operation status
+        """
+        sc.pp.log1p(self.adata)
+
+        # Invalidate normalized cache
+        self._normalized_adata = None
+
+        result = {'status': 'completed'}
+        self._log_action('log1p', {}, result)
+        return result
+
+    def run_pca(
+        self,
+        n_comps: int = 50,
+        svd_solver: str = 'arpack',
+    ) -> dict[str, Any]:
+        """Run PCA dimensionality reduction.
+
+        Args:
+            n_comps: Number of principal components to compute
+            svd_solver: SVD solver to use ('arpack', 'randomized', 'auto')
+
+        Returns:
+            Dict with operation status and variance explained
+        """
+        # Limit n_comps to valid range
+        max_comps = min(self.n_cells - 1, self.n_genes - 1)
+        n_comps = min(n_comps, max_comps)
+
+        sc.tl.pca(self.adata, n_comps=n_comps, svd_solver=svd_solver)
+
+        # Get variance explained
+        variance_ratio = self.adata.uns['pca']['variance_ratio'][:10].tolist()
+
+        result = {
+            'status': 'completed',
+            'n_comps': n_comps,
+            'variance_explained_top10': variance_ratio,
+            'embedding_name': 'X_pca',
+        }
+        self._log_action('pca', {'n_comps': n_comps, 'svd_solver': svd_solver}, result)
+        return result
+
+    def run_neighbors(
+        self,
+        n_neighbors: int = 15,
+        n_pcs: int | None = None,
+        metric: str = 'euclidean',
+    ) -> dict[str, Any]:
+        """Compute neighborhood graph.
+
+        Args:
+            n_neighbors: Number of neighbors to use
+            n_pcs: Number of PCs to use (None = use all)
+            metric: Distance metric
+
+        Returns:
+            Dict with operation status
+        """
+        # Check prerequisites
+        prereq = self.check_prerequisites('neighbors')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        kwargs = {
+            'n_neighbors': n_neighbors,
+            'metric': metric,
+        }
+        if n_pcs is not None:
+            kwargs['n_pcs'] = n_pcs
+
+        sc.pp.neighbors(self.adata, **kwargs)
+
+        result = {'status': 'completed', 'n_neighbors': n_neighbors}
+        self._log_action('neighbors', kwargs, result)
+        return result
+
+    def run_umap(
+        self,
+        min_dist: float = 0.5,
+        spread: float = 1.0,
+        n_components: int = 2,
+    ) -> dict[str, Any]:
+        """Compute UMAP embedding.
+
+        Args:
+            min_dist: Minimum distance between points
+            spread: Spread of the embedding
+            n_components: Number of dimensions
+
+        Returns:
+            Dict with operation status and embedding name
+        """
+        # Check prerequisites
+        prereq = self.check_prerequisites('umap')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        sc.tl.umap(self.adata, min_dist=min_dist, spread=spread, n_components=n_components)
+
+        result = {
+            'status': 'completed',
+            'embedding_name': 'X_umap',
+            'n_components': n_components,
+        }
+        self._log_action('umap', {'min_dist': min_dist, 'spread': spread, 'n_components': n_components}, result)
+        return result
+
+    def run_leiden(
+        self,
+        resolution: float = 1.0,
+        key_added: str = 'leiden',
+    ) -> dict[str, Any]:
+        """Run Leiden clustering.
+
+        Args:
+            resolution: Resolution parameter (higher = more clusters)
+            key_added: Key to add to obs for cluster labels
+
+        Returns:
+            Dict with operation status and cluster info
+        """
+        # Check prerequisites
+        prereq = self.check_prerequisites('leiden')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        sc.tl.leiden(self.adata, resolution=resolution, key_added=key_added)
+
+        n_clusters = len(self.adata.obs[key_added].cat.categories)
+
+        result = {
+            'status': 'completed',
+            'key_added': key_added,
+            'n_clusters': n_clusters,
+            'resolution': resolution,
+        }
+        self._log_action('leiden', {'resolution': resolution, 'key_added': key_added}, result)
+        return result

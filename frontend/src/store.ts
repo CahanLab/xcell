@@ -109,6 +109,14 @@ export interface DisplayPreferences {
   expressionTransform: ExpressionTransform  // Transformation for expression values
 }
 
+// Scanpy action history entry
+export interface ScanpyActionRecord {
+  action: string
+  params: Record<string, unknown>
+  result: Record<string, unknown>
+  timestamp: string
+}
+
 interface AppState {
   // Data
   schema: Schema | null
@@ -159,6 +167,10 @@ interface AppState {
   drawnLines: DrawnLine[]
   activeLineId: string | null  // Currently selected line for editing/smoothing
   lineSmoothingParams: LineSmoothingParams
+
+  // Scanpy modal state
+  isScanpyModalOpen: boolean
+  scanpyActionHistory: ScanpyActionRecord[]
 
   // Actions
   setSchema: (schema: Schema) => void
@@ -227,6 +239,11 @@ interface AppState {
   setLineVisibility: (id: string, visible: boolean) => void
   projectSelectedCellsOntoLine: (lineId: string) => void  // Project currently selected cells onto a specific line
   clearLineProjections: (lineId: string) => void
+
+  // Scanpy modal actions
+  setScanpyModalOpen: (open: boolean) => void
+  setScanpyActionHistory: (history: ScanpyActionRecord[]) => void
+  addScanpyAction: (action: ScanpyActionRecord) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -273,6 +290,8 @@ export const useStore = create<AppState>((set) => ({
     windowSize: 5,
     iterations: 2,
   },
+  isScanpyModalOpen: false,
+  scanpyActionHistory: [],
 
   // Actions
   setSchema: (schema) => set({ schema }),
@@ -647,5 +666,13 @@ export const useStore = create<AppState>((set) => ({
       drawnLines: state.drawnLines.map((l) =>
         l.id === lineId ? { ...l, projections: [] } : l
       ),
+    })),
+
+  // Scanpy modal actions
+  setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),
+  setScanpyActionHistory: (history) => set({ scanpyActionHistory: history }),
+  addScanpyAction: (action) =>
+    set((state) => ({
+      scanpyActionHistory: [...state.scanpyActionHistory, action],
     })),
 }))

@@ -712,6 +712,162 @@ def run_leiden(request: LeidenRequest):
 
 
 # =========================================================================
+# Gene analysis endpoints
+# =========================================================================
+
+
+class GenePcaRequest(BaseModel):
+    n_comps: int | None = None
+    scale: bool = True
+    use_kneedle: bool = True
+    max_comps: int = 100
+
+
+class GeneNeighborsRequest(BaseModel):
+    n_neighbors: int = 15
+    metric: str = 'cosine'
+
+
+class FindSimilarGenesRequest(BaseModel):
+    gene: str
+    n_neighbors: int = 10
+    use: str = 'connectivities'
+
+
+class ClusterGenesRequest(BaseModel):
+    resolution: float = 0.5
+    key_added: str = 'gene_cluster'
+
+
+class BuildGeneGraphRequest(BaseModel):
+    n_pcs: int | None = None
+    scale: bool = True
+    use_kneedle: bool = True
+    n_neighbors: int = 15
+    metric: str = 'cosine'
+
+
+@router.post("/scanpy/gene_pca")
+def run_gene_pca(request: GenePcaRequest):
+    """Run PCA on genes (transposed expression matrix).
+
+    Computes gene embeddings based on expression patterns.
+    Results stored in .varm['X_gene_pca'].
+
+    Returns:
+        Operation status, n_comps, variance explained
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_gene_pca(
+            n_comps=request.n_comps,
+            scale=request.scale,
+            use_kneedle=request.use_kneedle,
+            max_comps=request.max_comps,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/scanpy/gene_pca_variance")
+def get_gene_pca_variance():
+    """Get gene PCA variance information for visualization.
+
+    Returns:
+        Variance ratios, cumulative variance, elbow point
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.get_gene_pca_variance()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/gene_neighbors")
+def run_gene_neighbors(request: GeneNeighborsRequest):
+    """Compute gene-gene kNN graph from gene PCA.
+
+    Requires: gene_pca must be computed first.
+    Results stored in .varp['gene_connectivities'] and .varp['gene_distances'].
+
+    Returns:
+        Operation status
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_gene_neighbors(
+            n_neighbors=request.n_neighbors,
+            metric=request.metric,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scanpy/find_similar_genes")
+def run_find_similar_genes(request: FindSimilarGenesRequest):
+    """Find genes with similar expression patterns.
+
+    Requires: gene_neighbors must be computed first.
+
+    Returns:
+        List of similar genes with scores
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_find_similar_genes(
+            gene=request.gene,
+            n_neighbors=request.n_neighbors,
+            use=request.use,
+        )
+    except (ValueError, KeyError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/cluster_genes")
+def run_cluster_genes(request: ClusterGenesRequest):
+    """Cluster genes into co-expression modules using Leiden.
+
+    Requires: gene_neighbors must be computed first.
+    Results stored in .var[key_added] and .uns['gene_modules'].
+
+    Returns:
+        Cluster info and module composition
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_cluster_genes(
+            resolution=request.resolution,
+            key_added=request.key_added,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scanpy/build_gene_graph")
+def run_build_gene_graph(request: BuildGeneGraphRequest):
+    """Convenience: run gene_pca and gene_neighbors in one step.
+
+    Returns:
+        Combined results from both steps
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_build_gene_graph(
+            n_pcs=request.n_pcs,
+            scale=request.scale,
+            use_kneedle=request.use_kneedle,
+            n_neighbors=request.n_neighbors,
+            metric=request.metric,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
 # Export endpoints
 # =========================================================================
 

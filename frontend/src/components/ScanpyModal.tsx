@@ -3,6 +3,137 @@ import { useStore, ScanpyActionRecord } from '../store'
 
 const API_BASE = '/api'
 
+// Variance data for visualization
+interface VarianceData {
+  variance_ratio: number[]
+  cumulative_variance: number[]
+  n_comps_used: number
+  n_comps_computed: number
+  elbow_index: number | null
+}
+
+// Simple SVG-based variance chart component
+function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData; width?: number; height?: number }) {
+  const padding = { top: 20, right: 40, bottom: 30, left: 45 }
+  const chartWidth = width - padding.left - padding.right
+  const chartHeight = height - padding.top - padding.bottom
+
+  const nPCs = Math.min(data.variance_ratio.length, 50) // Show max 50 PCs
+  const varRatios = data.variance_ratio.slice(0, nPCs)
+  const cumVar = data.cumulative_variance.slice(0, nPCs)
+
+  const maxVar = Math.max(...varRatios) * 1.1
+  const barWidth = Math.max(2, (chartWidth / nPCs) - 1)
+
+  // Scale functions
+  const xScale = (i: number) => padding.left + (i / nPCs) * chartWidth
+  const yScaleVar = (v: number) => padding.top + chartHeight - (v / maxVar) * chartHeight
+  const yScaleCum = (v: number) => padding.top + chartHeight - v * chartHeight
+
+  // Build cumulative line path
+  const cumLinePath = cumVar.map((v, i) =>
+    `${i === 0 ? 'M' : 'L'} ${xScale(i + 0.5)} ${yScaleCum(v)}`
+  ).join(' ')
+
+  return (
+    <svg width={width} height={height} style={{ backgroundColor: '#0a0a1a', borderRadius: '4px' }}>
+      {/* Y-axis labels - variance ratio */}
+      <text x={padding.left - 5} y={padding.top} fontSize="9" fill="#888" textAnchor="end">
+        {(maxVar * 100).toFixed(0)}%
+      </text>
+      <text x={padding.left - 5} y={padding.top + chartHeight} fontSize="9" fill="#888" textAnchor="end">
+        0%
+      </text>
+      <text x={padding.left - 25} y={padding.top + chartHeight / 2} fontSize="9" fill="#666" textAnchor="middle" transform={`rotate(-90, ${padding.left - 25}, ${padding.top + chartHeight / 2})`}>
+        Var. Ratio
+      </text>
+
+      {/* Y-axis labels - cumulative (right side) */}
+      <text x={width - padding.right + 5} y={padding.top} fontSize="9" fill="#4ecdc4" textAnchor="start">
+        100%
+      </text>
+      <text x={width - padding.right + 5} y={padding.top + chartHeight} fontSize="9" fill="#4ecdc4" textAnchor="start">
+        0%
+      </text>
+
+      {/* X-axis label */}
+      <text x={padding.left + chartWidth / 2} y={height - 5} fontSize="9" fill="#666" textAnchor="middle">
+        Principal Component
+      </text>
+
+      {/* Variance ratio bars */}
+      {varRatios.map((v, i) => (
+        <rect
+          key={i}
+          x={xScale(i) + 1}
+          y={yScaleVar(v)}
+          width={barWidth}
+          height={yScaleVar(0) - yScaleVar(v)}
+          fill={i < data.n_comps_used ? '#e94560' : '#444'}
+          opacity={0.8}
+        />
+      ))}
+
+      {/* Cumulative variance line */}
+      <path
+        d={cumLinePath}
+        fill="none"
+        stroke="#4ecdc4"
+        strokeWidth={2}
+      />
+
+      {/* Elbow point marker */}
+      {data.elbow_index !== null && data.elbow_index < nPCs && (
+        <>
+          <line
+            x1={xScale(data.elbow_index + 0.5)}
+            y1={padding.top}
+            x2={xScale(data.elbow_index + 0.5)}
+            y2={padding.top + chartHeight}
+            stroke="#ffd700"
+            strokeWidth={1}
+            strokeDasharray="3,3"
+          />
+          <circle
+            cx={xScale(data.elbow_index + 0.5)}
+            cy={yScaleCum(cumVar[data.elbow_index])}
+            r={4}
+            fill="#ffd700"
+          />
+          <text
+            x={xScale(data.elbow_index + 0.5)}
+            y={padding.top - 5}
+            fontSize="8"
+            fill="#ffd700"
+            textAnchor="middle"
+          >
+            elbow
+          </text>
+        </>
+      )}
+
+      {/* N comps used indicator */}
+      {data.n_comps_used < nPCs && (
+        <line
+          x1={xScale(data.n_comps_used)}
+          y1={padding.top}
+          x2={xScale(data.n_comps_used)}
+          y2={padding.top + chartHeight}
+          stroke="#e94560"
+          strokeWidth={1}
+          opacity={0.5}
+        />
+      )}
+
+      {/* Legend */}
+      <rect x={padding.left + 5} y={padding.top + 2} width={8} height={8} fill="#e94560" />
+      <text x={padding.left + 16} y={padding.top + 9} fontSize="8" fill="#888">Used PCs</text>
+      <line x1={padding.left + 70} y1={padding.top + 6} x2={padding.left + 82} y2={padding.top + 6} stroke="#4ecdc4" strokeWidth={2} />
+      <text x={padding.left + 85} y={padding.top + 9} fontSize="8" fill="#888">Cumulative</text>
+    </svg>
+  )
+}
+
 // Type definitions for scanpy functions
 interface ParamDef {
   name: string
@@ -122,6 +253,61 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         params: [
           { name: 'resolution', label: 'Resolution', type: 'number', default: 1.0, description: 'Higher = more clusters' },
           { name: 'key_added', label: 'Column name', type: 'text', default: 'leiden', description: 'Name for cluster labels' },
+        ],
+      },
+    },
+  },
+  gene_analysis: {
+    label: 'Gene Analysis',
+    functions: {
+      build_gene_graph: {
+        label: 'Build Gene Graph',
+        description: 'Build gene-gene similarity graph (runs PCA + neighbors)',
+        prerequisites: [],
+        params: [
+          { name: 'n_pcs', label: 'Num PCs', type: 'number', default: null, description: 'Number of PCs (null = auto-detect with Kneedle)' },
+          { name: 'scale', label: 'Scale', type: 'select', default: 'true', options: ['true', 'false'], description: 'Z-score scale genes before PCA' },
+          { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 15, description: 'Number of gene neighbors' },
+          { name: 'metric', label: 'Metric', type: 'select', default: 'cosine', options: ['cosine', 'euclidean', 'correlation'], description: 'Distance metric' },
+        ],
+      },
+      gene_pca: {
+        label: 'Gene PCA',
+        description: 'PCA on genes (expression patterns across cells)',
+        prerequisites: [],
+        params: [
+          { name: 'n_comps', label: 'Components', type: 'number', default: null, description: 'Number of PCs (null = auto with Kneedle)' },
+          { name: 'scale', label: 'Scale', type: 'select', default: 'true', options: ['true', 'false'], description: 'Z-score scale genes' },
+          { name: 'use_kneedle', label: 'Auto-detect PCs', type: 'select', default: 'true', options: ['true', 'false'], description: 'Use Kneedle algorithm' },
+          { name: 'max_comps', label: 'Max components', type: 'number', default: 100, description: 'Max PCs to compute for Kneedle' },
+        ],
+      },
+      gene_neighbors: {
+        label: 'Gene Neighbors',
+        description: 'Compute gene-gene kNN graph',
+        prerequisites: ['gene_pca'],
+        params: [
+          { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 15, description: 'Number of neighbors per gene' },
+          { name: 'metric', label: 'Metric', type: 'select', default: 'cosine', options: ['cosine', 'euclidean', 'correlation'], description: 'Distance metric' },
+        ],
+      },
+      find_similar_genes: {
+        label: 'Find Similar Genes',
+        description: 'Find genes with similar expression patterns',
+        prerequisites: ['gene_neighbors'],
+        params: [
+          { name: 'gene', label: 'Query gene', type: 'text', default: '', description: 'Gene name to find similar genes for' },
+          { name: 'n_neighbors', label: 'Num results', type: 'number', default: 10, description: 'Number of similar genes to return' },
+          { name: 'use', label: 'Similarity', type: 'select', default: 'connectivities', options: ['connectivities', 'distances'], description: 'Use connectivity weights or distances' },
+        ],
+      },
+      cluster_genes: {
+        label: 'Cluster Genes',
+        description: 'Cluster genes into co-expression modules (Leiden)',
+        prerequisites: ['gene_neighbors'],
+        params: [
+          { name: 'resolution', label: 'Resolution', type: 'number', default: 0.5, description: 'Higher = more clusters' },
+          { name: 'key_added', label: 'Column name', type: 'text', default: 'gene_cluster', description: 'Name for cluster labels in .var' },
         ],
       },
     },
@@ -333,6 +519,7 @@ export default function ScanpyModal() {
   const [isRunning, setIsRunning] = useState(false)
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null)
   const [prereqStatus, setPrereqStatus] = useState<PrerequisiteStatus | null>(null)
+  const [varianceData, setVarianceData] = useState<VarianceData | null>(null)
 
   // Get current function definition
   const categoryDef = SCANPY_FUNCTIONS[selectedCategory]
@@ -347,6 +534,7 @@ export default function ScanpyModal() {
       })
       setParamValues(defaults)
       setResult(null)
+      setVarianceData(null)
     }
   }, [selectedFunction, functionDef])
 
@@ -369,6 +557,7 @@ export default function ScanpyModal() {
     const firstFunction = Object.keys(SCANPY_FUNCTIONS[category].functions)[0]
     setSelectedFunction(firstFunction)
     setResult(null)
+    setVarianceData(null)
   }, [])
 
   // Handle param change
@@ -392,6 +581,22 @@ export default function ScanpyModal() {
     }
   }, [setSchema])
 
+  // Load variance chart data (for viewing existing gene PCA)
+  const loadVarianceChart = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/scanpy/gene_pca_variance`)
+      if (response.ok) {
+        const data = await response.json()
+        setVarianceData(data)
+      } else {
+        const err = await response.json()
+        setResult({ success: false, message: err.detail || 'Gene PCA not yet computed' })
+      }
+    } catch {
+      setResult({ success: false, message: 'Failed to load variance data' })
+    }
+  }, [])
+
   // Run the selected function
   const handleRun = useCallback(async () => {
     if (!functionDef || isRunning) return
@@ -401,10 +606,22 @@ export default function ScanpyModal() {
     setResult(null)
 
     try {
+      // Convert 'true'/'false' strings to actual booleans for the request
+      const requestParams: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(paramValues)) {
+        if (value === 'true') {
+          requestParams[key] = true
+        } else if (value === 'false') {
+          requestParams[key] = false
+        } else {
+          requestParams[key] = value
+        }
+      }
+
       const response = await fetch(`${API_BASE}/scanpy/${selectedFunction}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(paramValues),
+        body: JSON.stringify(requestParams),
       })
 
       const data = await response.json()
@@ -423,6 +640,27 @@ export default function ScanpyModal() {
         message = `Found ${data.n_clusters} clusters`
       } else if (data.embedding_name) {
         message = `Created embedding: ${data.embedding_name}`
+      } else if (data.similar_genes !== undefined) {
+        // find_similar_genes result
+        if (data.similar_genes.length === 0) {
+          message = `No similar genes found for ${data.query_gene}`
+        } else {
+          message = `Similar to ${data.query_gene}: ${data.similar_genes.slice(0, 5).join(', ')}${data.similar_genes.length > 5 ? '...' : ''}`
+        }
+      } else if (data.module_sizes !== undefined) {
+        // cluster_genes result
+        const totalModules = Object.keys(data.module_sizes).length
+        message = `Created ${totalModules} gene modules`
+      } else if (data.pca !== undefined && data.neighbors !== undefined) {
+        // build_gene_graph result
+        message = `Gene graph built: ${data.pca.n_comps} PCs, ${data.neighbors.n_neighbors} neighbors`
+      } else if (data.n_comps !== undefined && data.cumulative_variance !== undefined) {
+        // gene_pca result
+        const varPct = (data.cumulative_variance * 100).toFixed(1)
+        message = `Gene PCA: ${data.n_comps} PCs (${varPct}% variance)${data.elbow_detected !== null ? `, elbow at PC ${data.elbow_detected + 1}` : ''}`
+      } else if (data.n_genes !== undefined && data.n_neighbors !== undefined) {
+        // gene_neighbors result
+        message = `Gene kNN graph: ${data.n_neighbors} neighbors for ${data.n_genes} genes`
       }
 
       setResult({ success: true, message })
@@ -430,15 +668,28 @@ export default function ScanpyModal() {
       // Add to history
       const actionRecord: ScanpyActionRecord = {
         action: selectedFunction,
-        params: paramValues as Record<string, unknown>,
+        params: requestParams,
         result: data,
         timestamp: new Date().toISOString(),
       }
       addScanpyAction(actionRecord)
 
       // Refresh schema if data shape may have changed
-      if (['filter_genes', 'filter_cells', 'pca', 'umap', 'leiden'].includes(selectedFunction)) {
+      if (['filter_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes'].includes(selectedFunction)) {
         await refreshSchema()
+      }
+
+      // Fetch variance data for visualization after gene PCA functions
+      if (['gene_pca', 'build_gene_graph'].includes(selectedFunction)) {
+        try {
+          const varResponse = await fetch(`${API_BASE}/scanpy/gene_pca_variance`)
+          if (varResponse.ok) {
+            const varData = await varResponse.json()
+            setVarianceData(varData)
+          }
+        } catch {
+          // Ignore variance fetch errors
+        }
       }
     } catch (err) {
       setResult({ success: false, message: (err as Error).message })
@@ -493,7 +744,27 @@ export default function ScanpyModal() {
 
         {/* Description */}
         {functionDef && (
-          <div style={styles.description}>{functionDef.description}</div>
+          <div style={styles.description}>
+            {functionDef.description}
+            {/* Show "View Variance Chart" button for gene analysis functions */}
+            {selectedCategory === 'gene_analysis' && !varianceData && (
+              <button
+                onClick={loadVarianceChart}
+                style={{
+                  marginLeft: '12px',
+                  padding: '3px 8px',
+                  fontSize: '11px',
+                  backgroundColor: '#1a1a2e',
+                  color: '#4ecdc4',
+                  border: '1px solid #4ecdc4',
+                  borderRadius: '3px',
+                  cursor: 'pointer',
+                }}
+              >
+                View Variance Chart
+              </button>
+            )}
+          </div>
         )}
 
         {/* Prerequisite warning */}
@@ -549,6 +820,20 @@ export default function ScanpyModal() {
             <div style={styles.resultText}>
               {result.success ? '✓ ' : '✗ '}
               {result.message}
+            </div>
+          </div>
+        )}
+
+        {/* Variance ratio chart for gene PCA */}
+        {varianceData && (
+          <div style={{ marginTop: '16px' }}>
+            <div style={{ fontSize: '12px', color: '#888', marginBottom: '8px' }}>
+              Gene PCA Variance Explained
+            </div>
+            <VarianceChart data={varianceData} width={400} height={160} />
+            <div style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
+              Using {varianceData.n_comps_used} of {varianceData.n_comps_computed} computed PCs
+              {varianceData.elbow_index !== null && ` (elbow detected at PC ${varianceData.elbow_index + 1})`}
             </div>
           </div>
         )}

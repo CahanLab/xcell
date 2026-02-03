@@ -916,6 +916,7 @@ class DataAdaptor:
             Dict with 'satisfied' (bool) and 'missing' (list of missing prereqs)
         """
         prereqs = {
+            # Cell analysis
             'filter_genes': [],
             'filter_cells': [],
             'normalize_total': [],
@@ -924,6 +925,12 @@ class DataAdaptor:
             'neighbors': ['pca'],
             'umap': ['neighbors'],
             'leiden': ['neighbors'],
+            # Gene analysis
+            'gene_pca': [],
+            'gene_neighbors': ['gene_pca'],
+            'find_similar_genes': ['gene_neighbors'],
+            'cluster_genes': ['gene_neighbors'],
+            'build_gene_graph': [],  # Convenience function, no prereqs
         }
 
         required = prereqs.get(action, [])
@@ -936,6 +943,12 @@ class DataAdaptor:
             elif prereq == 'neighbors':
                 if 'connectivities' not in self.adata.obsp:
                     missing.append('neighbors')
+            elif prereq == 'gene_pca':
+                if 'X_gene_pca' not in self.adata.varm:
+                    missing.append('gene_pca')
+            elif prereq == 'gene_neighbors':
+                if 'gene_connectivities' not in self.adata.varp:
+                    missing.append('gene_neighbors')
 
         return {
             'satisfied': len(missing) == 0,
@@ -1202,4 +1215,445 @@ class DataAdaptor:
             'resolution': resolution,
         }
         self._log_action('leiden', {'resolution': resolution, 'key_added': key_added}, result)
+        return result
+
+    # =========================================================================
+    # Gene analysis methods
+    # =========================================================================
+
+    @staticmethod
+    def _find_elbow_kneedle(values: np.ndarray, sensitivity: float = 1.0) -> int:
+        """Find elbow point using Kneedle algorithm.
+
+        Args:
+            values: Array of values (e.g., variance ratios)
+            sensitivity: Sensitivity parameter (higher = more sensitive)
+
+        Returns:
+            Index of the elbow point
+        """
+        n = len(values)
+        if n < 2:
+            return 0
+
+        # Normalize x and y to [0, 1]
+        x = np.arange(n)
+        x_norm = (x - x.min()) / (x.max() - x.min() + 1e-10)
+        y_norm = (values - values.min()) / (values.max() - values.min() + 1e-10)
+
+        # Calculate differences from the diagonal line
+        # For a decreasing curve, we look for max distance below the line
+        differences = y_norm - (1 - x_norm)
+
+        # Apply sensitivity - look for where the curve deviates significantly
+        threshold = sensitivity * np.std(differences)
+
+        # Find the elbow: first point where difference drops below threshold
+        # after the initial steep decline
+        for i in range(1, n - 1):
+            if differences[i] < -threshold:
+                # Check if we're past the steep part
+                local_slope = values[i] - values[i - 1]
+                next_slope = values[i + 1] - values[i] if i + 1 < n else 0
+                if abs(next_slope) < abs(local_slope) * 0.5:
+                    return i
+
+        # Fallback: use maximum curvature
+        if n > 2:
+            second_derivative = np.diff(np.diff(values))
+            return int(np.argmax(np.abs(second_derivative))) + 1
+
+        return min(n - 1, 10)
+
+    def run_gene_pca(
+        self,
+        n_comps: int | None = None,
+        scale: bool = True,
+        use_kneedle: bool = True,
+        max_comps: int = 100,
+    ) -> dict[str, Any]:
+        """Run PCA on genes (transposed expression matrix).
+
+        Computes gene embeddings based on their expression patterns across cells.
+        Results are stored in .varm['X_gene_pca'] and variance info in .uns['gene_pca'].
+
+        Args:
+            n_comps: Number of components. If None and use_kneedle=True, auto-detect.
+            scale: Whether to z-score scale genes before PCA (recommended)
+            use_kneedle: Whether to use Kneedle algorithm for auto PC selection
+            max_comps: Maximum components to compute before Kneedle selection
+
+        Returns:
+            Dict with operation status, n_comps used, and variance explained
+        """
+        from scipy import sparse
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
+
+        # Transpose: genes become observations
+        X = self.adata.X.T
+        if sparse.issparse(X):
+            X = X.toarray()
+        X = np.asarray(X, dtype=np.float64)
+
+        # Handle NaN/Inf
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Optional scaling (z-score each gene's expression across cells)
+        if scale:
+            scaler = StandardScaler()
+            X = scaler.fit_transform(X)
+
+        # Determine number of components to compute
+        n_genes, n_cells = X.shape
+        max_possible = min(n_genes - 1, n_cells - 1, max_comps)
+
+        if n_comps is not None:
+            # User specified
+            n_comps_compute = min(n_comps, max_possible)
+            n_comps_final = n_comps_compute
+        elif use_kneedle:
+            # Compute more PCs, then use Kneedle to select
+            n_comps_compute = max_possible
+        else:
+            # Default to 50
+            n_comps_compute = min(50, max_possible)
+            n_comps_final = n_comps_compute
+
+        # Run PCA
+        pca = PCA(n_components=n_comps_compute)
+        gene_pcs = pca.fit_transform(X)
+        variance_ratio = pca.explained_variance_ratio_
+
+        # Apply Kneedle if needed
+        if n_comps is None and use_kneedle:
+            elbow_idx = self._find_elbow_kneedle(variance_ratio)
+            n_comps_final = max(elbow_idx + 1, 5)  # At least 5 PCs
+            n_comps_final = min(n_comps_final, n_comps_compute)
+        elif n_comps is None:
+            n_comps_final = n_comps_compute
+
+        # Store truncated results
+        self.adata.varm['X_gene_pca'] = gene_pcs[:, :n_comps_final]
+
+        # Store variance info
+        self.adata.uns['gene_pca'] = {
+            'variance_ratio': variance_ratio.tolist(),
+            'variance': pca.explained_variance_.tolist(),
+            'n_comps': n_comps_final,
+            'n_comps_computed': n_comps_compute,
+            'scaled': scale,
+            'elbow_index': elbow_idx if (n_comps is None and use_kneedle) else None,
+        }
+
+        cumulative_var = float(np.sum(variance_ratio[:n_comps_final]))
+
+        result = {
+            'status': 'completed',
+            'n_comps': n_comps_final,
+            'n_comps_computed': n_comps_compute,
+            'cumulative_variance': cumulative_var,
+            'scaled': scale,
+            'elbow_detected': elbow_idx if (n_comps is None and use_kneedle) else None,
+        }
+        self._log_action('gene_pca', {
+            'n_comps': n_comps,
+            'scale': scale,
+            'use_kneedle': use_kneedle,
+        }, result)
+        return result
+
+    def get_gene_pca_variance(self) -> dict[str, Any]:
+        """Get gene PCA variance information for visualization.
+
+        Returns:
+            Dict with variance ratios, cumulative variance, and elbow point
+        """
+        if 'gene_pca' not in self.adata.uns:
+            raise ValueError("Gene PCA has not been computed. Run gene_pca first.")
+
+        info = self.adata.uns['gene_pca']
+        variance_ratio = np.array(info['variance_ratio'])
+        cumulative = np.cumsum(variance_ratio)
+
+        return {
+            'variance_ratio': variance_ratio.tolist(),
+            'cumulative_variance': cumulative.tolist(),
+            'n_comps_used': info['n_comps'],
+            'n_comps_computed': info['n_comps_computed'],
+            'elbow_index': info.get('elbow_index'),
+        }
+
+    def run_gene_neighbors(
+        self,
+        n_neighbors: int = 15,
+        metric: str = 'cosine',
+    ) -> dict[str, Any]:
+        """Compute gene-gene kNN graph from gene PCA embedding.
+
+        Results are stored in .varp['gene_connectivities'] and .varp['gene_distances'].
+
+        Args:
+            n_neighbors: Number of neighbors per gene
+            metric: Distance metric ('cosine', 'euclidean', 'correlation')
+
+        Returns:
+            Dict with operation status
+        """
+        from sklearn.neighbors import NearestNeighbors
+        from scipy import sparse
+
+        # Check prerequisites
+        prereq = self.check_prerequisites('gene_neighbors')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        # Get gene PCA embedding
+        gene_pcs = self.adata.varm['X_gene_pca']
+        n_genes = gene_pcs.shape[0]
+
+        # Limit n_neighbors to valid range
+        n_neighbors = min(n_neighbors, n_genes - 1)
+
+        # Compute kNN
+        nn = NearestNeighbors(n_neighbors=n_neighbors + 1, metric=metric)
+        nn.fit(gene_pcs)
+        distances, indices = nn.kneighbors(gene_pcs)
+
+        # Build sparse distance matrix (exclude self)
+        rows = []
+        cols = []
+        dists = []
+        for i in range(n_genes):
+            for j_idx in range(1, n_neighbors + 1):  # Skip self (index 0)
+                j = indices[i, j_idx]
+                rows.append(i)
+                cols.append(j)
+                dists.append(distances[i, j_idx])
+
+        dist_matrix = sparse.csr_matrix(
+            (dists, (rows, cols)),
+            shape=(n_genes, n_genes)
+        )
+
+        # Build connectivity matrix (1 / (1 + distance) for weights)
+        conn_weights = [1.0 / (1.0 + d) for d in dists]
+        conn_matrix = sparse.csr_matrix(
+            (conn_weights, (rows, cols)),
+            shape=(n_genes, n_genes)
+        )
+
+        # Store in .varp
+        self.adata.varp['gene_distances'] = dist_matrix
+        self.adata.varp['gene_connectivities'] = conn_matrix
+
+        # Store metadata
+        self.adata.uns['gene_neighbors'] = {
+            'n_neighbors': n_neighbors,
+            'metric': metric,
+        }
+
+        result = {
+            'status': 'completed',
+            'n_neighbors': n_neighbors,
+            'metric': metric,
+            'n_genes': n_genes,
+        }
+        self._log_action('gene_neighbors', {
+            'n_neighbors': n_neighbors,
+            'metric': metric,
+        }, result)
+        return result
+
+    def run_find_similar_genes(
+        self,
+        gene: str,
+        n_neighbors: int = 10,
+        use: str = 'connectivities',
+    ) -> dict[str, Any]:
+        """Find genes with similar expression patterns.
+
+        Args:
+            gene: Query gene name
+            n_neighbors: Number of similar genes to return
+            use: 'connectivities' (similarity) or 'distances'
+
+        Returns:
+            Dict with list of similar genes and their scores
+        """
+        # Check prerequisites
+        prereq = self.check_prerequisites('find_similar_genes')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        if use not in ('connectivities', 'distances'):
+            raise ValueError("`use` must be 'connectivities' or 'distances'")
+
+        # Find gene index
+        if gene not in self.adata.var_names:
+            raise KeyError(f"Gene '{gene}' not found in dataset")
+
+        gene_idx = self.adata.var_names.get_loc(gene)
+
+        # Get the appropriate matrix
+        if use == 'connectivities':
+            matrix = self.adata.varp['gene_connectivities']
+        else:
+            matrix = self.adata.varp['gene_distances']
+
+        # Extract row for query gene
+        row = matrix.getrow(gene_idx)
+        cols = row.indices
+        values = row.data
+
+        # Exclude self
+        mask = cols != gene_idx
+        cols = cols[mask]
+        values = values[mask]
+
+        if len(cols) == 0:
+            return {
+                'query_gene': gene,
+                'similar_genes': [],
+                'scores': [],
+                'use': use,
+            }
+
+        # Sort by similarity (descending for connectivity, ascending for distance)
+        if use == 'connectivities':
+            order = np.argsort(-values)
+        else:
+            order = np.argsort(values)
+
+        # Get top k
+        top_k = min(n_neighbors, len(order))
+        top_indices = cols[order[:top_k]]
+        top_scores = values[order[:top_k]]
+
+        similar_genes = [self.adata.var_names[i] for i in top_indices]
+
+        result = {
+            'query_gene': gene,
+            'similar_genes': similar_genes,
+            'scores': top_scores.tolist(),
+            'use': use,
+        }
+        return result
+
+    def run_cluster_genes(
+        self,
+        resolution: float = 0.5,
+        key_added: str = 'gene_cluster',
+    ) -> dict[str, Any]:
+        """Cluster genes into co-expression modules using Leiden.
+
+        Results are stored in .var[key_added] and .uns['gene_modules'].
+
+        Args:
+            resolution: Leiden resolution (higher = more clusters)
+            key_added: Column name in .var for cluster labels
+
+        Returns:
+            Dict with cluster info and module composition
+        """
+        import igraph as ig
+        import leidenalg
+
+        # Check prerequisites
+        prereq = self.check_prerequisites('cluster_genes')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        # Get connectivity matrix
+        conn = self.adata.varp['gene_connectivities']
+
+        # Make symmetric (required for Leiden)
+        conn_sym = conn + conn.T
+        conn_sym.data = conn_sym.data / 2
+
+        # Build igraph from sparse matrix
+        sources, targets = conn_sym.nonzero()
+        weights = np.array(conn_sym[sources, targets]).flatten()
+
+        g = ig.Graph(directed=False)
+        g.add_vertices(self.n_genes)
+        edges = list(zip(sources.tolist(), targets.tolist()))
+        g.add_edges(edges)
+        g.es['weight'] = weights.tolist()
+
+        # Run Leiden
+        partition = leidenalg.find_partition(
+            g,
+            leidenalg.RBConfigurationVertexPartition,
+            weights='weight',
+            resolution_parameter=resolution,
+        )
+
+        # Extract cluster assignments
+        clusters = np.array(partition.membership)
+        n_clusters = len(set(clusters))
+
+        # Store in .var
+        self.adata.var[key_added] = pd.Categorical(clusters.astype(str))
+
+        # Build module dictionary
+        modules = {}
+        for cluster_id in range(n_clusters):
+            gene_mask = clusters == cluster_id
+            genes_in_cluster = self.adata.var_names[gene_mask].tolist()
+            modules[f'module_{cluster_id}'] = genes_in_cluster
+
+        self.adata.uns['gene_modules'] = modules
+
+        result = {
+            'status': 'completed',
+            'key_added': key_added,
+            'n_clusters': n_clusters,
+            'resolution': resolution,
+            'module_sizes': {k: len(v) for k, v in modules.items()},
+        }
+        self._log_action('cluster_genes', {
+            'resolution': resolution,
+            'key_added': key_added,
+        }, result)
+        return result
+
+    def run_build_gene_graph(
+        self,
+        n_pcs: int | None = None,
+        scale: bool = True,
+        use_kneedle: bool = True,
+        n_neighbors: int = 15,
+        metric: str = 'cosine',
+    ) -> dict[str, Any]:
+        """Convenience function: run gene_pca and gene_neighbors in one step.
+
+        Args:
+            n_pcs: Number of PCs (None for auto-detection)
+            scale: Whether to scale genes before PCA
+            use_kneedle: Whether to use Kneedle for PC selection
+            n_neighbors: Number of neighbors for kNN graph
+            metric: Distance metric for kNN
+
+        Returns:
+            Dict with combined results from both steps
+        """
+        # Run gene PCA
+        pca_result = self.run_gene_pca(
+            n_comps=n_pcs,
+            scale=scale,
+            use_kneedle=use_kneedle,
+        )
+
+        # Run gene neighbors
+        neighbors_result = self.run_gene_neighbors(
+            n_neighbors=n_neighbors,
+            metric=metric,
+        )
+
+        result = {
+            'status': 'completed',
+            'pca': pca_result,
+            'neighbors': neighbors_result,
+        }
         return result

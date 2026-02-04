@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useStore, GeneSet } from '../store'
 import { useGeneSearch, useDataActions } from '../hooks/useData'
 
+const API_BASE = '/api'
+
 // Drag data type for genes
 const GENE_DRAG_TYPE = 'application/x-gene'
 
@@ -588,6 +590,71 @@ export default function GenePanel() {
   const [bivariateSet1, setBivariateSet1] = useState<string | null>(null)
   const [bivariateSet2, setBivariateSet2] = useState<string | null>(null)
 
+  // Find Similar Genes state
+  const [hasGeneNeighbors, setHasGeneNeighbors] = useState(false)
+  const [similarGenesSeed, setSimilarGenesSeed] = useState('')
+  const [numSimilarGenes, setNumSimilarGenes] = useState(10)
+  const [findingSimilarGenes, setFindingSimilarGenes] = useState(false)
+  const [similarGenesError, setSimilarGenesError] = useState<string | null>(null)
+
+  // Check prerequisites for find_similar_genes on mount and periodically
+  useEffect(() => {
+    const checkPrerequisites = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/scanpy/prerequisites/find_similar_genes`)
+        if (response.ok) {
+          const data = await response.json()
+          setHasGeneNeighbors(data.satisfied)
+        }
+      } catch {
+        // Silently fail - feature just won't be shown
+      }
+    }
+
+    checkPrerequisites()
+    // Re-check every 5 seconds in case user runs gene_neighbors from ScanpyModal
+    const interval = setInterval(checkPrerequisites, 5000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const handleFindSimilarGenes = async () => {
+    if (!similarGenesSeed.trim()) return
+
+    setFindingSimilarGenes(true)
+    setSimilarGenesError(null)
+
+    try {
+      const response = await fetch(`${API_BASE}/scanpy/find_similar_genes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gene: similarGenesSeed.trim(),
+          n_neighbors: numSimilarGenes,
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || 'Failed to find similar genes')
+      }
+
+      const data = await response.json()
+      // data.similar_genes is an array of gene names
+      const similarGenes = data.similar_genes as string[]
+
+      // Create gene set with seed gene + similar genes
+      const setName = `Similar to ${similarGenesSeed.trim()}`
+      addGeneSet(setName, [similarGenesSeed.trim(), ...similarGenes])
+
+      // Clear input after success
+      setSimilarGenesSeed('')
+    } catch (err) {
+      setSimilarGenesError(err instanceof Error ? err.message : 'Unknown error')
+    } finally {
+      setFindingSimilarGenes(false)
+    }
+  }
+
   const handleAddGenesToSet = useCallback(
     (setName: string, genes: string[]) => {
       addGenesToSet(setName, genes)
@@ -691,6 +758,87 @@ export default function GenePanel() {
             ))
           )}
         </div>
+
+        {/* Find Similar Genes Section - only shown when gene_neighbors exists */}
+        {hasGeneNeighbors && (
+          <div style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <span style={styles.sectionTitle}>Find Similar Genes</span>
+            </div>
+            <div style={{
+              backgroundColor: '#0f3460',
+              borderRadius: '4px',
+              padding: '12px',
+            }}>
+              <div style={{ marginBottom: '8px' }}>
+                <label style={{ fontSize: '11px', color: '#888', display: 'block', marginBottom: '4px' }}>
+                  Seed Gene
+                </label>
+                <input
+                  type="text"
+                  placeholder="Enter gene name..."
+                  value={similarGenesSeed}
+                  onChange={(e) => setSimilarGenesSeed(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleFindSimilarGenes()
+                  }}
+                  style={{
+                    ...styles.searchInput,
+                    width: '100%',
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ fontSize: '11px', color: '#888', display: 'block', marginBottom: '4px' }}>
+                  Number of Similar Genes
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={numSimilarGenes}
+                  onChange={(e) => setNumSimilarGenes(Math.max(1, parseInt(e.target.value) || 10))}
+                  style={{
+                    ...styles.searchInput,
+                    width: '80px',
+                  }}
+                />
+              </div>
+              {similarGenesError && (
+                <div style={{
+                  fontSize: '11px',
+                  color: '#e94560',
+                  marginBottom: '8px',
+                  padding: '6px 8px',
+                  backgroundColor: 'rgba(233, 69, 96, 0.1)',
+                  borderRadius: '4px',
+                }}>
+                  {similarGenesError}
+                </div>
+              )}
+              <button
+                onClick={handleFindSimilarGenes}
+                disabled={!similarGenesSeed.trim() || findingSimilarGenes}
+                style={{
+                  width: '100%',
+                  padding: '8px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  backgroundColor: similarGenesSeed.trim() && !findingSimilarGenes ? '#4ecdc4' : '#1a1a2e',
+                  color: similarGenesSeed.trim() && !findingSimilarGenes ? '#000' : '#666',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: similarGenesSeed.trim() && !findingSimilarGenes ? 'pointer' : 'not-allowed',
+                }}
+              >
+                {findingSimilarGenes ? 'Finding...' : 'Find Similar Genes'}
+              </button>
+              <div style={{ fontSize: '10px', color: '#666', marginTop: '8px', textAlign: 'center' }}>
+                Finds genes with similar expression patterns based on gene embeddings
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Bivariate Mode Section */}
         {geneSets.length >= 2 && (

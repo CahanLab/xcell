@@ -286,22 +286,33 @@ class DataAdaptor:
             result["transform"] = transform
         return result
 
-    def get_multi_gene_expression(self, genes: list[str], transform: str | None = None) -> dict[str, Any]:
-        """Get mean expression values for multiple genes across all cells.
+    def get_multi_gene_expression(
+        self,
+        genes: list[str],
+        transform: str | None = None,
+        scoring_method: str = 'mean',
+        clip_percentile: float = 1.0,
+    ) -> dict[str, Any]:
+        """Get aggregated expression values for multiple genes across all cells.
 
         Args:
             genes: List of gene names
             transform: Optional transformation to apply. Supported values:
                 - None: Raw expression values
                 - "log1p": Apply normalize_total followed by log1p transformation
+            scoring_method: How to aggregate expression across genes:
+                - "mean": Simple average of expression values (default)
+                - "zscore": Mean-center each gene, scale by MAD, then average
+            clip_percentile: For zscore method, percentile for symmetric clipping (default 1.0)
 
         Returns:
             Dictionary containing:
             - genes: List of gene names used
-            - values: List of mean expression values for each cell
-            - min: Minimum mean expression value
-            - max: Maximum mean expression value
+            - values: List of aggregated expression values for each cell
+            - min: Minimum value
+            - max: Maximum value
             - transform: The transformation applied (if any)
+            - scoring_method: The scoring method used
 
         Raises:
             KeyError: If any gene not found in .var
@@ -319,44 +330,85 @@ class DataAdaptor:
                 "max": 0.0,
             }
 
-        # Get gene indices
-        gene_indices = [self.adata.var.index.get_loc(g) for g in genes]
-
         # Select data source based on transform
         if transform == "log1p":
             adata_source = self.normalized_adata
         else:
             adata_source = self.adata
 
-        # Get expression values
-        X = adata_source.X
-        if hasattr(X, 'toarray'):
-            # Sparse matrix
-            expr_matrix = X[:, gene_indices].toarray()
+        if scoring_method == 'zscore':
+            # Z-score method: mean-center each gene, scale by MAD, average
+            scaled_arrays = []
+
+            for gene in genes:
+                gene_idx = adata_source.var.index.get_loc(gene)
+                X = adata_source.X
+
+                if hasattr(X, 'toarray'):
+                    values = X[:, gene_idx].toarray().flatten().astype(np.float64)
+                else:
+                    values = X[:, gene_idx].flatten().astype(np.float64)
+
+                # Mean-center the gene
+                gene_mean = np.nanmean(values)
+                centered = values - gene_mean
+
+                # Scale by MAD (median absolute deviation) for robustness
+                mad = np.nanmedian(np.abs(centered - np.nanmedian(centered)))
+                if mad > 0:
+                    scaled = centered / (mad * 1.4826)
+                else:
+                    sd = np.nanstd(values)
+                    if sd > 0:
+                        scaled = centered / sd
+                    else:
+                        scaled = np.zeros_like(values)
+
+                scaled_arrays.append(scaled)
+
+            # Stack and compute mean across genes
+            stacked = np.vstack(scaled_arrays).T
+            mean_scores = np.nanmean(stacked, axis=1)
+
+            # Clip extreme values symmetrically
+            valid_scores = mean_scores[~np.isnan(mean_scores)]
+            lo = np.percentile(valid_scores, clip_percentile)
+            hi = np.percentile(valid_scores, 100 - clip_percentile)
+            clipped = np.clip(mean_scores, lo, hi)
+
+            # Convert to Python floats (keep the z-score scale, don't normalize to 0-1)
+            values_list = [float(v) if not np.isnan(v) else 0.0 for v in clipped]
+            min_val = float(lo)
+            max_val = float(hi)
+
         else:
-            # Dense matrix
-            expr_matrix = X[:, gene_indices]
-
-        # Calculate mean expression across genes
-        mean_expr = np.nanmean(expr_matrix, axis=1)
-
-        # Convert to Python floats
-        values_list = []
-        for v in mean_expr:
-            if np.isnan(v):
-                values_list.append(None)
+            # Mean method: simple average
+            gene_indices = [adata_source.var.index.get_loc(g) for g in genes]
+            X = adata_source.X
+            if hasattr(X, 'toarray'):
+                expr_matrix = X[:, gene_indices].toarray()
             else:
-                values_list.append(float(v))
+                expr_matrix = X[:, gene_indices]
 
-        valid_values = [v for v in values_list if v is not None]
-        min_val = min(valid_values) if valid_values else 0
-        max_val = max(valid_values) if valid_values else 0
+            mean_expr = np.nanmean(expr_matrix, axis=1)
+
+            values_list = []
+            for v in mean_expr:
+                if np.isnan(v):
+                    values_list.append(None)
+                else:
+                    values_list.append(float(v))
+
+            valid_values = [v for v in values_list if v is not None]
+            min_val = min(valid_values) if valid_values else 0
+            max_val = max(valid_values) if valid_values else 0
 
         result = {
             "genes": genes,
             "values": values_list,
             "min": min_val,
             "max": max_val,
+            "scoring_method": scoring_method,
         }
         if transform:
             result["transform"] = transform
@@ -367,22 +419,18 @@ class DataAdaptor:
         genes1: list[str],
         genes2: list[str],
         transform: str | None = None,
+        scoring_method: str = 'zscore',
         clip_percentile: float = 1.0,
     ) -> dict[str, Any]:
         """Get normalized expression values for two gene sets for bivariate coloring.
-
-        For each gene set, expression values are computed using a robust approach:
-        1. Optionally log1p transformed (if transform='log1p')
-        2. Mean-centered per gene (subtract gene mean)
-        3. Scaled by robust measure (MAD) to handle outliers
-        4. Clipped to percentiles to limit extreme values
-        5. Averaged across genes in the set (z-score-like aggregation)
-        6. Final values rescaled to [0, 1] for coloring
 
         Args:
             genes1: List of gene names for the first set (maps to red/x-axis)
             genes2: List of gene names for the second set (maps to blue/y-axis)
             transform: Optional transformation ('log1p' for normalize_total + log1p)
+            scoring_method: How to aggregate expression across genes:
+                - "mean": Simple average, then min-max normalize to [0,1]
+                - "zscore": Mean-center each gene, scale by MAD, average, then normalize to [0,1]
             clip_percentile: Percentile for symmetric clipping (default 1.0 = clip at 1st/99th)
 
         Returns:
@@ -392,6 +440,7 @@ class DataAdaptor:
             - values1: Normalized [0,1] expression values for gene set 1
             - values2: Normalized [0,1] expression values for gene set 2
             - transform: The transformation applied (if any)
+            - scoring_method: The scoring method used
 
         Raises:
             KeyError: If any gene not found in .var
@@ -411,15 +460,14 @@ class DataAdaptor:
         else:
             adata_source = self.adata
 
-        def summarize_geneset(genes: list[str]) -> list[float]:
-            """Summarize expression for a gene set with robust mean-centered scoring."""
+        def summarize_geneset_zscore(genes: list[str]) -> list[float]:
+            """Summarize expression using z-score method (mean-centered, MAD-scaled)."""
             scaled_arrays = []
 
             for gene in genes:
                 gene_idx = adata_source.var.index.get_loc(gene)
                 X = adata_source.X
 
-                # Get expression values
                 if hasattr(X, 'toarray'):
                     values = X[:, gene_idx].toarray().flatten().astype(np.float64)
                 else:
@@ -429,14 +477,11 @@ class DataAdaptor:
                 gene_mean = np.nanmean(values)
                 centered = values - gene_mean
 
-                # Scale by MAD (median absolute deviation) for robustness to outliers
-                # MAD is more robust than standard deviation
+                # Scale by MAD for robustness
                 mad = np.nanmedian(np.abs(centered - np.nanmedian(centered)))
                 if mad > 0:
-                    # Scale factor: 1.4826 makes MAD comparable to SD for normal distributions
                     scaled = centered / (mad * 1.4826)
                 else:
-                    # If MAD is 0 (constant expression), use SD as fallback
                     sd = np.nanstd(values)
                     if sd > 0:
                         scaled = centered / sd
@@ -445,33 +490,65 @@ class DataAdaptor:
 
                 scaled_arrays.append(scaled)
 
-            # Stack and compute mean across genes (average z-score)
-            stacked = np.vstack(scaled_arrays).T  # Shape: (n_cells, n_genes)
+            # Stack and compute mean across genes
+            stacked = np.vstack(scaled_arrays).T
             mean_scores = np.nanmean(stacked, axis=1)
 
-            # Clip extreme values symmetrically using percentiles
+            # Clip extreme values symmetrically
             valid_scores = mean_scores[~np.isnan(mean_scores)]
             lo = np.percentile(valid_scores, clip_percentile)
             hi = np.percentile(valid_scores, 100 - clip_percentile)
             clipped = np.clip(mean_scores, lo, hi)
 
-            # Rescale to [0, 1] for coloring
+            # Rescale to [0, 1]
             if hi > lo:
                 normalized = (clipped - lo) / (hi - lo)
             else:
                 normalized = np.full_like(clipped, 0.5)
 
-            # Convert to Python floats
             return [float(v) if not np.isnan(v) else 0.5 for v in normalized]
 
-        values1 = summarize_geneset(genes1)
-        values2 = summarize_geneset(genes2)
+        def summarize_geneset_mean(genes: list[str]) -> list[float]:
+            """Summarize expression using simple mean, then min-max normalize."""
+            gene_indices = [adata_source.var.index.get_loc(g) for g in genes]
+            X = adata_source.X
+
+            if hasattr(X, 'toarray'):
+                expr_matrix = X[:, gene_indices].toarray()
+            else:
+                expr_matrix = X[:, gene_indices]
+
+            mean_expr = np.nanmean(expr_matrix, axis=1)
+
+            # Clip to percentiles
+            valid_values = mean_expr[~np.isnan(mean_expr)]
+            lo = np.percentile(valid_values, clip_percentile)
+            hi = np.percentile(valid_values, 100 - clip_percentile)
+            clipped = np.clip(mean_expr, lo, hi)
+
+            # Min-max normalize to [0, 1]
+            if hi > lo:
+                normalized = (clipped - lo) / (hi - lo)
+            else:
+                normalized = np.full_like(clipped, 0.5)
+
+            return [float(v) if not np.isnan(v) else 0.5 for v in normalized]
+
+        # Choose summarization function based on scoring method
+        if scoring_method == 'zscore':
+            summarize = summarize_geneset_zscore
+        else:
+            summarize = summarize_geneset_mean
+
+        values1 = summarize(genes1)
+        values2 = summarize(genes2)
 
         result = {
             "genes1": genes1,
             "genes2": genes2,
             "values1": values1,
             "values2": values2,
+            "scoring_method": scoring_method,
         }
         if transform:
             result["transform"] = transform

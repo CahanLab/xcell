@@ -204,6 +204,7 @@ class MultiExpressionRequest(BaseModel):
     """Request model for multi-gene expression."""
     genes: list[str]
     transform: str | None = None
+    scoring_method: str = 'mean'  # 'mean' or 'zscore'
 
 
 @router.post("/expression/multi")
@@ -225,7 +226,11 @@ def get_multi_expression(request: MultiExpressionRequest):
     """
     adaptor = get_adaptor()
     try:
-        return adaptor.get_multi_gene_expression(request.genes, transform=request.transform)
+        return adaptor.get_multi_gene_expression(
+            request.genes,
+            transform=request.transform,
+            scoring_method=request.scoring_method,
+        )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -236,6 +241,7 @@ class BivariateExpressionRequest(BaseModel):
     genes2: list[str]
     transform: str | None = None
     clip_percentile: float = 1.0  # Symmetric percentile clipping (1.0 = clip at 1st/99th)
+    scoring_method: str = 'zscore'  # 'mean' or 'zscore'
 
 
 @router.post("/expression/bivariate")
@@ -266,6 +272,7 @@ def get_bivariate_expression(request: BivariateExpressionRequest):
             genes2=request.genes2,
             transform=request.transform,
             clip_percentile=request.clip_percentile,
+            scoring_method=request.scoring_method,
         )
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))

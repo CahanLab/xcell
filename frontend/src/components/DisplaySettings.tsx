@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { useStore, ColorScale, ExpressionTransform } from '../store'
+import { useState, useRef, useEffect } from 'react'
+import { useStore, ColorScale, ExpressionTransform, BivariateColormap, GeneSetScoringMethod } from '../store'
+import { getBivariateColor } from './ScatterPlot'
 
 const styles = {
   container: {
@@ -209,6 +210,52 @@ const COLOR_SCALES: { value: ColorScale; label: string; gradient: string }[] = [
   },
 ]
 
+const BIVARIATE_COLORMAP_OPTIONS: { value: BivariateColormap; label: string }[] = [
+  { value: 'default', label: 'Red / Blue / Yellow' },
+  { value: 'pinkgreen', label: 'Pink / Green / Brown' },
+  { value: 'orangepurple', label: 'Orange / Purple / Maroon' },
+]
+
+// Canvas-based bivariate colormap preview
+function BivariateColormapPreview({ colormap, size = 40 }: { colormap: BivariateColormap; size?: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const imageData = ctx.createImageData(size, size)
+    const data = imageData.data
+
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const u = x / (size - 1)  // gene set 1 (horizontal)
+        const v = 1 - y / (size - 1)  // gene set 2 (vertical, flipped so high is at top)
+        const color = getBivariateColor(u, v, colormap)
+        const idx = (y * size + x) * 4
+        data[idx] = color[0]
+        data[idx + 1] = color[1]
+        data[idx + 2] = color[2]
+        data[idx + 3] = 255
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0)
+  }, [colormap, size])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={size}
+      height={size}
+      style={{ borderRadius: '4px', border: '1px solid #0f3460' }}
+    />
+  )
+}
+
 export default function DisplaySettings() {
   const { displayPreferences, setDisplayPreferences } = useStore()
   const [isOpen, setIsOpen] = useState(false)
@@ -229,14 +276,25 @@ export default function DisplaySettings() {
     setDisplayPreferences({ colorScale: e.target.value as ColorScale })
   }
 
+  const handleBivariateColormapChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setDisplayPreferences({ bivariateColormap: e.target.value as BivariateColormap })
+  }
+
   const handleTransformToggle = () => {
     const newTransform: ExpressionTransform =
       displayPreferences.expressionTransform === 'none' ? 'log1p' : 'none'
     setDisplayPreferences({ expressionTransform: newTransform })
   }
 
+  const handleScoringMethodToggle = () => {
+    const newMethod: GeneSetScoringMethod =
+      displayPreferences.geneSetScoringMethod === 'mean' ? 'zscore' : 'mean'
+    setDisplayPreferences({ geneSetScoringMethod: newMethod })
+  }
+
   const currentScale = COLOR_SCALES.find((s) => s.value === displayPreferences.colorScale)
   const isTransformEnabled = displayPreferences.expressionTransform === 'log1p'
+  const isZscoreEnabled = displayPreferences.geneSetScoringMethod === 'zscore'
 
   return (
     <div style={styles.container}>
@@ -350,6 +408,56 @@ export default function DisplaySettings() {
                     }}
                   />
                 )}
+              </div>
+
+              {/* Bivariate Colormap */}
+              <div style={styles.settingGroup}>
+                <label style={styles.label}>Bivariate Colormap</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <select
+                    value={displayPreferences.bivariateColormap}
+                    onChange={handleBivariateColormapChange}
+                    style={{ ...styles.select, flex: 1 }}
+                  >
+                    {BIVARIATE_COLORMAP_OPTIONS.map((cmap) => (
+                      <option key={cmap.value} value={cmap.value}>
+                        {cmap.label}
+                      </option>
+                    ))}
+                  </select>
+                  <BivariateColormapPreview colormap={displayPreferences.bivariateColormap} size={40} />
+                </div>
+                <div style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
+                  For comparing two gene sets simultaneously
+                </div>
+              </div>
+
+              {/* Gene Set Scoring Method */}
+              <div style={styles.settingGroup}>
+                <div style={styles.toggleContainer}>
+                  <div>
+                    <span style={styles.toggleLabel}>Z-score Scaling</span>
+                    <div style={styles.toggleDescription}>
+                      {isZscoreEnabled
+                        ? 'Mean-center + MAD scale each gene'
+                        : 'Simple mean across genes'}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      ...styles.toggle,
+                      ...(isZscoreEnabled ? styles.toggleActive : {}),
+                    }}
+                    onClick={handleScoringMethodToggle}
+                  >
+                    <div
+                      style={{
+                        ...styles.toggleKnob,
+                        ...(isZscoreEnabled ? styles.toggleKnobActive : {}),
+                      }}
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Expression Transform */}

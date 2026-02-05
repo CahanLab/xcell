@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
 import { useStore } from './store'
 import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect } from './hooks/useData'
-import ScatterPlot from './components/ScatterPlot'
+import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor } from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
 import DisplaySettings from './components/DisplaySettings'
@@ -304,6 +304,102 @@ function ContinuousLegend({ name, min, max }: { name: string; min: number; max: 
   )
 }
 
+// Canvas-based bivariate legend that accurately reflects the bilinear interpolation
+function BivariateLegend({
+  bivariateData,
+  colormap,
+  sortReversed,
+  onToggleSort,
+}: {
+  bivariateData: { genes1: string[]; genes2: string[]; transform?: string }
+  colormap: import('./store').BivariateColormap
+  sortReversed: boolean
+  onToggleSort: () => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const size = 80
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const imageData = ctx.createImageData(size, size)
+    const data = imageData.data
+
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const u = x / (size - 1)  // gene set 1 (horizontal, 0=left, 1=right)
+        const v = 1 - y / (size - 1)  // gene set 2 (vertical, 0=bottom, 1=top, but y increases down)
+        const color = getBivariateColor(u, v, colormap)
+        const idx = (y * size + x) * 4
+        data[idx] = color[0]
+        data[idx + 1] = color[1]
+        data[idx + 2] = color[2]
+        data[idx + 3] = 255
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0)
+  }, [colormap])
+
+  // Get corner colors for axis labels
+  const corners = BIVARIATE_COLORMAPS[colormap]
+  const color1 = `rgb(${corners.c10.join(',')})`  // High gene1 color
+  const color2 = `rgb(${corners.c01.join(',')})`  // High gene2 color
+
+  return (
+    <div style={styles.expressionLegend}>
+      <div style={styles.legendTitle}>
+        Bivariate Expression
+        {bivariateData.transform === 'log1p' && (
+          <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
+            (log1p)
+          </span>
+        )}
+      </div>
+      <canvas
+        ref={canvasRef}
+        width={size}
+        height={size}
+        style={{ borderRadius: '4px', marginBottom: '4px' }}
+      />
+      <div style={{ fontSize: '10px', color: '#888' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <span style={{ color: color1 }}>→</span>
+          <span>{bivariateData.genes1.length === 1 ? bivariateData.genes1[0] : `${bivariateData.genes1.length} genes`}</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <span style={{ color: color2 }}>↑</span>
+          <span>{bivariateData.genes2.length === 1 ? bivariateData.genes2[0] : `${bivariateData.genes2.length} genes`}</span>
+        </div>
+      </div>
+      {/* Sort order toggle button */}
+      <button
+        onClick={onToggleSort}
+        style={{
+          marginTop: '8px',
+          padding: '4px 8px',
+          fontSize: '10px',
+          backgroundColor: sortReversed ? '#4ecdc4' : '#0f3460',
+          color: sortReversed ? '#000' : '#aaa',
+          border: '1px solid #1a1a2e',
+          borderRadius: '4px',
+          cursor: 'pointer',
+          width: '100%',
+        }}
+        title={sortReversed
+          ? 'Currently: Low expression on top. Click to show high expression on top.'
+          : 'Currently: High expression on top. Click to show low expression on top.'}
+      >
+        {sortReversed ? '↓ Low on Top' : '↑ High on Top'}
+      </button>
+    </div>
+  )
+}
+
 export default function App() {
   const {
     isLoading,
@@ -320,6 +416,8 @@ export default function App() {
     clearSelection,
     // cellSortOrder, sortCellsByExpression, resetCellOrder - now auto-applied
     displayPreferences,
+    bivariateSortReversed,
+    toggleBivariateSortOrder,
     drawnLines,
     addLine,
     setScanpyModalOpen,
@@ -642,63 +740,12 @@ export default function App() {
                 </div>
               )}
               {colorMode === 'bivariate' && bivariateData && (
-                <div style={styles.expressionLegend}>
-                  <div style={styles.legendTitle}>
-                    Bivariate Expression
-                    {bivariateData.transform === 'log1p' && (
-                      <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
-                        (log1p)
-                      </span>
-                    )}
-                  </div>
-                  {/* 2D bivariate colormap */}
-                  <div style={{
-                    width: '80px',
-                    height: '80px',
-                    background: 'linear-gradient(to top, linear-gradient(to right, #f0f0f0, #e31a1c), linear-gradient(to right, #1f78b4, #ffff00))',
-                    marginBottom: '4px',
-                    position: 'relative',
-                  }}>
-                    {/* Render a canvas-like gradient using CSS */}
-                    <div style={{
-                      position: 'absolute',
-                      inset: 0,
-                      background: `
-                        linear-gradient(to top,
-                          rgba(31, 120, 180, 0) 0%,
-                          rgba(31, 120, 180, 1) 100%
-                        ),
-                        linear-gradient(to right,
-                          #f0f0f0 0%,
-                          #e31a1c 100%
-                        )
-                      `,
-                      mixBlendMode: 'normal',
-                    }} />
-                    <div style={{
-                      position: 'absolute',
-                      inset: 0,
-                      background: `
-                        linear-gradient(to top,
-                          transparent 0%,
-                          #ffff00 100%
-                        )
-                      `,
-                      mixBlendMode: 'overlay',
-                      opacity: 0.8,
-                    }} />
-                  </div>
-                  <div style={{ fontSize: '10px', color: '#888' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <span style={{ color: '#e31a1c' }}>→</span>
-                      <span>{bivariateData.genes1.length === 1 ? bivariateData.genes1[0] : `${bivariateData.genes1.length} genes`}</span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <span style={{ color: '#1f78b4' }}>↑</span>
-                      <span>{bivariateData.genes2.length === 1 ? bivariateData.genes2[0] : `${bivariateData.genes2.length} genes`}</span>
-                    </div>
-                  </div>
-                </div>
+                <BivariateLegend
+                  bivariateData={bivariateData}
+                  colormap={displayPreferences.bivariateColormap}
+                  sortReversed={bivariateSortReversed}
+                  onToggleSort={toggleBivariateSortOrder}
+                />
               )}
             </>
           )}

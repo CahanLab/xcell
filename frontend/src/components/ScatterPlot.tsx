@@ -116,20 +116,51 @@ function getColorFromScale(t: number, scale: ColorScale): [number, number, numbe
   return interpolateStops(t, COLOR_SCALES[scale])
 }
 
-// Bivariate colormap corner colors (matches STUF defaults)
-const BIVARIATE_CORNERS = {
-  c00: [240, 240, 240] as [number, number, number],  // Low/Low - Gray
-  c10: [227, 26, 28] as [number, number, number],    // High gene1/Low gene2 - Red
-  c01: [31, 120, 180] as [number, number, number],   // Low gene1/High gene2 - Blue
-  c11: [255, 255, 0] as [number, number, number],    // High/High - Yellow
+// Bivariate colormap definitions
+// Each has corner colors: c00 (low/low), c10 (high gene1/low gene2), c01 (low gene1/high gene2), c11 (high/high)
+import { BivariateColormap } from '../store'
+
+type BivariateCorners = {
+  c00: [number, number, number]  // Low/Low
+  c10: [number, number, number]  // High gene1/Low gene2
+  c01: [number, number, number]  // Low gene1/High gene2
+  c11: [number, number, number]  // High/High
+}
+
+export const BIVARIATE_COLORMAPS: Record<BivariateColormap, BivariateCorners> = {
+  default: {
+    c00: [240, 240, 240],  // Gray
+    c10: [227, 26, 28],    // Red
+    c01: [31, 120, 180],   // Blue
+    c11: [255, 255, 0],    // Yellow
+  },
+  pinkgreen: {
+    c00: [240, 240, 240],  // Gray
+    c10: [197, 27, 125],   // Pink/Magenta
+    c01: [77, 146, 33],    // Green
+    c11: [166, 86, 40],    // Brown (mixing pink+green)
+  },
+  orangepurple: {
+    c00: [240, 240, 240],  // Gray
+    c10: [230, 97, 1],     // Orange
+    c01: [94, 60, 153],    // Purple
+    c11: [178, 24, 43],    // Dark red/maroon
+  },
+  custom: {
+    c00: [240, 240, 240],  // Gray (default, can be customized later)
+    c10: [227, 26, 28],    // Red
+    c01: [31, 120, 180],   // Blue
+    c11: [255, 255, 0],    // Yellow
+  },
 }
 
 // Bilinear interpolation for bivariate coloring
-function getBivariateColor(
+export function getBivariateColor(
   u: number,  // Normalized gene set 1 value [0,1]
   v: number,  // Normalized gene set 2 value [0,1]
+  colormap: BivariateColormap = 'default',
 ): [number, number, number] {
-  const { c00, c10, c01, c11 } = BIVARIATE_CORNERS
+  const { c00, c10, c01, c11 } = BIVARIATE_COLORMAPS[colormap]
   // Bilinear interpolation: blend four corner colors based on (u, v) position
   return [
     Math.round(c00[0] * (1 - u) * (1 - v) + c10[0] * u * (1 - v) + c01[0] * (1 - u) * v + c11[0] * u * v),
@@ -180,6 +211,7 @@ export default function ScatterPlot({
   const activeCellMask = useStore((state) => state.activeCellMask)
   const showMaskedCells = useStore((state) => state.showMaskedCells)
   const cellSortOrder = useStore((state) => state.cellSortOrder)
+  const cellSortVersion = useStore((state) => state.cellSortVersion)
   const drawnLines = useStore((state) => state.drawnLines)
   const activeLineId = useStore((state) => state.activeLineId)
 
@@ -236,7 +268,7 @@ export default function ScatterPlot({
 
     // Filter out masked (inactive) cells
     return allData.filter((d) => activeCellMask[d.index])
-  }, [embedding, activeCellMask, showMaskedCells, cellSortOrder])
+  }, [embedding, activeCellMask, showMaskedCells, cellSortOrder, cellSortVersion])
 
   // Compute color function separately (so it can change without affecting view state)
   const getColor = useMemo(() => {
@@ -251,6 +283,7 @@ export default function ScatterPlot({
 
     if (colorMode === 'bivariate' && bivariateData) {
       const { values1, values2 } = bivariateData
+      const bivariateColormap = displayPreferences.bivariateColormap
 
       return (d: { index: number }): [number, number, number, number] => {
         if (isMasked(d.index)) {
@@ -261,7 +294,7 @@ export default function ScatterPlot({
         }
         const u = values1[d.index] ?? 0
         const v = values2[d.index] ?? 0
-        const color = getBivariateColor(u, v)
+        const color = getBivariateColor(u, v, bivariateColormap)
         return [...color, opacity] as [number, number, number, number]
       }
     } else if (colorMode === 'expression' && expressionData) {
@@ -523,7 +556,7 @@ export default function ScatterPlot({
       radiusMaxPixels: 20,
       pickable: true,
       updateTriggers: {
-        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.pointOpacity, activeCellMask],
+        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.bivariateColormap, displayPreferences.pointOpacity, activeCellMask],
         getRadius: [selectedCellIndices, displayPreferences.pointSize, activeCellMask],
       },
     }),

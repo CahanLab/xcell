@@ -138,7 +138,7 @@ function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData
 interface ParamDef {
   name: string
   label: string
-  type: 'number' | 'text' | 'select'
+  type: 'number' | 'text' | 'select' | 'gene_subset'
   default: string | number | null
   description: string
   options?: string[]

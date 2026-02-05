@@ -107,7 +107,11 @@ export function useExpressionTransformEffect() {
           const data = await fetchJson<ExpressionData>(`${API_BASE}/expression/multi`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ genes: selectedGenes, transform }),
+            body: JSON.stringify({
+              genes: selectedGenes,
+              transform,
+              scoring_method: displayPreferences.geneSetScoringMethod,
+            }),
           })
           setExpressionData(data)
         }
@@ -119,7 +123,7 @@ export function useExpressionTransformEffect() {
     }
 
     fetchExpression()
-  }, [displayPreferences.expressionTransform]) // Only re-run when transform changes
+  }, [displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod]) // Re-run when transform or scoring method changes
 }
 
 // Hook to re-fetch bivariate data when transform setting changes
@@ -152,7 +156,8 @@ export function useBivariateTransformEffect() {
             genes1,
             genes2,
             transform,
-            clip_percentiles: [0, 99],
+            clip_percentile: 1.0,
+            scoring_method: displayPreferences.geneSetScoringMethod,
           }),
         })
         setBivariateData(data)
@@ -164,7 +169,7 @@ export function useBivariateTransformEffect() {
     }
 
     fetchBivariate()
-  }, [displayPreferences.expressionTransform]) // Only re-run when transform changes
+  }, [displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod]) // Re-run when transform or scoring method changes
 }
 
 export function useDataActions() {
@@ -243,7 +248,11 @@ export function useDataActions() {
         const data = await fetchJson<ExpressionData>(`${API_BASE}/expression/multi`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ genes, transform: effectiveTransform }),
+          body: JSON.stringify({
+            genes,
+            transform: effectiveTransform,
+            scoring_method: displayPreferences.geneSetScoringMethod,
+          }),
         })
         setExpressionData(data)
         setSelectedGenes(genes)
@@ -255,7 +264,7 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform]
+    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod]
   )
 
   const clearExpressionColor = useCallback(() => {
@@ -278,7 +287,8 @@ export function useDataActions() {
             genes1,
             genes2,
             transform,
-            clip_percentiles: [0, 99],
+            clip_percentile: 1.0,
+            scoring_method: displayPreferences.geneSetScoringMethod,
           }),
         })
         setBivariateData(data)
@@ -292,7 +302,7 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setBivariateData, setColorMode, setSelectedColorColumn, setExpressionData, setSelectedGenes, setError, displayPreferences.expressionTransform]
+    [setLoading, setBivariateData, setColorMode, setSelectedColorColumn, setExpressionData, setSelectedGenes, setError, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod]
   )
 
   const clearBivariateColor = useCallback(() => {

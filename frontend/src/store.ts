@@ -161,6 +161,12 @@ export type InteractionMode = 'pan' | 'lasso' | 'draw'
 // Color scale options for expression data
 export type ColorScale = 'viridis' | 'plasma' | 'magma' | 'inferno' | 'cividis' | 'coolwarm' | 'blues' | 'reds'
 
+// Bivariate colormap options (corner colors: [lowLow, highLow, lowHigh, highHigh])
+export type BivariateColormap = 'default' | 'pinkgreen' | 'orangepurple' | 'custom'
+
+// Gene set scoring method options
+export type GeneSetScoringMethod = 'mean' | 'zscore'
+
 // Expression transform options
 export type ExpressionTransform = 'none' | 'log1p'
 
@@ -169,6 +175,8 @@ export interface DisplayPreferences {
   pointSize: number  // Base point size (1-10)
   backgroundColor: string  // Hex color
   colorScale: ColorScale  // Color scale for expression data
+  bivariateColormap: BivariateColormap  // Colormap for bivariate expression
+  geneSetScoringMethod: GeneSetScoringMethod  // How to aggregate gene set expression
   pointOpacity: number  // 0-1
   expressionTransform: ExpressionTransform  // Transformation for expression values
 }
@@ -229,6 +237,7 @@ interface AppState {
   // Cell ordering for z-stacking
   cellSortOrder: number[] | null  // Custom sort order for rendering (indices), null = default order
   cellSortVersion: number  // Incremented when sort is triggered
+  bivariateSortReversed: boolean  // Whether bivariate sort is reversed (high values first)
 
   // Drawn lines/shapes for trajectory analysis
   drawnLines: DrawnLine[]
@@ -307,6 +316,7 @@ interface AppState {
   // Cell ordering actions
   sortCellsByExpression: () => void  // Sort cells so high-expression renders on top
   sortCellsByBivariate: () => void  // Sort cells so high-bivariate product renders on top
+  toggleBivariateSortOrder: () => void  // Toggle between normal and reversed sort order
   resetCellOrder: () => void  // Reset to default order
 
   // Line/shape drawing actions
@@ -347,6 +357,8 @@ export const useStore = create<AppState>((set) => ({
     pointSize: 3,
     backgroundColor: '#1a1a2e',
     colorScale: 'viridis',
+    bivariateColormap: 'default',
+    geneSetScoringMethod: 'mean',
     pointOpacity: 0.85,
     expressionTransform: 'none',
   },
@@ -365,6 +377,7 @@ export const useStore = create<AppState>((set) => ({
   showMaskedCells: true,
   cellSortOrder: null,
   cellSortVersion: 0,
+  bivariateSortReversed: false,
   drawnLines: [],
   activeLineId: null,
   lineSmoothingParams: {
@@ -402,14 +415,15 @@ export const useStore = create<AppState>((set) => ({
       if (!data || !state.schema) {
         return { bivariateData: data, cellSortOrder: null, cellSortVersion: 0 }
       }
-      // Auto-sort by sum of both values (ascending, so high values render last/on top)
-      // Sum prioritizes cells high in EITHER or BOTH gene sets for visibility
+      // Sort by sum of both values
+      // Respect bivariateSortReversed setting
+      const reversed = state.bivariateSortReversed
       const { values1, values2 } = data
       const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
       indices.sort((a, b) => {
         const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
         const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
-        return sumA - sumB
+        return reversed ? sumB - sumA : sumA - sumB
       })
       return {
         bivariateData: data,
@@ -826,18 +840,39 @@ export const useStore = create<AppState>((set) => ({
     set((state) => {
       if (!state.bivariateData || !state.schema) return {}
       const { values1, values2 } = state.bivariateData
-      // Sort by sum of both normalized values (ascending, so high values render last/on top)
-      // Sum prioritizes cells high in EITHER or BOTH gene sets for visibility
+      const reversed = state.bivariateSortReversed
+      // Sort by sum of both normalized values
+      // Normal: ascending (low first, high last/on top)
+      // Reversed: descending (high first, low last/on top)
       const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
       indices.sort((a, b) => {
         const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
         const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
-        return sumA - sumB  // Ascending: low values first, high values last (on top)
+        return reversed ? sumB - sumA : sumA - sumB
       })
       return { cellSortOrder: indices, cellSortVersion: state.cellSortVersion + 1 }
     }),
 
-  resetCellOrder: () => set({ cellSortOrder: null, cellSortVersion: 0 }),
+  toggleBivariateSortOrder: () =>
+    set((state) => {
+      if (!state.bivariateData || !state.schema) return {}
+      const { values1, values2 } = state.bivariateData
+      const newReversed = !state.bivariateSortReversed
+      // Re-sort with new direction
+      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+      indices.sort((a, b) => {
+        const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
+        const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
+        return newReversed ? sumB - sumA : sumA - sumB
+      })
+      return {
+        bivariateSortReversed: newReversed,
+        cellSortOrder: indices,
+        cellSortVersion: state.cellSortVersion + 1,
+      }
+    }),
+
+  resetCellOrder: () => set({ cellSortOrder: null, cellSortVersion: 0, bivariateSortReversed: false }),
 
   // Line/shape drawing actions
   addLine: (name, points, embeddingName) =>

@@ -197,6 +197,18 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         prerequisites: [],
         params: [],
       },
+      highly_variable_genes: {
+        label: 'Highly Variable Genes',
+        description: 'Identify highly variable genes for downstream analysis',
+        prerequisites: [],
+        params: [
+          { name: 'n_top_genes', label: 'Top N genes', type: 'number', default: null, description: 'Number of top genes (overrides thresholds if set)' },
+          { name: 'min_mean', label: 'Min mean', type: 'number', default: 0.0125, description: 'Minimum mean expression' },
+          { name: 'max_mean', label: 'Max mean', type: 'number', default: 3.0, description: 'Maximum mean expression' },
+          { name: 'min_disp', label: 'Min dispersion', type: 'number', default: 0.5, description: 'Minimum normalized dispersion' },
+          { name: 'flavor', label: 'Method', type: 'select', default: 'seurat', options: ['seurat', 'cell_ranger', 'seurat_v3'], description: 'HVG selection method' },
+        ],
+      },
     },
   },
   dimensionality_reduction: {
@@ -204,11 +216,12 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
     functions: {
       pca: {
         label: 'PCA',
-        description: 'Principal component analysis',
+        description: 'Principal component analysis on cells',
         prerequisites: [],
         params: [
           { name: 'n_comps', label: 'Components', type: 'number', default: 50, description: 'Number of principal components' },
           { name: 'svd_solver', label: 'SVD solver', type: 'select', default: 'arpack', options: ['arpack', 'randomized', 'auto'], description: 'SVD algorithm' },
+          { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: null, description: 'Filter genes using boolean columns from .var (default: use highly_variable if available)' },
         ],
       },
     },
@@ -280,6 +293,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'scale', label: 'Scale', type: 'select', default: 'true', options: ['true', 'false'], description: 'Z-score scale genes' },
           { name: 'use_kneedle', label: 'Auto-detect PCs', type: 'select', default: 'true', options: ['true', 'false'], description: 'Use Kneedle algorithm' },
           { name: 'max_comps', label: 'Max components', type: 'number', default: 100, description: 'Max PCs to compute for Kneedle' },
+          { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: null, description: 'Filter to specific genes using boolean columns from .var' },
         ],
       },
       gene_neighbors: {
@@ -308,6 +322,32 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         params: [
           { name: 'resolution', label: 'Resolution', type: 'number', default: 0.5, description: 'Higher = more clusters' },
           { name: 'key_added', label: 'Column name', type: 'text', default: 'gene_cluster', description: 'Name for cluster labels in .var' },
+        ],
+      },
+    },
+  },
+  spatial_analysis: {
+    label: 'Spatial Analysis',
+    functions: {
+      spatial_neighbors: {
+        label: 'Spatial Neighbors',
+        description: 'Build spatial neighborhood graph from coordinates',
+        prerequisites: ['has_spatial'],
+        params: [
+          { name: 'n_neighs', label: 'Neighbors', type: 'number', default: 6, description: 'Number of spatial neighbors' },
+          { name: 'coord_type', label: 'Coord Type', type: 'select', default: '', options: ['', 'grid', 'generic'], description: 'Coordinate type (empty = auto-detect)' },
+          { name: 'delaunay', label: 'Delaunay', type: 'select', default: 'false', options: ['true', 'false'], description: 'Use Delaunay triangulation' },
+        ],
+      },
+      spatial_autocorr: {
+        label: 'Spatial Autocorrelation',
+        description: "Identify spatially variable genes (Moran's I or Geary's C)",
+        prerequisites: ['spatial_neighbors'],
+        params: [
+          { name: 'mode', label: 'Method', type: 'select', default: 'moran', options: ['moran', 'geary'], description: "Moran's I (clustering) or Geary's C" },
+          { name: 'n_perms', label: 'Permutations', type: 'number', default: 100, description: 'Permutations for p-value (0 for analytical only)' },
+          { name: 'pval_threshold', label: 'P-value Threshold', type: 'number', default: 0.05, description: 'Threshold for spatially variable' },
+          { name: 'n_jobs', label: 'Parallel Jobs', type: 'number', default: 1, description: 'Number of parallel jobs' },
         ],
       },
     },
@@ -510,6 +550,13 @@ const styles = {
   },
 }
 
+// Boolean column info from .var
+interface BooleanColumn {
+  name: string
+  n_true: number
+  n_total: number
+}
+
 export default function ScanpyModal() {
   const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction } = useStore()
 
@@ -520,6 +567,11 @@ export default function ScanpyModal() {
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null)
   const [prereqStatus, setPrereqStatus] = useState<PrerequisiteStatus | null>(null)
   const [varianceData, setVarianceData] = useState<VarianceData | null>(null)
+
+  // Gene subset selection state
+  const [booleanColumns, setBooleanColumns] = useState<BooleanColumn[]>([])
+  const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
+  const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
 
   // Get current function definition
   const categoryDef = SCANPY_FUNCTIONS[selectedCategory]
@@ -550,6 +602,22 @@ export default function ScanpyModal() {
       .then(setPrereqStatus)
       .catch(() => setPrereqStatus({ satisfied: false, missing: ['unknown'] }))
   }, [selectedFunction, functionDef, scanpyActionHistory])
+
+  // Fetch boolean columns for gene subset selection
+  useEffect(() => {
+    if (!isScanpyModalOpen) return
+
+    fetch(`${API_BASE}/var/boolean_columns`)
+      .then((res) => res.json())
+      .then(setBooleanColumns)
+      .catch(() => setBooleanColumns([]))
+  }, [isScanpyModalOpen, scanpyActionHistory])
+
+  // Reset gene subset selection when function changes
+  useEffect(() => {
+    setSelectedGeneColumns([])
+    setGeneSubsetOperation('intersection')
+  }, [selectedFunction])
 
   // Handle category change
   const handleCategoryChange = useCallback((category: CategoryKey) => {
@@ -618,6 +686,20 @@ export default function ScanpyModal() {
         }
       }
 
+      // Handle gene_subset parameter specially
+      if (functionDef.params.some(p => p.type === 'gene_subset')) {
+        if (selectedGeneColumns.length === 0) {
+          requestParams['gene_subset'] = null
+        } else if (selectedGeneColumns.length === 1) {
+          requestParams['gene_subset'] = selectedGeneColumns[0]
+        } else {
+          requestParams['gene_subset'] = {
+            columns: selectedGeneColumns,
+            operation: geneSubsetOperation,
+          }
+        }
+      }
+
       const response = await fetch(`${API_BASE}/scanpy/${selectedFunction}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -636,8 +718,38 @@ export default function ScanpyModal() {
         message = `Removed ${data.n_genes_removed} genes (${data.n_genes_before} → ${data.n_genes_after})`
       } else if (data.n_cells_removed !== undefined) {
         message = `Removed ${data.n_cells_removed} cells (${data.n_cells_before} → ${data.n_cells_after})`
+      } else if (data.module_sizes !== undefined && data.n_clusters !== undefined) {
+        // cluster_genes result - create folder in gene_clusters category
+        const totalModules = Object.keys(data.module_sizes).length
+        message = `Created ${totalModules} gene modules (${data.n_genes_clustered} genes clustered)`
+
+        // Fetch the gene modules and add them to the gene_clusters category
+        try {
+          const modulesResponse = await fetch(`${API_BASE}/scanpy/gene_modules`)
+          if (modulesResponse.ok) {
+            const modulesData = await modulesResponse.json()
+            const timestamp = new Date().toLocaleString('en-US', {
+              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+            })
+            const folderName = `Clusters (res=${requestParams.resolution || 0.5}) ${timestamp}`
+            const geneSets = Object.entries(modulesData.modules || {}).map(([name, genes]) => ({
+              name: name.replace('module_', 'Module '),
+              genes: genes as string[],
+            }))
+            useStore.getState().addFolderToCategory('gene_clusters', folderName, geneSets)
+          }
+        } catch {
+          console.error('Failed to fetch gene modules for folder creation')
+        }
       } else if (data.n_clusters !== undefined) {
+        // leiden cell clustering result
         message = `Found ${data.n_clusters} clusters`
+      } else if (data.embedding_name && data.n_genes_used !== undefined) {
+        // PCA with gene subset info
+        const subsetInfo = data.gene_subset_type && data.gene_subset_type !== 'default'
+          ? ` on ${data.n_genes_used.toLocaleString()} genes (${data.gene_subset_type})`
+          : ''
+        message = `Created embedding: ${data.embedding_name} (${data.n_comps} PCs)${subsetInfo}`
       } else if (data.embedding_name) {
         message = `Created embedding: ${data.embedding_name}`
       } else if (data.similar_genes !== undefined) {
@@ -647,20 +759,38 @@ export default function ScanpyModal() {
         } else {
           message = `Similar to ${data.query_gene}: ${data.similar_genes.slice(0, 5).join(', ')}${data.similar_genes.length > 5 ? '...' : ''}`
         }
-      } else if (data.module_sizes !== undefined) {
-        // cluster_genes result
-        const totalModules = Object.keys(data.module_sizes).length
-        message = `Created ${totalModules} gene modules`
       } else if (data.pca !== undefined && data.neighbors !== undefined) {
         // build_gene_graph result
         message = `Gene graph built: ${data.pca.n_comps} PCs, ${data.neighbors.n_neighbors} neighbors`
       } else if (data.n_comps !== undefined && data.cumulative_variance !== undefined) {
         // gene_pca result
         const varPct = (data.cumulative_variance * 100).toFixed(1)
-        message = `Gene PCA: ${data.n_comps} PCs (${varPct}% variance)${data.elbow_detected !== null ? `, elbow at PC ${data.elbow_detected + 1}` : ''}`
+        const subsetInfo = data.n_genes_used !== undefined && data.n_genes_used !== data.n_comps
+          ? ` on ${data.n_genes_used.toLocaleString()} genes`
+          : ''
+        message = `Gene PCA: ${data.n_comps} PCs (${varPct}% variance)${subsetInfo}${data.elbow_detected !== null ? `, elbow at PC ${data.elbow_detected + 1}` : ''}`
       } else if (data.n_genes !== undefined && data.n_neighbors !== undefined) {
         // gene_neighbors result
-        message = `Gene kNN graph: ${data.n_neighbors} neighbors for ${data.n_genes} genes`
+        message = `Gene kNN graph: ${data.n_neighbors} neighbors for ${data.n_genes.toLocaleString()} genes`
+      } else if (data.n_edges !== undefined && data.spatial_key !== undefined) {
+        // spatial_neighbors result
+        message = `Spatial graph: ${data.n_edges.toLocaleString()} edges for ${data.n_cells.toLocaleString()} cells`
+      } else if (data.n_spatially_variable !== undefined) {
+        // spatial_autocorr result
+        const topGenes = data.top_sv_genes?.slice(0, 3).join(', ') || ''
+        message = `Found ${data.n_spatially_variable.toLocaleString()} spatially variable genes (${data.mode === 'moran' ? "Moran's I" : "Geary's C"})${topGenes ? `. Top: ${topGenes}...` : ''}`
+
+        // Add top spatially variable genes to the spatial category
+        if (data.top_sv_genes && data.top_sv_genes.length > 0) {
+          const timestamp = new Date().toLocaleString('en-US', {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+          })
+          const setName = `Top SVG (${data.mode === 'moran' ? "Moran's I" : "Geary's C"}) ${timestamp}`
+          useStore.getState().addGeneSetToCategory('spatial', setName, data.top_sv_genes)
+        }
+      } else if (data.n_highly_variable !== undefined) {
+        // highly_variable_genes result
+        message = `Identified ${data.n_highly_variable.toLocaleString()} highly variable genes (${data.flavor} method)`
       }
 
       setResult({ success: true, message })
@@ -675,7 +805,7 @@ export default function ScanpyModal() {
       addScanpyAction(actionRecord)
 
       // Refresh schema if data shape may have changed
-      if (['filter_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes'].includes(selectedFunction)) {
+      if (['filter_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes'].includes(selectedFunction)) {
         await refreshSchema()
       }
 
@@ -696,7 +826,7 @@ export default function ScanpyModal() {
     } finally {
       setIsRunning(false)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, addScanpyAction, refreshSchema])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema])
 
   if (!isScanpyModalOpen) return null
 
@@ -779,31 +909,112 @@ export default function ScanpyModal() {
           <div style={styles.paramsSection}>
             {functionDef.params.map((param) => (
               <div key={param.name}>
-                <div style={styles.paramRow}>
-                  <label style={styles.paramLabel}>{param.label}</label>
-                  {param.type === 'select' ? (
-                    <select
-                      style={styles.paramInput}
-                      value={paramValues[param.name] ?? ''}
-                      onChange={(e) => handleParamChange(param.name, e.target.value)}
-                    >
-                      {param.options?.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type={param.type === 'number' ? 'number' : 'text'}
-                      style={styles.paramInput}
-                      value={paramValues[param.name] ?? ''}
-                      onChange={(e) => handleParamChange(param.name, e.target.value)}
-                      placeholder={param.default === null ? '(optional)' : String(param.default)}
-                    />
-                  )}
-                </div>
-                <div style={styles.paramDescription}>{param.description}</div>
+                {param.type === 'gene_subset' ? (
+                  /* Special UI for gene subset selection */
+                  <div style={{ marginBottom: '12px' }}>
+                    <label style={styles.paramLabel}>{param.label}</label>
+                    <div style={styles.paramDescription}>{param.description}</div>
+                    {booleanColumns.length === 0 ? (
+                      <div style={{ fontSize: '12px', color: '#888', padding: '8px', backgroundColor: '#1a1a2e', borderRadius: '4px', marginTop: '8px' }}>
+                        No boolean columns available. Run spatial_autocorr or use scanpy's highly_variable_genes to create filterable gene sets.
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: '8px' }}>
+                        <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>
+                          Select columns to filter genes (leave empty for all genes):
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                          {booleanColumns.map((col) => {
+                            const isSelected = selectedGeneColumns.includes(col.name)
+                            return (
+                              <button
+                                key={col.name}
+                                onClick={() => {
+                                  setSelectedGeneColumns((prev) =>
+                                    isSelected
+                                      ? prev.filter((c) => c !== col.name)
+                                      : [...prev, col.name]
+                                  )
+                                }}
+                                style={{
+                                  padding: '4px 10px',
+                                  fontSize: '11px',
+                                  backgroundColor: isSelected ? '#4ecdc4' : '#1a1a2e',
+                                  color: isSelected ? '#000' : '#aaa',
+                                  border: `1px solid ${isSelected ? '#4ecdc4' : '#333'}`,
+                                  borderRadius: '12px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                {col.name} ({col.n_true.toLocaleString()})
+                              </button>
+                            )
+                          })}
+                        </div>
+                        {selectedGeneColumns.length >= 2 && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
+                            <span style={{ fontSize: '11px', color: '#888' }}>Combine with:</span>
+                            <label style={{ fontSize: '12px', color: '#ccc', cursor: 'pointer' }}>
+                              <input
+                                type="radio"
+                                name="geneSubsetOp"
+                                checked={geneSubsetOperation === 'intersection'}
+                                onChange={() => setGeneSubsetOperation('intersection')}
+                                style={{ marginRight: '4px' }}
+                              />
+                              AND (intersection)
+                            </label>
+                            <label style={{ fontSize: '12px', color: '#ccc', cursor: 'pointer' }}>
+                              <input
+                                type="radio"
+                                name="geneSubsetOp"
+                                checked={geneSubsetOperation === 'union'}
+                                onChange={() => setGeneSubsetOperation('union')}
+                                style={{ marginRight: '4px' }}
+                              />
+                              OR (union)
+                            </label>
+                          </div>
+                        )}
+                        {selectedGeneColumns.length > 0 && (
+                          <div style={{ fontSize: '11px', color: '#4ecdc4', marginTop: '8px' }}>
+                            {selectedGeneColumns.length === 1
+                              ? `Using genes where ${selectedGeneColumns[0]} = True`
+                              : `Using genes where ${selectedGeneColumns.join(geneSubsetOperation === 'intersection' ? ' AND ' : ' OR ')}`}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <div style={styles.paramRow}>
+                      <label style={styles.paramLabel}>{param.label}</label>
+                      {param.type === 'select' ? (
+                        <select
+                          style={styles.paramInput}
+                          value={paramValues[param.name] ?? ''}
+                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                        >
+                          {param.options?.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type={param.type === 'number' ? 'number' : 'text'}
+                          style={styles.paramInput}
+                          value={paramValues[param.name] ?? ''}
+                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                          placeholder={param.default === null ? '(optional)' : String(param.default)}
+                        />
+                      )}
+                    </div>
+                    <div style={styles.paramDescription}>{param.description}</div>
+                  </>
+                )}
               </div>
             ))}
           </div>

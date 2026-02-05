@@ -235,18 +235,21 @@ class BivariateExpressionRequest(BaseModel):
     genes1: list[str]
     genes2: list[str]
     transform: str | None = None
-    clip_percentiles: tuple[float, float] = (0, 99)
+    clip_percentile: float = 1.0  # Symmetric percentile clipping (1.0 = clip at 1st/99th)
 
 
 @router.post("/expression/bivariate")
 def get_bivariate_expression(request: BivariateExpressionRequest):
     """Get normalized expression for two gene sets for bivariate visualization.
 
+    Uses robust scoring: mean-centers each gene, scales by MAD to handle outliers,
+    clips extreme values, then averages across genes.
+
     Args:
         genes1: List of gene names for set 1 (maps to red/x-axis)
         genes2: List of gene names for set 2 (maps to blue/y-axis)
         transform: Optional transformation ('log1p' for normalize_total + log1p)
-        clip_percentiles: Tuple of (low, high) percentiles for clipping
+        clip_percentile: Symmetric percentile for clipping (1.0 = clip at 1st/99th)
 
     Returns:
         JSON object containing:
@@ -262,7 +265,7 @@ def get_bivariate_expression(request: BivariateExpressionRequest):
             genes1=request.genes1,
             genes2=request.genes2,
             transform=request.transform,
-            clip_percentiles=request.clip_percentiles,
+            clip_percentile=request.clip_percentile,
         )
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -516,9 +519,31 @@ class NormalizeTotalRequest(BaseModel):
     target_sum: float | None = None
 
 
+class HighlyVariableGenesRequest(BaseModel):
+    n_top_genes: int | None = None
+    min_mean: float = 0.0125
+    max_mean: float = 3.0
+    min_disp: float = 0.5
+    flavor: str = 'seurat'
+    n_bins: int = 20
+    subset: bool = False
+
+
+class GeneSubsetSpec(BaseModel):
+    """Specification for combining multiple boolean columns."""
+    columns: list[str]
+    operation: str = 'intersection'  # 'intersection' (AND) or 'union' (OR)
+
+
 class PcaRequest(BaseModel):
     n_comps: int = 50
     svd_solver: str = 'arpack'
+    # Gene subset can be:
+    # - None: default behavior (use highly_variable if available)
+    # - str: boolean column name (e.g., 'highly_variable', 'spatially_variable')
+    # - list[str]: explicit gene names
+    # - GeneSubsetSpec: combine multiple columns with AND/OR
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
 
 
 class NeighborsRequest(BaseModel):
@@ -629,18 +654,51 @@ def run_log1p():
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/scanpy/highly_variable_genes")
+def run_highly_variable_genes(request: HighlyVariableGenesRequest):
+    """Identify highly variable genes.
+
+    Adds 'highly_variable' boolean column to .var.
+
+    Returns:
+        Operation status and number of HVGs
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_highly_variable_genes(
+            n_top_genes=request.n_top_genes,
+            min_mean=request.min_mean,
+            max_mean=request.max_mean,
+            min_disp=request.min_disp,
+            flavor=request.flavor,
+            n_bins=request.n_bins,
+            subset=request.subset,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/scanpy/pca")
 def run_pca(request: PcaRequest):
     """Run PCA dimensionality reduction.
+
+    Args (via request):
+        gene_subset: Gene filtering specification (see GenePcaRequest for format)
 
     Returns:
         Operation status and variance explained
     """
     adaptor = get_adaptor()
     try:
+        # Convert Pydantic model to dict if needed
+        gene_subset = request.gene_subset
+        if isinstance(gene_subset, GeneSubsetSpec):
+            gene_subset = {'columns': gene_subset.columns, 'operation': gene_subset.operation}
+
         return adaptor.run_pca(
             n_comps=request.n_comps,
             svd_solver=request.svd_solver,
+            gene_subset=gene_subset,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -721,6 +779,12 @@ class GenePcaRequest(BaseModel):
     scale: bool = True
     use_kneedle: bool = True
     max_comps: int = 100
+    # Gene subset can be:
+    # - None: all genes
+    # - str: single boolean column name (e.g., 'highly_variable', 'spatially_variable')
+    # - list[str]: explicit list of gene names
+    # - GeneSubsetSpec: combine multiple columns with AND/OR
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
 
 
 class GeneNeighborsRequest(BaseModel):
@@ -747,6 +811,17 @@ class BuildGeneGraphRequest(BaseModel):
     metric: str = 'cosine'
 
 
+@router.get("/var/boolean_columns")
+def get_var_boolean_columns():
+    """Get list of boolean columns in .var that can be used for gene filtering.
+
+    Returns:
+        List of columns with name, count of True values, and total genes
+    """
+    adaptor = get_adaptor()
+    return adaptor.get_var_boolean_columns()
+
+
 @router.post("/scanpy/gene_pca")
 def run_gene_pca(request: GenePcaRequest):
     """Run PCA on genes (transposed expression matrix).
@@ -754,16 +829,29 @@ def run_gene_pca(request: GenePcaRequest):
     Computes gene embeddings based on expression patterns.
     Results stored in .varm['X_gene_pca'].
 
+    Args (via request):
+        gene_subset: Gene filtering specification. Can be:
+            - None: all genes
+            - str: boolean column name (e.g., 'highly_variable')
+            - list[str]: explicit gene names
+            - {columns: [...], operation: 'intersection'|'union'}: combine columns
+
     Returns:
-        Operation status, n_comps, variance explained
+        Operation status, n_comps, variance explained, subset info
     """
     adaptor = get_adaptor()
     try:
+        # Convert Pydantic model to dict if needed
+        gene_subset = request.gene_subset
+        if isinstance(gene_subset, GeneSubsetSpec):
+            gene_subset = {'columns': gene_subset.columns, 'operation': gene_subset.operation}
+
         return adaptor.run_gene_pca(
             n_comps=request.n_comps,
             scale=request.scale,
             use_kneedle=request.use_kneedle,
             max_comps=request.max_comps,
+            gene_subset=gene_subset,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -847,6 +935,20 @@ def run_cluster_genes(request: ClusterGenesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/scanpy/gene_modules")
+def get_gene_modules():
+    """Get gene modules from the last cluster_genes run.
+
+    Returns:
+        Dict with modules (module_name -> gene list)
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.get_gene_modules()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/scanpy/build_gene_graph")
 def run_build_gene_graph(request: BuildGeneGraphRequest):
     """Convenience: run gene_pca and gene_neighbors in one step.
@@ -864,6 +966,118 @@ def run_build_gene_graph(request: BuildGeneGraphRequest):
             metric=request.metric,
         )
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
+# Spatial Analysis endpoints
+# =========================================================================
+
+class SpatialNeighborsRequest(BaseModel):
+    n_neighs: int = 6
+    coord_type: str | None = None
+    spatial_key: str | None = None
+    delaunay: bool = False
+    n_rings: int = 1
+    radius: float | None = None
+
+
+class SpatialAutocorrRequest(BaseModel):
+    mode: str = 'moran'
+    genes: list[str] | None = None
+    n_perms: int | None = 100
+    n_jobs: int = 1
+    corr_method: str = 'fdr_bh'
+    pval_threshold: float = 0.05
+
+
+class GetSpatiallyVariableGenesRequest(BaseModel):
+    top_n: int | None = None
+    pval_threshold: float | None = None
+
+
+@router.get("/scanpy/has_spatial")
+def check_has_spatial():
+    """Check if spatial coordinates are available.
+
+    Returns:
+        Dict with has_spatial (bool) and spatial_key if found
+    """
+    adaptor = get_adaptor()
+    has_spatial = adaptor._has_spatial_coordinates()
+    spatial_key = adaptor._get_spatial_key() if has_spatial else None
+    return {
+        'has_spatial': has_spatial,
+        'spatial_key': spatial_key,
+    }
+
+
+@router.post("/scanpy/spatial_neighbors")
+def run_spatial_neighbors(request: SpatialNeighborsRequest):
+    """Compute spatial neighborhood graph using Squidpy.
+
+    Requires: spatial coordinates in .obsm
+
+    Returns:
+        Operation status and graph info
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_spatial_neighbors(
+            n_neighs=request.n_neighs,
+            coord_type=request.coord_type,
+            spatial_key=request.spatial_key,
+            delaunay=request.delaunay,
+            n_rings=request.n_rings,
+            radius=request.radius,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scanpy/spatial_autocorr")
+def run_spatial_autocorr(request: SpatialAutocorrRequest):
+    """Compute spatial autocorrelation to identify spatially variable genes.
+
+    Requires: spatial_neighbors must be computed first.
+
+    Returns:
+        Operation status, number of spatially variable genes, top genes
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_spatial_autocorr(
+            mode=request.mode,
+            genes=request.genes,
+            n_perms=request.n_perms,
+            n_jobs=request.n_jobs,
+            corr_method=request.corr_method,
+            pval_threshold=request.pval_threshold,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scanpy/spatially_variable_genes")
+def get_spatially_variable_genes(request: GetSpatiallyVariableGenesRequest):
+    """Get list of spatially variable genes.
+
+    Requires: spatial_autocorr must be computed first.
+
+    Returns:
+        List of genes with statistics
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.get_spatially_variable_genes(
+            top_n=request.top_n,
+            pval_threshold=request.pval_threshold,
+        )
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 

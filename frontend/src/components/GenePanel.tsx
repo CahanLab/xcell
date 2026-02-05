@@ -1,11 +1,21 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { useStore, GeneSet } from '../store'
+import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType } from '../store'
 import { useGeneSearch, useDataActions } from '../hooks/useData'
 
 const API_BASE = '/api'
 
 // Drag data type for genes
 const GENE_DRAG_TYPE = 'application/x-gene'
+
+// Category display order and icons
+const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial']
+const CATEGORY_ICONS: Record<GeneSetCategoryType, string> = {
+  manual: '📁',
+  gene_clusters: '🧬',
+  similar_genes: '🔗',
+  diff_exp: '📊',
+  spatial: '🗺️',
+}
 
 const styles = {
   panel: {
@@ -249,6 +259,85 @@ const styles = {
     border: 'none',
     borderRadius: '3px',
     cursor: 'pointer',
+  },
+  // Category styles
+  category: {
+    marginBottom: '12px',
+  },
+  categoryHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '6px 8px',
+    backgroundColor: '#0a0f1a',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    marginBottom: '4px',
+  },
+  categoryIcon: {
+    marginRight: '6px',
+    fontSize: '12px',
+  },
+  categoryName: {
+    flex: 1,
+    fontSize: '12px',
+    fontWeight: 600,
+    color: '#aaa',
+    textTransform: 'uppercase' as const,
+  },
+  categoryCount: {
+    fontSize: '10px',
+    color: '#666',
+    marginRight: '8px',
+  },
+  categoryExpander: {
+    color: '#666',
+    fontSize: '10px',
+  },
+  categoryContent: {
+    paddingLeft: '8px',
+  },
+  // Folder styles
+  folder: {
+    marginBottom: '6px',
+    marginLeft: '8px',
+  },
+  folderHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '4px 8px',
+    backgroundColor: '#0f1a2e',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    marginBottom: '4px',
+  },
+  folderIcon: {
+    marginRight: '6px',
+    fontSize: '11px',
+    color: '#888',
+  },
+  folderName: {
+    flex: 1,
+    fontSize: '11px',
+    fontWeight: 500,
+    color: '#bbb',
+  },
+  folderCount: {
+    fontSize: '10px',
+    color: '#666',
+    marginRight: '6px',
+  },
+  folderActions: {
+    display: 'flex',
+    gap: '2px',
+  },
+  folderContent: {
+    paddingLeft: '12px',
+  },
+  emptyCategory: {
+    fontSize: '11px',
+    color: '#555',
+    padding: '8px 12px',
+    fontStyle: 'italic',
   },
 }
 
@@ -581,9 +670,366 @@ function GeneSetComponent({
   )
 }
 
+// New component for rendering gene sets within the category system
+function CategoryGeneSetComponent({
+  geneSet,
+  categoryType,
+  folderId,
+  onColorByGene,
+  onColorBySet,
+  activeGenes,
+}: {
+  geneSet: GeneSet
+  categoryType: GeneSetCategoryType
+  folderId?: string
+  onColorByGene: (gene: string) => void
+  onColorBySet: (genes: string[]) => void
+  activeGenes: string[]
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [hoveredGene, setHoveredGene] = useState<string | null>(null)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editName, setEditName] = useState(geneSet.name)
+  const editInputRef = useRef<HTMLInputElement>(null)
+  const {
+    removeGeneSetFromCategory,
+    removeGeneSetFromFolder,
+    addGenesToCategorySet,
+    removeGenesFromCategorySet,
+    renameCategoryGeneSet,
+  } = useStore()
+
+  useEffect(() => {
+    if (isEditing && editInputRef.current) {
+      editInputRef.current.focus()
+      editInputRef.current.select()
+    }
+  }, [isEditing])
+
+  const handleRemove = () => {
+    if (folderId) {
+      removeGeneSetFromFolder(categoryType, folderId, geneSet.id)
+    } else {
+      removeGeneSetFromCategory(categoryType, geneSet.id)
+    }
+  }
+
+  const handleAddGenes = (genes: string[]) => {
+    addGenesToCategorySet(categoryType, geneSet.id, genes)
+  }
+
+  const handleRemoveGene = (gene: string) => {
+    removeGenesFromCategorySet(categoryType, geneSet.id, [gene])
+  }
+
+  const handleRename = () => {
+    const trimmedName = editName.trim()
+    if (trimmedName && trimmedName !== geneSet.name) {
+      renameCategoryGeneSet(categoryType, geneSet.id, trimmedName)
+    }
+    setIsEditing(false)
+  }
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes(GENE_DRAG_TYPE)) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+      setIsDragOver(true)
+    }
+  }, [])
+
+  const handleDragLeave = useCallback(() => setIsDragOver(false), [])
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      setIsDragOver(false)
+      const data = e.dataTransfer.getData(GENE_DRAG_TYPE)
+      if (data) {
+        try {
+          const genes = JSON.parse(data) as string[]
+          handleAddGenes(genes)
+        } catch (err) {
+          console.error('Failed to parse dropped genes:', err)
+        }
+      }
+    },
+    [handleAddGenes]
+  )
+
+  return (
+    <div
+      style={{
+        ...styles.geneSet,
+        ...styles.dropZone,
+        ...(isDragOver ? styles.dropZoneActive : {}),
+        marginBottom: '4px',
+      }}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <div style={styles.geneSetHeader} onClick={() => !isEditing && setExpanded(!expanded)}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {isEditing ? (
+            <input
+              ref={editInputRef}
+              type="text"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onBlur={handleRename}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRename()
+                else if (e.key === 'Escape') {
+                  setIsEditing(false)
+                  setEditName(geneSet.name)
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+              style={{ ...styles.searchInput, padding: '2px 6px', fontSize: '12px', width: '100%' }}
+            />
+          ) : (
+            <>
+              <span
+                style={{ ...styles.geneSetName, fontSize: '12px' }}
+                onDoubleClick={(e) => {
+                  e.stopPropagation()
+                  setEditName(geneSet.name)
+                  setIsEditing(true)
+                }}
+                title="Double-click to rename"
+              >
+                {geneSet.name}
+              </span>
+              <span style={styles.geneSetCount}>({geneSet.genes.length})</span>
+            </>
+          )}
+        </div>
+        <div style={styles.geneSetActions}>
+          <button
+            style={styles.iconButton}
+            onClick={(e) => { e.stopPropagation(); onColorBySet(geneSet.genes) }}
+            title="Color by mean expression"
+          >
+            🎨
+          </button>
+          <button
+            style={styles.iconButton}
+            onClick={(e) => { e.stopPropagation(); handleRemove() }}
+            title="Delete gene set"
+          >
+            ✕
+          </button>
+          <span style={{ color: '#888', fontSize: '10px' }}>{expanded ? '▼' : '▶'}</span>
+        </div>
+      </div>
+      {expanded && geneSet.genes.length > 0 && (
+        <div style={styles.geneList}>
+          {geneSet.genes.map((gene) => (
+            <div
+              key={gene}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(GENE_DRAG_TYPE, JSON.stringify([gene]))
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
+              style={{
+                ...styles.gene,
+                ...(activeGenes.includes(gene) ? styles.geneActive : {}),
+                ...(hoveredGene === gene && !activeGenes.includes(gene) ? styles.geneHover : {}),
+                cursor: 'grab',
+              }}
+              onMouseEnter={() => setHoveredGene(gene)}
+              onMouseLeave={() => setHoveredGene(null)}
+            >
+              <span style={styles.geneName} onClick={() => onColorByGene(gene)} title="Click to color by expression">
+                {gene}
+              </span>
+              <button
+                style={{ ...styles.iconButton, fontSize: '10px' }}
+                onClick={() => handleRemoveGene(gene)}
+                title="Remove from set"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {expanded && geneSet.genes.length === 0 && (
+        <div style={{ ...styles.dragHint, padding: '8px 10px' }}>Drag genes here</div>
+      )}
+    </div>
+  )
+}
+
+// Folder component
+function GeneSetFolderComponent({
+  folder,
+  categoryType,
+  onColorByGene,
+  onColorBySet,
+  activeGenes,
+}: {
+  folder: GeneSetFolder
+  categoryType: GeneSetCategoryType
+  onColorByGene: (gene: string) => void
+  onColorBySet: (genes: string[]) => void
+  activeGenes: string[]
+}) {
+  const { toggleFolderExpanded, removeFolder } = useStore()
+
+  const totalGenes = folder.geneSets.reduce((sum, gs) => sum + gs.genes.length, 0)
+
+  return (
+    <div style={styles.folder}>
+      <div
+        style={styles.folderHeader}
+        onClick={() => toggleFolderExpanded(categoryType, folder.id)}
+      >
+        <span style={styles.folderIcon}>{folder.expanded ? '📂' : '📁'}</span>
+        <span style={styles.folderName}>{folder.name}</span>
+        <span style={styles.folderCount}>
+          {folder.geneSets.length} sets, {totalGenes} genes
+        </span>
+        <div style={styles.folderActions}>
+          <button
+            style={{ ...styles.iconButton, fontSize: '10px' }}
+            onClick={(e) => {
+              e.stopPropagation()
+              removeFolder(categoryType, folder.id)
+            }}
+            title="Delete folder"
+          >
+            ✕
+          </button>
+        </div>
+        <span style={styles.categoryExpander}>{folder.expanded ? '▼' : '▶'}</span>
+      </div>
+      {folder.expanded && (
+        <div style={styles.folderContent}>
+          {folder.geneSets.map((gs) => (
+            <CategoryGeneSetComponent
+              key={gs.id}
+              geneSet={gs}
+              categoryType={categoryType}
+              folderId={folder.id}
+              onColorByGene={onColorByGene}
+              onColorBySet={onColorBySet}
+              activeGenes={activeGenes}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Category component
+function GeneSetCategoryComponent({
+  category,
+  onColorByGene,
+  onColorBySet,
+  activeGenes,
+  onAddNewSet,
+}: {
+  category: GeneSetCategory
+  onColorByGene: (gene: string) => void
+  onColorBySet: (genes: string[]) => void
+  activeGenes: string[]
+  onAddNewSet?: () => void
+}) {
+  const { toggleCategoryExpanded } = useStore()
+
+  const totalSets = category.geneSets.length + category.folders.reduce((sum, f) => sum + f.geneSets.length, 0)
+  const totalGenes = category.geneSets.reduce((sum, gs) => sum + gs.genes.length, 0) +
+    category.folders.reduce((sum, f) => f.geneSets.reduce((s, gs) => s + gs.genes.length, 0) + sum, 0)
+
+  const isEmpty = totalSets === 0
+
+  return (
+    <div style={styles.category}>
+      <div
+        style={styles.categoryHeader}
+        onClick={() => toggleCategoryExpanded(category.type)}
+      >
+        <span style={styles.categoryIcon}>{CATEGORY_ICONS[category.type]}</span>
+        <span style={styles.categoryName}>{category.name}</span>
+        {!isEmpty && (
+          <span style={styles.categoryCount}>
+            {totalSets} sets, {totalGenes} genes
+          </span>
+        )}
+        {category.type === 'manual' && onAddNewSet && (
+          <button
+            style={{ ...styles.addButton, marginRight: '8px', padding: '2px 6px', fontSize: '10px' }}
+            onClick={(e) => {
+              e.stopPropagation()
+              onAddNewSet()
+            }}
+          >
+            +
+          </button>
+        )}
+        <span style={styles.categoryExpander}>{category.expanded ? '▼' : '▶'}</span>
+      </div>
+      {category.expanded && (
+        <div style={styles.categoryContent}>
+          {/* Folders */}
+          {category.folders.map((folder) => (
+            <GeneSetFolderComponent
+              key={folder.id}
+              folder={folder}
+              categoryType={category.type}
+              onColorByGene={onColorByGene}
+              onColorBySet={onColorBySet}
+              activeGenes={activeGenes}
+            />
+          ))}
+          {/* Direct gene sets */}
+          {category.geneSets.map((gs) => (
+            <CategoryGeneSetComponent
+              key={gs.id}
+              geneSet={gs}
+              categoryType={category.type}
+              onColorByGene={onColorByGene}
+              onColorBySet={onColorBySet}
+              activeGenes={activeGenes}
+            />
+          ))}
+          {isEmpty && (
+            <div style={styles.emptyCategory}>
+              {category.type === 'manual' ? 'Click + to create a gene set' : 'No gene sets yet'}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Helper to flatten all gene sets from hierarchical categories
+function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetCategory>): GeneSet[] {
+  const allSets: GeneSet[] = []
+  for (const catType of CATEGORY_ORDER) {
+    const cat = categories[catType]
+    // Add direct gene sets in category
+    allSets.push(...cat.geneSets)
+    // Add gene sets from folders
+    for (const folder of cat.folders) {
+      allSets.push(...folder.geneSets)
+    }
+  }
+  return allSets
+}
+
 export default function GenePanel() {
-  const { geneSets, selectedGenes, bivariateData, colorMode, addGeneSet, addGenesToSet } = useStore()
+  const { geneSetCategories, selectedGenes, bivariateData, colorMode, addGeneSet, addGeneSetToCategory, addGenesToSet } = useStore()
   const { colorByGene, colorByGenes, clearExpressionColor, colorByBivariate, clearBivariateColor } = useDataActions()
+
+  // Flatten gene sets for bivariate selection
+  const allGeneSets = flattenGeneSets(geneSetCategories)
   const [newSetName, setNewSetName] = useState('')
   const [showNewSetInput, setShowNewSetInput] = useState(false)
   const [selectedSearchGenes, setSelectedSearchGenes] = useState<Set<string>>(new Set())
@@ -642,9 +1088,9 @@ export default function GenePanel() {
       // data.similar_genes is an array of gene names
       const similarGenes = data.similar_genes as string[]
 
-      // Create gene set with seed gene + similar genes
+      // Create gene set with seed gene + similar genes in the similar_genes category
       const setName = `Similar to ${similarGenesSeed.trim()}`
-      addGeneSet(setName, [similarGenesSeed.trim(), ...similarGenes])
+      addGeneSetToCategory('similar_genes', setName, [similarGenesSeed.trim(), ...similarGenes])
 
       // Clear input after success
       setSimilarGenesSeed('')
@@ -710,54 +1156,38 @@ export default function GenePanel() {
       )}
 
       <div style={styles.content}>
-        <div style={styles.section}>
-          <div style={styles.sectionHeader}>
-            <span style={styles.sectionTitle}>Gene Sets</span>
-            <button
-              style={styles.addButton}
-              onClick={() => setShowNewSetInput(true)}
-            >
-              + New Set
+        {/* New Set Input (for manual category) */}
+        {showNewSetInput && (
+          <div style={{ marginBottom: '12px', display: 'flex', gap: '4px' }}>
+            <input
+              type="text"
+              placeholder="Set name..."
+              value={newSetName}
+              onChange={(e) => setNewSetName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleCreateSet()
+                if (e.key === 'Escape') setShowNewSetInput(false)
+              }}
+              style={{ ...styles.searchInput, flex: 1 }}
+              autoFocus
+            />
+            <button style={styles.addButton} onClick={handleCreateSet}>
+              Add
             </button>
           </div>
+        )}
 
-          {showNewSetInput && (
-            <div style={{ marginBottom: '8px', display: 'flex', gap: '4px' }}>
-              <input
-                type="text"
-                placeholder="Set name..."
-                value={newSetName}
-                onChange={(e) => setNewSetName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreateSet()
-                  if (e.key === 'Escape') setShowNewSetInput(false)
-                }}
-                style={{ ...styles.searchInput, flex: 1 }}
-                autoFocus
-              />
-              <button style={styles.addButton} onClick={handleCreateSet}>
-                Add
-              </button>
-            </div>
-          )}
-
-          {geneSets.length === 0 ? (
-            <div style={styles.emptyState}>
-              Create a gene set, then drag genes from search results to add them
-            </div>
-          ) : (
-            geneSets.map((gs) => (
-              <GeneSetComponent
-                key={gs.name}
-                geneSet={gs}
-                onColorByGene={colorByGene}
-                onColorBySet={colorByGenes}
-                activeGenes={selectedGenes}
-                onAddGenes={handleAddGenesToSet}
-              />
-            ))
-          )}
-        </div>
+        {/* Gene Set Categories */}
+        {CATEGORY_ORDER.map((catType) => (
+          <GeneSetCategoryComponent
+            key={catType}
+            category={geneSetCategories[catType]}
+            onColorByGene={colorByGene}
+            onColorBySet={colorByGenes}
+            activeGenes={selectedGenes}
+            onAddNewSet={catType === 'manual' ? () => setShowNewSetInput(true) : undefined}
+          />
+        ))}
 
         {/* Find Similar Genes Section - only shown when gene_neighbors exists */}
         {hasGeneNeighbors && (
@@ -841,7 +1271,7 @@ export default function GenePanel() {
         )}
 
         {/* Bivariate Mode Section */}
-        {geneSets.length >= 2 && (
+        {allGeneSets.filter(gs => gs.genes.length > 0).length >= 2 && (
           <div style={styles.section}>
             <div style={styles.sectionHeader}>
               <span style={styles.sectionTitle}>Bivariate Coloring</span>
@@ -870,8 +1300,8 @@ export default function GenePanel() {
                   }}
                 >
                   <option value="">Select gene set...</option>
-                  {geneSets.filter(gs => gs.genes.length > 0 && gs.name !== bivariateSet2).map((gs) => (
-                    <option key={gs.name} value={gs.name}>
+                  {allGeneSets.filter(gs => gs.genes.length > 0 && gs.id !== bivariateSet2).map((gs) => (
+                    <option key={gs.id} value={gs.id}>
                       {gs.name} ({gs.genes.length} genes)
                     </option>
                   ))}
@@ -896,8 +1326,8 @@ export default function GenePanel() {
                   }}
                 >
                   <option value="">Select gene set...</option>
-                  {geneSets.filter(gs => gs.genes.length > 0 && gs.name !== bivariateSet1).map((gs) => (
-                    <option key={gs.name} value={gs.name}>
+                  {allGeneSets.filter(gs => gs.genes.length > 0 && gs.id !== bivariateSet1).map((gs) => (
+                    <option key={gs.id} value={gs.id}>
                       {gs.name} ({gs.genes.length} genes)
                     </option>
                   ))}
@@ -905,8 +1335,8 @@ export default function GenePanel() {
               </div>
               <button
                 onClick={() => {
-                  const set1 = geneSets.find(gs => gs.name === bivariateSet1)
-                  const set2 = geneSets.find(gs => gs.name === bivariateSet2)
+                  const set1 = allGeneSets.find(gs => gs.id === bivariateSet1)
+                  const set2 = allGeneSets.find(gs => gs.id === bivariateSet2)
                   if (set1 && set2) {
                     colorByBivariate(set1.genes, set2.genes)
                   }

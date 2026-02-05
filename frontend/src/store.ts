@@ -38,9 +38,73 @@ export interface BivariateExpressionData {
 }
 
 export interface GeneSet {
+  id: string
   name: string
   genes: string[]
 }
+
+// Category types for organizing gene sets
+export type GeneSetCategoryType = 'manual' | 'gene_clusters' | 'similar_genes' | 'diff_exp' | 'spatial'
+
+export interface GeneSetFolder {
+  id: string
+  name: string
+  expanded: boolean
+  geneSets: GeneSet[]
+  createdAt: string
+}
+
+export interface GeneSetCategory {
+  type: GeneSetCategoryType
+  name: string  // Display name
+  expanded: boolean
+  folders: GeneSetFolder[]  // Subfolders (for gene_clusters, diff_exp)
+  geneSets: GeneSet[]  // Direct gene sets (for similar_genes, manual)
+}
+
+// Default category configuration
+const createDefaultCategories = (): Record<GeneSetCategoryType, GeneSetCategory> => ({
+  manual: {
+    type: 'manual',
+    name: 'Manual',
+    expanded: true,
+    folders: [],
+    geneSets: [],
+  },
+  gene_clusters: {
+    type: 'gene_clusters',
+    name: 'Gene Clusters',
+    expanded: true,
+    folders: [],
+    geneSets: [],
+  },
+  similar_genes: {
+    type: 'similar_genes',
+    name: 'Similar Genes',
+    expanded: true,
+    folders: [],
+    geneSets: [],
+  },
+  diff_exp: {
+    type: 'diff_exp',
+    name: 'Differential Expression',
+    expanded: true,
+    folders: [],
+    geneSets: [],
+  },
+  spatial: {
+    type: 'spatial',
+    name: 'Spatially Variable',
+    expanded: true,
+    folders: [],
+    geneSets: [],
+  },
+})
+
+// Helper to generate unique IDs
+let geneSetIdCounter = 0
+export const generateGeneSetId = () => `gs_${Date.now()}_${++geneSetIdCounter}`
+export const generateFolderId = () => `folder_${Date.now()}_${++geneSetIdCounter}`
 
 // Differential expression types
 export interface DiffExpGene {
@@ -127,9 +191,12 @@ interface AppState {
   // Bivariate expression data
   bivariateData: BivariateExpressionData | null
 
-  // Gene management
-  geneSets: GeneSet[]
+  // Gene management (hierarchical)
+  geneSetCategories: Record<GeneSetCategoryType, GeneSetCategory>
   selectedGenes: string[]  // Currently selected genes for expression coloring
+
+  // Legacy flat gene sets (for backward compatibility during migration)
+  geneSets: GeneSet[]
 
   // Cell selection
   selectedCellIndices: number[]  // Indices of selected cells
@@ -185,7 +252,7 @@ interface AppState {
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
 
-  // Gene set actions
+  // Gene set actions (legacy - for backward compatibility)
   addGeneSet: (name: string, genes: string[]) => void
   removeGeneSet: (name: string) => void
   addGenesToSet: (setName: string, genes: string[]) => void
@@ -193,6 +260,19 @@ interface AppState {
   renameGeneSet: (oldName: string, newName: string) => void
   setSelectedGenes: (genes: string[]) => void
   clearSelectedGenes: () => void
+
+  // Gene set category actions (hierarchical)
+  toggleCategoryExpanded: (categoryType: GeneSetCategoryType) => void
+  toggleFolderExpanded: (categoryType: GeneSetCategoryType, folderId: string) => void
+  addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[]) => void
+  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[] }[]) => void
+  addGeneSetToFolder: (categoryType: GeneSetCategoryType, folderId: string, name: string, genes: string[]) => void
+  removeGeneSetFromCategory: (categoryType: GeneSetCategoryType, geneSetId: string) => void
+  removeGeneSetFromFolder: (categoryType: GeneSetCategoryType, folderId: string, geneSetId: string) => void
+  removeFolder: (categoryType: GeneSetCategoryType, folderId: string) => void
+  addGenesToCategorySet: (categoryType: GeneSetCategoryType, geneSetId: string, genes: string[]) => void
+  removeGenesFromCategorySet: (categoryType: GeneSetCategoryType, geneSetId: string, genes: string[]) => void
+  renameCategoryGeneSet: (categoryType: GeneSetCategoryType, geneSetId: string, newName: string) => void
 
   // Cell selection actions
   setSelectedCellIndices: (indices: number[]) => void
@@ -253,7 +333,8 @@ export const useStore = create<AppState>((set) => ({
   colorBy: null,
   expressionData: null,
   bivariateData: null,
-  geneSets: [],
+  geneSetCategories: createDefaultCategories(),
+  geneSets: [],  // Legacy, kept for backward compatibility
   selectedGenes: [],
   selectedCellIndices: [],
   interactionMode: 'pan',
@@ -321,13 +402,14 @@ export const useStore = create<AppState>((set) => ({
       if (!data || !state.schema) {
         return { bivariateData: data, cellSortOrder: null, cellSortVersion: 0 }
       }
-      // Auto-sort by product of both values (ascending, so high values render last/on top)
+      // Auto-sort by sum of both values (ascending, so high values render last/on top)
+      // Sum prioritizes cells high in EITHER or BOTH gene sets for visibility
       const { values1, values2 } = data
       const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
       indices.sort((a, b) => {
-        const prodA = (values1[a] ?? 0) * (values2[a] ?? 0)
-        const prodB = (values1[b] ?? 0) * (values2[b] ?? 0)
-        return prodA - prodB
+        const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
+        const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
+        return sumA - sumB
       })
       return {
         bivariateData: data,
@@ -344,9 +426,21 @@ export const useStore = create<AppState>((set) => ({
 
   // Gene set actions
   addGeneSet: (name, genes) =>
-    set((state) => ({
-      geneSets: [...state.geneSets, { name, genes }],
-    })),
+    set((state) => {
+      const newGeneSet = { id: generateGeneSetId(), name, genes }
+      return {
+        // Add to legacy flat list
+        geneSets: [...state.geneSets, newGeneSet],
+        // Also add to manual category in hierarchical structure
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          manual: {
+            ...state.geneSetCategories.manual,
+            geneSets: [...state.geneSetCategories.manual.geneSets, newGeneSet],
+          },
+        },
+      }
+    }),
 
   removeGeneSet: (name) =>
     set((state) => ({
@@ -380,6 +474,242 @@ export const useStore = create<AppState>((set) => ({
 
   setSelectedGenes: (genes) => set({ selectedGenes: genes }),
   clearSelectedGenes: () => set({ selectedGenes: [], expressionData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 }),
+
+  // Gene set category actions (hierarchical)
+  toggleCategoryExpanded: (categoryType) =>
+    set((state) => ({
+      geneSetCategories: {
+        ...state.geneSetCategories,
+        [categoryType]: {
+          ...state.geneSetCategories[categoryType],
+          expanded: !state.geneSetCategories[categoryType].expanded,
+        },
+      },
+    })),
+
+  toggleFolderExpanded: (categoryType, folderId) =>
+    set((state) => ({
+      geneSetCategories: {
+        ...state.geneSetCategories,
+        [categoryType]: {
+          ...state.geneSetCategories[categoryType],
+          folders: state.geneSetCategories[categoryType].folders.map((f) =>
+            f.id === folderId ? { ...f, expanded: !f.expanded } : f
+          ),
+        },
+      },
+    })),
+
+  addGeneSetToCategory: (categoryType, name, genes) =>
+    set((state) => ({
+      geneSetCategories: {
+        ...state.geneSetCategories,
+        [categoryType]: {
+          ...state.geneSetCategories[categoryType],
+          geneSets: [
+            ...state.geneSetCategories[categoryType].geneSets,
+            { id: generateGeneSetId(), name, genes },
+          ],
+        },
+      },
+    })),
+
+  addFolderToCategory: (categoryType, folderName, geneSets) =>
+    set((state) => ({
+      geneSetCategories: {
+        ...state.geneSetCategories,
+        [categoryType]: {
+          ...state.geneSetCategories[categoryType],
+          folders: [
+            ...state.geneSetCategories[categoryType].folders,
+            {
+              id: generateFolderId(),
+              name: folderName,
+              expanded: true,
+              createdAt: new Date().toISOString(),
+              geneSets: geneSets.map((gs) => ({
+                id: generateGeneSetId(),
+                name: gs.name,
+                genes: gs.genes,
+              })),
+            },
+          ],
+        },
+      },
+    })),
+
+  addGeneSetToFolder: (categoryType, folderId, name, genes) =>
+    set((state) => ({
+      geneSetCategories: {
+        ...state.geneSetCategories,
+        [categoryType]: {
+          ...state.geneSetCategories[categoryType],
+          folders: state.geneSetCategories[categoryType].folders.map((f) =>
+            f.id === folderId
+              ? {
+                  ...f,
+                  geneSets: [...f.geneSets, { id: generateGeneSetId(), name, genes }],
+                }
+              : f
+          ),
+        },
+      },
+    })),
+
+  removeGeneSetFromCategory: (categoryType, geneSetId) =>
+    set((state) => ({
+      geneSetCategories: {
+        ...state.geneSetCategories,
+        [categoryType]: {
+          ...state.geneSetCategories[categoryType],
+          geneSets: state.geneSetCategories[categoryType].geneSets.filter(
+            (gs) => gs.id !== geneSetId
+          ),
+        },
+      },
+    })),
+
+  removeGeneSetFromFolder: (categoryType, folderId, geneSetId) =>
+    set((state) => ({
+      geneSetCategories: {
+        ...state.geneSetCategories,
+        [categoryType]: {
+          ...state.geneSetCategories[categoryType],
+          folders: state.geneSetCategories[categoryType].folders.map((f) =>
+            f.id === folderId
+              ? { ...f, geneSets: f.geneSets.filter((gs) => gs.id !== geneSetId) }
+              : f
+          ),
+        },
+      },
+    })),
+
+  removeFolder: (categoryType, folderId) =>
+    set((state) => ({
+      geneSetCategories: {
+        ...state.geneSetCategories,
+        [categoryType]: {
+          ...state.geneSetCategories[categoryType],
+          folders: state.geneSetCategories[categoryType].folders.filter(
+            (f) => f.id !== folderId
+          ),
+        },
+      },
+    })),
+
+  addGenesToCategorySet: (categoryType, geneSetId, genes) =>
+    set((state) => {
+      const category = state.geneSetCategories[categoryType]
+      // Check if it's a direct gene set
+      const directSet = category.geneSets.find((gs) => gs.id === geneSetId)
+      if (directSet) {
+        return {
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            [categoryType]: {
+              ...category,
+              geneSets: category.geneSets.map((gs) =>
+                gs.id === geneSetId
+                  ? { ...gs, genes: [...new Set([...gs.genes, ...genes])] }
+                  : gs
+              ),
+            },
+          },
+        }
+      }
+      // Check folders
+      return {
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...category,
+            folders: category.folders.map((f) => ({
+              ...f,
+              geneSets: f.geneSets.map((gs) =>
+                gs.id === geneSetId
+                  ? { ...gs, genes: [...new Set([...gs.genes, ...genes])] }
+                  : gs
+              ),
+            })),
+          },
+        },
+      }
+    }),
+
+  removeGenesFromCategorySet: (categoryType, geneSetId, genes) =>
+    set((state) => {
+      const category = state.geneSetCategories[categoryType]
+      const genesSet = new Set(genes)
+      // Check if it's a direct gene set
+      const directSet = category.geneSets.find((gs) => gs.id === geneSetId)
+      if (directSet) {
+        return {
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            [categoryType]: {
+              ...category,
+              geneSets: category.geneSets.map((gs) =>
+                gs.id === geneSetId
+                  ? { ...gs, genes: gs.genes.filter((g) => !genesSet.has(g)) }
+                  : gs
+              ),
+            },
+          },
+        }
+      }
+      // Check folders
+      return {
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...category,
+            folders: category.folders.map((f) => ({
+              ...f,
+              geneSets: f.geneSets.map((gs) =>
+                gs.id === geneSetId
+                  ? { ...gs, genes: gs.genes.filter((g) => !genesSet.has(g)) }
+                  : gs
+              ),
+            })),
+          },
+        },
+      }
+    }),
+
+  renameCategoryGeneSet: (categoryType, geneSetId, newName) =>
+    set((state) => {
+      const category = state.geneSetCategories[categoryType]
+      // Check if it's a direct gene set
+      const directSet = category.geneSets.find((gs) => gs.id === geneSetId)
+      if (directSet) {
+        return {
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            [categoryType]: {
+              ...category,
+              geneSets: category.geneSets.map((gs) =>
+                gs.id === geneSetId ? { ...gs, name: newName } : gs
+              ),
+            },
+          },
+        }
+      }
+      // Check folders
+      return {
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...category,
+            folders: category.folders.map((f) => ({
+              ...f,
+              geneSets: f.geneSets.map((gs) =>
+                gs.id === geneSetId ? { ...gs, name: newName } : gs
+              ),
+            })),
+          },
+        },
+      }
+    }),
 
   // Cell selection actions
   setSelectedCellIndices: (indices) => set({ selectedCellIndices: indices }),
@@ -496,12 +826,13 @@ export const useStore = create<AppState>((set) => ({
     set((state) => {
       if (!state.bivariateData || !state.schema) return {}
       const { values1, values2 } = state.bivariateData
-      // Sort by product of both normalized values (ascending, so high values render last/on top)
+      // Sort by sum of both normalized values (ascending, so high values render last/on top)
+      // Sum prioritizes cells high in EITHER or BOTH gene sets for visibility
       const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
       indices.sort((a, b) => {
-        const prodA = (values1[a] ?? 0) * (values2[a] ?? 0)
-        const prodB = (values1[b] ?? 0) * (values2[b] ?? 0)
-        return prodA - prodB  // Ascending: low values first, high values last (on top)
+        const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
+        const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
+        return sumA - sumB  // Ascending: low values first, high values last (on top)
       })
       return { cellSortOrder: indices, cellSortVersion: state.cellSortVersion + 1 }
     }),

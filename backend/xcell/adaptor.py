@@ -367,21 +367,23 @@ class DataAdaptor:
         genes1: list[str],
         genes2: list[str],
         transform: str | None = None,
-        clip_percentiles: tuple[float, float] = (0, 100),
+        clip_percentile: float = 1.0,
     ) -> dict[str, Any]:
         """Get normalized expression values for two gene sets for bivariate coloring.
 
-        For each gene set, expression values are:
+        For each gene set, expression values are computed using a robust approach:
         1. Optionally log1p transformed (if transform='log1p')
-        2. Clipped to specified percentiles
-        3. Min-max normalized to [0, 1] for each gene
-        4. Averaged across genes in the set
+        2. Mean-centered per gene (subtract gene mean)
+        3. Scaled by robust measure (MAD) to handle outliers
+        4. Clipped to percentiles to limit extreme values
+        5. Averaged across genes in the set (z-score-like aggregation)
+        6. Final values rescaled to [0, 1] for coloring
 
         Args:
             genes1: List of gene names for the first set (maps to red/x-axis)
             genes2: List of gene names for the second set (maps to blue/y-axis)
             transform: Optional transformation ('log1p' for normalize_total + log1p)
-            clip_percentiles: Tuple of (low, high) percentiles for clipping
+            clip_percentile: Percentile for symmetric clipping (default 1.0 = clip at 1st/99th)
 
         Returns:
             Dictionary containing:
@@ -410,8 +412,8 @@ class DataAdaptor:
             adata_source = self.adata
 
         def summarize_geneset(genes: list[str]) -> list[float]:
-            """Summarize expression for a gene set with normalization."""
-            normalized_arrays = []
+            """Summarize expression for a gene set with robust mean-centered scoring."""
+            scaled_arrays = []
 
             for gene in genes:
                 gene_idx = adata_source.var.index.get_loc(gene)
@@ -419,29 +421,48 @@ class DataAdaptor:
 
                 # Get expression values
                 if hasattr(X, 'toarray'):
-                    values = X[:, gene_idx].toarray().flatten()
+                    values = X[:, gene_idx].toarray().flatten().astype(np.float64)
                 else:
-                    values = X[:, gene_idx].flatten()
+                    values = X[:, gene_idx].flatten().astype(np.float64)
 
-                # Clip to percentiles
-                lo, hi = np.percentile(values[~np.isnan(values)], clip_percentiles)
+                # Mean-center the gene
+                gene_mean = np.nanmean(values)
+                centered = values - gene_mean
 
-                values = np.clip(values, lo, hi)
-
-                # Min-max normalize to [0, 1]
-                if hi > lo:
-                    normalized = (values - lo) / (hi - lo)
+                # Scale by MAD (median absolute deviation) for robustness to outliers
+                # MAD is more robust than standard deviation
+                mad = np.nanmedian(np.abs(centered - np.nanmedian(centered)))
+                if mad > 0:
+                    # Scale factor: 1.4826 makes MAD comparable to SD for normal distributions
+                    scaled = centered / (mad * 1.4826)
                 else:
-                    normalized = np.zeros_like(values)
+                    # If MAD is 0 (constant expression), use SD as fallback
+                    sd = np.nanstd(values)
+                    if sd > 0:
+                        scaled = centered / sd
+                    else:
+                        scaled = np.zeros_like(values)
 
-                normalized_arrays.append(normalized)
+                scaled_arrays.append(scaled)
 
-            # Stack and compute mean across genes
-            stacked = np.vstack(normalized_arrays).T  # Shape: (n_cells, n_genes)
-            mean_values = np.nanmean(stacked, axis=1)
+            # Stack and compute mean across genes (average z-score)
+            stacked = np.vstack(scaled_arrays).T  # Shape: (n_cells, n_genes)
+            mean_scores = np.nanmean(stacked, axis=1)
+
+            # Clip extreme values symmetrically using percentiles
+            valid_scores = mean_scores[~np.isnan(mean_scores)]
+            lo = np.percentile(valid_scores, clip_percentile)
+            hi = np.percentile(valid_scores, 100 - clip_percentile)
+            clipped = np.clip(mean_scores, lo, hi)
+
+            # Rescale to [0, 1] for coloring
+            if hi > lo:
+                normalized = (clipped - lo) / (hi - lo)
+            else:
+                normalized = np.full_like(clipped, 0.5)
 
             # Convert to Python floats
-            return [float(v) if not np.isnan(v) else 0.0 for v in mean_values]
+            return [float(v) if not np.isnan(v) else 0.5 for v in normalized]
 
         values1 = summarize_geneset(genes1)
         values2 = summarize_geneset(genes2)
@@ -931,6 +952,9 @@ class DataAdaptor:
             'find_similar_genes': ['gene_neighbors'],
             'cluster_genes': ['gene_neighbors'],
             'build_gene_graph': [],  # Convenience function, no prereqs
+            # Spatial analysis
+            'spatial_neighbors': ['has_spatial'],
+            'spatial_autocorr': ['spatial_neighbors'],
         }
 
         required = prereqs.get(action, [])
@@ -949,11 +973,202 @@ class DataAdaptor:
             elif prereq == 'gene_neighbors':
                 if 'gene_connectivities' not in self.adata.varp:
                     missing.append('gene_neighbors')
+            elif prereq == 'has_spatial':
+                if not self._has_spatial_coordinates():
+                    missing.append('has_spatial')
+            elif prereq == 'spatial_neighbors':
+                if 'spatial_connectivities' not in self.adata.obsp:
+                    missing.append('spatial_neighbors')
 
         return {
             'satisfied': len(missing) == 0,
             'missing': missing,
         }
+
+    def _has_spatial_coordinates(self) -> bool:
+        """Check if spatial coordinates are available.
+
+        Looks for common spatial coordinate keys in .obsm.
+
+        Returns:
+            True if spatial coordinates exist
+        """
+        spatial_keys = ['spatial', 'X_spatial']
+        for key in spatial_keys:
+            if key in self.adata.obsm:
+                arr = self.adata.obsm[key]
+                if isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.shape[1] >= 2:
+                    return True
+        return False
+
+    def _get_spatial_key(self) -> str | None:
+        """Get the key for spatial coordinates in .obsm.
+
+        Returns:
+            The key name, or None if not found
+        """
+        spatial_keys = ['spatial', 'X_spatial']
+        for key in spatial_keys:
+            if key in self.adata.obsm:
+                arr = self.adata.obsm[key]
+                if isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.shape[1] >= 2:
+                    return key
+        return None
+
+    def get_var_boolean_columns(self) -> list[dict[str, Any]]:
+        """Get list of boolean columns in .var that can be used for gene filtering.
+
+        Returns:
+            List of dicts with column name, description, and count of True values
+        """
+        bool_columns = []
+        for col in self.adata.var.columns:
+            # Check if column is boolean or can be treated as boolean
+            dtype = self.adata.var[col].dtype
+            if dtype == bool or (dtype == 'bool'):
+                n_true = self.adata.var[col].sum()
+                bool_columns.append({
+                    'name': col,
+                    'n_true': int(n_true),
+                    'n_total': self.n_genes,
+                })
+            # Also check for columns that look boolean (0/1 or True/False)
+            elif pd.api.types.is_numeric_dtype(dtype):
+                unique_vals = self.adata.var[col].dropna().unique()
+                if len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1, 0.0, 1.0, True, False}):
+                    n_true = int((self.adata.var[col] == 1).sum() | (self.adata.var[col] == True).sum())
+                    bool_columns.append({
+                        'name': col,
+                        'n_true': n_true,
+                        'n_total': self.n_genes,
+                    })
+        return bool_columns
+
+    def _resolve_gene_mask(
+        self,
+        gene_subset: str | list[str] | dict[str, Any] | None,
+    ) -> tuple[np.ndarray, str, dict[str, Any]]:
+        """Resolve a gene_subset specification into a boolean mask.
+
+        Args:
+            gene_subset: Gene subset specification. Can be:
+                - None: all genes
+                - str: single boolean column name from .var (e.g., 'highly_variable')
+                - list[str]: explicit list of gene names
+                - dict: {'columns': [...], 'operation': 'intersection'|'union'}
+
+        Returns:
+            Tuple of (boolean mask, subset_type string, metadata dict)
+        """
+        if gene_subset is None:
+            return (
+                np.ones(self.n_genes, dtype=bool),
+                'all',
+                {'n_genes': self.n_genes},
+            )
+
+        # Single column name
+        if isinstance(gene_subset, str):
+            if gene_subset not in self.adata.var.columns:
+                raise ValueError(f"Column '{gene_subset}' not found in .var")
+            col_values = self.adata.var[gene_subset]
+            # Convert to boolean mask
+            if col_values.dtype == bool:
+                mask = col_values.values
+            else:
+                mask = (col_values == 1) | (col_values == True)
+            mask = np.asarray(mask, dtype=bool)
+            if mask.sum() == 0:
+                raise ValueError(f"No genes found with {gene_subset}=True")
+            return (
+                mask,
+                f'column:{gene_subset}',
+                {'column': gene_subset, 'n_genes': int(mask.sum())},
+            )
+
+        # Explicit list of gene names
+        if isinstance(gene_subset, list) and len(gene_subset) > 0 and isinstance(gene_subset[0], str):
+            # Check if it looks like gene names (not column names)
+            # If all items are in var_names, treat as gene list
+            # If all items are in var.columns, treat as column list with default intersection
+            all_genes = all(g in self.adata.var_names for g in gene_subset)
+            all_columns = all(c in self.adata.var.columns for c in gene_subset)
+
+            if all_genes and not all_columns:
+                # Explicit gene list
+                mask = self.adata.var_names.isin(gene_subset)
+                if mask.sum() == 0:
+                    raise ValueError("None of the specified genes found in dataset")
+                return (
+                    mask,
+                    'gene_list',
+                    {'n_genes': int(mask.sum()), 'genes_requested': len(gene_subset)},
+                )
+            elif all_columns:
+                # Treat as column list with intersection
+                gene_subset = {'columns': gene_subset, 'operation': 'intersection'}
+            else:
+                # Mixed - try as gene list
+                mask = self.adata.var_names.isin(gene_subset)
+                if mask.sum() == 0:
+                    raise ValueError("None of the specified genes found in dataset")
+                return (
+                    mask,
+                    'gene_list',
+                    {'n_genes': int(mask.sum()), 'genes_requested': len(gene_subset)},
+                )
+
+        # Dict with columns and operation
+        if isinstance(gene_subset, dict):
+            columns = gene_subset.get('columns', [])
+            operation = gene_subset.get('operation', 'intersection')
+
+            if not columns:
+                raise ValueError("No columns specified in gene_subset")
+
+            if operation not in ('intersection', 'union'):
+                raise ValueError("operation must be 'intersection' or 'union'")
+
+            # Validate columns exist
+            missing = [c for c in columns if c not in self.adata.var.columns]
+            if missing:
+                raise ValueError(f"Columns not found in .var: {missing}")
+
+            # Build combined mask
+            masks = []
+            for col in columns:
+                col_values = self.adata.var[col]
+                if col_values.dtype == bool:
+                    m = col_values.values
+                else:
+                    m = (col_values == 1) | (col_values == True)
+                masks.append(np.asarray(m, dtype=bool))
+
+            if operation == 'intersection':
+                combined_mask = np.all(masks, axis=0)
+                op_symbol = 'AND'
+            else:  # union
+                combined_mask = np.any(masks, axis=0)
+                op_symbol = 'OR'
+
+            if combined_mask.sum() == 0:
+                raise ValueError(f"No genes found matching {op_symbol} of {columns}")
+
+            return (
+                combined_mask,
+                f'{operation}:{"+".join(columns)}',
+                {
+                    'columns': columns,
+                    'operation': operation,
+                    'n_genes': int(combined_mask.sum()),
+                    'individual_counts': {c: int(m.sum()) for c, m in zip(columns, masks)},
+                },
+            )
+
+        raise ValueError(
+            "gene_subset must be None, a column name (str), a list of gene names, "
+            "or a dict with 'columns' and 'operation'"
+        )
 
     def run_filter_genes(
         self,
@@ -1088,25 +1303,121 @@ class DataAdaptor:
         self._log_action('log1p', {}, result)
         return result
 
+    def run_highly_variable_genes(
+        self,
+        n_top_genes: int | None = None,
+        min_mean: float = 0.0125,
+        max_mean: float = 3.0,
+        min_disp: float = 0.5,
+        flavor: str = 'seurat',
+        n_bins: int = 20,
+        subset: bool = False,
+    ) -> dict[str, Any]:
+        """Identify highly variable genes.
+
+        Adds 'highly_variable' boolean column to .var.
+
+        Args:
+            n_top_genes: Number of top genes to select (overrides min/max thresholds)
+            min_mean: Minimum mean expression threshold
+            max_mean: Maximum mean expression threshold
+            min_disp: Minimum dispersion threshold
+            flavor: Method ('seurat', 'cell_ranger', 'seurat_v3')
+            n_bins: Number of bins for dispersion normalization
+            subset: If True, subset adata to only highly variable genes (destructive)
+
+        Returns:
+            Dict with operation status and number of HVGs
+        """
+        sc.pp.highly_variable_genes(
+            self.adata,
+            n_top_genes=n_top_genes,
+            min_mean=min_mean,
+            max_mean=max_mean,
+            min_disp=min_disp,
+            flavor=flavor,
+            n_bins=n_bins,
+            subset=subset,
+        )
+
+        n_hvg = int(self.adata.var['highly_variable'].sum())
+
+        result = {
+            'status': 'completed',
+            'n_highly_variable': n_hvg,
+            'n_total_genes': self.n_genes,
+            'flavor': flavor,
+        }
+        self._log_action('highly_variable_genes', {
+            'n_top_genes': n_top_genes,
+            'min_mean': min_mean,
+            'max_mean': max_mean,
+            'min_disp': min_disp,
+            'flavor': flavor,
+            'subset': subset,
+        }, result)
+        return result
+
     def run_pca(
         self,
         n_comps: int = 50,
         svd_solver: str = 'arpack',
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        use_highly_variable: bool | None = None,
     ) -> dict[str, Any]:
         """Run PCA dimensionality reduction.
 
         Args:
             n_comps: Number of principal components to compute
             svd_solver: SVD solver to use ('arpack', 'randomized', 'auto')
+            gene_subset: Subset of genes to use. Can be:
+                - None: use default behavior (highly_variable if available, else all)
+                - str: boolean column name from .var
+                - list[str]: explicit list of gene names
+                - dict: {'columns': [...], 'operation': 'intersection'|'union'}
+            use_highly_variable: Deprecated, use gene_subset instead.
+                If True and gene_subset is None, uses 'highly_variable' column.
 
         Returns:
             Dict with operation status and variance explained
         """
+        # Handle legacy use_highly_variable parameter
+        if gene_subset is None and use_highly_variable is True:
+            if 'highly_variable' in self.adata.var.columns:
+                gene_subset = 'highly_variable'
+
+        # Resolve gene subset
+        if gene_subset is not None:
+            gene_mask, subset_type, subset_metadata = self._resolve_gene_mask(gene_subset)
+            n_genes_used = int(gene_mask.sum())
+
+            # Create a temporary subset for PCA
+            adata_pca = self.adata[:, gene_mask].copy()
+        else:
+            # Default scanpy behavior: use highly_variable if present
+            adata_pca = self.adata
+            subset_type = 'default'
+            n_genes_used = self.n_genes
+            if 'highly_variable' in self.adata.var.columns:
+                n_genes_used = int(self.adata.var['highly_variable'].sum())
+                subset_type = 'highly_variable (auto)'
+
         # Limit n_comps to valid range
-        max_comps = min(self.n_cells - 1, self.n_genes - 1)
+        max_comps = min(adata_pca.n_obs - 1, adata_pca.n_vars - 1)
         n_comps = min(n_comps, max_comps)
 
-        sc.tl.pca(self.adata, n_comps=n_comps, svd_solver=svd_solver)
+        # Run PCA on subset
+        sc.tl.pca(adata_pca, n_comps=n_comps, svd_solver=svd_solver)
+
+        # Copy results back to main adata
+        self.adata.obsm['X_pca'] = adata_pca.obsm['X_pca']
+        self.adata.uns['pca'] = adata_pca.uns['pca']
+        if 'PCs' in adata_pca.varm:
+            # Store loadings for the subset genes
+            self.adata.uns['pca']['gene_subset'] = {
+                'type': subset_type,
+                'n_genes': n_genes_used,
+            }
 
         # Get variance explained
         variance_ratio = self.adata.uns['pca']['variance_ratio'][:10].tolist()
@@ -1116,8 +1427,14 @@ class DataAdaptor:
             'n_comps': n_comps,
             'variance_explained_top10': variance_ratio,
             'embedding_name': 'X_pca',
+            'gene_subset_type': subset_type,
+            'n_genes_used': n_genes_used,
         }
-        self._log_action('pca', {'n_comps': n_comps, 'svd_solver': svd_solver}, result)
+        self._log_action('pca', {
+            'n_comps': n_comps,
+            'svd_solver': svd_solver,
+            'gene_subset': gene_subset,
+        }, result)
         return result
 
     def run_neighbors(
@@ -1271,6 +1588,7 @@ class DataAdaptor:
         scale: bool = True,
         use_kneedle: bool = True,
         max_comps: int = 100,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run PCA on genes (transposed expression matrix).
 
@@ -1282,6 +1600,12 @@ class DataAdaptor:
             scale: Whether to z-score scale genes before PCA (recommended)
             use_kneedle: Whether to use Kneedle algorithm for auto PC selection
             max_comps: Maximum components to compute before Kneedle selection
+            gene_subset: Subset of genes to use. Can be:
+                - None: use all genes
+                - str: boolean column name from .var (e.g., 'highly_variable', 'spatially_variable')
+                - list[str]: explicit list of gene names
+                - dict: {'columns': ['col1', 'col2'], 'operation': 'intersection'|'union'}
+                  for combining multiple boolean columns with AND/OR logic
 
         Returns:
             Dict with operation status, n_comps used, and variance explained
@@ -1290,8 +1614,19 @@ class DataAdaptor:
         from sklearn.decomposition import PCA
         from sklearn.preprocessing import StandardScaler
 
-        # Transpose: genes become observations
-        X = self.adata.X.T
+        # Resolve gene subset to boolean mask
+        gene_mask, subset_type, subset_metadata = self._resolve_gene_mask(gene_subset)
+
+        # Store the gene subset info for downstream use
+        self.adata.uns['gene_pca_subset'] = {
+            'type': subset_type,
+            'genes': self.adata.var_names[gene_mask].tolist(),
+            'n_genes': int(gene_mask.sum()),
+            **subset_metadata,
+        }
+
+        # Subset and transpose: genes become observations
+        X = self.adata.X[:, gene_mask].T
         if sparse.issparse(X):
             X = X.toarray()
         X = np.asarray(X, dtype=np.float64)
@@ -1334,9 +1669,12 @@ class DataAdaptor:
             n_comps_final = n_comps_compute
 
         # Store truncated results
-        self.adata.varm['X_gene_pca'] = gene_pcs[:, :n_comps_final]
+        # If using a subset, store full-sized array with NaN for excluded genes
+        full_gene_pcs = np.full((self.n_genes, n_comps_final), np.nan)
+        full_gene_pcs[gene_mask, :] = gene_pcs[:, :n_comps_final]
+        self.adata.varm['X_gene_pca'] = full_gene_pcs
 
-        # Store variance info
+        # Store variance info and subset metadata
         self.adata.uns['gene_pca'] = {
             'variance_ratio': variance_ratio.tolist(),
             'variance': pca.explained_variance_.tolist(),
@@ -1344,6 +1682,8 @@ class DataAdaptor:
             'n_comps_computed': n_comps_compute,
             'scaled': scale,
             'elbow_index': elbow_idx if (n_comps is None and use_kneedle) else None,
+            'gene_subset_type': subset_type,
+            'n_genes_used': int(gene_mask.sum()),
         }
 
         cumulative_var = float(np.sum(variance_ratio[:n_comps_final]))
@@ -1355,11 +1695,14 @@ class DataAdaptor:
             'cumulative_variance': cumulative_var,
             'scaled': scale,
             'elbow_detected': elbow_idx if (n_comps is None and use_kneedle) else None,
+            'gene_subset_type': subset_type,
+            'n_genes_used': int(gene_mask.sum()),
         }
         self._log_action('gene_pca', {
             'n_comps': n_comps,
             'scale': scale,
             'use_kneedle': use_kneedle,
+            'gene_subset': gene_subset,
         }, result)
         return result
 
@@ -1392,6 +1735,7 @@ class DataAdaptor:
         """Compute gene-gene kNN graph from gene PCA embedding.
 
         Results are stored in .varp['gene_connectivities'] and .varp['gene_distances'].
+        If gene_pca was computed on a subset, neighbors are only computed for that subset.
 
         Args:
             n_neighbors: Number of neighbors per gene
@@ -1410,54 +1754,76 @@ class DataAdaptor:
 
         # Get gene PCA embedding
         gene_pcs = self.adata.varm['X_gene_pca']
-        n_genes = gene_pcs.shape[0]
+        n_genes_total = gene_pcs.shape[0]
+
+        # Identify genes with valid embeddings (not NaN)
+        valid_mask = ~np.isnan(gene_pcs[:, 0])
+        valid_indices = np.where(valid_mask)[0]
+        n_genes_valid = len(valid_indices)
+
+        if n_genes_valid == 0:
+            raise ValueError("No genes with valid PCA embeddings")
+
+        # Extract valid gene embeddings
+        gene_pcs_valid = gene_pcs[valid_mask, :]
 
         # Limit n_neighbors to valid range
-        n_neighbors = min(n_neighbors, n_genes - 1)
+        n_neighbors = min(n_neighbors, n_genes_valid - 1)
 
-        # Compute kNN
+        # Compute kNN on valid genes
         nn = NearestNeighbors(n_neighbors=n_neighbors + 1, metric=metric)
-        nn.fit(gene_pcs)
-        distances, indices = nn.kneighbors(gene_pcs)
+        nn.fit(gene_pcs_valid)
+        distances, indices = nn.kneighbors(gene_pcs_valid)
 
         # Build sparse distance matrix (exclude self)
+        # Map back to original gene indices
         rows = []
         cols = []
         dists = []
-        for i in range(n_genes):
+        for i_valid in range(n_genes_valid):
+            i_original = valid_indices[i_valid]
             for j_idx in range(1, n_neighbors + 1):  # Skip self (index 0)
-                j = indices[i, j_idx]
-                rows.append(i)
-                cols.append(j)
-                dists.append(distances[i, j_idx])
+                j_valid = indices[i_valid, j_idx]
+                j_original = valid_indices[j_valid]
+                rows.append(i_original)
+                cols.append(j_original)
+                dists.append(distances[i_valid, j_idx])
 
         dist_matrix = sparse.csr_matrix(
             (dists, (rows, cols)),
-            shape=(n_genes, n_genes)
+            shape=(n_genes_total, n_genes_total)
         )
 
         # Build connectivity matrix (1 / (1 + distance) for weights)
         conn_weights = [1.0 / (1.0 + d) for d in dists]
         conn_matrix = sparse.csr_matrix(
             (conn_weights, (rows, cols)),
-            shape=(n_genes, n_genes)
+            shape=(n_genes_total, n_genes_total)
         )
 
         # Store in .varp
         self.adata.varp['gene_distances'] = dist_matrix
         self.adata.varp['gene_connectivities'] = conn_matrix
 
+        # Get subset info from gene_pca
+        subset_info = self.adata.uns.get('gene_pca', {})
+        subset_type = subset_info.get('gene_subset_type', 'all')
+
         # Store metadata
         self.adata.uns['gene_neighbors'] = {
             'n_neighbors': n_neighbors,
             'metric': metric,
+            'n_genes_in_graph': n_genes_valid,
+            'gene_subset_type': subset_type,
         }
 
         result = {
             'status': 'completed',
             'n_neighbors': n_neighbors,
             'metric': metric,
-            'n_genes': n_genes,
+            'n_genes': n_genes_valid,
+            'n_genes_total': n_genes_total,
+            'gene_subset_type': subset_type,
         }
         self._log_action('gene_neighbors', {
             'n_neighbors': n_neighbors,
@@ -1571,13 +1937,29 @@ class DataAdaptor:
         conn_sym = conn + conn.T
         conn_sym.data = conn_sym.data / 2
 
-        # Build igraph from sparse matrix
-        sources, targets = conn_sym.nonzero()
-        weights = np.array(conn_sym[sources, targets]).flatten()
+        # Identify genes with valid embeddings (genes that have connections)
+        # Genes outside the PCA subset will have no connections
+        gene_pcs = self.adata.varm['X_gene_pca']
+        valid_mask = ~np.isnan(gene_pcs[:, 0])
+        valid_indices = np.where(valid_mask)[0]
+        n_genes_valid = len(valid_indices)
 
+        if n_genes_valid == 0:
+            raise ValueError("No genes with valid embeddings to cluster")
+
+        # Create mapping from original indices to subgraph indices
+        original_to_sub = {orig: sub for sub, orig in enumerate(valid_indices)}
+        sub_to_original = valid_indices
+
+        # Extract subgraph for valid genes only
+        conn_sub = conn_sym[valid_indices, :][:, valid_indices]
+        sources_sub, targets_sub = conn_sub.nonzero()
+        weights = np.array(conn_sub[sources_sub, targets_sub]).flatten()
+
+        # Build igraph from the subgraph
         g = ig.Graph(directed=False)
-        g.add_vertices(self.n_genes)
-        edges = list(zip(sources.tolist(), targets.tolist()))
+        g.add_vertices(n_genes_valid)
+        edges = list(zip(sources_sub.tolist(), targets_sub.tolist()))
         g.add_edges(edges)
         g.es['weight'] = weights.tolist()
 
@@ -1589,18 +1971,25 @@ class DataAdaptor:
             resolution_parameter=resolution,
         )
 
-        # Extract cluster assignments
-        clusters = np.array(partition.membership)
-        n_clusters = len(set(clusters))
+        # Extract cluster assignments for valid genes
+        clusters_sub = np.array(partition.membership)
+        n_clusters = len(set(clusters_sub))
+
+        # Map back to full gene set: unclustered genes get label 'unclustered'
+        cluster_labels = np.full(self.n_genes, 'unclustered', dtype=object)
+        for sub_idx, orig_idx in enumerate(sub_to_original):
+            cluster_labels[orig_idx] = str(clusters_sub[sub_idx])
 
         # Store in .var
-        self.adata.var[key_added] = pd.Categorical(clusters.astype(str))
+        self.adata.var[key_added] = pd.Categorical(cluster_labels)
 
-        # Build module dictionary
+        # Build module dictionary (only for clustered genes)
         modules = {}
         for cluster_id in range(n_clusters):
-            gene_mask = clusters == cluster_id
-            genes_in_cluster = self.adata.var_names[gene_mask].tolist()
+            # Find genes in this cluster
+            sub_mask = clusters_sub == cluster_id
+            original_indices = sub_to_original[sub_mask]
+            genes_in_cluster = self.adata.var_names[original_indices].tolist()
             modules[f'module_{cluster_id}'] = genes_in_cluster
 
         self.adata.uns['gene_modules'] = modules
@@ -1609,6 +1998,8 @@ class DataAdaptor:
             'status': 'completed',
             'key_added': key_added,
             'n_clusters': n_clusters,
+            'n_genes_clustered': n_genes_valid,
+            'n_genes_unclustered': self.n_genes - n_genes_valid,
             'resolution': resolution,
             'module_sizes': {k: len(v) for k, v in modules.items()},
         }
@@ -1657,3 +2048,262 @@ class DataAdaptor:
             'neighbors': neighbors_result,
         }
         return result
+
+    # =========================================================================
+    # Spatial Analysis Methods
+    # =========================================================================
+
+    def run_spatial_neighbors(
+        self,
+        n_neighs: int = 6,
+        coord_type: str | None = None,
+        spatial_key: str | None = None,
+        delaunay: bool = False,
+        n_rings: int = 1,
+        radius: float | None = None,
+    ) -> dict[str, Any]:
+        """Compute spatial neighborhood graph using Squidpy.
+
+        Builds a graph based on spatial proximity of cells/spots.
+        Results stored in .obsp['spatial_connectivities'] and .obsp['spatial_distances'].
+
+        Args:
+            n_neighs: Number of spatial neighbors (default 6 for hexagonal grids)
+            coord_type: 'grid' for Visium, 'generic' for other, None for auto-detect
+            spatial_key: Key in .obsm for spatial coordinates (auto-detected if None)
+            delaunay: Use Delaunay triangulation instead of kNN
+            n_rings: Number of rings of neighbors for grid coordinates
+            radius: Radius for generic coordinates (optional)
+
+        Returns:
+            Dict with operation status and graph info
+        """
+        import squidpy as sq
+
+        # Check prerequisites
+        prereq = self.check_prerequisites('spatial_neighbors')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        # Auto-detect spatial key if not provided
+        if spatial_key is None:
+            spatial_key = self._get_spatial_key()
+            if spatial_key is None:
+                raise ValueError("No spatial coordinates found in .obsm")
+
+        # Build spatial neighbors graph
+        sq.gr.spatial_neighbors(
+            self.adata,
+            n_neighs=n_neighs,
+            coord_type=coord_type,
+            spatial_key=spatial_key,
+            delaunay=delaunay,
+            n_rings=n_rings,
+            radius=radius,
+        )
+
+        # Get graph stats
+        n_edges = self.adata.obsp['spatial_connectivities'].nnz
+
+        result = {
+            'status': 'completed',
+            'n_cells': self.n_cells,
+            'n_edges': n_edges,
+            'spatial_key': spatial_key,
+            'n_neighs': n_neighs,
+        }
+        self._log_action('spatial_neighbors', {
+            'n_neighs': n_neighs,
+            'coord_type': coord_type,
+            'spatial_key': spatial_key,
+            'delaunay': delaunay,
+        }, result)
+        return result
+
+    def run_spatial_autocorr(
+        self,
+        mode: str = 'moran',
+        genes: list[str] | None = None,
+        n_perms: int | None = 100,
+        n_jobs: int = 1,
+        corr_method: str = 'fdr_bh',
+        pval_threshold: float = 0.05,
+    ) -> dict[str, Any]:
+        """Compute spatial autocorrelation to identify spatially variable genes.
+
+        Uses Squidpy to compute Moran's I or Geary's C statistics.
+        Results stored in:
+        - .uns['moranI'] or .uns['gearyC']: Full DataFrame with stats
+        - .var['spatially_variable']: Boolean, True if gene passes threshold
+        - .var['moranI'] or .var['gearyC']: The autocorrelation statistic
+        - .var['spatial_pval_adj']: Adjusted p-value
+
+        Args:
+            mode: 'moran' for Moran's I, 'geary' for Geary's C
+            genes: Subset of genes to test (None for all highly variable or all)
+            n_perms: Number of permutations for p-value (None for analytical only)
+            n_jobs: Number of parallel jobs
+            corr_method: Multiple testing correction method
+            pval_threshold: Threshold for marking genes as spatially variable
+
+        Returns:
+            Dict with operation status, number of spatially variable genes
+        """
+        import squidpy as sq
+
+        # Check prerequisites
+        prereq = self.check_prerequisites('spatial_autocorr')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        if mode not in ('moran', 'geary'):
+            raise ValueError("mode must be 'moran' or 'geary'")
+
+        # Run spatial autocorrelation
+        sq.gr.spatial_autocorr(
+            self.adata,
+            mode=mode,
+            genes=genes,
+            n_perms=n_perms,
+            n_jobs=n_jobs,
+            corr_method=corr_method,
+        )
+
+        # Get results from .uns
+        uns_key = 'moranI' if mode == 'moran' else 'gearyC'
+        stat_col = 'I' if mode == 'moran' else 'C'
+        results_df = self.adata.uns[uns_key]
+
+        # Determine p-value column (depends on correction method and n_perms)
+        if f'pval_{corr_method}' in results_df.columns:
+            pval_col = f'pval_{corr_method}'
+        elif 'pval_norm_fdr_bh' in results_df.columns:
+            pval_col = 'pval_norm_fdr_bh'
+        elif 'pval_norm' in results_df.columns:
+            pval_col = 'pval_norm'
+        else:
+            # Fallback - use first pval column
+            pval_cols = [c for c in results_df.columns if 'pval' in c]
+            pval_col = pval_cols[0] if pval_cols else None
+
+        # Store in .var for easy filtering
+        # Initialize columns with NaN for genes not tested
+        self.adata.var[uns_key] = np.nan
+        self.adata.var['spatial_pval_adj'] = np.nan
+        self.adata.var['spatially_variable'] = False
+
+        # Fill in values for tested genes
+        for gene in results_df.index:
+            if gene in self.adata.var_names:
+                self.adata.var.loc[gene, uns_key] = results_df.loc[gene, stat_col]
+                if pval_col:
+                    self.adata.var.loc[gene, 'spatial_pval_adj'] = results_df.loc[gene, pval_col]
+
+        # Mark spatially variable genes
+        if pval_col:
+            sv_mask = self.adata.var['spatial_pval_adj'] < pval_threshold
+            # For Moran's I, positive values indicate clustering
+            if mode == 'moran':
+                sv_mask = sv_mask & (self.adata.var[uns_key] > 0)
+            # For Geary's C, values < 1 indicate positive autocorrelation
+            else:
+                sv_mask = sv_mask & (self.adata.var[uns_key] < 1)
+            self.adata.var['spatially_variable'] = sv_mask
+
+        n_sv_genes = self.adata.var['spatially_variable'].sum()
+        n_tested = len(results_df)
+
+        # Get top spatially variable genes
+        sv_genes = self.adata.var[self.adata.var['spatially_variable']].copy()
+        if mode == 'moran':
+            sv_genes = sv_genes.sort_values(uns_key, ascending=False)
+        else:
+            sv_genes = sv_genes.sort_values(uns_key, ascending=True)
+        top_sv_genes = sv_genes.head(20).index.tolist()
+
+        result = {
+            'status': 'completed',
+            'mode': mode,
+            'n_tested': n_tested,
+            'n_spatially_variable': int(n_sv_genes),
+            'pval_threshold': pval_threshold,
+            'top_sv_genes': top_sv_genes,
+        }
+        self._log_action('spatial_autocorr', {
+            'mode': mode,
+            'n_perms': n_perms,
+            'corr_method': corr_method,
+            'pval_threshold': pval_threshold,
+        }, result)
+        return result
+
+    def get_spatially_variable_genes(
+        self,
+        top_n: int | None = None,
+        pval_threshold: float | None = None,
+    ) -> dict[str, Any]:
+        """Get list of spatially variable genes.
+
+        Args:
+            top_n: Return only top N genes (sorted by statistic)
+            pval_threshold: Override threshold for filtering
+
+        Returns:
+            Dict with gene list and statistics
+        """
+        if 'spatially_variable' not in self.adata.var.columns:
+            raise ValueError("spatial_autocorr has not been run")
+
+        # Determine which statistic was used
+        if 'moranI' in self.adata.var.columns:
+            stat_col = 'moranI'
+            ascending = False
+        elif 'gearyC' in self.adata.var.columns:
+            stat_col = 'gearyC'
+            ascending = True
+        else:
+            raise ValueError("No spatial autocorrelation statistics found")
+
+        # Filter genes
+        if pval_threshold is not None:
+            mask = (self.adata.var['spatial_pval_adj'] < pval_threshold)
+            if stat_col == 'moranI':
+                mask = mask & (self.adata.var[stat_col] > 0)
+            else:
+                mask = mask & (self.adata.var[stat_col] < 1)
+        else:
+            mask = self.adata.var['spatially_variable']
+
+        sv_genes = self.adata.var[mask].copy()
+        sv_genes = sv_genes.sort_values(stat_col, ascending=ascending)
+
+        if top_n is not None:
+            sv_genes = sv_genes.head(top_n)
+
+        genes_list = []
+        for gene in sv_genes.index:
+            genes_list.append({
+                'gene': gene,
+                'statistic': float(sv_genes.loc[gene, stat_col]),
+                'pval_adj': float(sv_genes.loc[gene, 'spatial_pval_adj']),
+            })
+
+        return {
+            'genes': genes_list,
+            'n_total': int(mask.sum()),
+            'statistic_type': stat_col,
+        }
+
+    def get_gene_modules(self) -> dict[str, Any]:
+        """Get gene cluster modules from the last cluster_genes run.
+
+        Returns:
+            Dict with modules (dict of module_name -> gene list)
+        """
+        if 'gene_modules' not in self.adata.uns:
+            raise ValueError("cluster_genes has not been run")
+
+        return {
+            'modules': self.adata.uns['gene_modules'],
+            'n_modules': len(self.adata.uns['gene_modules']),
+        }

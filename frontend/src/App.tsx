@@ -6,6 +6,7 @@ import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
 import DisplaySettings from './components/DisplaySettings'
 import DiffExpModal from './components/DiffExpModal'
+import LineAssociationModal from './components/LineAssociationModal'
 import ScanpyModal from './components/ScanpyModal'
 import ShapeManager from './components/ShapeManager'
 
@@ -761,6 +762,7 @@ export default function App() {
       </div>
 
       <DiffExpModal />
+      <LineAssociationModal />
       <ScanpyModal />
 
       {/* Export modal */}

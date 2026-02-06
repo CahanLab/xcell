@@ -404,7 +404,6 @@ export default function ScatterPlot({
     const scale = Math.pow(2, zoom)
 
     // Convert screen to data coordinates
-    // Note: deck.gl OrthographicView has Y increasing downward in screen space
     const dataX = (x - width / 2) / scale + target[0]
     const dataY = (y - height / 2) / scale + target[1]
 

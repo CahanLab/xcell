@@ -503,6 +503,213 @@ def get_lines():
     return {"lines": adaptor.get_lines()}
 
 
+@router.get("/lines/debug/{line_name}")
+def debug_line_projection(line_name: str):
+    """Debug endpoint to inspect line projection data.
+
+    Returns detailed information about the line and sample projections.
+    """
+    import numpy as np
+
+    adaptor = get_adaptor()
+
+    # Find the line
+    line = None
+    for l in adaptor._drawn_lines:
+        if l.get('name') == line_name:
+            line = l
+            break
+
+    if line is None:
+        raise HTTPException(status_code=404, detail=f"Line '{line_name}' not found")
+
+    # Get line points
+    points = line.get('points', [])
+    smoothed = line.get('smoothedPoints')
+    line_points = smoothed if smoothed else points
+
+    # Get embedding
+    embedding_name = line.get('embeddingName', '')
+    if embedding_name not in adaptor.adata.obsm:
+        raise HTTPException(status_code=400, detail=f"Embedding '{embedding_name}' not found")
+
+    coords = adaptor.adata.obsm[embedding_name][:, :2]
+
+    # Compute projections
+    positions, distances = adaptor._project_cells_onto_line(line_points, coords)
+
+    # Sample some cells
+    sample_indices = [0, 100, 500, 1000, 2000] if len(positions) > 2000 else list(range(min(10, len(positions))))
+    sample_indices = [i for i in sample_indices if i < len(positions)]
+
+    return {
+        "line_name": line_name,
+        "embedding_name": embedding_name,
+        "n_line_points": len(line_points),
+        "line_points_sample": line_points[:5] if len(line_points) > 5 else line_points,
+        "line_points_range": {
+            "x": [float(min(p[0] for p in line_points)), float(max(p[0] for p in line_points))],
+            "y": [float(min(p[1] for p in line_points)), float(max(p[1] for p in line_points))],
+        } if line_points else None,
+        "embedding_range": {
+            "x": [float(coords[:, 0].min()), float(coords[:, 0].max())],
+            "y": [float(coords[:, 1].min()), float(coords[:, 1].max())],
+        },
+        "n_cells": len(positions),
+        "position_stats": {
+            "min": float(positions.min()),
+            "max": float(positions.max()),
+            "mean": float(positions.mean()),
+            "std": float(positions.std()),
+            "unique_count": len(np.unique(positions)),
+        },
+        "distance_stats": {
+            "min": float(distances.min()),
+            "max": float(distances.max()),
+            "mean": float(distances.mean()),
+        },
+        "sample_projections": [
+            {
+                "cell_idx": int(i),
+                "cell_coords": [float(coords[i, 0]), float(coords[i, 1])],
+                "position": float(positions[i]),
+                "distance": float(distances[i]),
+            }
+            for i in sample_indices
+        ],
+    }
+
+
+class LineAssociationRequest(BaseModel):
+    """Request model for line association testing."""
+    line_name: str
+    cell_indices: list[int] | None = None
+    n_spline_knots: int = 5
+    min_cells: int = 20
+    fdr_threshold: float = 0.05
+    top_n: int = 50
+    use_log1p: bool = True
+
+
+class LineAssociationGene(BaseModel):
+    """A gene result from line association testing."""
+    gene: str
+    f_stat: float
+    pval: float
+    fdr: float
+    r_squared: float
+    amplitude: float
+    direction: float
+
+
+class LineAssociationDiagnostics(BaseModel):
+    """Diagnostic information from line association testing."""
+    n_genes_tested: int
+    n_pval_below_05: int
+    n_pval_below_01: int
+    position_range: list[float]
+    position_std: float
+    expression_range: list[float]
+    expression_mean: float
+    n_zero_genes: int
+    used_log1p: bool
+    spline_df: int
+
+
+class LineAssociationResponse(BaseModel):
+    """Response model for line association testing."""
+    positive: list[LineAssociationGene]
+    negative: list[LineAssociationGene]
+    n_cells: int
+    n_significant: int
+    n_positive: int
+    n_negative: int
+    line_name: str
+    fdr_threshold: float
+    diagnostics: LineAssociationDiagnostics | None = None
+
+
+@router.post("/lines/association", response_model=LineAssociationResponse)
+def test_line_association(request: LineAssociationRequest):
+    """Test genes for association with position along a line.
+
+    Uses cubic B-spline regression to model gene expression as a function
+    of position along the line, then tests significance via F-test.
+
+    Args:
+        line_name: Name of the line to test against
+        cell_indices: Optional list of cell indices to use
+        n_spline_knots: Number of interior knots for spline (default: 5)
+        min_cells: Minimum cells required (default: 20)
+        fdr_threshold: FDR significance threshold (default: 0.05)
+        top_n: Number of top genes per direction (default: 50)
+        use_log1p: Apply log1p transform (default: True)
+
+    Returns:
+        Genes with expression associated with line position:
+        - positive: genes increasing along line
+        - negative: genes decreasing along line
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.test_line_association(
+            line_name=request.line_name,
+            cell_indices=request.cell_indices,
+            n_spline_knots=request.n_spline_knots,
+            min_cells=request.min_cells,
+            fdr_threshold=request.fdr_threshold,
+            top_n=request.top_n,
+            use_log1p=request.use_log1p,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class CreateLineEmbeddingRequest(BaseModel):
+    """Request model for creating a line projection embedding."""
+    line_name: str
+    cell_indices: list[int] | None = None
+
+
+class CreateLineEmbeddingResponse(BaseModel):
+    """Response model for line projection embedding creation."""
+    embedding_name: str
+    n_cells: int
+    position_range: list[float]
+    distance_range_original: list[float]
+    distance_range_normalized: list[float]
+
+
+@router.post("/lines/create-embedding", response_model=CreateLineEmbeddingResponse)
+def create_line_embedding(request: CreateLineEmbeddingRequest):
+    """Create an embedding from cell projections onto a line.
+
+    Creates a new embedding in .obsm where:
+    - X-axis: position along the line (0-1)
+    - Y-axis: distance from the line (normalized to 0-1)
+
+    This allows visualizing cells by their position along a trajectory
+    and coloring by gene expression.
+
+    Args:
+        line_name: Name of the line to project onto
+        cell_indices: Optional cell indices to include
+
+    Returns:
+        The new embedding name and statistics
+    """
+    adaptor = get_adaptor()
+    try:
+        # First sync lines (they need to exist on the backend)
+        result = adaptor.create_line_projection_embedding(
+            line_name=request.line_name,
+            cell_indices=request.cell_indices,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # =========================================================================
 # Scanpy analysis endpoints
 # =========================================================================

@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState } from 'react'
-import { useStore, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult } from '../store'
+import { useStore, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult } from '../store'
 
 const API_BASE = '/api'
 
@@ -500,4 +500,128 @@ export function useDiffExp() {
     isDiffExpLoading,
     runComparison,
   }
+}
+
+// Line association API function
+export interface LineAssociationParams {
+  lineName: string
+  cellIndices?: number[]
+  nSplineKnots?: number
+  minCells?: number
+  fdrThreshold?: number
+  topN?: number
+  useLog1p?: boolean
+}
+
+// Sync lines to backend
+async function syncLinesToBackend(lines: { name: string; embeddingName: string; points: [number, number][]; smoothedPoints: [number, number][] | null }[]) {
+  const payload = lines.map((line) => ({
+    name: line.name,
+    embeddingName: line.embeddingName,
+    points: line.points,
+    smoothedPoints: line.smoothedPoints,
+  }))
+  await fetchJson(`${API_BASE}/lines`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lines: payload }),
+  })
+}
+
+export async function runLineAssociation(params: LineAssociationParams): Promise<LineAssociationResult> {
+  return fetchJson<LineAssociationResult>(`${API_BASE}/lines/association`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      line_name: params.lineName,
+      cell_indices: params.cellIndices,
+      n_spline_knots: params.nSplineKnots ?? 5,
+      min_cells: params.minCells ?? 20,
+      fdr_threshold: params.fdrThreshold ?? 0.05,
+      top_n: params.topN ?? 50,
+      use_log1p: params.useLog1p ?? true,
+    }),
+  })
+}
+
+// Hook for line association testing
+export function useLineAssociation() {
+  const {
+    drawnLines,
+    lineAssociationResult,
+    isLineAssociationLoading,
+    setLineAssociationResult,
+    setLineAssociationLoading,
+    setLineAssociationModalOpen,
+  } = useStore()
+
+  const runAssociation = useCallback(async (lineName: string, params?: Partial<LineAssociationParams>) => {
+    setLineAssociationLoading(true)
+    try {
+      // First sync all lines to the backend
+      await syncLinesToBackend(drawnLines)
+
+      // Then run the association test
+      const result = await runLineAssociation({
+        lineName,
+        ...params,
+      })
+      setLineAssociationResult(result)
+      setLineAssociationModalOpen(true)
+      return result
+    } catch (err) {
+      setLineAssociationResult(null)
+      throw err
+    } finally {
+      setLineAssociationLoading(false)
+    }
+  }, [drawnLines, setLineAssociationLoading, setLineAssociationResult, setLineAssociationModalOpen])
+
+  return {
+    drawnLines,
+    lineAssociationResult,
+    isLineAssociationLoading,
+    runAssociation,
+  }
+}
+
+// Create projection embedding API function
+export interface CreateLineEmbeddingParams {
+  lineName: string
+  cellIndices?: number[]
+}
+
+export interface CreateLineEmbeddingResult {
+  embedding_name: string
+  n_cells: number
+  position_range: [number, number]
+  distance_range: [number, number]
+}
+
+export async function createLineEmbedding(
+  params: CreateLineEmbeddingParams,
+  lines: { name: string; embeddingName: string; points: [number, number][]; smoothedPoints: [number, number][] | null }[]
+): Promise<CreateLineEmbeddingResult> {
+  // First sync lines to backend
+  const payload = lines.map((line) => ({
+    name: line.name,
+    embeddingName: line.embeddingName,
+    points: line.points,
+    smoothedPoints: line.smoothedPoints,
+  }))
+  await fetchJson(`${API_BASE}/lines`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lines: payload }),
+  })
+
+  // Then create the embedding
+  return fetchJson<CreateLineEmbeddingResult>(`${API_BASE}/lines/create-embedding`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      line_name: params.lineName,
+      cell_indices: params.cellIndices,
+    }),
+  })
 }

@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useStore } from '../store'
+import { useLineAssociation, createLineEmbedding } from '../hooks/useData'
 
 const styles = {
   panel: {
@@ -146,6 +147,7 @@ export default function ShapeManager() {
     activeLineId,
     selectedEmbedding,
     selectedCellIndices,
+    activeCellMask,
     setActiveLine,
     removeLine,
     renameLine,
@@ -159,6 +161,14 @@ export default function ShapeManager() {
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
+  const [associationError, setAssociationError] = useState<string | null>(null)
+  const [isCreatingEmbedding, setIsCreatingEmbedding] = useState(false)
+  const [embeddingMessage, setEmbeddingMessage] = useState<string | null>(null)
+
+  const { runAssociation, isLineAssociationLoading } = useLineAssociation()
+
+  // Get setSchema to force refresh after creating embedding
+  const setSchema = useStore((state) => state.setSchema)
 
   // Filter lines to show only those for current embedding
   const currentEmbeddingLines = drawnLines.filter(
@@ -187,6 +197,60 @@ export default function ShapeManager() {
     }
     projectSelectedCellsOntoLine(lineId)
   }, [selectedCellIndices, projectSelectedCellsOntoLine])
+
+  const handleFindAssociatedGenes = useCallback(async (line: typeof drawnLines[0]) => {
+    setAssociationError(null)
+    try {
+      // Determine which cells to use:
+      // 1. If active cell mask exists, use only masked (visible) cells
+      // 2. Otherwise, use all cells
+      let cellIndices: number[] | undefined = undefined
+
+      if (activeCellMask) {
+        // Get indices where mask is true
+        cellIndices = activeCellMask
+          .map((visible, idx) => visible ? idx : -1)
+          .filter(idx => idx >= 0)
+      }
+
+      await runAssociation(line.name, { cellIndices })
+    } catch (err) {
+      setAssociationError((err as Error).message)
+    }
+  }, [runAssociation, activeCellMask])
+
+  const handleCreateProjectionEmbedding = useCallback(async (line: typeof drawnLines[0]) => {
+    setEmbeddingMessage(null)
+    setIsCreatingEmbedding(true)
+    try {
+      // Determine which cells to use:
+      // 1. If active cell mask exists, use only masked (visible) cells
+      // 2. Otherwise, use all cells
+      let cellIndices: number[] | undefined = undefined
+
+      if (activeCellMask) {
+        cellIndices = activeCellMask
+          .map((visible, idx) => visible ? idx : -1)
+          .filter(idx => idx >= 0)
+      }
+
+      const result = await createLineEmbedding(
+        { lineName: line.name, cellIndices },
+        drawnLines
+      )
+
+      // Force schema refresh to pick up the new embedding
+      const schemaResponse = await fetch('/api/schema')
+      const schema = await schemaResponse.json()
+      setSchema(schema)
+
+      setEmbeddingMessage(`Created embedding "${result.embedding_name}"`)
+    } catch (err) {
+      setEmbeddingMessage(`Error: ${(err as Error).message}`)
+    } finally {
+      setIsCreatingEmbedding(false)
+    }
+  }, [drawnLines, setSchema, activeCellMask])
 
   const activeLine = drawnLines.find((l) => l.id === activeLineId)
 
@@ -336,6 +400,55 @@ export default function ShapeManager() {
               </button>
             </div>
           )}
+
+          {/* Find Associated Genes button */}
+          <div style={{ marginTop: '8px' }}>
+            <button
+              style={{
+                ...styles.smoothButton,
+                marginLeft: 0,
+                backgroundColor: '#4ecdc4',
+                color: '#000',
+                fontWeight: 500,
+                opacity: isLineAssociationLoading ? 0.6 : 1,
+              }}
+              onClick={() => handleFindAssociatedGenes(activeLine)}
+              disabled={isLineAssociationLoading}
+              title="Find genes whose expression is associated with position along this line"
+            >
+              {isLineAssociationLoading ? 'Analyzing...' : 'Find Associated Genes'}
+            </button>
+            {associationError && (
+              <div style={{ marginTop: '4px', fontSize: '10px', color: '#e94560' }}>
+                {associationError}
+              </div>
+            )}
+          </div>
+
+          {/* Create Projection Embedding button */}
+          <div style={{ marginTop: '6px' }}>
+            <button
+              style={{
+                ...styles.smoothButton,
+                marginLeft: 0,
+                opacity: isCreatingEmbedding ? 0.6 : 1,
+              }}
+              onClick={() => handleCreateProjectionEmbedding(activeLine)}
+              disabled={isCreatingEmbedding}
+              title="Create a new embedding where X=position along line, Y=distance from line"
+            >
+              {isCreatingEmbedding ? 'Creating...' : 'Create Projection Embedding'}
+            </button>
+            {embeddingMessage && (
+              <div style={{
+                marginTop: '4px',
+                fontSize: '10px',
+                color: embeddingMessage.startsWith('Error') ? '#e94560' : '#4ecdc4',
+              }}>
+                {embeddingMessage}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

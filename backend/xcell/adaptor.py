@@ -986,6 +986,361 @@ class DataAdaptor:
 
         return adata_export
 
+    def test_line_association(
+        self,
+        line_name: str,
+        cell_indices: list[int] | None = None,
+        n_spline_knots: int = 5,
+        min_cells: int = 20,
+        fdr_threshold: float = 0.05,
+        top_n: int = 50,
+        use_log1p: bool = True,
+    ) -> dict[str, Any]:
+        """Test genes for association with position along a line.
+
+        Uses cubic B-spline regression to model gene expression as a function
+        of position along the line, then tests whether the spline model explains
+        significantly more variance than an intercept-only model (F-test).
+
+        Args:
+            line_name: Name of the line to test against
+            cell_indices: Optional list of cell indices to use. If None, uses
+                         all cells (projected based on distance threshold).
+            n_spline_knots: Number of interior knots for the B-spline basis.
+                           Total df = n_spline_knots + 2 (for cubic splines).
+            min_cells: Minimum number of cells required for testing.
+            fdr_threshold: FDR threshold for significance.
+            top_n: Number of top genes to return for each direction.
+            use_log1p: If True, apply log1p transform to raw counts.
+
+        Returns:
+            Dict containing:
+            - positive: Genes with expression increasing along line
+            - negative: Genes with expression decreasing along line
+            - n_cells: Number of cells used
+            - n_significant: Total significant genes at FDR threshold
+            - line_name: The line name used
+
+        Raises:
+            ValueError: If line not found or too few cells
+        """
+        from scipy.interpolate import BSpline
+        from scipy.stats import f as f_dist
+        from statsmodels.stats.multitest import multipletests
+
+        # Find the line
+        line = None
+        for l in self._drawn_lines:
+            if l.get('name') == line_name:
+                line = l
+                break
+
+        if line is None:
+            raise ValueError(f"Line '{line_name}' not found")
+
+        embedding_name = line.get('embeddingName', '')
+        if embedding_name not in self.adata.obsm:
+            raise ValueError(f"Embedding '{embedding_name}' not found")
+
+        # Get line points (smoothed if available)
+        line_points = line.get('smoothedPoints') or line.get('points', [])
+        if len(line_points) < 2:
+            raise ValueError("Line must have at least 2 points")
+
+        # Get embedding coordinates
+        coords = self.adata.obsm[embedding_name][:, :2]
+
+        # Project cells onto line
+        positions, distances = self._project_cells_onto_line(line_points, coords)
+
+        # Determine which cells to use
+        if cell_indices is not None:
+            # Use provided cell indices
+            cell_mask = np.zeros(self.n_cells, dtype=bool)
+            cell_mask[cell_indices] = True
+        else:
+            # Use all cells (could filter by distance threshold in future)
+            cell_mask = np.ones(self.n_cells, dtype=bool)
+
+        # Get positions for selected cells
+        selected_indices = np.where(cell_mask)[0]
+        selected_positions = positions[cell_mask]
+        n_cells_used = len(selected_indices)
+
+        if n_cells_used < min_cells:
+            raise ValueError(
+                f"Too few cells ({n_cells_used}). Need at least {min_cells}."
+            )
+
+        # Get expression matrix for selected cells
+        X = self.adata.X[selected_indices, :]
+
+        # Convert sparse to dense if needed
+        if hasattr(X, 'toarray'):
+            X = X.toarray()
+
+        # Apply log1p transform if requested
+        if use_log1p:
+            # Normalize per cell first (like scanpy normalize_total)
+            cell_sums = X.sum(axis=1, keepdims=True)
+            cell_sums[cell_sums == 0] = 1  # Avoid division by zero
+            X = X / cell_sums * 10000  # Scale to 10k counts
+            X = np.log1p(X)
+
+        n_genes = X.shape[1]
+        gene_names = self.adata.var_names.tolist()
+
+        # Build B-spline basis matrix
+        # Use quantile-based knots for even coverage of cells
+        pos = selected_positions
+
+        # Create knot vector for cubic B-spline
+        # Interior knots at quantiles, plus boundary knots
+        degree = 3
+        n_interior = n_spline_knots
+        interior_knots = np.quantile(pos, np.linspace(0, 1, n_interior + 2)[1:-1])
+
+        # Full knot vector: degree+1 copies at boundaries, interior knots in between
+        knots = np.concatenate([
+            np.repeat(0.0, degree + 1),
+            interior_knots,
+            np.repeat(1.0, degree + 1),
+        ])
+
+        # Number of basis functions
+        n_basis = len(knots) - degree - 1
+
+        # Evaluate B-spline basis at all positions
+        B = np.zeros((n_cells_used, n_basis))
+        for i in range(n_basis):
+            # Create coefficient vector with 1 at position i
+            c = np.zeros(n_basis)
+            c[i] = 1.0
+            spline = BSpline(knots, c, degree)
+            B[:, i] = spline(pos)
+
+        # Design matrix with intercept
+        design = np.column_stack([np.ones(n_cells_used), B])
+        k = n_basis  # Number of spline coefficients (excluding intercept)
+
+        # Solve OLS for all genes at once: beta = (X'X)^{-1} X' Y
+        # where Y is expression matrix (n_cells x n_genes)
+        try:
+            XtX = design.T @ design
+            XtX_inv = np.linalg.inv(XtX)
+            beta = XtX_inv @ design.T @ X  # (k+1) x n_genes
+        except np.linalg.LinAlgError:
+            raise ValueError("Singular design matrix. Try fewer spline knots.")
+
+        # Compute residuals and RSS
+        predicted = design @ beta
+        residuals = X - predicted
+        rss_full = np.sum(residuals ** 2, axis=0)  # RSS per gene
+
+        # Null model: intercept only
+        gene_means = X.mean(axis=0)
+        rss_null = np.sum((X - gene_means) ** 2, axis=0)
+
+        # F-test: F = [(RSS_null - RSS_full) / k] / [RSS_full / (n - k - 1)]
+        df1 = k  # Numerator df (spline coefficients)
+        df2 = n_cells_used - k - 1  # Denominator df
+
+        # Avoid division by zero
+        rss_full_safe = np.maximum(rss_full, 1e-10)
+
+        f_stat = ((rss_null - rss_full) / df1) / (rss_full_safe / df2)
+        f_stat = np.maximum(f_stat, 0)  # F-stat can't be negative
+
+        # P-values from F distribution
+        p_values = 1 - f_dist.cdf(f_stat, df1, df2)
+
+        # FDR correction
+        _, fdr, _, _ = multipletests(p_values, method='fdr_bh')
+
+        # Compute effect size metrics
+        # R-squared: variance explained
+        r_squared = 1 - rss_full / np.maximum(rss_null, 1e-10)
+        r_squared = np.clip(r_squared, 0, 1)
+
+        # Amplitude: range of predicted expression along the line
+        amplitude = predicted.max(axis=0) - predicted.min(axis=0)
+
+        # Direction: correlation of predicted with position (for ranking)
+        # Positive = expression increases along line, Negative = decreases
+        pos_centered = pos - pos.mean()
+        pred_centered = predicted - predicted.mean(axis=0)
+        direction = np.zeros(n_genes)
+        for g in range(n_genes):
+            if np.std(pred_centered[:, g]) > 1e-10:
+                corr = np.corrcoef(pos_centered, pred_centered[:, g])[0, 1]
+                direction[g] = corr if not np.isnan(corr) else 0
+            else:
+                direction[g] = 0
+
+        # Build results DataFrame
+        results = pd.DataFrame({
+            'gene': gene_names,
+            'f_stat': f_stat,
+            'pval': p_values,
+            'fdr': fdr,
+            'r_squared': r_squared,
+            'amplitude': amplitude,
+            'direction': direction,
+        })
+
+        # Sort by significance (combining FDR and amplitude)
+        results['score'] = -np.log10(results['fdr'] + 1e-300) * results['amplitude']
+
+        # Get significant genes
+        sig_mask = results['fdr'] < fdr_threshold
+        n_significant = sig_mask.sum()
+
+        # Split into positive (increasing) and negative (decreasing) direction
+        pos_mask = sig_mask & (results['direction'] > 0)
+        neg_mask = sig_mask & (results['direction'] < 0)
+
+        # Get top genes for each direction
+        positive_genes = (
+            results[pos_mask]
+            .nlargest(top_n, 'score')
+            [['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']]
+            .to_dict('records')
+        )
+
+        negative_genes = (
+            results[neg_mask]
+            .nlargest(top_n, 'score')
+            [['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']]
+            .to_dict('records')
+        )
+
+        # Compute diagnostic statistics
+        n_pval_below_05 = int((p_values < 0.05).sum())
+        n_pval_below_01 = int((p_values < 0.01).sum())
+
+        # Check expression matrix properties
+        expr_min = float(X.min())
+        expr_max = float(X.max())
+        expr_mean = float(X.mean())
+        n_zero_genes = int((X.sum(axis=0) == 0).sum())
+
+        # Position statistics
+        pos_min = float(pos.min())
+        pos_max = float(pos.max())
+        pos_std = float(pos.std())
+
+        return {
+            'positive': positive_genes,
+            'negative': negative_genes,
+            'n_cells': n_cells_used,
+            'n_significant': int(n_significant),
+            'n_positive': int(pos_mask.sum()),
+            'n_negative': int(neg_mask.sum()),
+            'line_name': line_name,
+            'fdr_threshold': fdr_threshold,
+            # Diagnostic info
+            'diagnostics': {
+                'n_genes_tested': n_genes,
+                'n_pval_below_05': n_pval_below_05,
+                'n_pval_below_01': n_pval_below_01,
+                'position_range': [pos_min, pos_max],
+                'position_std': pos_std,
+                'expression_range': [expr_min, expr_max],
+                'expression_mean': expr_mean,
+                'n_zero_genes': n_zero_genes,
+                'used_log1p': use_log1p,
+                'spline_df': k,
+            },
+        }
+
+    def create_line_projection_embedding(
+        self,
+        line_name: str,
+        cell_indices: list[int] | None = None,
+    ) -> dict[str, Any]:
+        """Create an embedding based on cell projections onto a line.
+
+        This creates a new embedding in .obsm where:
+        - X-axis: position along the line (0 = start, 1 = end)
+        - Y-axis: distance from the line (with jitter for visualization)
+
+        Only cells that are projected are included; others get NaN.
+
+        Args:
+            line_name: Name of the line to create embedding from
+            cell_indices: Optional cell indices to include. If None and line
+                         has projections stored, uses those. Otherwise uses all.
+
+        Returns:
+            Dict with embedding name and cell count
+        """
+        # Find the line
+        line = None
+        for l in self._drawn_lines:
+            if l.get('name') == line_name:
+                line = l
+                break
+
+        if line is None:
+            raise ValueError(f"Line '{line_name}' not found")
+
+        embedding_name = line.get('embeddingName', '')
+        if embedding_name not in self.adata.obsm:
+            raise ValueError(f"Embedding '{embedding_name}' not found")
+
+        # Get line points (smoothed if available)
+        line_points = line.get('smoothedPoints') or line.get('points', [])
+        if len(line_points) < 2:
+            raise ValueError("Line must have at least 2 points")
+
+        # Get embedding coordinates
+        coords = self.adata.obsm[embedding_name][:, :2]
+
+        # Project all cells onto line
+        positions, distances = self._project_cells_onto_line(line_points, coords)
+
+        # Determine which cells to include
+        if cell_indices is not None:
+            cell_mask = np.zeros(self.n_cells, dtype=bool)
+            cell_mask[cell_indices] = True
+        else:
+            # Use all cells
+            cell_mask = np.ones(self.n_cells, dtype=bool)
+
+        # Create the projection embedding
+        # X = position along line (0-1), Y = distance from line (normalized to 0-1)
+        proj_embedding = np.full((self.n_cells, 2), np.nan)
+        proj_embedding[cell_mask, 0] = positions[cell_mask]
+
+        # Normalize distances to 0-1 range
+        masked_distances = distances[cell_mask]
+        dist_min = masked_distances.min()
+        dist_max = masked_distances.max()
+        if dist_max > dist_min:
+            normalized_distances = (masked_distances - dist_min) / (dist_max - dist_min)
+        else:
+            # All cells same distance from line
+            normalized_distances = np.zeros_like(masked_distances)
+        proj_embedding[cell_mask, 1] = normalized_distances
+
+        # Sanitize line name for embedding key
+        safe_name = line_name.replace(' ', '_').replace('-', '_')
+        safe_name = ''.join(c for c in safe_name if c.isalnum() or c == '_')
+        emb_key = f'X_{safe_name}_proj'
+
+        # Store in adata.obsm
+        self.adata.obsm[emb_key] = proj_embedding
+
+        n_cells_projected = int(cell_mask.sum())
+
+        return {
+            'embedding_name': emb_key,
+            'n_cells': n_cells_projected,
+            'position_range': [float(positions[cell_mask].min()), float(positions[cell_mask].max())],
+            'distance_range_original': [float(dist_min), float(dist_max)],
+            'distance_range_normalized': [0.0, 1.0],
+        }
+
     # =========================================================================
     # Scanpy analysis methods
     # =========================================================================

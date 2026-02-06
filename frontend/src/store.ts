@@ -155,6 +155,44 @@ export interface LineSmoothingParams {
   iterations: number  // Number of smoothing passes
 }
 
+// Line association test result (gene)
+export interface LineAssociationGene {
+  gene: string
+  f_stat: number
+  pval: number
+  fdr: number
+  r_squared: number
+  amplitude: number
+  direction: number  // Positive = increases along line, negative = decreases
+}
+
+// Diagnostic info from line association test
+export interface LineAssociationDiagnostics {
+  n_genes_tested: number
+  n_pval_below_05: number
+  n_pval_below_01: number
+  position_range: [number, number]
+  position_std: number
+  expression_range: [number, number]
+  expression_mean: number
+  n_zero_genes: number
+  used_log1p: boolean
+  spline_df: number
+}
+
+// Line association test results
+export interface LineAssociationResult {
+  positive: LineAssociationGene[]  // Genes increasing along line
+  negative: LineAssociationGene[]  // Genes decreasing along line
+  n_cells: number
+  n_significant: number
+  n_positive: number
+  n_negative: number
+  line_name: string
+  fdr_threshold: number
+  diagnostics?: LineAssociationDiagnostics
+}
+
 // Interaction mode for the scatter plot
 export type InteractionMode = 'pan' | 'lasso' | 'draw'
 
@@ -225,6 +263,11 @@ interface AppState {
   diffExpResult: DiffExpResult | null
   isDiffExpLoading: boolean
   isDiffExpModalOpen: boolean
+
+  // Line association state
+  lineAssociationResult: LineAssociationResult | null
+  isLineAssociationLoading: boolean
+  isLineAssociationModalOpen: boolean
 
   // Cell panel column management
   hiddenColumns: Set<string>  // Column names to hide from cell panel
@@ -300,6 +343,11 @@ interface AppState {
   setDiffExpLoading: (loading: boolean) => void
   setDiffExpModalOpen: (open: boolean) => void
 
+  // Line association actions
+  setLineAssociationResult: (result: LineAssociationResult | null) => void
+  setLineAssociationLoading: (loading: boolean) => void
+  setLineAssociationModalOpen: (open: boolean) => void
+
   // Column management actions
   hideColumn: (name: string) => void
   showColumn: (name: string) => void
@@ -371,6 +419,9 @@ export const useStore = create<AppState>((set) => ({
   diffExpResult: null,
   isDiffExpLoading: false,
   isDiffExpModalOpen: false,
+  lineAssociationResult: null,
+  isLineAssociationLoading: false,
+  isLineAssociationModalOpen: false,
   hiddenColumns: new Set<string>(),
   columnDisplayNames: {},
   activeCellMask: null,
@@ -757,6 +808,11 @@ export const useStore = create<AppState>((set) => ({
   setDiffExpResult: (result) => set({ diffExpResult: result }),
   setDiffExpLoading: (loading) => set({ isDiffExpLoading: loading }),
   setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
+
+  // Line association actions
+  setLineAssociationResult: (result) => set({ lineAssociationResult: result }),
+  setLineAssociationLoading: (loading) => set({ isLineAssociationLoading: loading }),
+  setLineAssociationModalOpen: (open) => set({ isLineAssociationModalOpen: open }),
 
   // Column management actions
   hideColumn: (name) =>

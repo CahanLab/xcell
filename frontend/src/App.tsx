@@ -415,6 +415,7 @@ export default function App() {
     setInteractionMode,
     setSelectedCellIndices,
     clearSelection,
+    invertSelection,
     // cellSortOrder, sortCellsByExpression, resetCellOrder - now auto-applied
     displayPreferences,
     bivariateSortReversed,
@@ -638,6 +639,9 @@ export default function App() {
               {selectedCellIndices.length > 0 && (
                 <div style={styles.selectionInfo}>
                   {selectedCellIndices.length.toLocaleString()} cells selected
+                  <button style={styles.clearButton} onClick={invertSelection}>
+                    Invert
+                  </button>
                   <button style={styles.clearButton} onClick={clearSelection}>
                     Clear
                   </button>

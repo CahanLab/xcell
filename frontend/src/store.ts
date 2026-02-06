@@ -330,6 +330,7 @@ interface AppState {
   setSelectedCellIndices: (indices: number[]) => void
   addToSelection: (indices: number[]) => void
   clearSelection: () => void
+  invertSelection: () => void
   setInteractionMode: (mode: InteractionMode) => void
 
   // Display preferences actions
@@ -783,6 +784,16 @@ export const useStore = create<AppState>((set) => ({
       selectedCellIndices: [...new Set([...state.selectedCellIndices, ...indices])],
     })),
   clearSelection: () => set({ selectedCellIndices: [] }),
+  invertSelection: () =>
+    set((state) => {
+      if (!state.schema || state.selectedCellIndices.length === 0) return {}
+      const selected = new Set(state.selectedCellIndices)
+      const inverted: number[] = []
+      for (let i = 0; i < state.schema.n_cells; i++) {
+        if (!selected.has(i)) inverted.push(i)
+      }
+      return { selectedCellIndices: inverted }
+    }),
   setInteractionMode: (mode) => set({ interactionMode: mode }),
 
   // Display preferences

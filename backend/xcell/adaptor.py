@@ -2162,7 +2162,7 @@ class DataAdaptor:
     def run_gene_neighbors(
         self,
         n_neighbors: int = 15,
-        metric: str = 'cosine',
+        metric: str = 'euclidean',
     ) -> dict[str, Any]:
         """Compute gene-gene kNN graph from gene PCA embedding.
 
@@ -2171,7 +2171,7 @@ class DataAdaptor:
 
         Args:
             n_neighbors: Number of neighbors per gene
-            metric: Distance metric ('cosine', 'euclidean', 'correlation')
+            metric: Distance metric ('euclidean', 'cosine')
 
         Returns:
             Dict with operation status
@@ -2447,7 +2447,7 @@ class DataAdaptor:
         scale: bool = True,
         use_kneedle: bool = True,
         n_neighbors: int = 15,
-        metric: str = 'cosine',
+        metric: str = 'euclidean',
     ) -> dict[str, Any]:
         """Convenience function: run gene_pca and gene_neighbors in one step.
 

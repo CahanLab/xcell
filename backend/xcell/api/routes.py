@@ -1003,7 +1003,7 @@ class GenePcaRequest(BaseModel):
 
 class GeneNeighborsRequest(BaseModel):
     n_neighbors: int = 15
-    metric: str = 'cosine'
+    metric: str = 'euclidean'
 
 
 class FindSimilarGenesRequest(BaseModel):
@@ -1022,7 +1022,7 @@ class BuildGeneGraphRequest(BaseModel):
     scale: bool = True
     use_kneedle: bool = True
     n_neighbors: int = 15
-    metric: str = 'cosine'
+    metric: str = 'euclidean'
 
 
 @router.get("/var/boolean_columns")

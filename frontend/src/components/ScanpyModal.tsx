@@ -281,7 +281,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'n_pcs', label: 'Num PCs', type: 'number', default: null, description: 'Number of PCs (null = auto-detect with Kneedle)' },
           { name: 'scale', label: 'Scale', type: 'select', default: 'true', options: ['true', 'false'], description: 'Z-score scale genes before PCA' },
           { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 15, description: 'Number of gene neighbors' },
-          { name: 'metric', label: 'Metric', type: 'select', default: 'cosine', options: ['cosine', 'euclidean', 'correlation'], description: 'Distance metric' },
+          { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine'], description: 'Distance metric' },
         ],
       },
       gene_pca: {
@@ -302,7 +302,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         prerequisites: ['gene_pca'],
         params: [
           { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 15, description: 'Number of neighbors per gene' },
-          { name: 'metric', label: 'Metric', type: 'select', default: 'cosine', options: ['cosine', 'euclidean', 'correlation'], description: 'Distance metric' },
+          { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine'], description: 'Distance metric' },
         ],
       },
       find_similar_genes: {

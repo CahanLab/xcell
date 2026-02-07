@@ -169,6 +169,7 @@ export default function ShapeManager() {
   const [geneSubsetColumns, setGeneSubsetColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])
   const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
   const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
+  const [testVariable, setTestVariable] = useState<'position' | 'distance'>('position')
 
   const { runAssociation, isLineAssociationLoading } = useLineAssociation()
 
@@ -235,11 +236,11 @@ export default function ShapeManager() {
         geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
       }
 
-      await runAssociation(line.name, { cellIndices, geneSubset })
+      await runAssociation(line.name, { cellIndices, geneSubset, testVariable })
     } catch (err) {
       setAssociationError((err as Error).message)
     }
-  }, [runAssociation, activeCellMask, selectedGeneColumns, geneSubsetOperation])
+  }, [runAssociation, activeCellMask, selectedGeneColumns, geneSubsetOperation, testVariable])
 
   const handleCreateProjectionEmbedding = useCallback(async (line: typeof drawnLines[0]) => {
     setEmbeddingMessage(null)
@@ -495,6 +496,47 @@ export default function ShapeManager() {
             </div>
           )}
 
+          {/* Test variable toggle */}
+          <div style={{ marginTop: '8px' }}>
+            <div style={{ fontSize: '10px', color: '#888', marginBottom: '4px' }}>
+              Test against:
+            </div>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button
+                onClick={() => setTestVariable('position')}
+                style={{
+                  padding: '2px 8px',
+                  fontSize: '9px',
+                  backgroundColor: testVariable === 'position' ? '#4ecdc4' : '#0f3460',
+                  color: testVariable === 'position' ? '#000' : '#aaa',
+                  border: `1px solid ${testVariable === 'position' ? '#4ecdc4' : '#1a1a2e'}`,
+                  borderRadius: '3px',
+                  cursor: 'pointer',
+                  fontWeight: testVariable === 'position' ? 600 : 400,
+                }}
+                title="Test gene expression vs. position along the line (0=start, 1=end)"
+              >
+                Position along line
+              </button>
+              <button
+                onClick={() => setTestVariable('distance')}
+                style={{
+                  padding: '2px 8px',
+                  fontSize: '9px',
+                  backgroundColor: testVariable === 'distance' ? '#4ecdc4' : '#0f3460',
+                  color: testVariable === 'distance' ? '#000' : '#aaa',
+                  border: `1px solid ${testVariable === 'distance' ? '#4ecdc4' : '#1a1a2e'}`,
+                  borderRadius: '3px',
+                  cursor: 'pointer',
+                  fontWeight: testVariable === 'distance' ? 600 : 400,
+                }}
+                title="Test gene expression vs. perpendicular distance from the line"
+              >
+                Distance from line
+              </button>
+            </div>
+          </div>
+
           {/* Find Associated Genes button */}
           <div style={{ marginTop: '8px' }}>
             <button
@@ -508,7 +550,10 @@ export default function ShapeManager() {
               }}
               onClick={() => handleFindAssociatedGenes(activeLine)}
               disabled={isLineAssociationLoading}
-              title="Find genes whose expression is associated with position along this line"
+              title={testVariable === 'position'
+                ? "Find genes whose expression is associated with position along this line"
+                : "Find genes whose expression is associated with distance from this line"
+              }
             >
               {isLineAssociationLoading ? 'Analyzing...' : 'Find Associated Genes'}
             </button>

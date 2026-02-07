@@ -585,6 +585,7 @@ class LineAssociationRequest(BaseModel):
     line_name: str
     cell_indices: list[int] | None = None
     gene_subset: str | list[str] | None = None
+    test_variable: str = 'position'  # 'position' or 'distance'
     n_spline_knots: int = 5
     min_cells: int = 20
     fdr_threshold: float = 0.05
@@ -636,6 +637,7 @@ class LineAssociationResponse(BaseModel):
     n_negative: int
     n_modules: int = 0
     line_name: str
+    test_variable: str = 'position'
     fdr_threshold: float
     diagnostics: LineAssociationDiagnostics | None = None
 
@@ -667,6 +669,7 @@ def test_line_association(request: LineAssociationRequest):
             line_name=request.line_name,
             cell_indices=request.cell_indices,
             gene_subset=request.gene_subset,
+            test_variable=request.test_variable,
             n_spline_knots=request.n_spline_knots,
             min_cells=request.min_cells,
             fdr_threshold=request.fdr_threshold,

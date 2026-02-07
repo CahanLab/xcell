@@ -200,6 +200,7 @@ export interface LineAssociationResult {
   n_negative: number
   n_modules: number
   line_name: string
+  test_variable: string  // 'position' or 'distance'
   fdr_threshold: number
   diagnostics?: LineAssociationDiagnostics
 }

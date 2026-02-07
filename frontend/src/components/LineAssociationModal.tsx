@@ -360,7 +360,7 @@ export default function LineAssociationModal() {
     return null
   }
 
-  const { n_cells, n_significant, line_name, fdr_threshold, diagnostics, modules } = lineAssociationResult
+  const { n_cells, n_significant, line_name, test_variable, fdr_threshold, diagnostics, modules } = lineAssociationResult
   const hasModules = modules && modules.length > 0
   const totalModuleGenes = hasModules ? modules.reduce((sum, m) => sum + m.n_genes, 0) : 0
 
@@ -368,7 +368,14 @@ export default function LineAssociationModal() {
     <div style={styles.overlay} onClick={handleClose}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
-          <h2 style={styles.title}>Line Association: {line_name}</h2>
+          <h2 style={styles.title}>
+            Line Association: {line_name}
+            {test_variable === 'distance' && (
+              <span style={{ fontSize: '12px', color: '#888', fontWeight: 400, marginLeft: '8px' }}>
+                (distance from line)
+              </span>
+            )}
+          </h2>
           <button style={styles.closeButton} onClick={handleClose}>
             &times;
           </button>

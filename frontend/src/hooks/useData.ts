@@ -507,6 +507,7 @@ export interface LineAssociationParams {
   lineName: string
   cellIndices?: number[]
   geneSubset?: string | string[] | { columns: string[]; operation: string } | null
+  testVariable?: 'position' | 'distance'
   nSplineKnots?: number
   minCells?: number
   fdrThreshold?: number
@@ -536,6 +537,7 @@ export async function runLineAssociation(params: LineAssociationParams): Promise
       line_name: params.lineName,
       cell_indices: params.cellIndices,
       gene_subset: params.geneSubset ?? null,
+      test_variable: params.testVariable ?? 'position',
       n_spline_knots: params.nSplineKnots ?? 5,
       min_cells: params.minCells ?? 20,
       fdr_threshold: params.fdrThreshold ?? 0.05,

@@ -991,16 +991,18 @@ class DataAdaptor:
         line_name: str,
         cell_indices: list[int] | None = None,
         gene_subset: str | list[str] | dict[str, Any] | None = None,
+        test_variable: str = 'position',
         n_spline_knots: int = 5,
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
         top_n: int = 50,
     ) -> dict[str, Any]:
-        """Test genes for association with position along a line.
+        """Test genes for association with position along or distance from a line.
 
         Uses cubic B-spline regression to model gene expression as a function
-        of position along the line, then tests whether the spline model explains
-        significantly more variance than an intercept-only model (F-test).
+        of a spatial variable derived from the line, then tests whether the
+        spline model explains significantly more variance than an intercept-only
+        model (F-test).
 
         Args:
             line_name: Name of the line to test against
@@ -1008,6 +1010,9 @@ class DataAdaptor:
                          all cells (projected based on distance threshold).
             gene_subset: Optional gene filter. Can be a boolean column name (str),
                         a list of gene names, or a dict for combining columns.
+            test_variable: 'position' to test against position along the line,
+                          'distance' to test against perpendicular distance from
+                          the line.
             n_spline_knots: Number of interior knots for the B-spline basis.
                            Total df = n_spline_knots + 2 (for cubic splines).
             min_cells: Minimum number of cells required for testing.
@@ -1016,8 +1021,9 @@ class DataAdaptor:
 
         Returns:
             Dict containing:
-            - positive: Genes with expression increasing along line
-            - negative: Genes with expression decreasing along line
+            - modules: Gene modules clustered by expression profile shape
+            - positive: Genes with expression increasing along variable
+            - negative: Genes with expression decreasing along variable
             - n_cells: Number of cells used
             - n_significant: Total significant genes at FDR threshold
             - line_name: The line name used
@@ -1063,15 +1069,30 @@ class DataAdaptor:
             # Use all cells (could filter by distance threshold in future)
             cell_mask = np.ones(self.n_cells, dtype=bool)
 
-        # Get positions for selected cells
+        # Get positions and distances for selected cells
         selected_indices = np.where(cell_mask)[0]
         selected_positions = positions[cell_mask]
+        selected_distances = distances[cell_mask]
         n_cells_used = len(selected_indices)
 
         if n_cells_used < min_cells:
             raise ValueError(
                 f"Too few cells ({n_cells_used}). Need at least {min_cells}."
             )
+
+        # Select the test variable
+        if test_variable == 'distance':
+            # Normalize distances to [0, 1] for spline fitting
+            d_min = selected_distances.min()
+            d_max = selected_distances.max()
+            if d_max - d_min < 1e-10:
+                raise ValueError(
+                    "All cells have the same distance from the line. "
+                    "Cannot test distance association."
+                )
+            test_values = (selected_distances - d_min) / (d_max - d_min)
+        else:
+            test_values = selected_positions
 
         # Resolve gene subset if provided
         if gene_subset is not None:
@@ -1093,7 +1114,7 @@ class DataAdaptor:
 
         # Build B-spline basis matrix
         # Use quantile-based knots for even coverage of cells
-        pos = selected_positions
+        pos = test_values
 
         # Create knot vector for cubic B-spline
         # Interior knots at quantiles, plus boundary knots
@@ -1317,6 +1338,7 @@ class DataAdaptor:
             'n_negative': int(neg_mask.sum()),
             'n_modules': len(modules),
             'line_name': line_name,
+            'test_variable': test_variable,
             'fdr_threshold': fdr_threshold,
             # Diagnostic info
             'diagnostics': {

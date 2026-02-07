@@ -990,11 +990,11 @@ class DataAdaptor:
         self,
         line_name: str,
         cell_indices: list[int] | None = None,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
         n_spline_knots: int = 5,
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
         top_n: int = 50,
-        use_log1p: bool = True,
     ) -> dict[str, Any]:
         """Test genes for association with position along a line.
 
@@ -1006,12 +1006,13 @@ class DataAdaptor:
             line_name: Name of the line to test against
             cell_indices: Optional list of cell indices to use. If None, uses
                          all cells (projected based on distance threshold).
+            gene_subset: Optional gene filter. Can be a boolean column name (str),
+                        a list of gene names, or a dict for combining columns.
             n_spline_knots: Number of interior knots for the B-spline basis.
                            Total df = n_spline_knots + 2 (for cubic splines).
             min_cells: Minimum number of cells required for testing.
             fdr_threshold: FDR threshold for significance.
             top_n: Number of top genes to return for each direction.
-            use_log1p: If True, apply log1p transform to raw counts.
 
         Returns:
             Dict containing:
@@ -1072,23 +1073,23 @@ class DataAdaptor:
                 f"Too few cells ({n_cells_used}). Need at least {min_cells}."
             )
 
-        # Get expression matrix for selected cells
-        X = self.adata.X[selected_indices, :]
+        # Resolve gene subset if provided
+        if gene_subset is not None:
+            gene_mask, _, _ = self._resolve_gene_mask(gene_subset)
+        else:
+            gene_mask = np.ones(self.n_genes, dtype=bool)
+
+        # Get expression matrix for selected cells and genes
+        # (trusts that user has already preprocessed: normalize, log1p, etc.)
+        X = self.adata.X[selected_indices][:, gene_mask]
 
         # Convert sparse to dense if needed
         if hasattr(X, 'toarray'):
             X = X.toarray()
-
-        # Apply log1p transform if requested
-        if use_log1p:
-            # Normalize per cell first (like scanpy normalize_total)
-            cell_sums = X.sum(axis=1, keepdims=True)
-            cell_sums[cell_sums == 0] = 1  # Avoid division by zero
-            X = X / cell_sums * 10000  # Scale to 10k counts
-            X = np.log1p(X)
+        X = np.asarray(X, dtype=np.float64)
 
         n_genes = X.shape[1]
-        gene_names = self.adata.var_names.tolist()
+        gene_names = self.adata.var_names[gene_mask].tolist()
 
         # Build B-spline basis matrix
         # Use quantile-based knots for even coverage of cells
@@ -1196,10 +1197,10 @@ class DataAdaptor:
         n_significant = sig_mask.sum()
 
         # Split into positive (increasing) and negative (decreasing) direction
+        # (kept for backward compatibility)
         pos_mask = sig_mask & (results['direction'] > 0)
         neg_mask = sig_mask & (results['direction'] < 0)
 
-        # Get top genes for each direction
         positive_genes = (
             results[pos_mask]
             .nlargest(top_n, 'score')
@@ -1213,6 +1214,83 @@ class DataAdaptor:
             [['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']]
             .to_dict('records')
         )
+
+        # ---- Module-based clustering of ALL significant genes ----
+        # Evaluate spline profiles at evenly-spaced positions
+        n_profile_points = 50
+        profile_positions = np.linspace(0.0, 1.0, n_profile_points)
+        profile_design = np.zeros((n_profile_points, n_basis))
+        for i in range(n_basis):
+            c = np.zeros(n_basis)
+            c[i] = 1.0
+            spline = BSpline(knots, c, degree)
+            profile_design[:, i] = spline(profile_positions)
+        profile_design_full = np.column_stack([np.ones(n_profile_points), profile_design])
+
+        sig_indices = np.where(sig_mask.values)[0]
+        modules = []
+
+        if len(sig_indices) > 0:
+            # Predicted profiles for significant genes (n_profile_points x n_sig_genes)
+            sig_profiles = profile_design_full @ beta[:, sig_indices]
+
+            # Min-max normalize each gene's profile to [0, 1]
+            prof_min = sig_profiles.min(axis=0)
+            prof_max = sig_profiles.max(axis=0)
+            prof_range = prof_max - prof_min
+            prof_range[prof_range < 1e-10] = 1.0  # avoid division by zero
+            norm_profiles = (sig_profiles - prof_min) / prof_range  # (n_points, n_sig)
+
+            if len(sig_indices) == 1:
+                # Single gene: one module
+                cluster_labels = np.array([0])
+            else:
+                # Hierarchical clustering with correlation distance
+                from scipy.cluster.hierarchy import linkage, fcluster
+                from scipy.spatial.distance import pdist
+
+                # Transpose so each row is a gene's profile
+                profile_matrix = norm_profiles.T  # (n_sig, n_points)
+
+                # Correlation distance; clip to avoid numerical issues
+                dists = pdist(profile_matrix, metric='correlation')
+                dists = np.clip(dists, 0, 2)
+
+                Z = linkage(dists, method='average')
+                # Cut tree: use distance threshold of 0.5 (correlation-based)
+                # This gives reasonable module granularity
+                cluster_labels = fcluster(Z, t=0.5, criterion='distance') - 1  # 0-indexed
+
+            sig_results = results.iloc[sig_indices].reset_index(drop=True)
+            n_modules = int(cluster_labels.max()) + 1
+
+            for mod_idx in range(n_modules):
+                member_mask = cluster_labels == mod_idx
+                member_genes = sig_results[member_mask]
+
+                # Representative profile: mean of normalized profiles in this module
+                rep_profile = norm_profiles[:, member_mask].mean(axis=1)
+
+                # Classify pattern shape
+                pattern = self._classify_profile_pattern(rep_profile, profile_positions)
+
+                # Sort genes within module by score
+                member_genes_sorted = member_genes.nlargest(top_n, 'score')
+
+                modules.append({
+                    'module_id': mod_idx,
+                    'pattern': pattern,
+                    'n_genes': int(member_mask.sum()),
+                    'representative_profile': rep_profile.tolist(),
+                    'profile_positions': profile_positions.tolist(),
+                    'genes': member_genes_sorted[
+                        ['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']
+                    ].to_dict('records'),
+                })
+
+            # Sort modules: increasing first, then decreasing, then peak, trough, complex
+            pattern_order = {'increasing': 0, 'decreasing': 1, 'peak': 2, 'trough': 3, 'complex': 4}
+            modules.sort(key=lambda m: (pattern_order.get(m['pattern'], 5), -m['n_genes']))
 
         # Compute diagnostic statistics
         n_pval_below_05 = int((p_values < 0.05).sum())
@@ -1232,10 +1310,12 @@ class DataAdaptor:
         return {
             'positive': positive_genes,
             'negative': negative_genes,
+            'modules': modules,
             'n_cells': n_cells_used,
             'n_significant': int(n_significant),
             'n_positive': int(pos_mask.sum()),
             'n_negative': int(neg_mask.sum()),
+            'n_modules': len(modules),
             'line_name': line_name,
             'fdr_threshold': fdr_threshold,
             # Diagnostic info
@@ -1248,10 +1328,62 @@ class DataAdaptor:
                 'expression_range': [expr_min, expr_max],
                 'expression_mean': expr_mean,
                 'n_zero_genes': n_zero_genes,
-                'used_log1p': use_log1p,
                 'spline_df': k,
             },
         }
+
+    @staticmethod
+    def _classify_profile_pattern(
+        profile: np.ndarray,
+        positions: np.ndarray,
+    ) -> str:
+        """Classify the shape of a gene expression profile along a line.
+
+        Args:
+            profile: Normalized expression profile (0-1 scale), shape (n_points,)
+            positions: Corresponding position values along the line (0-1)
+
+        Returns:
+            One of: 'increasing', 'decreasing', 'peak', 'trough', 'complex'
+        """
+        # Correlation with position
+        corr = np.corrcoef(positions, profile)[0, 1]
+        if np.isnan(corr):
+            corr = 0.0
+
+        # Strong monotonic trend
+        if corr > 0.7:
+            return 'increasing'
+        if corr < -0.7:
+            return 'decreasing'
+
+        # Check for peak or trough: location of max/min relative to endpoints
+        argmax = np.argmax(profile)
+        argmin = np.argmin(profile)
+        n = len(profile)
+        interior_fraction = 0.15  # consider first/last 15% as "edges"
+        edge_low = int(n * interior_fraction)
+        edge_high = int(n * (1 - interior_fraction))
+
+        max_is_interior = edge_low <= argmax <= edge_high
+        min_is_interior = edge_low <= argmin <= edge_high
+
+        # Peak: max in interior and higher than both endpoints
+        edge_mean = (profile[:edge_low].mean() + profile[edge_high:].mean()) / 2
+        center_val = profile[argmax] if max_is_interior else profile[argmin]
+
+        if max_is_interior and profile[argmax] > edge_mean + 0.2:
+            return 'peak'
+        if min_is_interior and profile[argmin] < edge_mean - 0.2:
+            return 'trough'
+
+        # Fallback: use monotonicity for weak trends
+        if corr > 0.3:
+            return 'increasing'
+        if corr < -0.3:
+            return 'decreasing'
+
+        return 'complex'
 
     def create_line_projection_embedding(
         self,
@@ -1358,6 +1490,49 @@ class DataAdaptor:
             'result': result,
             'timestamp': datetime.datetime.now().isoformat(),
         })
+
+    def _validate_cell_indices(
+        self, active_cell_indices: list[int] | None,
+    ) -> np.ndarray | None:
+        """Validate active_cell_indices and return as numpy array.
+
+        Returns None if no subsetting is needed (indices is None or covers all cells).
+        """
+        if active_cell_indices is None:
+            return None
+
+        indices = np.array(active_cell_indices)
+
+        if len(indices) == 0:
+            raise ValueError("active_cell_indices is empty — no cells selected.")
+
+        if indices.max() >= self.n_cells or indices.min() < 0:
+            raise ValueError(
+                f"active_cell_indices out of range: max index {indices.max()}, "
+                f"n_cells {self.n_cells}"
+            )
+
+        if len(indices) == self.n_cells:
+            return None
+
+        return indices
+
+    def _get_active_adata(
+        self, active_cell_indices: list[int] | None,
+    ) -> tuple[anndata.AnnData, np.ndarray | None]:
+        """Get an AnnData subset copy for active cells.
+
+        Args:
+            active_cell_indices: List of cell indices to include, or None for all.
+
+        Returns:
+            Tuple of (adata_subset_or_full, indices_array_or_None).
+            If indices is None or covers all cells, returns (self.adata, None).
+        """
+        indices = self._validate_cell_indices(active_cell_indices)
+        if indices is None:
+            return self.adata, None
+        return self.adata[indices].copy(), indices
 
     def check_prerequisites(self, action: str) -> dict[str, Any]:
         """Check if prerequisites are met for a scanpy action.
@@ -1608,6 +1783,7 @@ class DataAdaptor:
         max_counts: int | None = None,
         min_cells: int | None = None,
         max_cells: int | None = None,
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Filter genes based on counts or number of cells expressing.
 
@@ -1616,6 +1792,7 @@ class DataAdaptor:
             max_counts: Maximum total counts for a gene
             min_cells: Minimum number of cells expressing the gene
             max_cells: Maximum number of cells expressing the gene
+            active_cell_indices: If provided, compute gene stats using only these cells
 
         Returns:
             Dict with before/after gene counts
@@ -1634,7 +1811,15 @@ class DataAdaptor:
             kwargs['max_cells'] = max_cells
 
         if kwargs:
-            sc.pp.filter_genes(self.adata, **kwargs)
+            adata_sub, indices = self._get_active_adata(active_cell_indices)
+            if indices is not None:
+                # Run filter on subset to find surviving genes
+                # (adata_sub is already a copy from _get_active_adata)
+                sc.pp.filter_genes(adata_sub, **kwargs)
+                surviving = set(adata_sub.var_names)
+                self.adata = self.adata[:, self.adata.var_names.isin(surviving)].copy()
+            else:
+                sc.pp.filter_genes(self.adata, **kwargs)
 
         n_genes_after = self.n_genes
 
@@ -1655,6 +1840,7 @@ class DataAdaptor:
         max_counts: int | None = None,
         min_genes: int | None = None,
         max_genes: int | None = None,
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Filter cells based on counts or number of genes expressed.
 
@@ -1663,6 +1849,7 @@ class DataAdaptor:
             max_counts: Maximum total counts for a cell
             min_genes: Minimum number of genes expressed in the cell
             max_genes: Maximum number of genes expressed in the cell
+            active_cell_indices: If provided, only evaluate these cells for filtering
 
         Returns:
             Dict with before/after cell counts
@@ -1680,7 +1867,24 @@ class DataAdaptor:
             kwargs['max_genes'] = max_genes
 
         if kwargs:
-            sc.pp.filter_cells(self.adata, **kwargs)
+            adata_sub, indices = self._get_active_adata(active_cell_indices)
+            if indices is not None:
+                # Run filter on subset copy to find which cells fail
+                adata_test = adata_sub.copy()
+                n_before_sub = adata_test.n_obs
+                sc.pp.filter_cells(adata_test, **kwargs)
+                n_after_sub = adata_test.n_obs
+                # Identify surviving cell names
+                surviving_names = set(adata_test.obs_names)
+                # Find the indices in the full adata that failed
+                failing_mask = np.ones(self.n_cells, dtype=bool)
+                for idx in indices:
+                    cell_name = self.adata.obs_names[idx]
+                    if cell_name not in surviving_names:
+                        failing_mask[idx] = False
+                self.adata = self.adata[failing_mask].copy()
+            else:
+                sc.pp.filter_cells(self.adata, **kwargs)
 
         n_cells_after = self.n_cells
 
@@ -1698,20 +1902,40 @@ class DataAdaptor:
     def run_normalize_total(
         self,
         target_sum: float | None = None,
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Normalize total counts per cell.
 
         Args:
             target_sum: Target sum of counts per cell. If None, uses median.
+            active_cell_indices: If provided, only normalize these cells
 
         Returns:
             Dict with operation status
         """
+        from scipy import sparse
+
         kwargs = {}
         if target_sum is not None:
             kwargs['target_sum'] = target_sum
 
-        sc.pp.normalize_total(self.adata, **kwargs)
+        adata_sub, indices = self._get_active_adata(active_cell_indices)
+        if indices is not None:
+            sc.pp.normalize_total(adata_sub, **kwargs)
+            # Write back — normalize_total only scales rows, preserving sparsity
+            if sparse.issparse(self.adata.X):
+                csr = self.adata.X.tocsr()
+                sub_csr = adata_sub.X.tocsr() if sparse.issparse(adata_sub.X) else sparse.csr_matrix(adata_sub.X)
+                # Vectorized: flag data entries belonging to active rows
+                row_flag = np.zeros(csr.shape[0], dtype=bool)
+                row_flag[indices] = True
+                entry_mask = np.repeat(row_flag, np.diff(csr.indptr))
+                csr.data[entry_mask] = sub_csr.data
+                self.adata.X = csr
+            else:
+                self.adata.X[indices] = adata_sub.X if not sparse.issparse(adata_sub.X) else adata_sub.X.toarray()
+        else:
+            sc.pp.normalize_total(self.adata, **kwargs)
 
         # Invalidate normalized cache
         self._normalized_adata = None
@@ -1720,13 +1944,35 @@ class DataAdaptor:
         self._log_action('normalize_total', kwargs, result)
         return result
 
-    def run_log1p(self) -> dict[str, Any]:
+    def run_log1p(
+        self,
+        active_cell_indices: list[int] | None = None,
+    ) -> dict[str, Any]:
         """Apply log1p transformation to the data.
+
+        Args:
+            active_cell_indices: If provided, only transform these cells
 
         Returns:
             Dict with operation status
         """
-        sc.pp.log1p(self.adata)
+        from scipy import sparse
+
+        # Validate indices without copying (log1p operates in-place)
+        indices = self._validate_cell_indices(active_cell_indices)
+        if indices is not None:
+            # In-place transform — log1p(0)=0 so sparsity is preserved
+            if sparse.issparse(self.adata.X):
+                csr = self.adata.X.tocsr()
+                row_flag = np.zeros(csr.shape[0], dtype=bool)
+                row_flag[indices] = True
+                entry_mask = np.repeat(row_flag, np.diff(csr.indptr))
+                np.log1p(csr.data[entry_mask], out=csr.data[entry_mask])
+                self.adata.X = csr
+            else:
+                np.log1p(self.adata.X[indices], out=self.adata.X[indices])
+        else:
+            sc.pp.log1p(self.adata)
 
         # Invalidate normalized cache
         self._normalized_adata = None
@@ -1744,6 +1990,7 @@ class DataAdaptor:
         flavor: str = 'seurat',
         n_bins: int = 20,
         subset: bool = False,
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Identify highly variable genes.
 
@@ -1757,20 +2004,55 @@ class DataAdaptor:
             flavor: Method ('seurat', 'cell_ranger', 'seurat_v3')
             n_bins: Number of bins for dispersion normalization
             subset: If True, subset adata to only highly variable genes (destructive)
+            active_cell_indices: If provided, compute HVGs using only these cells
 
         Returns:
             Dict with operation status and number of HVGs
         """
-        sc.pp.highly_variable_genes(
-            self.adata,
-            n_top_genes=n_top_genes,
-            min_mean=min_mean,
-            max_mean=max_mean,
-            min_disp=min_disp,
-            flavor=flavor,
-            n_bins=n_bins,
-            subset=subset,
-        )
+        adata_sub, indices = self._get_active_adata(active_cell_indices)
+        if indices is not None:
+            from scipy import sparse
+            # Drop genes with zero expression in the subset to avoid
+            # degenerate bin edges in scanpy's HVG binning step
+            if sparse.issparse(adata_sub.X):
+                gene_totals = np.asarray(adata_sub.X.sum(axis=0)).ravel()
+            else:
+                gene_totals = np.asarray(adata_sub.X.sum(axis=0)).ravel()
+            expressed_mask = gene_totals > 0
+            adata_hvg = adata_sub[:, expressed_mask].copy()
+
+            # Compute HVGs on subset (always with subset=False to get annotations)
+            sc.pp.highly_variable_genes(
+                adata_hvg,
+                n_top_genes=n_top_genes,
+                min_mean=min_mean,
+                max_mean=max_mean,
+                min_disp=min_disp,
+                flavor=flavor,
+                n_bins=n_bins,
+                subset=False,
+            )
+            # Map results back to full gene set — unexpressed genes are not HVG
+            for col in ['highly_variable', 'means', 'dispersions', 'dispersions_norm']:
+                if col in adata_hvg.var.columns:
+                    default = False if col == 'highly_variable' else 0.0
+                    full_col = pd.Series(default, index=self.adata.var_names, dtype=adata_hvg.var[col].dtype)
+                    full_col.loc[adata_hvg.var_names] = adata_hvg.var[col]
+                    self.adata.var[col] = full_col.values
+            # Apply subset on full adata if requested
+            if subset:
+                self.adata = self.adata[:, self.adata.var['highly_variable']].copy()
+        else:
+            sc.pp.highly_variable_genes(
+                self.adata,
+                n_top_genes=n_top_genes,
+                min_mean=min_mean,
+                max_mean=max_mean,
+                min_disp=min_disp,
+                flavor=flavor,
+                n_bins=n_bins,
+                subset=subset,
+            )
 
         n_hvg = int(self.adata.var['highly_variable'].sum())
 
@@ -1796,6 +2078,7 @@ class DataAdaptor:
         svd_solver: str = 'arpack',
         gene_subset: str | list[str] | dict[str, Any] | None = None,
         use_highly_variable: bool | None = None,
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Run PCA dimensionality reduction.
 
@@ -1809,6 +2092,8 @@ class DataAdaptor:
                 - dict: {'columns': [...], 'operation': 'intersection'|'union'}
             use_highly_variable: Deprecated, use gene_subset instead.
                 If True and gene_subset is None, uses 'highly_variable' column.
+            active_cell_indices: If provided, compute PCA on these cells only;
+                inactive cells get NaN in X_pca.
 
         Returns:
             Dict with operation status and variance explained
@@ -1834,6 +2119,15 @@ class DataAdaptor:
                 n_genes_used = int(self.adata.var['highly_variable'].sum())
                 subset_type = 'highly_variable (auto)'
 
+        # Apply cell mask
+        adata_sub, cell_indices = self._get_active_adata(active_cell_indices)
+        if cell_indices is not None:
+            # Subset cells from the (possibly gene-subsetted) adata
+            if gene_subset is not None:
+                adata_pca = adata_pca[cell_indices].copy()
+            else:
+                adata_pca = self.adata[cell_indices].copy()
+
         # Limit n_comps to valid range
         max_comps = min(adata_pca.n_obs - 1, adata_pca.n_vars - 1)
         n_comps = min(n_comps, max_comps)
@@ -1842,7 +2136,13 @@ class DataAdaptor:
         sc.tl.pca(adata_pca, n_comps=n_comps, svd_solver=svd_solver)
 
         # Copy results back to main adata
-        self.adata.obsm['X_pca'] = adata_pca.obsm['X_pca']
+        if cell_indices is not None:
+            # Store X_pca with NaN for inactive cells
+            full_pca = np.full((self.n_cells, n_comps), np.nan)
+            full_pca[cell_indices] = adata_pca.obsm['X_pca']
+            self.adata.obsm['X_pca'] = full_pca
+        else:
+            self.adata.obsm['X_pca'] = adata_pca.obsm['X_pca']
         self.adata.uns['pca'] = adata_pca.uns['pca']
         if 'PCs' in adata_pca.varm:
             # Store loadings for the subset genes
@@ -1874,6 +2174,7 @@ class DataAdaptor:
         n_neighbors: int = 15,
         n_pcs: int | None = None,
         metric: str = 'euclidean',
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Compute neighborhood graph.
 
@@ -1881,10 +2182,14 @@ class DataAdaptor:
             n_neighbors: Number of neighbors to use
             n_pcs: Number of PCs to use (None = use all)
             metric: Distance metric
+            active_cell_indices: If provided, compute neighbors on these cells only;
+                results are remapped into full-size sparse matrices.
 
         Returns:
             Dict with operation status
         """
+        from scipy.sparse import coo_matrix
+
         # Check prerequisites
         prereq = self.check_prerequisites('neighbors')
         if not prereq['satisfied']:
@@ -1897,7 +2202,34 @@ class DataAdaptor:
         if n_pcs is not None:
             kwargs['n_pcs'] = n_pcs
 
-        sc.pp.neighbors(self.adata, **kwargs)
+        cell_indices = self._validate_cell_indices(active_cell_indices)
+        if cell_indices is not None:
+            # Build a subset AnnData with PCA from the active cells
+            import anndata as ad
+            pca_full = self.adata.obsm['X_pca']
+            pca_sub = pca_full[cell_indices]
+            adata_sub = ad.AnnData(obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
+            adata_sub.obsm['X_pca'] = pca_sub
+
+            sc.pp.neighbors(adata_sub, **kwargs)
+
+            # Remap sparse obsp matrices to full size
+            n_full = self.n_cells
+            for key in ['connectivities', 'distances']:
+                if key in adata_sub.obsp:
+                    sub_coo = adata_sub.obsp[key].tocoo()
+                    full_rows = cell_indices[sub_coo.row]
+                    full_cols = cell_indices[sub_coo.col]
+                    full_mat = coo_matrix(
+                        (sub_coo.data, (full_rows, full_cols)),
+                        shape=(n_full, n_full),
+                    )
+                    self.adata.obsp[key] = full_mat.tocsr()
+
+            # Copy uns['neighbors'] metadata
+            self.adata.uns['neighbors'] = adata_sub.uns['neighbors']
+        else:
+            sc.pp.neighbors(self.adata, **kwargs)
 
         result = {'status': 'completed', 'n_neighbors': n_neighbors}
         self._log_action('neighbors', kwargs, result)
@@ -1908,6 +2240,7 @@ class DataAdaptor:
         min_dist: float = 0.5,
         spread: float = 1.0,
         n_components: int = 2,
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Compute UMAP embedding.
 
@@ -1915,6 +2248,8 @@ class DataAdaptor:
             min_dist: Minimum distance between points
             spread: Spread of the embedding
             n_components: Number of dimensions
+            active_cell_indices: If provided, compute UMAP on these cells only;
+                inactive cells get NaN coordinates.
 
         Returns:
             Dict with operation status and embedding name
@@ -1924,7 +2259,31 @@ class DataAdaptor:
         if not prereq['satisfied']:
             raise ValueError(f"Prerequisites not met: {prereq['missing']}")
 
-        sc.tl.umap(self.adata, min_dist=min_dist, spread=spread, n_components=n_components)
+        cell_indices = self._validate_cell_indices(active_cell_indices)
+        if cell_indices is not None:
+            # Build subset AnnData with PCA and neighbor graph
+            import anndata as ad
+            pca_full = self.adata.obsm['X_pca']
+            adata_sub = ad.AnnData(obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
+            adata_sub.obsm['X_pca'] = pca_full[cell_indices]
+
+            # Extract subset neighbor graph from full-size obsp
+            for key in ['connectivities', 'distances']:
+                if key in self.adata.obsp:
+                    full_mat = self.adata.obsp[key].tocsr()
+                    adata_sub.obsp[key] = full_mat[np.ix_(cell_indices, cell_indices)]
+
+            if 'neighbors' in self.adata.uns:
+                adata_sub.uns['neighbors'] = self.adata.uns['neighbors']
+
+            sc.tl.umap(adata_sub, min_dist=min_dist, spread=spread, n_components=n_components)
+
+            # Store with NaN for inactive cells
+            full_umap = np.full((self.n_cells, n_components), np.nan)
+            full_umap[cell_indices] = adata_sub.obsm['X_umap']
+            self.adata.obsm['X_umap'] = full_umap
+        else:
+            sc.tl.umap(self.adata, min_dist=min_dist, spread=spread, n_components=n_components)
 
         result = {
             'status': 'completed',
@@ -1938,12 +2297,15 @@ class DataAdaptor:
         self,
         resolution: float = 1.0,
         key_added: str = 'leiden',
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Run Leiden clustering.
 
         Args:
             resolution: Resolution parameter (higher = more clusters)
             key_added: Key to add to obs for cluster labels
+            active_cell_indices: If provided, cluster only these cells;
+                inactive cells are labeled 'unassigned'.
 
         Returns:
             Dict with operation status and cluster info
@@ -1953,9 +2315,37 @@ class DataAdaptor:
         if not prereq['satisfied']:
             raise ValueError(f"Prerequisites not met: {prereq['missing']}")
 
-        sc.tl.leiden(self.adata, resolution=resolution, key_added=key_added)
+        cell_indices = self._validate_cell_indices(active_cell_indices)
+        if cell_indices is not None:
+            # Build subset AnnData with neighbor graph
+            import anndata as ad
+            adata_sub = ad.AnnData(obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
 
-        n_clusters = len(self.adata.obs[key_added].cat.categories)
+            # Extract subset neighbor graph from full-size obsp
+            for key in ['connectivities', 'distances']:
+                if key in self.adata.obsp:
+                    full_mat = self.adata.obsp[key].tocsr()
+                    adata_sub.obsp[key] = full_mat[np.ix_(cell_indices, cell_indices)]
+
+            if 'neighbors' in self.adata.uns:
+                adata_sub.uns['neighbors'] = self.adata.uns['neighbors']
+
+            sc.tl.leiden(adata_sub, resolution=resolution, key_added=key_added)
+
+            # Map labels back with 'unassigned' for inactive cells
+            sub_categories = list(adata_sub.obs[key_added].cat.categories)
+            all_categories = sub_categories + ['unassigned']
+            full_labels = ['unassigned'] * self.n_cells
+            for i, idx in enumerate(cell_indices):
+                full_labels[idx] = str(adata_sub.obs[key_added].iloc[i])
+            self.adata.obs[key_added] = pd.Categorical(
+                full_labels, categories=all_categories,
+            )
+
+            n_clusters = len(sub_categories)
+        else:
+            sc.tl.leiden(self.adata, resolution=resolution, key_added=key_added)
+            n_clusters = len(self.adata.obs[key_added].cat.categories)
 
         result = {
             'status': 'completed',
@@ -2021,6 +2411,7 @@ class DataAdaptor:
         use_kneedle: bool = True,
         max_comps: int = 100,
         gene_subset: str | list[str] | dict[str, Any] | None = None,
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Run PCA on genes (transposed expression matrix).
 
@@ -2038,6 +2429,7 @@ class DataAdaptor:
                 - list[str]: explicit list of gene names
                 - dict: {'columns': ['col1', 'col2'], 'operation': 'intersection'|'union'}
                   for combining multiple boolean columns with AND/OR logic
+            active_cell_indices: If provided, use only these cells for gene PCA
 
         Returns:
             Dict with operation status, n_comps used, and variance explained
@@ -2057,8 +2449,12 @@ class DataAdaptor:
             **subset_metadata,
         }
 
-        # Subset and transpose: genes become observations
-        X = self.adata.X[:, gene_mask].T
+        # Subset cells if active_cell_indices provided, then genes, then transpose
+        cell_indices = self._validate_cell_indices(active_cell_indices)
+        if cell_indices is not None:
+            X = self.adata.X[cell_indices][:, gene_mask].T
+        else:
+            X = self.adata.X[:, gene_mask].T
         if sparse.issparse(X):
             X = X.toarray()
         X = np.asarray(X, dtype=np.float64)
@@ -2448,6 +2844,7 @@ class DataAdaptor:
         use_kneedle: bool = True,
         n_neighbors: int = 15,
         metric: str = 'euclidean',
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Convenience function: run gene_pca and gene_neighbors in one step.
 
@@ -2457,6 +2854,7 @@ class DataAdaptor:
             use_kneedle: Whether to use Kneedle for PC selection
             n_neighbors: Number of neighbors for kNN graph
             metric: Distance metric for kNN
+            active_cell_indices: If provided, use only these cells for gene PCA
 
         Returns:
             Dict with combined results from both steps
@@ -2466,6 +2864,7 @@ class DataAdaptor:
             n_comps=n_pcs,
             scale=scale,
             use_kneedle=use_kneedle,
+            active_cell_indices=active_cell_indices,
         )
 
         # Run gene neighbors

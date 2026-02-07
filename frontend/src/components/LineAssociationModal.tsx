@@ -1,5 +1,21 @@
 import { useState } from 'react'
-import { useStore, LineAssociationGene } from '../store'
+import { useStore, LineAssociationGene, LineAssociationModule } from '../store'
+
+const PATTERN_COLORS: Record<string, string> = {
+  increasing: '#4ecdc4',
+  decreasing: '#e94560',
+  peak: '#f0a500',
+  trough: '#7b68ee',
+  complex: '#888',
+}
+
+const PATTERN_ICONS: Record<string, string> = {
+  increasing: '\u2197',   // ↗
+  decreasing: '\u2198',   // ↘
+  peak: '\u2229',         // ∩
+  trough: '\u222A',       // ∪
+  complex: '\u223F',      // ∿
+}
 
 const styles = {
   overlay: {
@@ -72,43 +88,10 @@ const styles = {
     color: '#eee',
     fontWeight: 500,
   },
-  columnsContainer: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: '20px',
-  },
-  column: {
-    backgroundColor: '#0a0f1a',
-    borderRadius: '8px',
-    overflow: 'hidden',
-  },
-  columnHeader: {
-    padding: '12px 16px',
-    borderBottom: '1px solid #0f3460',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-  },
-  columnTitle: {
-    fontSize: '13px',
-    fontWeight: 600,
-    color: '#eee',
-  },
-  columnCount: {
-    fontSize: '11px',
-    color: '#888',
-    backgroundColor: '#0f3460',
-    padding: '2px 8px',
-    borderRadius: '10px',
-  },
-  geneList: {
-    maxHeight: '400px',
-    overflow: 'auto',
-  },
   geneRow: {
     display: 'flex',
     alignItems: 'center',
-    padding: '8px 16px',
+    padding: '6px 16px',
     borderBottom: '1px solid #1a1a2e',
     cursor: 'pointer',
     transition: 'background-color 0.1s',
@@ -167,16 +150,45 @@ const styles = {
     backgroundColor: '#0f3460',
     color: '#eee',
   },
-  arrowUp: {
-    color: '#4ecdc4',
-    fontSize: '14px',
-    marginRight: '4px',
-  },
-  arrowDown: {
-    color: '#e94560',
-    fontSize: '14px',
-    marginRight: '4px',
-  },
+}
+
+function Sparkline({
+  profile,
+  color,
+  width = 120,
+  height = 32,
+}: {
+  profile: number[]
+  color: string
+  width?: number
+  height?: number
+}) {
+  if (profile.length < 2) return null
+
+  const padding = 2
+  const w = width - padding * 2
+  const h = height - padding * 2
+
+  const points = profile
+    .map((v, i) => {
+      const x = padding + (i / (profile.length - 1)) * w
+      const y = padding + (1 - v) * h
+      return `${x},${y}`
+    })
+    .join(' ')
+
+  return (
+    <svg width={width} height={height} style={{ display: 'block' }}>
+      <polyline
+        points={points}
+        fill="none"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
 }
 
 function GeneRow({
@@ -212,6 +224,93 @@ function GeneRow({
   )
 }
 
+function ModuleCard({
+  module,
+  onGeneSelect,
+  defaultExpanded,
+}: {
+  module: LineAssociationModule
+  onGeneSelect: (gene: string) => void
+  defaultExpanded: boolean
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const color = PATTERN_COLORS[module.pattern] || PATTERN_COLORS.complex
+  const icon = PATTERN_ICONS[module.pattern] || PATTERN_ICONS.complex
+
+  return (
+    <div style={{
+      backgroundColor: '#0a0f1a',
+      borderRadius: '8px',
+      overflow: 'hidden',
+      marginBottom: '12px',
+      border: `1px solid ${expanded ? color + '44' : '#1a1a2e'}`,
+    }}>
+      <div
+        style={{
+          padding: '10px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          cursor: 'pointer',
+          borderBottom: expanded ? '1px solid #0f3460' : 'none',
+        }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span style={{
+          fontSize: '16px',
+          color,
+          width: '20px',
+          textAlign: 'center',
+        }}>
+          {icon}
+        </span>
+        <div style={{ flex: 1 }}>
+          <span style={{
+            fontSize: '13px',
+            fontWeight: 600,
+            color: '#eee',
+            textTransform: 'capitalize',
+          }}>
+            {module.pattern}
+          </span>
+          <span style={{
+            fontSize: '11px',
+            color: '#888',
+            marginLeft: '8px',
+          }}>
+            {module.n_genes} gene{module.n_genes !== 1 ? 's' : ''}
+          </span>
+        </div>
+        <Sparkline
+          profile={module.representative_profile}
+          color={color}
+        />
+        <span style={{
+          fontSize: '14px',
+          color: '#666',
+          marginLeft: '4px',
+          transition: 'transform 0.15s',
+          transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+        }}>
+          &#9660;
+        </span>
+      </div>
+
+      {expanded && (
+        <div style={{ maxHeight: '300px', overflow: 'auto' }}>
+          {module.genes.map((gene) => (
+            <GeneRow
+              key={gene.gene}
+              gene={gene}
+              onSelect={onGeneSelect}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function LineAssociationModal() {
   const {
     isLineAssociationModalOpen,
@@ -225,7 +324,6 @@ export default function LineAssociationModal() {
   }
 
   const handleGeneSelect = (gene: string) => {
-    // Could trigger expression coloring here
     console.log('Selected gene:', gene)
   }
 
@@ -234,16 +332,25 @@ export default function LineAssociationModal() {
 
     const lineName = lineAssociationResult.line_name
 
-    // Add positive genes (increasing along line)
-    if (lineAssociationResult.positive.length > 0) {
-      const posGenes = lineAssociationResult.positive.map((g) => g.gene)
-      addGeneSetToCategory('manual', `${lineName} - Increasing`, posGenes)
-    }
-
-    // Add negative genes (decreasing along line)
-    if (lineAssociationResult.negative.length > 0) {
-      const negGenes = lineAssociationResult.negative.map((g) => g.gene)
-      addGeneSetToCategory('manual', `${lineName} - Decreasing`, negGenes)
+    if (lineAssociationResult.modules && lineAssociationResult.modules.length > 0) {
+      // Add one gene set per module
+      for (const mod of lineAssociationResult.modules) {
+        const genes = mod.genes.map((g) => g.gene)
+        if (genes.length > 0) {
+          const label = `${lineName} - ${mod.pattern.charAt(0).toUpperCase() + mod.pattern.slice(1)}`
+          addGeneSetToCategory('manual', label, genes)
+        }
+      }
+    } else {
+      // Fallback to positive/negative (backward compatibility)
+      if (lineAssociationResult.positive.length > 0) {
+        const posGenes = lineAssociationResult.positive.map((g) => g.gene)
+        addGeneSetToCategory('manual', `${lineName} - Increasing`, posGenes)
+      }
+      if (lineAssociationResult.negative.length > 0) {
+        const negGenes = lineAssociationResult.negative.map((g) => g.gene)
+        addGeneSetToCategory('manual', `${lineName} - Decreasing`, negGenes)
+      }
     }
 
     handleClose()
@@ -253,7 +360,9 @@ export default function LineAssociationModal() {
     return null
   }
 
-  const { positive, negative, n_cells, n_significant, line_name, fdr_threshold, diagnostics } = lineAssociationResult
+  const { n_cells, n_significant, line_name, fdr_threshold, diagnostics, modules } = lineAssociationResult
+  const hasModules = modules && modules.length > 0
+  const totalModuleGenes = hasModules ? modules.reduce((sum, m) => sum + m.n_genes, 0) : 0
 
   return (
     <div style={styles.overlay} onClick={handleClose}>
@@ -279,14 +388,12 @@ export default function LineAssociationModal() {
               <div style={styles.summaryLabel}>FDR Threshold</div>
               <div style={styles.summaryValue}>{fdr_threshold}</div>
             </div>
-            <div style={styles.summaryItem}>
-              <div style={styles.summaryLabel}>Increasing</div>
-              <div style={styles.summaryValue}>{lineAssociationResult.n_positive}</div>
-            </div>
-            <div style={styles.summaryItem}>
-              <div style={styles.summaryLabel}>Decreasing</div>
-              <div style={styles.summaryValue}>{lineAssociationResult.n_negative}</div>
-            </div>
+            {hasModules && (
+              <div style={styles.summaryItem}>
+                <div style={styles.summaryLabel}>Modules</div>
+                <div style={styles.summaryValue}>{modules.length}</div>
+              </div>
+            )}
           </div>
 
           {/* Diagnostics section */}
@@ -339,58 +446,33 @@ export default function LineAssociationModal() {
                 </div>
               </div>
               <div style={{ marginTop: '6px', color: '#666', fontStyle: 'italic' }}>
-                {diagnostics.used_log1p ? 'Applied normalize_total + log1p' : 'Used raw expression values'}
+                Uses current expression values (user-preprocessed)
               </div>
             </div>
           )}
 
-          <div style={styles.columnsContainer}>
-            {/* Positive (increasing) genes */}
-            <div style={styles.column}>
-              <div style={styles.columnHeader}>
-                <span style={styles.arrowUp}>&#8593;</span>
-                <span style={styles.columnTitle}>Increasing Along Line</span>
-                <span style={styles.columnCount}>{positive.length} shown</span>
-              </div>
-              <div style={styles.geneList}>
-                {positive.map((gene) => (
-                  <GeneRow
-                    key={gene.gene}
-                    gene={gene}
-                    onSelect={handleGeneSelect}
-                  />
-                ))}
-                {positive.length === 0 && (
-                  <div style={{ padding: '16px', color: '#666', textAlign: 'center' }}>
-                    No significant genes
-                  </div>
-                )}
-              </div>
+          {/* Module-based display */}
+          {hasModules ? (
+            <div>
+              {modules.map((mod, idx) => (
+                <ModuleCard
+                  key={mod.module_id}
+                  module={mod}
+                  onGeneSelect={handleGeneSelect}
+                  defaultExpanded={idx < 3}
+                />
+              ))}
+              {totalModuleGenes === 0 && (
+                <div style={{ padding: '24px', color: '#666', textAlign: 'center' }}>
+                  No significant genes found
+                </div>
+              )}
             </div>
-
-            {/* Negative (decreasing) genes */}
-            <div style={styles.column}>
-              <div style={styles.columnHeader}>
-                <span style={styles.arrowDown}>&#8595;</span>
-                <span style={styles.columnTitle}>Decreasing Along Line</span>
-                <span style={styles.columnCount}>{negative.length} shown</span>
-              </div>
-              <div style={styles.geneList}>
-                {negative.map((gene) => (
-                  <GeneRow
-                    key={gene.gene}
-                    gene={gene}
-                    onSelect={handleGeneSelect}
-                  />
-                ))}
-                {negative.length === 0 && (
-                  <div style={{ padding: '16px', color: '#666', textAlign: 'center' }}>
-                    No significant genes
-                  </div>
-                )}
-              </div>
+          ) : (
+            <div style={{ padding: '24px', color: '#666', textAlign: 'center' }}>
+              No significant genes found
             </div>
-          </div>
+          )}
         </div>
 
         <div style={styles.footer}>
@@ -407,7 +489,7 @@ export default function LineAssociationModal() {
             <button
               style={{ ...styles.button, ...styles.primaryButton }}
               onClick={handleAddToGeneSets}
-              disabled={positive.length === 0 && negative.length === 0}
+              disabled={!hasModules || totalModuleGenes === 0}
             >
               Add to Gene Sets
             </button>

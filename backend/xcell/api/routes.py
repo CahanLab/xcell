@@ -584,11 +584,11 @@ class LineAssociationRequest(BaseModel):
     """Request model for line association testing."""
     line_name: str
     cell_indices: list[int] | None = None
+    gene_subset: str | list[str] | None = None
     n_spline_knots: int = 5
     min_cells: int = 20
     fdr_threshold: float = 0.05
     top_n: int = 50
-    use_log1p: bool = True
 
 
 class LineAssociationGene(BaseModel):
@@ -612,18 +612,29 @@ class LineAssociationDiagnostics(BaseModel):
     expression_range: list[float]
     expression_mean: float
     n_zero_genes: int
-    used_log1p: bool
     spline_df: int
+
+
+class LineAssociationModule(BaseModel):
+    """A module of genes with similar expression profiles along a line."""
+    module_id: int
+    pattern: str                          # 'increasing', 'decreasing', 'peak', 'trough', 'complex'
+    n_genes: int
+    representative_profile: list[float]   # normalized 0-1 profile at evenly-spaced positions
+    profile_positions: list[float]        # corresponding position values (0-1)
+    genes: list[LineAssociationGene]
 
 
 class LineAssociationResponse(BaseModel):
     """Response model for line association testing."""
     positive: list[LineAssociationGene]
     negative: list[LineAssociationGene]
+    modules: list[LineAssociationModule] = []
     n_cells: int
     n_significant: int
     n_positive: int
     n_negative: int
+    n_modules: int = 0
     line_name: str
     fdr_threshold: float
     diagnostics: LineAssociationDiagnostics | None = None
@@ -655,11 +666,11 @@ def test_line_association(request: LineAssociationRequest):
         return adaptor.test_line_association(
             line_name=request.line_name,
             cell_indices=request.cell_indices,
+            gene_subset=request.gene_subset,
             n_spline_knots=request.n_spline_knots,
             min_cells=request.min_cells,
             fdr_threshold=request.fdr_threshold,
             top_n=request.top_n,
-            use_log1p=request.use_log1p,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -720,6 +731,7 @@ class FilterGenesRequest(BaseModel):
     max_counts: int | None = None
     min_cells: int | None = None
     max_cells: int | None = None
+    active_cell_indices: list[int] | None = None
 
 
 class FilterCellsRequest(BaseModel):
@@ -727,10 +739,12 @@ class FilterCellsRequest(BaseModel):
     max_counts: int | None = None
     min_genes: int | None = None
     max_genes: int | None = None
+    active_cell_indices: list[int] | None = None
 
 
 class NormalizeTotalRequest(BaseModel):
     target_sum: float | None = None
+    active_cell_indices: list[int] | None = None
 
 
 class HighlyVariableGenesRequest(BaseModel):
@@ -741,6 +755,7 @@ class HighlyVariableGenesRequest(BaseModel):
     flavor: str = 'seurat'
     n_bins: int = 20
     subset: bool = False
+    active_cell_indices: list[int] | None = None
 
 
 class GeneSubsetSpec(BaseModel):
@@ -758,23 +773,27 @@ class PcaRequest(BaseModel):
     # - list[str]: explicit gene names
     # - GeneSubsetSpec: combine multiple columns with AND/OR
     gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    active_cell_indices: list[int] | None = None
 
 
 class NeighborsRequest(BaseModel):
     n_neighbors: int = 15
     n_pcs: int | None = None
     metric: str = 'euclidean'
+    active_cell_indices: list[int] | None = None
 
 
 class UmapRequest(BaseModel):
     min_dist: float = 0.5
     spread: float = 1.0
     n_components: int = 2
+    active_cell_indices: list[int] | None = None
 
 
 class LeidenRequest(BaseModel):
     resolution: float = 1.0
     key_added: str = 'leiden'
+    active_cell_indices: list[int] | None = None
 
 
 @router.get("/scanpy/history")
@@ -816,6 +835,7 @@ def run_filter_genes(request: FilterGenesRequest):
             max_counts=request.max_counts,
             min_cells=request.min_cells,
             max_cells=request.max_cells,
+            active_cell_indices=request.active_cell_indices,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -835,6 +855,7 @@ def run_filter_cells(request: FilterCellsRequest):
             max_counts=request.max_counts,
             min_genes=request.min_genes,
             max_genes=request.max_genes,
+            active_cell_indices=request.active_cell_indices,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -849,13 +870,17 @@ def run_normalize_total(request: NormalizeTotalRequest):
     """
     adaptor = get_adaptor()
     try:
-        return adaptor.run_normalize_total(target_sum=request.target_sum)
+        return adaptor.run_normalize_total(target_sum=request.target_sum, active_cell_indices=request.active_cell_indices)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class Log1pRequest(BaseModel):
+    active_cell_indices: list[int] | None = None
+
+
 @router.post("/scanpy/log1p")
-def run_log1p():
+def run_log1p(request: Log1pRequest = Log1pRequest()):
     """Apply log1p transformation.
 
     Returns:
@@ -863,7 +888,7 @@ def run_log1p():
     """
     adaptor = get_adaptor()
     try:
-        return adaptor.run_log1p()
+        return adaptor.run_log1p(active_cell_indices=request.active_cell_indices)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -887,6 +912,7 @@ def run_highly_variable_genes(request: HighlyVariableGenesRequest):
             flavor=request.flavor,
             n_bins=request.n_bins,
             subset=request.subset,
+            active_cell_indices=request.active_cell_indices,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -913,6 +939,7 @@ def run_pca(request: PcaRequest):
             n_comps=request.n_comps,
             svd_solver=request.svd_solver,
             gene_subset=gene_subset,
+            active_cell_indices=request.active_cell_indices,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -933,6 +960,7 @@ def run_neighbors(request: NeighborsRequest):
             n_neighbors=request.n_neighbors,
             n_pcs=request.n_pcs,
             metric=request.metric,
+            active_cell_indices=request.active_cell_indices,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -955,6 +983,7 @@ def run_umap(request: UmapRequest):
             min_dist=request.min_dist,
             spread=request.spread,
             n_components=request.n_components,
+            active_cell_indices=request.active_cell_indices,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -976,6 +1005,7 @@ def run_leiden(request: LeidenRequest):
         return adaptor.run_leiden(
             resolution=request.resolution,
             key_added=request.key_added,
+            active_cell_indices=request.active_cell_indices,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -999,6 +1029,7 @@ class GenePcaRequest(BaseModel):
     # - list[str]: explicit list of gene names
     # - GeneSubsetSpec: combine multiple columns with AND/OR
     gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    active_cell_indices: list[int] | None = None
 
 
 class GeneNeighborsRequest(BaseModel):
@@ -1023,6 +1054,7 @@ class BuildGeneGraphRequest(BaseModel):
     use_kneedle: bool = True
     n_neighbors: int = 15
     metric: str = 'euclidean'
+    active_cell_indices: list[int] | None = None
 
 
 @router.get("/var/boolean_columns")
@@ -1066,6 +1098,7 @@ def run_gene_pca(request: GenePcaRequest):
             use_kneedle=request.use_kneedle,
             max_comps=request.max_comps,
             gene_subset=gene_subset,
+            active_cell_indices=request.active_cell_indices,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1178,6 +1211,7 @@ def run_build_gene_graph(request: BuildGeneGraphRequest):
             use_kneedle=request.use_kneedle,
             n_neighbors=request.n_neighbors,
             metric=request.metric,
+            active_cell_indices=request.active_cell_indices,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

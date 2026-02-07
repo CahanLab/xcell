@@ -202,11 +202,11 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         description: 'Identify highly variable genes for downstream analysis',
         prerequisites: [],
         params: [
-          { name: 'n_top_genes', label: 'Top N genes', type: 'number', default: null, description: 'Number of top genes (overrides thresholds if set)' },
+          { name: 'n_top_genes', label: 'Top N genes', type: 'number', default: 2000, description: 'Number of top genes (overrides thresholds if set)' },
           { name: 'min_mean', label: 'Min mean', type: 'number', default: 0.0125, description: 'Minimum mean expression' },
           { name: 'max_mean', label: 'Max mean', type: 'number', default: 3.0, description: 'Maximum mean expression' },
           { name: 'min_disp', label: 'Min dispersion', type: 'number', default: 0.5, description: 'Minimum normalized dispersion' },
-          { name: 'flavor', label: 'Method', type: 'select', default: 'seurat', options: ['seurat', 'cell_ranger', 'seurat_v3'], description: 'HVG selection method' },
+          { name: 'flavor', label: 'Method', type: 'select', default: 'cell_ranger', options: ['seurat', 'cell_ranger', 'seurat_v3'], description: 'HVG selection method' },
         ],
       },
     },
@@ -558,7 +558,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells } = useStore()
 
   const [selectedCategory, setSelectedCategory] = useState<CategoryKey>('preprocessing')
   const [selectedFunction, setSelectedFunction] = useState<FunctionKey>('filter_genes')
@@ -700,6 +700,18 @@ export default function ScanpyModal() {
         }
       }
 
+      // Add active cell indices if a cell mask is active
+      if (activeCellMask) {
+        const activeIndices: number[] = []
+        activeCellMask.forEach((active, idx) => { if (active) activeIndices.push(idx) })
+        if (activeIndices.length === 0) {
+          setResult({ success: false, message: 'No active cells. Reset the cell mask first.' })
+          setIsRunning(false)
+          return
+        }
+        requestParams['active_cell_indices'] = activeIndices
+      }
+
       const response = await fetch(`${API_BASE}/scanpy/${selectedFunction}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -809,6 +821,11 @@ export default function ScanpyModal() {
         await refreshSchema()
       }
 
+      // Reset cell mask after filter_cells removes cells (indices become stale)
+      if (selectedFunction === 'filter_cells' && data.n_cells_removed > 0) {
+        resetActiveCells()
+      }
+
       // Fetch variance data for visualization after gene PCA functions
       if (['gene_pca', 'build_gene_graph'].includes(selectedFunction)) {
         try {
@@ -826,7 +843,7 @@ export default function ScanpyModal() {
     } finally {
       setIsRunning(false)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells])
 
   if (!isScanpyModalOpen) return null
 
@@ -901,6 +918,14 @@ export default function ScanpyModal() {
         {prereqStatus && !prereqStatus.satisfied && (
           <div style={styles.prerequisiteWarning}>
             Requires: {prereqStatus.missing.map((p) => p.toUpperCase()).join(', ')} to be computed first
+          </div>
+        )}
+
+        {/* Cell mask indicator */}
+        {activeCellMask && (
+          <div style={{ fontSize: '12px', color: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.1)',
+            padding: '8px', borderRadius: '4px', marginBottom: '16px', borderLeft: '3px solid #4ecdc4' }}>
+            Cell mask active: operating on {activeCellMask.filter(Boolean).length.toLocaleString()} of {schema?.n_cells.toLocaleString()} cells
           </div>
         )}
 

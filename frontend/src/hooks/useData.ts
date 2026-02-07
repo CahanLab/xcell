@@ -506,11 +506,11 @@ export function useDiffExp() {
 export interface LineAssociationParams {
   lineName: string
   cellIndices?: number[]
+  geneSubset?: string | string[] | { columns: string[]; operation: string } | null
   nSplineKnots?: number
   minCells?: number
   fdrThreshold?: number
   topN?: number
-  useLog1p?: boolean
 }
 
 // Sync lines to backend
@@ -535,11 +535,11 @@ export async function runLineAssociation(params: LineAssociationParams): Promise
     body: JSON.stringify({
       line_name: params.lineName,
       cell_indices: params.cellIndices,
+      gene_subset: params.geneSubset ?? null,
       n_spline_knots: params.nSplineKnots ?? 5,
       min_cells: params.minCells ?? 20,
       fdr_threshold: params.fdrThreshold ?? 0.05,
       top_n: params.topN ?? 50,
-      use_log1p: params.useLog1p ?? true,
     }),
   })
 }

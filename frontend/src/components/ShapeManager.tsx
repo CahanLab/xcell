@@ -1,6 +1,8 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useStore } from '../store'
 import { useLineAssociation, createLineEmbedding } from '../hooks/useData'
+
+const API_BASE = '/api'
 
 const styles = {
   panel: {
@@ -164,8 +166,20 @@ export default function ShapeManager() {
   const [associationError, setAssociationError] = useState<string | null>(null)
   const [isCreatingEmbedding, setIsCreatingEmbedding] = useState(false)
   const [embeddingMessage, setEmbeddingMessage] = useState<string | null>(null)
+  const [geneSubsetColumns, setGeneSubsetColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])
+  const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
+  const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
 
   const { runAssociation, isLineAssociationLoading } = useLineAssociation()
+
+  // Fetch available boolean columns for gene subsetting (on mount + after scanpy actions)
+  const scanpyActionHistory = useStore((state) => state.scanpyActionHistory)
+  useEffect(() => {
+    fetch(`${API_BASE}/var/boolean_columns`)
+      .then((res) => res.json())
+      .then(setGeneSubsetColumns)
+      .catch(() => setGeneSubsetColumns([]))
+  }, [scanpyActionHistory])
 
   // Get setSchema to force refresh after creating embedding
   const setSchema = useStore((state) => state.setSchema)
@@ -213,11 +227,19 @@ export default function ShapeManager() {
           .filter(idx => idx >= 0)
       }
 
-      await runAssociation(line.name, { cellIndices })
+      // Build gene subset spec
+      let geneSubset: string | { columns: string[]; operation: string } | null = null
+      if (selectedGeneColumns.length === 1) {
+        geneSubset = selectedGeneColumns[0]
+      } else if (selectedGeneColumns.length > 1) {
+        geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
+      }
+
+      await runAssociation(line.name, { cellIndices, geneSubset })
     } catch (err) {
       setAssociationError((err as Error).message)
     }
-  }, [runAssociation, activeCellMask])
+  }, [runAssociation, activeCellMask, selectedGeneColumns, geneSubsetOperation])
 
   const handleCreateProjectionEmbedding = useCallback(async (line: typeof drawnLines[0]) => {
     setEmbeddingMessage(null)
@@ -398,6 +420,78 @@ export default function ShapeManager() {
               >
                 Clear Projections
               </button>
+            </div>
+          )}
+
+          {/* Gene subset selector for association */}
+          {geneSubsetColumns.length > 0 && (
+            <div style={{ marginTop: '8px' }}>
+              <div style={{ fontSize: '10px', color: '#888', marginBottom: '4px' }}>
+                Genes {selectedGeneColumns.length === 0 ? '(all)' : ''}:
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {geneSubsetColumns.map((col) => {
+                  const isSelected = selectedGeneColumns.includes(col.name)
+                  return (
+                    <button
+                      key={col.name}
+                      onClick={() => {
+                        if (isSelected) {
+                          setSelectedGeneColumns(selectedGeneColumns.filter(c => c !== col.name))
+                        } else {
+                          setSelectedGeneColumns([...selectedGeneColumns, col.name])
+                        }
+                      }}
+                      style={{
+                        padding: '2px 6px',
+                        fontSize: '9px',
+                        backgroundColor: isSelected ? '#4ecdc4' : '#0f3460',
+                        color: isSelected ? '#000' : '#aaa',
+                        border: `1px solid ${isSelected ? '#4ecdc4' : '#1a1a2e'}`,
+                        borderRadius: '10px',
+                        cursor: 'pointer',
+                        fontWeight: isSelected ? 600 : 400,
+                      }}
+                      title={`${col.n_true.toLocaleString()} of ${col.n_total.toLocaleString()} genes`}
+                    >
+                      {col.name} ({col.n_true.toLocaleString()})
+                    </button>
+                  )
+                })}
+              </div>
+              {selectedGeneColumns.length >= 2 && (
+                <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px' }}>
+                  <span style={{ color: '#888' }}>Combine:</span>
+                  <button
+                    onClick={() => setGeneSubsetOperation('intersection')}
+                    style={{
+                      padding: '1px 5px',
+                      fontSize: '9px',
+                      backgroundColor: geneSubsetOperation === 'intersection' ? '#4ecdc4' : '#0f3460',
+                      color: geneSubsetOperation === 'intersection' ? '#000' : '#aaa',
+                      border: '1px solid #1a1a2e',
+                      borderRadius: '3px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    AND
+                  </button>
+                  <button
+                    onClick={() => setGeneSubsetOperation('union')}
+                    style={{
+                      padding: '1px 5px',
+                      fontSize: '9px',
+                      backgroundColor: geneSubsetOperation === 'union' ? '#4ecdc4' : '#0f3460',
+                      color: geneSubsetOperation === 'union' ? '#000' : '#aaa',
+                      border: '1px solid #1a1a2e',
+                      borderRadius: '3px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    OR
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

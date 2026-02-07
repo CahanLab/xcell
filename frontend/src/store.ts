@@ -176,18 +176,29 @@ export interface LineAssociationDiagnostics {
   expression_range: [number, number]
   expression_mean: number
   n_zero_genes: number
-  used_log1p: boolean
   spline_df: number
+}
+
+// A module of genes with similar expression profiles along a line
+export interface LineAssociationModule {
+  module_id: number
+  pattern: string                    // 'increasing', 'decreasing', 'peak', 'trough', 'complex'
+  n_genes: number
+  representative_profile: number[]   // normalized 0-1 profile
+  profile_positions: number[]        // corresponding position values (0-1)
+  genes: LineAssociationGene[]
 }
 
 // Line association test results
 export interface LineAssociationResult {
-  positive: LineAssociationGene[]  // Genes increasing along line
-  negative: LineAssociationGene[]  // Genes decreasing along line
+  positive: LineAssociationGene[]  // Genes increasing along line (backward compat)
+  negative: LineAssociationGene[]  // Genes decreasing along line (backward compat)
+  modules: LineAssociationModule[] // All significant genes grouped by profile shape
   n_cells: number
   n_significant: number
   n_positive: number
   n_negative: number
+  n_modules: number
   line_name: string
   fdr_threshold: number
   diagnostics?: LineAssociationDiagnostics

@@ -2,6 +2,8 @@
 
 Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad file, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
 
+ ![Screenshot](docs/images/xcell_screenshot.jpg)   
+
 ## Quick Start
 
 ### Prerequisites

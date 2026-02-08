@@ -10,6 +10,8 @@ import {
   useDiffExp,
 } from '../hooks/useData'
 
+const API_BASE = '/api'
+
 const styles = {
   panel: {
     width: '280px',
@@ -740,6 +742,7 @@ export default function CellPanel() {
     removeSelectionFromActive,
     resetActiveCells,
     setShowMaskedCells,
+    setSchema,
   } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
   const { selectColorColumn } = useDataActions()
@@ -754,6 +757,10 @@ export default function CellPanel() {
   const [newLabel, setNewLabel] = useState('')
   const [isLabeling, setIsLabeling] = useState(false)
 
+  // State for delete confirmation
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+
   // State for collapsible sections
   const [categoricalExpanded, setCategoricalExpanded] = useState(true)
   const [continuousExpanded, setContinuousExpanded] = useState(true)
@@ -762,6 +769,11 @@ export default function CellPanel() {
   // Track which categories are set as groups (for highlighting buttons)
   const [group1Categories, setGroup1Categories] = useState<Set<string>>(new Set())
   const [group2Categories, setGroup2Categories] = useState<Set<string>>(new Set())
+
+  // Reset delete confirmation when selection changes
+  useEffect(() => {
+    setShowDeleteConfirm(false)
+  }, [selectedCellIndices])
 
   // Get display name for a column
   const getDisplayName = useCallback((originalName: string) => {
@@ -944,6 +956,37 @@ export default function CellPanel() {
       setIsLabeling(false)
     }
   }, [selectedAnnotation, newLabel, selectedCellIndices, clearSelection, refresh])
+
+  const handleDeleteCells = useCallback(async () => {
+    if (selectedCellIndices.length === 0) return
+    setIsDeleting(true)
+    try {
+      const response = await fetch(`${API_BASE}/cells/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cell_indices: selectedCellIndices }),
+      })
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.detail || 'Delete failed')
+      }
+      // Refresh schema (cell count changed)
+      const schemaRes = await fetch(`${API_BASE}/schema`)
+      if (schemaRes.ok) {
+        setSchema(await schemaRes.json())
+      }
+      // Reset mask (indices are now stale) and clear selection
+      resetActiveCells()
+      clearSelection()
+      refresh()
+    } catch (err) {
+      console.error('Failed to delete cells:', err)
+      alert(`Failed to delete cells: ${(err as Error).message}`)
+    } finally {
+      setIsDeleting(false)
+      setShowDeleteConfirm(false)
+    }
+  }, [selectedCellIndices, setSchema, resetActiveCells, clearSelection, refresh])
 
   if (isLoading) {
     return (
@@ -1232,11 +1275,49 @@ export default function CellPanel() {
             <button
               style={{ ...styles.maskActionButton, flex: 1 }}
               onClick={removeSelectionFromActive}
-              title="Remove selection from active cells"
+              title="Mask selection — hide from analysis but keep in data"
             >
-              Remove
+              Mask
+            </button>
+            <button
+              style={{
+                ...styles.maskActionButton,
+                flex: 1,
+                backgroundColor: showDeleteConfirm ? '#e94560' : '#3a1020',
+                color: showDeleteConfirm ? '#fff' : '#e94560',
+                border: '1px solid #e94560',
+              }}
+              onClick={() => {
+                if (showDeleteConfirm) {
+                  handleDeleteCells()
+                } else {
+                  setShowDeleteConfirm(true)
+                }
+              }}
+              disabled={isDeleting}
+              title="Permanently remove selected cells from the dataset"
+            >
+              {isDeleting ? '...' : showDeleteConfirm ? `Delete ${selectedCellIndices.length}?` : 'Delete'}
             </button>
           </div>
+          {showDeleteConfirm && (
+            <div style={{ fontSize: '9px', color: '#e94560', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span>This permanently removes {selectedCellIndices.length.toLocaleString()} cells.</span>
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#888',
+                  cursor: 'pointer',
+                  fontSize: '9px',
+                  textDecoration: 'underline',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
 
           {/* Select annotation to label */}
           <div style={{ ...styles.inputRow, marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #0f3460' }}>

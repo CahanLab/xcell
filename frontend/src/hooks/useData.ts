@@ -352,6 +352,39 @@ export function useGeneSearch() {
   return { results, isSearching, searchGenes, clearResults }
 }
 
+// Hook for paginated gene browsing
+export interface GeneBrowseResult {
+  genes: string[]
+  offset: number
+  limit: number
+  total: number
+}
+
+export function useGeneBrowse(pageSize: number = 50) {
+  const [page, setPage] = useState<GeneBrowseResult | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+
+  const fetchPage = useCallback(async (offset: number) => {
+    setIsLoading(true)
+    try {
+      const data = await fetchJson<GeneBrowseResult>(
+        `${API_BASE}/genes/browse?offset=${offset}&limit=${pageSize}`
+      )
+      setPage(data)
+    } catch (err) {
+      console.error('Gene browse failed:', err)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [pageSize])
+
+  const reset = useCallback(() => {
+    setPage(null)
+  }, [])
+
+  return { page, isLoading, fetchPage, reset }
+}
+
 // Types for obs summaries
 export interface CategoryValue {
   value: string
@@ -373,6 +406,7 @@ export function useObsSummaries() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [refreshCounter, setRefreshCounter] = useState(0)
+  const obsSummariesVersion = useStore((s) => s.obsSummariesVersion)
 
   useEffect(() => {
     setIsLoading(true)
@@ -380,7 +414,7 @@ export function useObsSummaries() {
       .then(setSummaries)
       .catch((err) => setError(err.message))
       .finally(() => setIsLoading(false))
-  }, [refreshCounter])
+  }, [refreshCounter, obsSummariesVersion])
 
   const refresh = useCallback(() => {
     setRefreshCounter((c) => c + 1)

@@ -314,21 +314,19 @@ class DataAdaptor:
             - transform: The transformation applied (if any)
             - scoring_method: The scoring method used
 
-        Raises:
-            KeyError: If any gene not found in .var
         """
-        # Validate all genes exist
-        missing = [g for g in genes if g not in self.adata.var.index]
-        if missing:
-            raise KeyError(f"Genes not found: {missing}")
+        # Filter to only genes present in the dataset (silently skip missing)
+        valid_genes = [g for g in genes if g in self.adata.var.index]
 
-        if len(genes) == 0:
+        if len(valid_genes) == 0:
             return {
                 "genes": [],
                 "values": [0.0] * self.n_cells,
                 "min": 0.0,
                 "max": 0.0,
             }
+
+        genes = valid_genes
 
         # Select data source based on transform
         if transform == "log1p":
@@ -442,17 +440,13 @@ class DataAdaptor:
             - transform: The transformation applied (if any)
             - scoring_method: The scoring method used
 
-        Raises:
-            KeyError: If any gene not found in .var
         """
-        # Validate all genes exist
-        all_genes = genes1 + genes2
-        missing = [g for g in all_genes if g not in self.adata.var.index]
-        if missing:
-            raise KeyError(f"Genes not found: {missing}")
+        # Filter to only genes present in the dataset (silently skip missing)
+        genes1 = [g for g in genes1 if g in self.adata.var.index]
+        genes2 = [g for g in genes2 if g in self.adata.var.index]
 
         if len(genes1) == 0 or len(genes2) == 0:
-            raise ValueError("Both gene sets must contain at least one gene")
+            raise ValueError("No valid genes found in one or both gene sets after filtering to dataset genes")
 
         # Select data source based on transform
         if transform == "log1p":
@@ -1919,6 +1913,48 @@ class DataAdaptor:
             'n_cells_removed': n_cells_before - n_cells_after,
         }
         self._log_action('filter_cells', kwargs, result)
+        return result
+
+    def delete_cells(
+        self,
+        cell_indices: list[int],
+    ) -> dict[str, Any]:
+        """Permanently remove specific cells from the dataset.
+
+        Args:
+            cell_indices: List of cell indices to remove.
+
+        Returns:
+            Dict with before/after cell counts.
+        """
+        if not cell_indices:
+            raise ValueError("No cell indices provided.")
+
+        indices = np.array(cell_indices)
+        if indices.max() >= self.n_cells or indices.min() < 0:
+            raise ValueError(
+                f"Cell indices out of range [0, {self.n_cells - 1}]."
+            )
+
+        n_cells_before = self.n_cells
+
+        # Build keep mask (True for cells to keep)
+        keep_mask = np.ones(self.n_cells, dtype=bool)
+        keep_mask[indices] = False
+
+        self.adata = self.adata[keep_mask].copy()
+
+        # Invalidate normalized cache
+        self._normalized_adata = None
+
+        n_cells_after = self.n_cells
+
+        result = {
+            'n_cells_before': n_cells_before,
+            'n_cells_after': n_cells_after,
+            'n_cells_deleted': n_cells_before - n_cells_after,
+        }
+        self._log_action('delete_cells', {'n_indices': len(cell_indices)}, result)
         return result
 
     def run_normalize_total(

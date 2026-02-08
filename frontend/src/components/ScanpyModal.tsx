@@ -558,7 +558,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries } = useStore()
 
   const [selectedCategory, setSelectedCategory] = useState<CategoryKey>('preprocessing')
   const [selectedFunction, setSelectedFunction] = useState<FunctionKey>('filter_genes')
@@ -798,7 +798,7 @@ export default function ScanpyModal() {
             month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
           })
           const setName = `Top SVG (${data.mode === 'moran' ? "Moran's I" : "Geary's C"}) ${timestamp}`
-          useStore.getState().addGeneSetToCategory('spatial', setName, data.top_sv_genes)
+          useStore.getState().addGeneSetToCategory('manual', setName, data.top_sv_genes)
         }
       } else if (data.n_highly_variable !== undefined) {
         // highly_variable_genes result
@@ -819,6 +819,8 @@ export default function ScanpyModal() {
       // Refresh schema if data shape may have changed
       if (['filter_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes'].includes(selectedFunction)) {
         await refreshSchema()
+        // Also refresh obs summaries so Cell Manager shows new/updated columns (e.g. leiden clusters)
+        refreshObsSummaries()
       }
 
       // Reset cell mask after filter_cells removes cells (indices become stale)
@@ -843,7 +845,7 @@ export default function ScanpyModal() {
     } finally {
       setIsRunning(false)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries])
 
   if (!isScanpyModalOpen) return null
 

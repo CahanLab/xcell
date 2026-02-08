@@ -239,7 +239,7 @@ export default function DiffExpModal() {
     comparison,
     diffExpResult,
     isDiffExpLoading,
-    addGeneSet,
+    addGeneSetToCategory,
     clearComparison,
   } = useStore()
   const { runComparison } = useDiffExp()
@@ -254,22 +254,22 @@ export default function DiffExpModal() {
 
     const timestamp = formatTimestamp()
 
-    // Add upregulated in group1 - name format: "Feb02 1430 grp1 MS4A1"
+    // Add upregulated in group1
     if (diffExpResult.positive.length > 0) {
       const genes = diffExpResult.positive.map((g) => g.gene)
       const topGene = diffExpResult.positive[0].gene
-      addGeneSet(`${timestamp} grp1 ${topGene}`, genes)
+      addGeneSetToCategory('diff_exp', `${timestamp} grp1 ${topGene}`, genes)
     }
 
-    // Add upregulated in group2 - name format: "Feb02 1430 grp2 CD3D"
+    // Add upregulated in group2
     if (diffExpResult.negative.length > 0) {
       const genes = diffExpResult.negative.map((g) => g.gene)
       const topGene = diffExpResult.negative[0].gene
-      addGeneSet(`${timestamp} grp2 ${topGene}`, genes)
+      addGeneSetToCategory('diff_exp', `${timestamp} grp2 ${topGene}`, genes)
     }
 
     handleClose()
-  }, [diffExpResult, addGeneSet, handleClose])
+  }, [diffExpResult, addGeneSetToCategory, handleClose])
 
   const handleClearAndClose = useCallback(() => {
     clearComparison()

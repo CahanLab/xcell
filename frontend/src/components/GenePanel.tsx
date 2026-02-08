@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType } from '../store'
-import { useGeneSearch, useDataActions } from '../hooks/useData'
+import { useGeneSearch, useGeneBrowse, useDataActions } from '../hooks/useData'
+import ImportModal from './ImportModal'
 
 const API_BASE = '/api'
 
@@ -8,7 +9,7 @@ const API_BASE = '/api'
 const GENE_DRAG_TYPE = 'application/x-gene'
 
 // Category display order and icons
-const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial']
+const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp']
 const CATEGORY_ICONS: Record<GeneSetCategoryType, string> = {
   manual: '📁',
   gene_clusters: '🧬',
@@ -350,8 +351,10 @@ interface GeneSearchProps {
 function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes }: GeneSearchProps) {
   const [query, setQuery] = useState('')
   const [hoveredGene, setHoveredGene] = useState<string | null>(null)
+  const [showBrowse, setShowBrowse] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const { results, searchGenes, clearResults } = useGeneSearch()
+  const { page, isLoading: isBrowseLoading, fetchPage } = useGeneBrowse(50)
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -359,6 +362,20 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
     }, 150) // Debounce
     return () => clearTimeout(timer)
   }, [query, searchGenes])
+
+  // When browse is opened for the first time, fetch the first page
+  useEffect(() => {
+    if (showBrowse && !page) {
+      fetchPage(0)
+    }
+  }, [showBrowse, page, fetchPage])
+
+  // Hide browse when user starts typing a search query
+  useEffect(() => {
+    if (query.length > 0) {
+      setShowBrowse(false)
+    }
+  }, [query])
 
   const handleClearSearch = () => {
     setQuery('')
@@ -379,7 +396,8 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
   }
 
   const selectAll = () => {
-    setSelectedSearchGenes(new Set(results))
+    const genes = query ? results : (page?.genes || [])
+    setSelectedSearchGenes(new Set(genes))
   }
 
   const selectNone = () => {
@@ -397,6 +415,11 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
     e.dataTransfer.effectAllowed = 'copy'
   }
 
+  // Determine which genes to display: search results or browse page
+  const isSearchMode = query.length > 0
+  const displayGenes = isSearchMode ? results : (showBrowse && page ? page.genes : [])
+  const showGeneList = displayGenes.length > 0
+
   return (
     <div>
       <div style={styles.searchContainer}>
@@ -410,10 +433,38 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
         />
       </div>
 
-      {results.length > 0 && (
+      {/* Browse toggle - shown when not searching */}
+      {!isSearchMode && (
+        <button
+          onClick={() => setShowBrowse(!showBrowse)}
+          style={{
+            width: '100%',
+            marginTop: '6px',
+            padding: '5px 8px',
+            fontSize: '11px',
+            color: showBrowse ? '#4ecdc4' : '#888',
+            backgroundColor: 'transparent',
+            border: '1px solid ' + (showBrowse ? '#4ecdc4' : '#1a1a2e'),
+            borderRadius: '4px',
+            cursor: 'pointer',
+            textAlign: 'center',
+          }}
+        >
+          {showBrowse ? 'Hide gene browser' : 'Browse all genes'}
+        </button>
+      )}
+
+      {showGeneList && (
         <div style={styles.searchResults}>
           <div style={styles.searchResultsHeader}>
-            <span>{results.length} results</span>
+            <span>
+              {isSearchMode
+                ? `${results.length} results`
+                : page
+                  ? `${page.offset + 1}\u2013${Math.min(page.offset + page.limit, page.total)} of ${page.total.toLocaleString()}`
+                  : ''
+              }
+            </span>
             <div style={{ display: 'flex', gap: '8px' }}>
               <button style={styles.smallActionButton} onClick={selectAll}>
                 All
@@ -421,13 +472,15 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
               <button style={styles.smallActionButton} onClick={selectNone}>
                 None
               </button>
-              <button style={styles.smallActionButton} onClick={handleClearSearch}>
-                Clear
-              </button>
+              {isSearchMode && (
+                <button style={styles.smallActionButton} onClick={handleClearSearch}>
+                  Clear
+                </button>
+              )}
             </div>
           </div>
 
-          {results.map((gene) => {
+          {displayGenes.map((gene) => {
             const isSelected = selectedSearchGenes.has(gene)
             const isHovered = hoveredGene === gene
             return (
@@ -463,6 +516,43 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
           {selectedSearchGenes.size > 0 && (
             <div style={styles.dragHint}>
               Drag {selectedSearchGenes.size} selected gene{selectedSearchGenes.size > 1 ? 's' : ''} to a gene set
+            </div>
+          )}
+
+          {/* Pagination controls for browse mode */}
+          {!isSearchMode && page && page.total > page.limit && (
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '6px 10px',
+              borderTop: '1px solid #1a1a2e',
+            }}>
+              <button
+                onClick={() => fetchPage(Math.max(0, page.offset - page.limit))}
+                disabled={page.offset === 0 || isBrowseLoading}
+                style={{
+                  ...styles.smallActionButton,
+                  opacity: page.offset === 0 ? 0.4 : 1,
+                  cursor: page.offset === 0 ? 'default' : 'pointer',
+                }}
+              >
+                Prev
+              </button>
+              <span style={{ fontSize: '10px', color: '#666' }}>
+                {isBrowseLoading ? 'Loading...' : `page ${Math.floor(page.offset / page.limit) + 1} of ${Math.ceil(page.total / page.limit)}`}
+              </span>
+              <button
+                onClick={() => fetchPage(page.offset + page.limit)}
+                disabled={page.offset + page.limit >= page.total || isBrowseLoading}
+                style={{
+                  ...styles.smallActionButton,
+                  opacity: page.offset + page.limit >= page.total ? 0.4 : 1,
+                  cursor: page.offset + page.limit >= page.total ? 'default' : 'pointer',
+                }}
+              >
+                Next
+              </button>
             </div>
           )}
         </div>
@@ -826,7 +916,7 @@ function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetCategory
 }
 
 export default function GenePanel() {
-  const { geneSetCategories, selectedGenes, bivariateData, colorMode, addGeneSet, addGeneSetToCategory } = useStore()
+  const { geneSetCategories, selectedGenes, bivariateData, colorMode, addGeneSet, addGeneSetToCategory, setImportModalOpen } = useStore()
   const { colorByGene, colorByGenes, clearExpressionColor, colorByBivariate, clearBivariateColor } = useDataActions()
 
   // Flatten gene sets for bivariate selection
@@ -913,13 +1003,31 @@ export default function GenePanel() {
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
-        <div style={styles.title}>Genes</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={styles.title}>Genes</div>
+          <button
+            onClick={() => setImportModalOpen(true)}
+            style={{
+              padding: '2px 8px',
+              fontSize: '10px',
+              backgroundColor: '#0f3460',
+              color: '#aaa',
+              border: '1px solid #1a1a2e',
+              borderRadius: '3px',
+              cursor: 'pointer',
+            }}
+            title="Import gene lists from file (.gmt, .csv, .txt)"
+          >
+            Import
+          </button>
+        </div>
         <GeneSearch
           onColorByGene={colorByGene}
           selectedSearchGenes={selectedSearchGenes}
           setSelectedSearchGenes={setSelectedSearchGenes}
         />
       </div>
+      <ImportModal />
 
       {selectedGenes.length > 0 && colorMode === 'expression' && (
         <div style={styles.selectedGenesBar}>

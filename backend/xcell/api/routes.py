@@ -155,6 +155,33 @@ def get_genes():
     }
 
 
+@router.get("/genes/browse")
+def browse_genes(offset: int = 0, limit: int = 50):
+    """Browse genes with pagination (sorted alphabetically).
+
+    Args:
+        offset: Starting index (default 0)
+        limit: Number of genes to return (default 50)
+
+    Returns:
+        JSON object containing:
+        - genes: Array of gene names for this page
+        - offset: The starting index used
+        - limit: The page size used
+        - total: Total number of genes
+    """
+    adaptor = get_adaptor()
+    all_genes = sorted(adaptor.get_gene_names(), key=str.lower)
+    total = len(all_genes)
+    page = all_genes[offset:offset + limit]
+    return {
+        "genes": page,
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+    }
+
+
 @router.get("/genes/search")
 def search_genes(q: str, limit: int = 20):
     """Search for genes by name.
@@ -393,6 +420,43 @@ def export_annotations(request: ExportAnnotationsRequest):
             headers={"Content-Disposition": "attachment; filename=annotations.tsv"}
         )
     except KeyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
+# Cell deletion endpoint
+# =========================================================================
+
+
+class DeleteCellsRequest(BaseModel):
+    """Request model for permanently deleting cells."""
+    cell_indices: list[int]
+
+
+class DeleteCellsResponse(BaseModel):
+    """Response model for cell deletion."""
+    n_cells_before: int
+    n_cells_after: int
+    n_cells_deleted: int
+
+
+@router.post("/cells/delete", response_model=DeleteCellsResponse)
+def delete_cells(request: DeleteCellsRequest):
+    """Permanently remove specific cells from the dataset.
+
+    This is irreversible within the current session. The cells are removed
+    from the underlying AnnData object.
+
+    Args:
+        cell_indices: List of cell indices to delete
+
+    Returns:
+        Before/after cell counts and number deleted
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.delete_cells(cell_indices=request.cell_indices)
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 

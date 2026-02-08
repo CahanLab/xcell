@@ -299,9 +299,15 @@ interface AppState {
   activeLineId: string | null  // Currently selected line for editing/smoothing
   lineSmoothingParams: LineSmoothingParams
 
+  // Import modal state
+  isImportModalOpen: boolean
+
   // Scanpy modal state
   isScanpyModalOpen: boolean
   scanpyActionHistory: ScanpyActionRecord[]
+
+  // Observable summaries refresh trigger
+  obsSummariesVersion: number
 
   // Actions
   setSchema: (schema: Schema) => void
@@ -391,10 +397,16 @@ interface AppState {
   projectSelectedCellsOntoLine: (lineId: string) => void  // Project currently selected cells onto a specific line
   clearLineProjections: (lineId: string) => void
 
+  // Import modal actions
+  setImportModalOpen: (open: boolean) => void
+
   // Scanpy modal actions
   setScanpyModalOpen: (open: boolean) => void
   setScanpyActionHistory: (history: ScanpyActionRecord[]) => void
   addScanpyAction: (action: ScanpyActionRecord) => void
+
+  // Observable summaries refresh
+  refreshObsSummaries: () => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -448,8 +460,10 @@ export const useStore = create<AppState>((set) => ({
     windowSize: 5,
     iterations: 2,
   },
+  isImportModalOpen: false,
   isScanpyModalOpen: false,
   scanpyActionHistory: [],
+  obsSummariesVersion: 0,
 
   // Actions
   setSchema: (schema) => set({ schema }),
@@ -1113,6 +1127,9 @@ export const useStore = create<AppState>((set) => ({
       ),
     })),
 
+  // Import modal actions
+  setImportModalOpen: (open) => set({ isImportModalOpen: open }),
+
   // Scanpy modal actions
   setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),
   setScanpyActionHistory: (history) => set({ scanpyActionHistory: history }),
@@ -1120,4 +1137,8 @@ export const useStore = create<AppState>((set) => ({
     set((state) => ({
       scanpyActionHistory: [...state.scanpyActionHistory, action],
     })),
+
+  // Observable summaries refresh
+  refreshObsSummaries: () =>
+    set((state) => ({ obsSummariesVersion: state.obsSummariesVersion + 1 })),
 }))

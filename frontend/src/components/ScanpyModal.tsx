@@ -211,8 +211,8 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
       },
     },
   },
-  dimensionality_reduction: {
-    label: 'Dimensionality Reduction',
+  cell_analysis: {
+    label: 'Cell Analysis',
     functions: {
       pca: {
         label: 'PCA',
@@ -224,11 +224,6 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: null, description: 'Filter genes using boolean columns from .var (default: use highly_variable if available)' },
         ],
       },
-    },
-  },
-  graph_building: {
-    label: 'Graph Building',
-    functions: {
       neighbors: {
         label: 'Neighbors',
         description: 'Compute neighborhood graph',
@@ -239,11 +234,6 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine', 'manhattan'], description: 'Distance metric' },
         ],
       },
-    },
-  },
-  embedding: {
-    label: 'Embedding',
-    functions: {
       umap: {
         label: 'UMAP',
         description: 'Compute UMAP embedding',
@@ -254,11 +244,6 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'n_components', label: 'Dimensions', type: 'number', default: 2, description: 'Number of dimensions' },
         ],
       },
-    },
-  },
-  clustering: {
-    label: 'Clustering',
-    functions: {
       leiden: {
         label: 'Leiden',
         description: 'Leiden clustering algorithm',

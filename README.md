@@ -1,6 +1,6 @@
 # XCell
 
-Modern web application for exploring scRNA-seq and spatial transcriptomics data.
+Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad file, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
 
 ## Quick Start
 
@@ -8,12 +8,11 @@ Modern web application for exploring scRNA-seq and spatial transcriptomics data.
 
 - Python 3.9+
 - Node.js 18+
-- An h5ad file (AnnData format) with embeddings in `.obsm`
 
 ### Backend Setup
 
 ```bash
-cd backend
+cd xcell/backend
 
 # Create virtual environment (recommended)
 python -m venv venv
@@ -21,48 +20,108 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install in editable mode
 pip install -e .
-
-# Run with auto-reload (replace with your h5ad file path)
-XCELL_DATA_PATH=/path/to/your/data.h5ad uvicorn xcell.main:app --reload --port 8000
 ```
-
-The backend will:
-- Auto-reload when you edit Python files
-- Provide API docs at http://localhost:8000/docs
-- Expose API at http://localhost:8000/api/
 
 ### Frontend Setup
 
 ```bash
-cd frontend
-
-# Install dependencies
+cd xcell/frontend
 npm install
-
-# Run dev server with hot module replacement
-npm run dev
 ```
 
-The frontend will:
-- Run at http://localhost:5173
-- Instantly update when you edit React/TypeScript files
-- Proxy API requests to the backend
-
-### Example with Sample Data
-
-If you have the excellxgene example dataset:
+### Launch with Toy Data
 
 ```bash
-# Terminal 1: Backend
-cd backend
-XCELL_DATA_PATH=../../excellxgene/example-dataset/pbmc3k.h5ad uvicorn xcell.main:app --reload
+# Terminal 1: Start the backend (from xcell/backend/)
+XCELL_DATA_PATH=../../test_data/toy_spatial.h5ad uvicorn xcell.main:app --reload
 
-# Terminal 2: Frontend
-cd frontend
+# Terminal 2: Start the frontend (from xcell/frontend/)
 npm run dev
 ```
 
-Then open http://localhost:5173 in your browser.
+Open http://localhost:5173 in your browser.
+
+## Getting Started with Toy Data
+
+The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcriptomics dataset for exploring XCell's features. Here's a step-by-step walkthrough:
+
+### 1. Explore the Scatter Plot
+
+- Pan by clicking and dragging
+- Zoom with scroll wheel
+- Cells are rendered as points at their spatial coordinates
+
+### 2. Color by Metadata
+
+- Open **Cell Manager** (left panel)
+- Select a metadata column to color cells by that annotation
+
+### 3. Select Cells
+
+- Use the **lasso tool** to draw a selection around cells
+- Selected cells can be masked or deleted
+
+### 4. Run Preprocessing
+
+- Open the **Scanpy** modal (top toolbar)
+- Go to **Preprocessing** and run in order:
+  1. **Normalize Total** — normalize counts per cell
+  2. **Log1p** — log-transform the data
+  3. **Highly Variable Genes** — identify informative genes
+
+### 5. Run Cell Analysis
+
+- In the **Scanpy** modal, go to **Cell Analysis** and run in order:
+  1. **PCA** — reduce dimensionality
+  2. **Neighbors** — build cell neighborhood graph (requires PCA)
+  3. **UMAP** — compute 2D embedding (requires Neighbors)
+  4. **Leiden** — cluster cells (requires Neighbors)
+
+### 6. View Clustering Results
+
+- In **Cell Manager**, select the `leiden` column to color by cluster
+- Switch the embedding to `X_umap` to see the UMAP layout
+
+### 7. Color by Gene Expression
+
+- Open **Gene Manager** (right panel)
+- Search or browse genes
+- Click a gene to color cells by its expression
+
+### 8. Gene Sets
+
+- Create gene sets manually in Gene Manager
+- Import gene lists from files
+
+### 9. Differential Expression
+
+- Select two groups of cells (e.g., via lasso or cluster labels)
+- Open **Compare groups** to run differential expression analysis
+
+### 10. Trajectory Analysis
+
+- Draw lines on the scatter plot
+- Use the **Line Association** tool to analyze genes along trajectories
+
+### 11. Run Gene Analysis
+
+- In the **Scanpy** modal, go to **Gene Analysis**:
+  1. **Build Gene Graph** — compute gene-gene similarity
+  2. **Cluster Genes** — group genes by expression pattern
+
+### 12. Export Results
+
+- Click **Export** in the toolbar to download annotations and results
+
+## Features
+
+- **Interactive scatter plot** — deck.gl-powered visualization with pan, zoom, lasso selection
+- **Cell Manager** — browse/color by metadata, mask/delete cells
+- **Gene Manager** — search genes, create gene sets, import gene lists
+- **Scanpy integration** — run preprocessing, cell analysis (PCA, Neighbors, UMAP, Leiden), gene analysis, and differential expression directly in the browser
+- **Trajectory analysis** — draw lines and associate genes with spatial trajectories
+- **Display settings** — adjust point size, opacity, colormaps, bivariate coloring
+- **Export** — download annotations and analysis results
 
 ## Project Structure
 
@@ -70,55 +129,40 @@ Then open http://localhost:5173 in your browser.
 xcell/
 ├── backend/
 │   ├── xcell/
-│   │   ├── main.py       # FastAPI app entry point
-│   │   ├── adaptor.py    # DataAdaptor class (wraps AnnData)
+│   │   ├── main.py          # FastAPI app entry point
+│   │   ├── adaptor.py       # DataAdaptor class (wraps AnnData)
+│   │   ├── diffexp.py       # Differential expression
 │   │   └── api/
-│   │       └── routes.py # REST API endpoints
-│   └── pyproject.toml    # Python dependencies
+│   │       └── routes.py    # REST API endpoints
+│   └── pyproject.toml       # Python dependencies
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx              # Main app component
-│   │   ├── store.ts             # Zustand state management
+│   │   ├── App.tsx           # Main app component
+│   │   ├── store.ts          # Zustand state management
+│   │   ├── main.tsx          # Entry point
 │   │   ├── components/
-│   │   │   └── ScatterPlot.tsx  # deck.gl scatter plot
+│   │   │   ├── ScatterPlot.tsx        # deck.gl scatter plot
+│   │   │   ├── CellPanel.tsx          # Cell metadata manager
+│   │   │   ├── GenePanel.tsx          # Gene browser / gene sets
+│   │   │   ├── ScanpyModal.tsx        # Scanpy analysis pipeline UI
+│   │   │   ├── DiffExpModal.tsx       # Differential expression
+│   │   │   ├── LineAssociationModal.tsx # Trajectory analysis
+│   │   │   ├── DisplaySettings.tsx    # Visualization settings
+│   │   │   ├── ShapeManager.tsx       # Shape/selection tools
+│   │   │   └── ImportModal.tsx        # Gene list import
 │   │   └── hooks/
-│   │       └── useData.ts       # Data fetching hooks
-│   ├── package.json             # Node dependencies
-│   └── vite.config.ts           # Vite configuration
-└── README.md
+│   │       └── useData.ts    # Data fetching hooks
+│   ├── package.json          # Node dependencies
+│   └── vite.config.ts        # Vite configuration
+├── README.md
+test_data/
+├── toy_spatial.h5ad          # Toy dataset for testing
+└── generate_toy.py           # Script to regenerate toy data
 ```
-
-## API Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/schema` | Dataset info: cell/gene counts, embedding names, metadata columns |
-| `GET /api/embedding/{name}` | Embedding coordinates (e.g., X_umap, X_pca) |
-| `GET /api/obs/{column}` | Cell metadata values for coloring |
-| `GET /api/health` | Health check |
-
-## Development Workflow
-
-The setup prioritizes fast iteration:
-
-1. **Edit Python code** → Backend auto-reloads (uvicorn --reload)
-2. **Edit React/TypeScript** → Browser updates instantly (Vite HMR)
-3. **No manual restart needed** for most changes
 
 ## Architecture
 
-- **Backend**: FastAPI + AnnData + Scanpy-ready adaptor pattern
-- **Frontend**: React + Vite + TypeScript + deck.gl + Zustand
-- **Data flow**: h5ad → DataAdaptor → REST API → React hooks → deck.gl visualization
-
-## Future Additions
-
-The `DataAdaptor` class is designed for easy scanpy integration:
-
-```python
-# Planned methods
-adaptor.run_pca(n_comps=50)
-adaptor.run_umap()
-adaptor.run_leiden(resolution=1.0)
-adaptor.run_diffexp(groupby='cluster')
-```
+- **Backend**: FastAPI + AnnData + Scanpy, serving data and running analysis via REST API
+- **Frontend**: React + TypeScript + Vite + deck.gl + Zustand for state management
+- **Data flow**: h5ad file → DataAdaptor → REST API → React hooks → deck.gl visualization
+- **API docs**: Available at http://localhost:8000/docs when the backend is running

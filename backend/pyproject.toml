@@ -31,3 +31,6 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["xcell*"]
+
+[tool.setuptools.package-data]
+xcell = ["data/*.h5ad"]

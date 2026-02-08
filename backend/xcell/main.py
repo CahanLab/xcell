@@ -38,18 +38,25 @@ async def startup_event():
     # Get data file path from environment variable
     data_path = os.environ.get("XCELL_DATA_PATH")
 
-    if data_path:
-        path = Path(data_path)
-        if path.exists():
-            print(f"Loading data from: {path}")
-            adaptor = DataAdaptor(path)
-            set_adaptor(adaptor)
-            print(f"Loaded {adaptor.n_cells} cells, {adaptor.n_genes} genes")
+    if not data_path:
+        # Fall back to bundled toy dataset
+        bundled = Path(__file__).parent / "data" / "toy_spatial.h5ad"
+        if bundled.exists():
+            data_path = str(bundled)
+            print("No XCELL_DATA_PATH set — using bundled toy_spatial.h5ad")
         else:
-            print(f"Warning: Data file not found: {path}")
+            print("Warning: XCELL_DATA_PATH not set. Set it to load an h5ad file.")
+            print("Example: XCELL_DATA_PATH=/path/to/data.h5ad uvicorn xcell.main:app --reload")
+            return
+
+    path = Path(data_path)
+    if path.exists():
+        print(f"Loading data from: {path}")
+        adaptor = DataAdaptor(path)
+        set_adaptor(adaptor)
+        print(f"Loaded {adaptor.n_cells} cells, {adaptor.n_genes} genes")
     else:
-        print("Warning: XCELL_DATA_PATH not set. Set it to load an h5ad file.")
-        print("Example: XCELL_DATA_PATH=/path/to/data.h5ad uvicorn xcell.main:app --reload")
+        print(f"Warning: Data file not found: {path}")
 
 
 @app.get("/")

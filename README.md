@@ -29,17 +29,23 @@ cd xcell/frontend
 npm install
 ```
 
-### Launch with Toy Data
+### Launch
 
 ```bash
 # Terminal 1: Start the backend (from xcell/backend/)
-XCELL_DATA_PATH=../../test_data/toy_spatial.h5ad uvicorn xcell.main:app --reload
+uvicorn xcell.main:app --reload
 
 # Terminal 2: Start the frontend (from xcell/frontend/)
 npm run dev
 ```
 
 Open http://localhost:5173 in your browser.
+
+A bundled toy dataset (`toy_spatial.h5ad`) loads automatically if no data path is specified. To load your own data, set the `XCELL_DATA_PATH` environment variable:
+
+```bash
+XCELL_DATA_PATH=/path/to/your/data.h5ad uvicorn xcell.main:app --reload
+```
 
 ## Getting Started with Toy Data
 
@@ -132,6 +138,8 @@ xcell/
 │   │   ├── main.py          # FastAPI app entry point
 │   │   ├── adaptor.py       # DataAdaptor class (wraps AnnData)
 │   │   ├── diffexp.py       # Differential expression
+│   │   ├── data/
+│   │   │   └── toy_spatial.h5ad  # Bundled toy dataset
 │   │   └── api/
 │   │       └── routes.py    # REST API endpoints
 │   └── pyproject.toml       # Python dependencies

@@ -743,6 +743,10 @@ export default function CellPanel() {
     resetActiveCells,
     setShowMaskedCells,
     setSchema,
+    setEmbedding,
+    setColorBy,
+    setExpressionData,
+    setInteractionMode,
   } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
   const { selectColorColumn } = useDataActions()
@@ -975,6 +979,12 @@ export default function CellPanel() {
       if (schemaRes.ok) {
         setSchema(await schemaRes.json())
       }
+      // Clear cached data so hooks re-fetch with new cell set
+      setEmbedding(null)
+      setColorBy(null)
+      setExpressionData(null)
+      // Reset interaction mode so DeckGL controller is re-enabled
+      setInteractionMode('pan')
       // Reset mask (indices are now stale) and clear selection
       resetActiveCells()
       clearSelection()
@@ -986,7 +996,7 @@ export default function CellPanel() {
       setIsDeleting(false)
       setShowDeleteConfirm(false)
     }
-  }, [selectedCellIndices, setSchema, resetActiveCells, clearSelection, refresh])
+  }, [selectedCellIndices, setSchema, setEmbedding, setColorBy, setExpressionData, setInteractionMode, resetActiveCells, clearSelection, refresh])
 
   if (isLoading) {
     return (

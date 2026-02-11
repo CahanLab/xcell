@@ -9,6 +9,7 @@ import DiffExpModal from './components/DiffExpModal'
 import LineAssociationModal from './components/LineAssociationModal'
 import ScanpyModal from './components/ScanpyModal'
 import ShapeManager from './components/ShapeManager'
+import HeatmapView from './components/HeatmapView'
 
 const styles = {
   container: {
@@ -128,6 +129,8 @@ const styles = {
   },
   main: {
     flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
     position: 'relative' as const,
     overflow: 'hidden',
   },
@@ -237,6 +240,31 @@ const styles = {
     backgroundColor: '#4ecdc4',
     color: '#000',
     borderColor: '#4ecdc4',
+  },
+  tabBar: {
+    display: 'flex',
+    gap: '0px',
+    borderBottom: '1px solid #0f3460',
+    flexShrink: 0,
+  },
+  tab: {
+    padding: '6px 16px',
+    fontSize: '12px',
+    fontWeight: 500,
+    color: '#888',
+    backgroundColor: 'transparent',
+    border: 'none',
+    borderBottom: '2px solid transparent',
+    cursor: 'pointer',
+  },
+  tabActive: {
+    color: '#e94560',
+    borderBottomColor: '#e94560',
+  },
+  vizContent: {
+    flex: 1,
+    position: 'relative' as const,
+    overflow: 'hidden',
   },
 }
 
@@ -423,6 +451,8 @@ export default function App() {
     drawnLines,
     addLine,
     setScanpyModalOpen,
+    centerPanelView,
+    setCenterPanelView,
   } = useStore()
 
   const schema = useSchema()
@@ -441,6 +471,18 @@ export default function App() {
   // State for export modal
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
   const [exportLoading, setExportLoading] = useState<string | null>(null)
+
+  // State for load data modal
+  const [isLoadModalOpen, setIsLoadModalOpen] = useState(false)
+  const [loadFilePath, setLoadFilePath] = useState('')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadLoading, setLoadLoading] = useState(false)
+
+  // State for file browser
+  const [browseEntries, setBrowseEntries] = useState<{ name: string; type: string; path: string; size?: number }[]>([])
+  const [browseCurrent, setBrowseCurrent] = useState<string | null>(null)
+  const [browseParent, setBrowseParent] = useState<string | null>(null)
+  const [browseLoading, setBrowseLoading] = useState(false)
 
   // Handle escape key to exit lasso/draw mode
   useEffect(() => {
@@ -581,6 +623,49 @@ export default function App() {
     }
   }, [geneSets])
 
+  const browseDirectory = useCallback(async (dirPath?: string) => {
+    setBrowseLoading(true)
+    try {
+      const url = dirPath ? `/api/browse?path=${encodeURIComponent(dirPath)}` : '/api/browse'
+      const response = await fetch(url)
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(err.detail || `HTTP ${response.status}`)
+      }
+      const data = await response.json()
+      setBrowseEntries(data.entries)
+      setBrowseCurrent(data.current)
+      setBrowseParent(data.parent)
+    } catch (err) {
+      setLoadError((err as Error).message)
+    } finally {
+      setBrowseLoading(false)
+    }
+  }, [])
+
+  const handleLoadDataset = useCallback(async () => {
+    if (!loadFilePath.trim()) return
+    setLoadLoading(true)
+    setLoadError(null)
+    try {
+      const response = await fetch('/api/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_path: loadFilePath.trim() }),
+      })
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(err.detail || `HTTP ${response.status}`)
+      }
+      // Success — reload page to reset all frontend state
+      window.location.reload()
+    } catch (err) {
+      setLoadError((err as Error).message)
+    } finally {
+      setLoadLoading(false)
+    }
+  }, [loadFilePath])
+
   return (
     <div style={styles.container}>
       <header style={styles.header}>
@@ -630,6 +715,14 @@ export default function App() {
 
               <button
                 style={styles.exportButton}
+                onClick={() => { setIsLoadModalOpen(true); setLoadError(null); setLoadFilePath(''); browseDirectory() }}
+                title="Load a different h5ad file"
+              >
+                Load
+              </button>
+
+              <button
+                style={styles.exportButton}
                 onClick={() => setIsExportModalOpen(true)}
                 title="Export data"
               >
@@ -665,101 +758,115 @@ export default function App() {
         </div>
 
         <main style={styles.main}>
-          {isLoading && <div style={styles.loading}>Loading...</div>}
+          {/* Tab bar (rollback: remove this block and restore plain <main> content) */}
+          <div style={styles.tabBar}>
+            <button
+              style={{ ...styles.tab, ...(centerPanelView === 'scatter' ? styles.tabActive : {}) }}
+              onClick={() => setCenterPanelView('scatter')}
+            >
+              Scatter Plot
+            </button>
+            <button
+              style={{ ...styles.tab, ...(centerPanelView === 'heatmap' ? styles.tabActive : {}) }}
+              onClick={() => setCenterPanelView('heatmap')}
+            >
+              Heatmap
+            </button>
+          </div>
 
-          {error && (
-            <div style={styles.error}>
-              <strong>Error:</strong> {error}
-            </div>
-          )}
+          <div style={styles.vizContent}>
+            {centerPanelView === 'scatter' && (
+              <>
+                {isLoading && <div style={styles.loading}>Loading...</div>}
 
-          {embedding && !error && (
-            <>
-              <ScatterPlot
-                embedding={embedding}
-                colorBy={colorBy}
-                expressionData={expressionData}
-                bivariateData={bivariateData}
-                colorMode={colorMode}
-                interactionMode={interactionMode}
-                selectedCellIndices={selectedCellIndices}
-                onSelectionComplete={handleSelectionComplete}
-                onLineDrawn={handleLineDrawn}
-              />
+                {error && (
+                  <div style={styles.error}>
+                    <strong>Error:</strong> {error}
+                  </div>
+                )}
 
-              {/* Embedding selector - bottom left */}
-              {schema && schema.embeddings.length > 1 && (
-                <div style={styles.embeddingSelector}>
-                  <span style={styles.embeddingLabel}>Embedding:</span>
-                  <select
-                    style={styles.embeddingSelect}
-                    value={selectedEmbedding || ''}
-                    onChange={(e) => selectEmbedding(e.target.value)}
-                  >
-                    {schema.embeddings.map((emb) => (
-                      <option key={emb} value={emb}>
-                        {emb}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {/* Legends - bottom right */}
-              {colorMode === 'metadata' && colorBy && colorBy.dtype === 'category' && (
-                <CategoryLegend colorBy={colorBy} />
-              )}
-              {colorMode === 'metadata' && colorBy && colorBy.dtype === 'numeric' && (
-                <ContinuousLegend
-                  name={colorBy.name}
-                  min={Math.min(...(colorBy.values.filter((v) => v !== null) as number[]))}
-                  max={Math.max(...(colorBy.values.filter((v) => v !== null) as number[]))}
-                />
-              )}
-              {colorMode === 'expression' && expressionData && (
-                <div style={styles.expressionLegend}>
-                  <div style={styles.legendTitle}>
-                    {selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
-                    {expressionData.transform === 'log1p' && (
-                      <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
-                        (log1p)
-                      </span>
+                {embedding && !error && (
+                  <>
+                    <ScatterPlot
+                      embedding={embedding}
+                      colorBy={colorBy}
+                      expressionData={expressionData}
+                      bivariateData={bivariateData}
+                      colorMode={colorMode}
+                      interactionMode={interactionMode}
+                      selectedCellIndices={selectedCellIndices}
+                      onSelectionComplete={handleSelectionComplete}
+                      onLineDrawn={handleLineDrawn}
+                    />
+
+                    {/* Embedding selector - bottom left */}
+                    {schema && schema.embeddings.length > 1 && (
+                      <div style={styles.embeddingSelector}>
+                        <span style={styles.embeddingLabel}>Embedding:</span>
+                        <select
+                          style={styles.embeddingSelect}
+                          value={selectedEmbedding || ''}
+                          onChange={(e) => selectEmbedding(e.target.value)}
+                        >
+                          {schema.embeddings.map((emb) => (
+                            <option key={emb} value={emb}>
+                              {emb}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     )}
-                  </div>
-                  <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
-                  <div style={styles.colorBarLabels}>
-                    <span>{expressionData.min.toFixed(2)}</span>
-                    <span>{expressionData.max.toFixed(2)}</span>
-                  </div>
-                  {/* Stack by Expression button - now auto-applied, UI hidden
-                  <button
-                    style={{
-                      ...styles.stackButton,
-                      ...(cellSortOrder ? styles.stackButtonActive : {}),
-                    }}
-                    onClick={cellSortOrder ? resetCellOrder : sortCellsByExpression}
-                    title={cellSortOrder ? 'Reset to default cell order' : 'Sort cells so high-expression cells render on top'}
-                  >
-                    {cellSortOrder ? 'Reset Order' : 'Stack by Expression'}
-                  </button>
-                  */}
-                </div>
-              )}
-              {colorMode === 'bivariate' && bivariateData && (
-                <BivariateLegend
-                  bivariateData={bivariateData}
-                  colormap={displayPreferences.bivariateColormap}
-                  sortReversed={bivariateSortReversed}
-                  onToggleSort={toggleBivariateSortOrder}
-                />
-              )}
-            </>
-          )}
+                    {/* Legends - bottom right */}
+                    {colorMode === 'metadata' && colorBy && colorBy.dtype === 'category' && (
+                      <CategoryLegend colorBy={colorBy} />
+                    )}
+                    {colorMode === 'metadata' && colorBy && colorBy.dtype === 'numeric' && (
+                      <ContinuousLegend
+                        name={colorBy.name}
+                        min={Math.min(...(colorBy.values.filter((v) => v !== null) as number[]))}
+                        max={Math.max(...(colorBy.values.filter((v) => v !== null) as number[]))}
+                      />
+                    )}
+                    {colorMode === 'expression' && expressionData && (
+                      <div style={styles.expressionLegend}>
+                        <div style={styles.legendTitle}>
+                          {selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
+                          {expressionData.transform === 'log1p' && (
+                            <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
+                              (log1p)
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
+                        <div style={styles.colorBarLabels}>
+                          <span>{expressionData.min.toFixed(2)}</span>
+                          <span>{expressionData.max.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    )}
+                    {colorMode === 'bivariate' && bivariateData && (
+                      <BivariateLegend
+                        bivariateData={bivariateData}
+                        colormap={displayPreferences.bivariateColormap}
+                        sortReversed={bivariateSortReversed}
+                        onToggleSort={toggleBivariateSortOrder}
+                      />
+                    )}
+                  </>
+                )}
 
-          {!embedding && !isLoading && !error && (
-            <div style={styles.loading}>
-              No data loaded. Start the backend with an h5ad file.
-            </div>
-          )}
+                {!embedding && !isLoading && !error && (
+                  <div style={styles.loading}>
+                    No data loaded. Start the backend with an h5ad file.
+                  </div>
+                )}
+              </>
+            )}
+
+            {centerPanelView === 'heatmap' && (
+              <HeatmapView />
+            )}
+          </div>
         </main>
 
         <GenePanel />
@@ -893,6 +1000,196 @@ export default function App() {
                 }}
               >
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Load data modal */}
+      {isLoadModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          onClick={() => !loadLoading && setIsLoadModalOpen(false)}
+        >
+          <div
+            style={{
+              backgroundColor: '#16213e',
+              border: '1px solid #0f3460',
+              borderRadius: '8px',
+              padding: '24px',
+              width: '500px',
+              maxHeight: '80vh',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: '16px', fontWeight: 600, color: '#e94560', marginBottom: '16px' }}>
+              Load Dataset
+            </div>
+
+            {/* File browser */}
+            <div style={{ fontSize: '11px', color: '#888', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              {browseCurrent && (
+                <>
+                  {browseParent && (
+                    <button
+                      onClick={() => browseDirectory(browseParent)}
+                      disabled={browseLoading}
+                      style={{
+                        padding: '2px 6px',
+                        fontSize: '11px',
+                        backgroundColor: '#0f3460',
+                        color: '#aaa',
+                        border: '1px solid #1a1a2e',
+                        borderRadius: '3px',
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                      }}
+                    >
+                      Up
+                    </button>
+                  )}
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }}>
+                    {browseCurrent}
+                  </span>
+                </>
+              )}
+            </div>
+            <div
+              style={{
+                flex: 1,
+                minHeight: '200px',
+                maxHeight: '300px',
+                overflowY: 'auto',
+                backgroundColor: '#0d1b30',
+                border: '1px solid #1a1a2e',
+                borderRadius: '4px',
+                marginBottom: '12px',
+              }}
+            >
+              {browseLoading ? (
+                <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '12px' }}>Loading...</div>
+              ) : browseEntries.length === 0 ? (
+                <div style={{ padding: '20px', textAlign: 'center', color: '#666', fontSize: '12px' }}>No folders or .h5ad files here</div>
+              ) : (
+                browseEntries.map((entry) => (
+                  <div
+                    key={entry.path}
+                    onClick={() => {
+                      if (entry.type === 'directory') {
+                        browseDirectory(entry.path)
+                      } else {
+                        setLoadFilePath(entry.path)
+                        setLoadError(null)
+                      }
+                    }}
+                    style={{
+                      padding: '6px 10px',
+                      fontSize: '13px',
+                      color: entry.type === 'directory' ? '#aaa' : '#e94560',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      backgroundColor: entry.path === loadFilePath ? 'rgba(233, 69, 96, 0.15)' : 'transparent',
+                      borderBottom: '1px solid #1a1a2e',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (entry.path !== loadFilePath) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.03)'
+                    }}
+                    onMouseLeave={(e) => {
+                      if (entry.path !== loadFilePath) e.currentTarget.style.backgroundColor = 'transparent'
+                    }}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
+                      <span style={{ flexShrink: 0 }}>{entry.type === 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4'}</span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</span>
+                    </span>
+                    {entry.type === 'file' && entry.size != null && (
+                      <span style={{ fontSize: '11px', color: '#666', flexShrink: 0, marginLeft: '8px' }}>
+                        {entry.size < 1024 * 1024
+                          ? `${(entry.size / 1024).toFixed(0)} KB`
+                          : entry.size < 1024 * 1024 * 1024
+                            ? `${(entry.size / (1024 * 1024)).toFixed(1)} MB`
+                            : `${(entry.size / (1024 * 1024 * 1024)).toFixed(2)} GB`}
+                      </span>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Path input (also accepts manual typing) */}
+            <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Or enter path directly:</div>
+            <input
+              type="text"
+              value={loadFilePath}
+              onChange={(e) => setLoadFilePath(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !loadLoading && loadFilePath.trim() && handleLoadDataset()}
+              placeholder="/path/to/data.h5ad"
+              disabled={loadLoading}
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                fontSize: '13px',
+                backgroundColor: '#0f3460',
+                color: '#eee',
+                border: '1px solid #1a1a2e',
+                borderRadius: '4px',
+                marginBottom: '8px',
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+            />
+            {loadError && (
+              <div style={{ fontSize: '12px', color: '#e94560', marginBottom: '8px' }}>
+                {loadError}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '4px' }}>
+              <button
+                onClick={() => setIsLoadModalOpen(false)}
+                disabled={loadLoading}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '13px',
+                  backgroundColor: 'transparent',
+                  color: '#aaa',
+                  border: '1px solid #0f3460',
+                  borderRadius: '4px',
+                  cursor: loadLoading ? 'wait' : 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleLoadDataset}
+                disabled={loadLoading || !loadFilePath.trim()}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '13px',
+                  backgroundColor: '#e94560',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: loadLoading || !loadFilePath.trim() ? 'not-allowed' : 'pointer',
+                  opacity: !loadFilePath.trim() ? 0.5 : 1,
+                }}
+              >
+                {loadLoading ? 'Loading...' : 'Load'}
               </button>
             </div>
           </div>

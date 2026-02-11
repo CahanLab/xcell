@@ -207,6 +207,20 @@ export interface LineAssociationResult {
   diagnostics?: LineAssociationDiagnostics
 }
 
+// Center panel view mode
+export type CenterPanelView = 'scatter' | 'heatmap'
+
+// Heatmap configuration
+export interface HeatmapConfig {
+  selectedGeneSets: { name: string; genes: string[] }[]
+  cellOrdering: 'none' | 'category' | 'line_position' | 'line_distance' | 'category_then_position'
+  obsColumn: string | null
+  lineName: string | null
+  geneOrdering: 'as_provided' | 'peak_position'
+  aggregateGeneSets: boolean
+  nBins: number
+}
+
 // Interaction mode for the scatter plot
 export type InteractionMode = 'pan' | 'lasso' | 'draw'
 
@@ -311,9 +325,13 @@ interface AppState {
   // Observable summaries refresh trigger
   obsSummariesVersion: number
 
+  // Heatmap tab state (rollback: remove this block)
+  centerPanelView: CenterPanelView
+  heatmapConfig: HeatmapConfig | null
+
   // Actions
   setSchema: (schema: Schema) => void
-  setEmbedding: (embedding: EmbeddingData) => void
+  setEmbedding: (embedding: EmbeddingData | null) => void
   setColorBy: (colorBy: ObsColumnData | null) => void
   setExpressionData: (data: ExpressionData | null) => void
   setBivariateData: (data: BivariateExpressionData | null) => void
@@ -409,6 +427,10 @@ interface AppState {
 
   // Observable summaries refresh
   refreshObsSummaries: () => void
+
+  // Heatmap tab actions (rollback: remove this block)
+  setCenterPanelView: (view: CenterPanelView) => void
+  setHeatmapConfig: (config: HeatmapConfig | null) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -466,6 +488,8 @@ export const useStore = create<AppState>((set) => ({
   isScanpyModalOpen: false,
   scanpyActionHistory: [],
   obsSummariesVersion: 0,
+  centerPanelView: 'scatter',
+  heatmapConfig: null,
 
   // Actions
   setSchema: (schema) => set({ schema }),
@@ -1143,4 +1167,8 @@ export const useStore = create<AppState>((set) => ({
   // Observable summaries refresh
   refreshObsSummaries: () =>
     set((state) => ({ obsSummariesVersion: state.obsSummariesVersion + 1 })),
+
+  // Heatmap tab actions
+  setCenterPanelView: (view) => set({ centerPanelView: view }),
+  setHeatmapConfig: (config) => set({ heatmapConfig: config }),
 }))

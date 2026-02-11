@@ -1,5 +1,7 @@
 """API routes for XCell."""
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -23,6 +25,78 @@ def get_adaptor() -> DataAdaptor:
     if _adaptor is None:
         raise HTTPException(status_code=503, detail="No data loaded")
     return _adaptor
+
+
+@router.get("/browse")
+def browse_filesystem(path: str | None = None):
+    """List directories and .h5ad files at the given path.
+
+    Args:
+        path: Directory path to list. Defaults to the user's home directory.
+
+    Returns:
+        JSON object with current path, parent path, and entries (dirs + h5ad files).
+    """
+    if path:
+        directory = Path(path).expanduser().resolve()
+    else:
+        directory = Path.home()
+
+    if not directory.is_dir():
+        raise HTTPException(status_code=400, detail=f"Not a directory: {directory}")
+
+    parent = str(directory.parent) if directory != directory.parent else None
+
+    entries = []
+    try:
+        for item in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if item.name.startswith('.'):
+                continue
+            if item.is_dir():
+                entries.append({"name": item.name, "type": "directory", "path": str(item)})
+            elif item.suffix == '.h5ad':
+                try:
+                    size = item.stat().st_size
+                except OSError:
+                    size = None
+                entries.append({"name": item.name, "type": "file", "path": str(item), "size": size})
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=f"Permission denied: {directory}")
+
+    return {
+        "current": str(directory),
+        "parent": parent,
+        "entries": entries,
+    }
+
+
+class LoadRequest(BaseModel):
+    file_path: str
+
+
+@router.post("/load")
+def load_dataset(request: LoadRequest):
+    """Load a new h5ad dataset from a server-side file path.
+
+    Replaces the current global DataAdaptor with one for the new file.
+
+    Args:
+        file_path: Absolute path to an .h5ad file on the server filesystem
+
+    Returns:
+        The schema of the newly loaded dataset
+    """
+    path = Path(request.file_path)
+    if not path.suffix == '.h5ad':
+        raise HTTPException(status_code=400, detail="File must have .h5ad extension")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
+    try:
+        adaptor = DataAdaptor(path)
+        set_adaptor(adaptor)
+        return adaptor.get_schema()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load file: {e}")
 
 
 @router.get("/schema")
@@ -787,6 +861,63 @@ def create_line_embedding(request: CreateLineEmbeddingRequest):
         )
         return result
     except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
+# Heatmap endpoint
+# =========================================================================
+
+
+class HeatmapGeneSetGroup(BaseModel):
+    name: str
+    genes: list[str]
+
+
+class HeatmapRequest(BaseModel):
+    """Request model for heatmap data computation."""
+    genes: list[str]
+    gene_set_groups: list[HeatmapGeneSetGroup] | None = None
+    aggregate_gene_sets: bool = False
+    cell_ordering: str = "none"
+    obs_column: str | None = None
+    line_name: str | None = None
+    gene_ordering: str = "as_provided"
+    n_bins: int = 0
+    transform: str | None = None
+    cell_indices: list[int] | None = None
+
+
+@router.post("/heatmap/data")
+def get_heatmap_data(request: HeatmapRequest):
+    """Compute expression heatmap matrix.
+
+    Returns a per-row normalized expression matrix with cells ordered
+    and optionally binned. Used by the Heatmap tab in the center panel.
+    """
+    from xcell.heatmap import compute_heatmap_data
+
+    adaptor = get_adaptor()
+    try:
+        gene_set_groups = None
+        if request.gene_set_groups:
+            gene_set_groups = [
+                {"name": g.name, "genes": g.genes} for g in request.gene_set_groups
+            ]
+        return compute_heatmap_data(
+            adaptor,
+            genes=request.genes,
+            gene_set_groups=gene_set_groups,
+            aggregate_gene_sets=request.aggregate_gene_sets,
+            cell_ordering=request.cell_ordering,
+            obs_column=request.obs_column,
+            line_name=request.line_name,
+            gene_ordering=request.gene_ordering,
+            n_bins=request.n_bins,
+            transform=request.transform,
+            cell_indices=request.cell_indices,
+        )
+    except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 

@@ -83,11 +83,11 @@ class DataAdaptor:
             - obs_columns: List of cell metadata column names from .obs
             - obs_dtypes: Dictionary mapping column names to their dtypes
         """
-        # Get embedding names (keys in obsm that are 2D arrays)
+        # Get embedding names (keys in obsm that are 2D array-likes)
         embeddings = []
         for key in self.adata.obsm.keys():
             arr = self.adata.obsm[key]
-            if isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.shape[1] >= 2:
+            if hasattr(arr, 'shape') and len(arr.shape) == 2 and arr.shape[1] >= 2:
                 embeddings.append(key)
 
         # Get obs column info

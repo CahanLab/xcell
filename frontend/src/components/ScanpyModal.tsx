@@ -543,7 +543,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding } = useStore()
 
   const [selectedCategory, setSelectedCategory] = useState<CategoryKey>('preprocessing')
   const [selectedFunction, setSelectedFunction] = useState<FunctionKey>('filter_genes')
@@ -808,6 +808,16 @@ export default function ScanpyModal() {
         refreshObsSummaries()
       }
 
+      // Invalidate cached colorBy so it re-fetches (e.g. leiden labels changed)
+      if (['leiden', 'filter_cells'].includes(selectedFunction)) {
+        setColorBy(null)
+      }
+
+      // Invalidate cached embedding so it re-fetches (e.g. new UMAP coordinates)
+      if (['umap', 'pca', 'filter_cells'].includes(selectedFunction)) {
+        setEmbedding(null)
+      }
+
       // Reset cell mask after filter_cells removes cells (indices become stale)
       if (selectedFunction === 'filter_cells' && data.n_cells_removed > 0) {
         resetActiveCells()
@@ -830,7 +840,7 @@ export default function ScanpyModal() {
     } finally {
       setIsRunning(false)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding])
 
   if (!isScanpyModalOpen) return null
 

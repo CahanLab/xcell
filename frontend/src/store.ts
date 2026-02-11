@@ -222,7 +222,7 @@ export interface HeatmapConfig {
 }
 
 // Interaction mode for the scatter plot
-export type InteractionMode = 'pan' | 'lasso' | 'draw'
+export type InteractionMode = 'pan' | 'lasso' | 'draw' | 'adjust'
 
 // Color scale options for expression data
 export type ColorScale = 'viridis' | 'plasma' | 'magma' | 'inferno' | 'cividis' | 'coolwarm' | 'blues' | 'reds'

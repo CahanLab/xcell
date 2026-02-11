@@ -14,6 +14,7 @@ interface ScatterPlotProps {
   selectedCellIndices: number[]
   onSelectionComplete: (indices: number[]) => void
   onLineDrawn: (points: [number, number][]) => void
+  onTransformEmbedding: (rotationDegrees: number) => void
 }
 
 // Color palette for categorical data (similar to d3 category10)
@@ -199,12 +200,19 @@ export default function ScatterPlot({
   selectedCellIndices,
   onSelectionComplete,
   onLineDrawn,
+  onTransformEmbedding,
 }: ScatterPlotProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [lassoPoints, setLassoPoints] = useState<[number, number][]>([])
   const [linePoints, setLinePoints] = useState<[number, number][]>([])
   const [isDrawing, setIsDrawing] = useState(false)
   const [viewState, setViewState] = useState<OrthographicViewState | null>(null)
+
+  // Rotation state for adjust mode
+  const isRotating = useRef(false)
+  const rotateStartAngle = useRef(0)
+  const accumulatedRotation = useRef(0)
+  const preRotationCoords = useRef<[number, number][] | null>(null)
 
   // Get display preferences, cell masking, sort state, and drawn lines from store
   const displayPreferences = useStore((state) => state.displayPreferences)
@@ -410,7 +418,7 @@ export default function ScatterPlot({
     return [dataX, dataY]
   }, [viewState])
 
-  // Handle lasso and line drawing
+  // Handle lasso, line drawing, and adjust rotation
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (interactionMode === 'lasso') {
       const point = screenToData(e.clientX, e.clientY)
@@ -424,10 +432,48 @@ export default function ScatterPlot({
         setIsDrawing(true)
         setLinePoints([point])
       }
+    } else if (interactionMode === 'adjust' && e.shiftKey && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect()
+      const centerX = rect.left + rect.width / 2
+      const centerY = rect.top + rect.height / 2
+      const angle = Math.atan2(e.clientY - centerY, e.clientX - centerX)
+      isRotating.current = true
+      rotateStartAngle.current = angle
+      accumulatedRotation.current = 0
+      preRotationCoords.current = embedding.coordinates.map(c => [c[0], c[1]] as [number, number])
     }
-  }, [interactionMode, screenToData])
+  }, [interactionMode, screenToData, embedding.coordinates])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    // Handle adjust rotation independently of isDrawing
+    if (isRotating.current && interactionMode === 'adjust' && containerRef.current && preRotationCoords.current) {
+      const rect = containerRef.current.getBoundingClientRect()
+      const centerX = rect.left + rect.width / 2
+      const centerY = rect.top + rect.height / 2
+      const currentAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX)
+      const totalDelta = currentAngle - rotateStartAngle.current
+      const totalDegrees = -(totalDelta * 180) / Math.PI
+      accumulatedRotation.current = totalDegrees
+
+      // Apply rotation client-side from the pre-rotation snapshot
+      const theta = (totalDegrees * Math.PI) / 180
+      const cosT = Math.cos(theta)
+      const sinT = Math.sin(theta)
+      const coords = preRotationCoords.current
+      // Compute centroid
+      let cx = 0, cy = 0
+      for (const [x, y] of coords) { cx += x; cy += y }
+      cx /= coords.length; cy /= coords.length
+      const rotated: [number, number][] = coords.map(([x, y]) => {
+        const dx = x - cx
+        const dy = y - cy
+        return [cx + dx * cosT - dy * sinT, cy + dx * sinT + dy * cosT]
+      })
+      const setEmbedding = useStore.getState().setEmbedding
+      setEmbedding({ name: embedding.name, coordinates: rotated })
+      return
+    }
+
     if (!isDrawing) return
 
     const point = screenToData(e.clientX, e.clientY)
@@ -438,9 +484,20 @@ export default function ScatterPlot({
     } else if (interactionMode === 'draw') {
       setLinePoints((prev) => [...prev, point])
     }
-  }, [isDrawing, interactionMode, screenToData])
+  }, [isDrawing, interactionMode, screenToData, embedding.name])
 
   const handleMouseUp = useCallback(() => {
+    // Handle adjust rotation release
+    if (isRotating.current) {
+      isRotating.current = false
+      const totalDeg = accumulatedRotation.current
+      preRotationCoords.current = null
+      if (Math.abs(totalDeg) > 0.1) {
+        onTransformEmbedding(totalDeg)
+      }
+      return
+    }
+
     if (!isDrawing) return
 
     if (interactionMode === 'lasso') {
@@ -469,7 +526,7 @@ export default function ScatterPlot({
       setIsDrawing(false)
       setLinePoints([])
     }
-  }, [isDrawing, interactionMode, lassoPoints, linePoints, embedding.coordinates, onSelectionComplete, onLineDrawn])
+  }, [isDrawing, interactionMode, lassoPoints, linePoints, embedding.coordinates, onSelectionComplete, onLineDrawn, onTransformEmbedding])
 
   // Convert data points to screen coordinates
   const dataToScreen = useCallback((points: [number, number][]): string[] => {
@@ -588,7 +645,7 @@ export default function ScatterPlot({
         controller={interactionMode === 'pan'}
         layers={layers}
         style={{ position: 'absolute', width: '100%', height: '100%', background: 'transparent' }}
-        getCursor={() => (interactionMode === 'lasso' || interactionMode === 'draw' ? 'crosshair' : 'grab')}
+        getCursor={() => (interactionMode === 'lasso' || interactionMode === 'draw' ? 'crosshair' : interactionMode === 'adjust' ? 'move' : 'grab')}
       />
 
       {/* SVG overlay for lasso, lines, and stored lines */}
@@ -698,6 +755,26 @@ export default function ScatterPlot({
           }}
         >
           Draw Mode: Click and drag to draw a line
+        </div>
+      )}
+
+      {/* Adjust mode indicator */}
+      {interactionMode === 'adjust' && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            padding: '6px 12px',
+            backgroundColor: 'rgba(255, 165, 0, 0.9)',
+            color: 'white',
+            borderRadius: 4,
+            fontSize: 12,
+            fontWeight: 500,
+          }}
+        >
+          Adjust Mode: Shift+drag to rotate
         </div>
       )}
     </div>

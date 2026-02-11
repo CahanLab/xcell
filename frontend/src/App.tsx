@@ -453,6 +453,7 @@ export default function App() {
     setScanpyModalOpen,
     centerPanelView,
     setCenterPanelView,
+    setEmbedding,
   } = useStore()
 
   const schema = useSchema()
@@ -510,6 +511,33 @@ export default function App() {
   const toggleDrawMode = useCallback(() => {
     setInteractionMode(interactionMode === 'draw' ? 'pan' : 'draw')
   }, [interactionMode, setInteractionMode])
+
+  const toggleAdjustMode = useCallback(() => {
+    setInteractionMode(interactionMode === 'adjust' ? 'pan' : 'adjust')
+  }, [interactionMode, setInteractionMode])
+
+  const handleTransformEmbedding = useCallback(async (opts: { rotation_degrees?: number; reflect_x?: boolean; reflect_y?: boolean }) => {
+    if (!selectedEmbedding) return
+    try {
+      const response = await fetch(`/api/embedding/${selectedEmbedding}/transform`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      })
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(err.detail || `HTTP ${response.status}`)
+      }
+      const data = await response.json()
+      setEmbedding(data)
+    } catch (err) {
+      console.error('Transform embedding failed:', err)
+    }
+  }, [selectedEmbedding, setEmbedding])
+
+  const handleRotateEmbedding = useCallback((rotationDegrees: number) => {
+    handleTransformEmbedding({ rotation_degrees: rotationDegrees })
+  }, [handleTransformEmbedding])
 
   const handleLineDrawn = useCallback((points: [number, number][]) => {
     setPendingLinePoints(points)
@@ -704,6 +732,17 @@ export default function App() {
               </button>
 
               <button
+                style={{
+                  ...styles.toolButton,
+                  ...(interactionMode === 'adjust' ? { ...styles.toolButtonActive, backgroundColor: '#ffa500' } : {}),
+                }}
+                onClick={toggleAdjustMode}
+                title="Adjust embedding orientation: flip or shift+drag to rotate (Escape to exit)"
+              >
+                <span>&#8634;</span> Adjust
+              </button>
+
+              <button
                 style={styles.toolButton}
                 onClick={() => setScanpyModalOpen(true)}
                 title="Run scanpy analysis functions"
@@ -797,23 +836,47 @@ export default function App() {
                       selectedCellIndices={selectedCellIndices}
                       onSelectionComplete={handleSelectionComplete}
                       onLineDrawn={handleLineDrawn}
+                      onTransformEmbedding={handleRotateEmbedding}
                     />
 
                     {/* Embedding selector - bottom left */}
-                    {schema && schema.embeddings.length > 1 && (
-                      <div style={styles.embeddingSelector}>
-                        <span style={styles.embeddingLabel}>Embedding:</span>
-                        <select
-                          style={styles.embeddingSelect}
-                          value={selectedEmbedding || ''}
-                          onChange={(e) => selectEmbedding(e.target.value)}
-                        >
-                          {schema.embeddings.map((emb) => (
-                            <option key={emb} value={emb}>
-                              {emb}
-                            </option>
-                          ))}
-                        </select>
+                    {schema && (schema.embeddings.length > 1 || interactionMode === 'adjust') && (
+                      <div style={{ ...styles.embeddingSelector, flexDirection: 'column' as const, alignItems: 'flex-start', gap: '6px' }}>
+                        {schema.embeddings.length > 1 && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={styles.embeddingLabel}>Embedding:</span>
+                            <select
+                              style={styles.embeddingSelect}
+                              value={selectedEmbedding || ''}
+                              onChange={(e) => selectEmbedding(e.target.value)}
+                            >
+                              {schema.embeddings.map((emb) => (
+                                <option key={emb} value={emb}>
+                                  {emb}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                        {interactionMode === 'adjust' && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <button
+                              style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
+                              onClick={() => handleTransformEmbedding({ reflect_y: true })}
+                              title="Mirror x-coordinates (reflect about y-axis)"
+                            >
+                              &#8596; Flip X
+                            </button>
+                            <button
+                              style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
+                              onClick={() => handleTransformEmbedding({ reflect_x: true })}
+                              title="Mirror y-coordinates (reflect about x-axis)"
+                            >
+                              &#8597; Flip Y
+                            </button>
+                            <span style={{ fontSize: '10px', color: '#666' }}>Shift+drag to rotate</span>
+                          </div>
+                        )}
                       </div>
                     )}
                     {/* Legends - bottom right */}

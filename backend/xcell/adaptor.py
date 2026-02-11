@@ -138,6 +138,60 @@ class DataAdaptor:
             "coordinates": coords_2d.tolist(),
         }
 
+    def transform_embedding(
+        self,
+        name: str,
+        rotation_degrees: float = 0,
+        reflect_x: bool = False,
+        reflect_y: bool = False,
+    ) -> dict[str, Any]:
+        """Apply rotation and/or reflection to an embedding in-place.
+
+        Transforms are applied around the centroid of the embedding:
+        reflections first, then rotation.
+
+        Args:
+            name: Name of the embedding in .obsm
+            rotation_degrees: Counter-clockwise rotation angle in degrees
+            reflect_x: If True, negate y-coordinates (reflect about x-axis)
+            reflect_y: If True, negate x-coordinates (reflect about y-axis)
+
+        Returns:
+            Updated embedding dict (same format as get_embedding)
+        """
+        if name not in self.adata.obsm:
+            raise KeyError(f"Embedding '{name}' not found. Available: {list(self.adata.obsm.keys())}")
+
+        coords = np.array(self.adata.obsm[name][:, :2], dtype=np.float64)
+        centroid = coords.mean(axis=0)
+
+        # Center at origin
+        coords -= centroid
+
+        # Apply reflections first
+        if reflect_y:
+            coords[:, 0] *= -1
+        if reflect_x:
+            coords[:, 1] *= -1
+
+        # Apply rotation
+        if rotation_degrees != 0:
+            theta = np.radians(rotation_degrees)
+            cos_t, sin_t = np.cos(theta), np.sin(theta)
+            rot = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+            coords = coords @ rot.T
+
+        # Shift back
+        coords += centroid
+
+        # Write back in-place
+        self.adata.obsm[name][:, :2] = coords
+
+        # Clear normalized cache (it may share obsm references)
+        self._normalized_adata = None
+
+        return self.get_embedding(name)
+
     def get_obs_column(self, name: str) -> dict[str, Any]:
         """Get cell metadata column values.
 

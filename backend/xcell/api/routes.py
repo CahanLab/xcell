@@ -134,6 +134,37 @@ def get_embedding(name: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+class TransformEmbeddingRequest(BaseModel):
+    rotation_degrees: float = 0
+    reflect_x: bool = False
+    reflect_y: bool = False
+
+
+@router.post("/embedding/{name}/transform")
+def transform_embedding(name: str, request: TransformEmbeddingRequest):
+    """Apply rotation and/or reflection to an embedding.
+
+    Transforms are applied in-place around the centroid (reflections first, then rotation).
+
+    Args:
+        name: Name of the embedding
+        request: Rotation angle (degrees) and reflection flags
+
+    Returns:
+        Updated embedding coordinates
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.transform_embedding(
+            name,
+            rotation_degrees=request.rotation_degrees,
+            reflect_x=request.reflect_x,
+            reflect_y=request.reflect_y,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 # =========================================================================
 # Cell metadata (obs) endpoints
 # Note: Specific routes must come BEFORE parameterized routes

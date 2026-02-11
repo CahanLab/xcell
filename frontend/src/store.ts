@@ -164,6 +164,8 @@ export interface LineAssociationGene {
   r_squared: number
   amplitude: number
   direction: number  // Positive = increases along line, negative = decreases
+  profile?: number[]  // Smoothed expression profile (normalized 0-1)
+  peak_position?: number  // Position along line where expression peaks
 }
 
 // Diagnostic info from line association test

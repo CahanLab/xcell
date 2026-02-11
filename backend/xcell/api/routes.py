@@ -665,6 +665,8 @@ class LineAssociationGene(BaseModel):
     r_squared: float
     amplitude: float
     direction: float
+    profile: list[float] | None = None  # Smoothed expression profile (normalized 0-1)
+    peak_position: float | None = None  # Position along line where expression peaks
 
 
 class LineAssociationDiagnostics(BaseModel):

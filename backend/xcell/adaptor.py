@@ -1279,18 +1279,45 @@ class DataAdaptor:
             sig_results = results.iloc[sig_indices].reset_index(drop=True)
             n_modules = int(cluster_labels.max()) + 1
 
+            # Compute per-gene peak positions for all significant genes
+            gene_peak_positions = np.argmax(norm_profiles, axis=0) / max(n_profile_points - 1, 1)
+
             for mod_idx in range(n_modules):
                 member_mask = cluster_labels == mod_idx
                 member_genes = sig_results[member_mask]
+                member_profiles = norm_profiles[:, member_mask]  # (n_points, n_members)
+                member_peak_positions = gene_peak_positions[member_mask]
 
                 # Representative profile: mean of normalized profiles in this module
-                rep_profile = norm_profiles[:, member_mask].mean(axis=1)
+                rep_profile = member_profiles.mean(axis=1)
 
                 # Classify pattern shape
                 pattern = self._classify_profile_pattern(rep_profile, profile_positions)
 
-                # Sort genes within module by score
-                member_genes_sorted = member_genes.nlargest(top_n, 'score')
+                # Sort genes within module by peak position along the line
+                member_genes = member_genes.copy()
+                member_genes['peak_position'] = member_peak_positions
+                member_genes_sorted = member_genes.sort_values('peak_position')
+                if len(member_genes_sorted) > top_n:
+                    member_genes_sorted = member_genes_sorted.head(top_n)
+
+                # Build gene records with per-gene profiles
+                gene_records = []
+                for row_idx, (orig_sig_idx, row) in enumerate(member_genes_sorted.iterrows()):
+                    # orig_sig_idx is the index into norm_profiles columns
+                    # (sig_results was built with reset_index, so index = column position)
+                    gene_profile = norm_profiles[:, orig_sig_idx].tolist()
+                    gene_records.append({
+                        'gene': row['gene'],
+                        'f_stat': row['f_stat'],
+                        'pval': row['pval'],
+                        'fdr': row['fdr'],
+                        'r_squared': row['r_squared'],
+                        'amplitude': row['amplitude'],
+                        'direction': row['direction'],
+                        'profile': gene_profile,
+                        'peak_position': float(row['peak_position']),
+                    })
 
                 modules.append({
                     'module_id': mod_idx,
@@ -1298,9 +1325,7 @@ class DataAdaptor:
                     'n_genes': int(member_mask.sum()),
                     'representative_profile': rep_profile.tolist(),
                     'profile_positions': profile_positions.tolist(),
-                    'genes': member_genes_sorted[
-                        ['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']
-                    ].to_dict('records'),
+                    'genes': gene_records,
                 })
 
             # Sort modules: increasing first, then decreasing, then peak, trough, complex

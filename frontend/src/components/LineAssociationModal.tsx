@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useStore, LineAssociationGene, LineAssociationModule } from '../store'
+import { useDataActions } from '../hooks/useData'
 
 const PATTERN_COLORS: Record<string, string> = {
   increasing: '#4ecdc4',
@@ -16,6 +17,33 @@ const PATTERN_ICONS: Record<string, string> = {
   trough: '\u222A',       // ∪
   complex: '\u223F',      // ∿
 }
+
+// Viridis colormap stops for the heatmap
+const VIRIDIS_STOPS = [
+  { pos: 0, r: 68, g: 1, b: 84 },
+  { pos: 0.25, r: 59, g: 82, b: 139 },
+  { pos: 0.5, r: 33, g: 145, b: 140 },
+  { pos: 0.75, r: 94, g: 201, b: 98 },
+  { pos: 1, r: 253, g: 231, b: 37 },
+]
+
+function viridisColor(t: number): [number, number, number] {
+  const clamped = Math.max(0, Math.min(1, t))
+  for (let i = 0; i < VIRIDIS_STOPS.length - 1; i++) {
+    if (clamped >= VIRIDIS_STOPS[i].pos && clamped <= VIRIDIS_STOPS[i + 1].pos) {
+      const local = (clamped - VIRIDIS_STOPS[i].pos) / (VIRIDIS_STOPS[i + 1].pos - VIRIDIS_STOPS[i].pos)
+      return [
+        Math.round(VIRIDIS_STOPS[i].r + (VIRIDIS_STOPS[i + 1].r - VIRIDIS_STOPS[i].r) * local),
+        Math.round(VIRIDIS_STOPS[i].g + (VIRIDIS_STOPS[i + 1].g - VIRIDIS_STOPS[i].g) * local),
+        Math.round(VIRIDIS_STOPS[i].b + (VIRIDIS_STOPS[i + 1].b - VIRIDIS_STOPS[i].b) * local),
+      ]
+    }
+  }
+  const last = VIRIDIS_STOPS[VIRIDIS_STOPS.length - 1]
+  return [last.r, last.g, last.b]
+}
+
+type ViewMode = 'list' | 'heatmap'
 
 const styles = {
   overlay: {
@@ -311,6 +339,297 @@ function ModuleCard({
   )
 }
 
+// =========================================================================
+// Heatmap component
+// =========================================================================
+
+interface HeatmapGeneEntry {
+  gene: LineAssociationGene
+  modulePattern: string
+  moduleId: number
+}
+
+function ProfileHeatmap({
+  modules,
+  onGeneSelect,
+  testVariable,
+}: {
+  modules: LineAssociationModule[]
+  onGeneSelect: (gene: string) => void
+  testVariable: string
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [hoveredGene, setHoveredGene] = useState<string | null>(null)
+  const [tooltipInfo, setTooltipInfo] = useState<{ gene: string; x: number; y: number; value: number } | null>(null)
+
+  // Collect all genes with profiles across modules, preserving module order
+  const geneEntries: HeatmapGeneEntry[] = []
+  const moduleBoundaries: { startIdx: number; pattern: string; moduleId: number }[] = []
+
+  for (const mod of modules) {
+    const startIdx = geneEntries.length
+    moduleBoundaries.push({ startIdx, pattern: mod.pattern, moduleId: mod.module_id })
+    for (const gene of mod.genes) {
+      if (gene.profile && gene.profile.length > 0) {
+        geneEntries.push({ gene, modulePattern: mod.pattern, moduleId: mod.module_id })
+      }
+    }
+  }
+
+  const nGenes = geneEntries.length
+  const nPositions = nGenes > 0 && geneEntries[0].gene.profile ? geneEntries[0].gene.profile.length : 50
+
+  // Layout constants
+  const labelWidth = 90
+  const moduleBarWidth = 6
+  const cellHeight = 14
+  const cellWidth = Math.max(4, Math.min(12, Math.floor(600 / nPositions)))
+  const heatmapWidth = cellWidth * nPositions
+  const legendHeight = 40
+  const axisLabelHeight = 20
+  const topPadding = 4
+  const totalWidth = labelWidth + moduleBarWidth + heatmapWidth + 20
+  const totalHeight = topPadding + nGenes * cellHeight + axisLabelHeight + legendHeight
+
+  // Draw heatmap on canvas
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || nGenes === 0) return
+
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = totalWidth * dpr
+    canvas.height = totalHeight * dpr
+    canvas.style.width = `${totalWidth}px`
+    canvas.style.height = `${totalHeight}px`
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.scale(dpr, dpr)
+
+    // Clear
+    ctx.fillStyle = '#0a0f1a'
+    ctx.fillRect(0, 0, totalWidth, totalHeight)
+
+    const heatmapLeft = labelWidth + moduleBarWidth
+
+    // Draw module color bar
+    for (let i = 0; i < moduleBoundaries.length; i++) {
+      const start = moduleBoundaries[i].startIdx
+      const end = i + 1 < moduleBoundaries.length ? moduleBoundaries[i + 1].startIdx : nGenes
+      const color = PATTERN_COLORS[moduleBoundaries[i].pattern] || PATTERN_COLORS.complex
+      ctx.fillStyle = color
+      ctx.fillRect(
+        labelWidth,
+        topPadding + start * cellHeight,
+        moduleBarWidth,
+        (end - start) * cellHeight
+      )
+    }
+
+    // Draw gene labels
+    ctx.font = '10px monospace'
+    ctx.textAlign = 'right'
+    ctx.textBaseline = 'middle'
+    for (let g = 0; g < nGenes; g++) {
+      const entry = geneEntries[g]
+      const y = topPadding + g * cellHeight + cellHeight / 2
+      ctx.fillStyle = hoveredGene === entry.gene.gene ? '#fff' : '#ccc'
+      // Truncate long names
+      let name = entry.gene.gene
+      if (name.length > 12) name = name.slice(0, 11) + '\u2026'
+      ctx.fillText(name, labelWidth - 4, y)
+    }
+
+    // Draw heatmap cells
+    for (let g = 0; g < nGenes; g++) {
+      const profile = geneEntries[g].gene.profile!
+      for (let p = 0; p < nPositions; p++) {
+        const [r, gVal, b] = viridisColor(profile[p])
+        ctx.fillStyle = `rgb(${r},${gVal},${b})`
+        ctx.fillRect(
+          heatmapLeft + p * cellWidth,
+          topPadding + g * cellHeight,
+          cellWidth,
+          cellHeight - 1  // 1px gap between rows
+        )
+      }
+    }
+
+    // Highlight hovered gene row
+    if (hoveredGene) {
+      const idx = geneEntries.findIndex((e) => e.gene.gene === hoveredGene)
+      if (idx >= 0) {
+        ctx.strokeStyle = '#fff'
+        ctx.lineWidth = 1
+        ctx.strokeRect(
+          heatmapLeft - 0.5,
+          topPadding + idx * cellHeight - 0.5,
+          heatmapWidth + 1,
+          cellHeight
+        )
+      }
+    }
+
+    // Draw module boundary lines
+    ctx.strokeStyle = '#333'
+    ctx.lineWidth = 1
+    for (let i = 1; i < moduleBoundaries.length; i++) {
+      const y = topPadding + moduleBoundaries[i].startIdx * cellHeight
+      ctx.beginPath()
+      ctx.moveTo(heatmapLeft, y)
+      ctx.lineTo(heatmapLeft + heatmapWidth, y)
+      ctx.stroke()
+    }
+
+    // Draw position axis
+    const axisY = topPadding + nGenes * cellHeight + 4
+    ctx.fillStyle = '#888'
+    ctx.font = '10px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'top'
+    const axisLabel = testVariable === 'distance' ? 'Distance from line' : 'Position along line'
+    ctx.fillText(axisLabel, heatmapLeft + heatmapWidth / 2, axisY + 10)
+
+    // Tick marks
+    const ticks = [0, 0.25, 0.5, 0.75, 1.0]
+    ctx.fillStyle = '#666'
+    ctx.font = '9px sans-serif'
+    for (const t of ticks) {
+      const x = heatmapLeft + t * (heatmapWidth - cellWidth) + cellWidth / 2
+      ctx.fillText(t.toFixed(2), x, axisY)
+    }
+
+    // Draw color legend
+    const legendY = topPadding + nGenes * cellHeight + axisLabelHeight + 12
+    const legendBarWidth = 150
+    const legendBarHeight = 8
+    const legendX = heatmapLeft + (heatmapWidth - legendBarWidth) / 2
+
+    ctx.fillStyle = '#888'
+    ctx.font = '9px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText('Expression (normalized)', legendX + legendBarWidth / 2, legendY - 4)
+
+    // Draw gradient bar
+    for (let i = 0; i < legendBarWidth; i++) {
+      const t = i / (legendBarWidth - 1)
+      const [r, gVal, b] = viridisColor(t)
+      ctx.fillStyle = `rgb(${r},${gVal},${b})`
+      ctx.fillRect(legendX + i, legendY, 1, legendBarHeight)
+    }
+
+    // Legend labels
+    ctx.fillStyle = '#888'
+    ctx.textAlign = 'left'
+    ctx.fillText('Low', legendX, legendY + legendBarHeight + 10)
+    ctx.textAlign = 'right'
+    ctx.fillText('High', legendX + legendBarWidth, legendY + legendBarHeight + 10)
+
+  }, [nGenes, nPositions, hoveredGene, geneEntries, moduleBoundaries, totalWidth, totalHeight, cellWidth, cellHeight, heatmapWidth, testVariable])
+
+  // Mouse interaction
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current
+    if (!canvas || nGenes === 0) return
+
+    const rect = canvas.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    const heatmapLeft = labelWidth + moduleBarWidth
+
+    // Check if over heatmap area
+    const geneIdx = Math.floor((y - topPadding) / cellHeight)
+    const posIdx = Math.floor((x - heatmapLeft) / cellWidth)
+
+    if (geneIdx >= 0 && geneIdx < nGenes && posIdx >= 0 && posIdx < nPositions && x >= heatmapLeft) {
+      const entry = geneEntries[geneIdx]
+      setHoveredGene(entry.gene.gene)
+      const value = entry.gene.profile ? entry.gene.profile[posIdx] : 0
+      setTooltipInfo({
+        gene: entry.gene.gene,
+        x: e.clientX,
+        y: e.clientY,
+        value,
+      })
+    } else if (geneIdx >= 0 && geneIdx < nGenes && x < heatmapLeft) {
+      // Over label area
+      setHoveredGene(geneEntries[geneIdx].gene.gene)
+      setTooltipInfo(null)
+    } else {
+      setHoveredGene(null)
+      setTooltipInfo(null)
+    }
+  }, [nGenes, nPositions, geneEntries, cellWidth, cellHeight])
+
+  const handleMouseLeave = useCallback(() => {
+    setHoveredGene(null)
+    setTooltipInfo(null)
+  }, [])
+
+  const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current
+    if (!canvas || nGenes === 0) return
+
+    const rect = canvas.getBoundingClientRect()
+    const y = e.clientY - rect.top
+    const geneIdx = Math.floor((y - topPadding) / cellHeight)
+
+    if (geneIdx >= 0 && geneIdx < nGenes) {
+      onGeneSelect(geneEntries[geneIdx].gene.gene)
+    }
+  }, [nGenes, geneEntries, cellHeight, onGeneSelect])
+
+  if (nGenes === 0) {
+    return (
+      <div style={{ padding: '24px', color: '#666', textAlign: 'center' }}>
+        No genes with profile data available
+      </div>
+    )
+  }
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      <canvas
+        ref={canvasRef}
+        style={{ display: 'block', cursor: 'pointer' }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+        onClick={handleClick}
+      />
+      {/* Tooltip */}
+      {tooltipInfo && (
+        <div
+          style={{
+            position: 'fixed',
+            left: tooltipInfo.x + 12,
+            top: tooltipInfo.y - 30,
+            backgroundColor: '#0a0f1a',
+            border: '1px solid #0f3460',
+            borderRadius: '4px',
+            padding: '4px 8px',
+            fontSize: '11px',
+            color: '#eee',
+            pointerEvents: 'none',
+            zIndex: 3000,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span style={{ fontFamily: 'monospace', color: '#4ecdc4' }}>{tooltipInfo.gene}</span>
+          {' '}
+          <span style={{ color: '#888' }}>{tooltipInfo.value.toFixed(2)}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// =========================================================================
+// Main modal
+// =========================================================================
+
 export default function LineAssociationModal() {
   const {
     isLineAssociationModalOpen,
@@ -319,12 +638,16 @@ export default function LineAssociationModal() {
     addGeneSetToCategory,
   } = useStore()
 
+  const { colorByGene } = useDataActions()
+
+  const [viewMode, setViewMode] = useState<ViewMode>('heatmap')
+
   const handleClose = () => {
     setLineAssociationModalOpen(false)
   }
 
   const handleGeneSelect = (gene: string) => {
-    console.log('Selected gene:', gene)
+    colorByGene(gene)
   }
 
   const handleAddToGeneSets = () => {
@@ -363,6 +686,7 @@ export default function LineAssociationModal() {
   const { n_cells, n_significant, line_name, test_variable, fdr_threshold, diagnostics, modules } = lineAssociationResult
   const hasModules = modules && modules.length > 0
   const totalModuleGenes = hasModules ? modules.reduce((sum, m) => sum + m.n_genes, 0) : 0
+  const hasProfiles = hasModules && modules.some((m) => m.genes.some((g) => g.profile && g.profile.length > 0))
 
   return (
     <div style={styles.overlay} onClick={handleClose}>
@@ -376,9 +700,49 @@ export default function LineAssociationModal() {
               </span>
             )}
           </h2>
-          <button style={styles.closeButton} onClick={handleClose}>
-            &times;
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {/* View mode toggle */}
+            {hasProfiles && (
+              <div style={{
+                display: 'flex',
+                backgroundColor: '#0a0f1a',
+                borderRadius: '4px',
+                overflow: 'hidden',
+              }}>
+                <button
+                  onClick={() => setViewMode('heatmap')}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    backgroundColor: viewMode === 'heatmap' ? '#0f3460' : 'transparent',
+                    color: viewMode === 'heatmap' ? '#eee' : '#666',
+                    fontWeight: viewMode === 'heatmap' ? 600 : 400,
+                  }}
+                >
+                  Heatmap
+                </button>
+                <button
+                  onClick={() => setViewMode('list')}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    backgroundColor: viewMode === 'list' ? '#0f3460' : 'transparent',
+                    color: viewMode === 'list' ? '#eee' : '#666',
+                    fontWeight: viewMode === 'list' ? 600 : 400,
+                  }}
+                >
+                  List
+                </button>
+              </div>
+            )}
+            <button style={styles.closeButton} onClick={handleClose}>
+              &times;
+            </button>
+          </div>
         </div>
 
         <div style={styles.content}>
@@ -458,8 +822,14 @@ export default function LineAssociationModal() {
             </div>
           )}
 
-          {/* Module-based display */}
-          {hasModules ? (
+          {/* Heatmap or List view */}
+          {viewMode === 'heatmap' && hasProfiles ? (
+            <ProfileHeatmap
+              modules={modules}
+              onGeneSelect={handleGeneSelect}
+              testVariable={test_variable}
+            />
+          ) : hasModules ? (
             <div>
               {modules.map((mod, idx) => (
                 <ModuleCard
@@ -484,7 +854,7 @@ export default function LineAssociationModal() {
 
         <div style={styles.footer}>
           <div style={{ fontSize: '11px', color: '#666' }}>
-            Click a gene to view its expression pattern
+            Click a gene to color cells by its expression
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button

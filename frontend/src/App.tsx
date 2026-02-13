@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore } from './store'
 import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect } from './hooks/useData'
 import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor } from './components/ScatterPlot'
@@ -558,7 +558,23 @@ export default function App() {
     setNewLineName('')
   }, [])
 
-  const geneSets = useStore((state) => state.geneSets)
+  const geneSetCategories = useStore((state) => state.geneSetCategories)
+
+  // Collect all gene sets from all categories (direct + inside folders)
+  const allGeneSets = useMemo(() => {
+    const result: { name: string; genes: string[]; category: string; folder?: string }[] = []
+    for (const cat of Object.values(geneSetCategories)) {
+      for (const gs of cat.geneSets) {
+        result.push({ name: gs.name, genes: gs.genes, category: cat.name })
+      }
+      for (const folder of cat.folders) {
+        for (const gs of folder.geneSets) {
+          result.push({ name: gs.name, genes: gs.genes, category: cat.name, folder: folder.name })
+        }
+      }
+    }
+    return result
+  }, [geneSetCategories])
 
   const handleExportH5ad = useCallback(async () => {
     setExportLoading('h5ad')
@@ -628,12 +644,12 @@ export default function App() {
   const handleExportGeneSets = useCallback(() => {
     setExportLoading('genesets')
     try {
-      if (geneSets.length === 0) {
+      if (allGeneSets.length === 0) {
         alert('No gene sets to export')
         return
       }
       // Export as JSON
-      const data = JSON.stringify(geneSets, null, 2)
+      const data = JSON.stringify(allGeneSets, null, 2)
       const blob = new Blob([data], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -649,7 +665,7 @@ export default function App() {
     } finally {
       setExportLoading(null)
     }
-  }, [geneSets])
+  }, [allGeneSets])
 
   const browseDirectory = useCallback(async (dirPath?: string) => {
     setBrowseLoading(true)
@@ -1023,15 +1039,15 @@ export default function App() {
               {/* Export Gene Sets */}
               <button
                 onClick={handleExportGeneSets}
-                disabled={exportLoading !== null || geneSets.length === 0}
+                disabled={exportLoading !== null || allGeneSets.length === 0}
                 style={{
                   padding: '12px 16px',
                   fontSize: '14px',
                   backgroundColor: '#0f3460',
-                  color: geneSets.length === 0 ? '#666' : '#eee',
+                  color: allGeneSets.length === 0 ? '#666' : '#eee',
                   border: '1px solid #1a1a2e',
                   borderRadius: '6px',
-                  cursor: exportLoading !== null || geneSets.length === 0 ? 'not-allowed' : 'pointer',
+                  cursor: exportLoading !== null || allGeneSets.length === 0 ? 'not-allowed' : 'pointer',
                   textAlign: 'left',
                   opacity: exportLoading !== null && exportLoading !== 'genesets' ? 0.5 : 1,
                 }}
@@ -1040,9 +1056,9 @@ export default function App() {
                   {exportLoading === 'genesets' ? 'Exporting...' : 'Gene Sets (.json)'}
                 </div>
                 <div style={{ fontSize: '12px', color: '#666' }}>
-                  {geneSets.length === 0
+                  {allGeneSets.length === 0
                     ? 'No gene sets defined'
-                    : `${geneSets.length} gene set${geneSets.length === 1 ? '' : 's'}`
+                    : `${allGeneSets.length} gene set${allGeneSets.length === 1 ? '' : 's'}`
                   }
                 </div>
               </button>

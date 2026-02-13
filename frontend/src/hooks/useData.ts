@@ -22,9 +22,13 @@ export function useSchema() {
     fetchJson<Schema>(`${API_BASE}/schema`)
       .then((data) => {
         setSchema(data)
-        // Auto-select first embedding
+        // Auto-select embedding by preference: spatial > umap > pca > first available
         if (data.embeddings.length > 0) {
-          setSelectedEmbedding(data.embeddings[0])
+          const preferred = ['spatial', 'umap', 'pca']
+          const lower = data.embeddings.map((e) => e.toLowerCase())
+          const pick = preferred.find((p) => lower.some((l) => l.includes(p)))
+          const idx = pick != null ? lower.findIndex((l) => l.includes(pick)) : 0
+          setSelectedEmbedding(data.embeddings[idx])
         }
       })
       .catch((err) => setError(err.message))

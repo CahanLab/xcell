@@ -160,11 +160,28 @@ function parseCSV(text: string, filename: string): ParsedGeneList[] {
   return lists
 }
 
+function parseJSON(text: string): ParsedGeneList[] {
+  const data = JSON.parse(text)
+  if (!Array.isArray(data)) return []
+
+  const lists: ParsedGeneList[] = []
+  for (const item of data) {
+    if (item && typeof item.name === 'string' && Array.isArray(item.genes) && item.genes.length > 0) {
+      lists.push({ name: item.name, genes: item.genes.filter((g: unknown) => typeof g === 'string' && g) })
+    }
+  }
+  return lists
+}
+
 function parseFile(text: string, filename: string): ParsedGeneList[] {
   const ext = filename.toLowerCase().split('.').pop() || ''
 
   if (ext === 'gmt') {
     return parseGMT(text)
+  }
+
+  if (ext === 'json') {
+    return parseJSON(text)
   }
 
   // CSV and TXT: use generic parser
@@ -239,8 +256,8 @@ export default function ImportModal() {
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
       const ext = file.name.toLowerCase().split('.').pop() || ''
-      if (!['gmt', 'csv', 'txt', 'tsv'].includes(ext)) {
-        setError(`Unsupported file type: .${ext}. Use .gmt, .csv, or .txt`)
+      if (!['gmt', 'csv', 'txt', 'tsv', 'json'].includes(ext)) {
+        setError(`Unsupported file type: .${ext}. Use .gmt, .csv, .txt, or .json`)
         remaining--
         if (remaining === 0) setParsedFiles((prev) => [...prev, ...newParsed])
         continue
@@ -326,7 +343,7 @@ export default function ImportModal() {
               Drag and drop files here, or click to browse
             </div>
             <div style={{ fontSize: '11px', color: '#666' }}>
-              Supported formats: .gmt, .csv, .txt (tab-delimited)
+              Supported formats: .gmt, .csv, .txt, .json
             </div>
           </div>
 
@@ -334,7 +351,7 @@ export default function ImportModal() {
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".gmt,.csv,.txt,.tsv"
+            accept=".gmt,.csv,.txt,.tsv,.json"
             onChange={handleFileSelect}
             style={{ display: 'none' }}
           />

@@ -8,8 +8,6 @@ const styles = {
   panel: {
     width: '280px',
     flex: '0 0 auto',
-    minHeight: '100px',
-    maxHeight: '250px',
     backgroundColor: '#16213e',
     borderRight: '1px solid #0f3460',
     borderTop: '1px solid #0f3460',
@@ -18,33 +16,39 @@ const styles = {
     overflow: 'hidden',
   },
   header: {
-    padding: '12px 16px',
+    padding: '8px 16px',
     borderBottom: '1px solid #0f3460',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
+    cursor: 'pointer',
+    userSelect: 'none' as const,
   },
   title: {
     fontSize: '14px',
     fontWeight: 600,
     color: '#4ecdc4',
   },
+  collapseIcon: {
+    fontSize: '10px',
+    color: '#888',
+  },
   content: {
     flex: 1,
     overflowY: 'auto' as const,
     padding: '8px 0',
   },
-  shapeRow: {
+  lineRow: {
     display: 'flex',
     alignItems: 'center',
     padding: '8px 16px',
-    gap: '8px',
+    gap: '6px',
     borderBottom: '1px solid #0a0f1a',
   },
-  shapeRowActive: {
+  lineRowActive: {
     backgroundColor: '#0f3460',
   },
-  shapeName: {
+  lineName: {
     flex: 1,
     fontSize: '12px',
     color: '#ddd',
@@ -53,7 +57,7 @@ const styles = {
     whiteSpace: 'nowrap' as const,
     cursor: 'pointer',
   },
-  shapeNameInput: {
+  lineNameInput: {
     flex: 1,
     padding: '2px 6px',
     fontSize: '12px',
@@ -63,17 +67,10 @@ const styles = {
     borderRadius: '3px',
     outline: 'none',
   },
-  embeddingBadge: {
-    fontSize: '9px',
-    color: '#666',
-    backgroundColor: '#0a0f1a',
-    padding: '2px 4px',
-    borderRadius: '2px',
-  },
   cellCount: {
     fontSize: '11px',
     color: '#888',
-    minWidth: '30px',
+    minWidth: '24px',
     textAlign: 'right' as const,
   },
   iconButton: {
@@ -109,60 +106,136 @@ const styles = {
     fontSize: '11px',
     lineHeight: '1.4',
   },
-  smoothingSection: {
-    padding: '8px 16px',
-    borderTop: '1px solid #0f3460',
-    backgroundColor: '#0a0f1a',
+  // Modal styles
+  overlay: {
+    position: 'fixed' as const,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2000,
   },
-  smoothingRow: {
+  modal: {
+    backgroundColor: '#16213e',
+    borderRadius: '12px',
+    border: '1px solid #0f3460',
+    width: '480px',
+    maxWidth: '95vw',
+    maxHeight: '80vh',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+  },
+  modalHeader: {
+    padding: '16px 20px',
+    borderBottom: '1px solid #0f3460',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: '16px',
+    fontWeight: 600,
+    color: '#e94560',
+    margin: 0,
+  },
+  modalClose: {
+    background: 'none',
+    border: 'none',
+    color: '#aaa',
+    fontSize: '20px',
+    cursor: 'pointer',
+    padding: '4px 8px',
+  },
+  modalContent: {
+    flex: 1,
+    overflow: 'auto',
+    padding: '20px',
+  },
+  section: {
+    marginBottom: '20px',
+  },
+  sectionTitle: {
+    fontSize: '12px',
+    fontWeight: 600,
+    color: '#4ecdc4',
+    marginBottom: '8px',
+  },
+  row: {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    fontSize: '11px',
-    color: '#888',
+    fontSize: '12px',
+    color: '#ccc',
   },
   smallInput: {
-    width: '40px',
-    padding: '3px 4px',
-    fontSize: '10px',
+    width: '48px',
+    padding: '4px 6px',
+    fontSize: '11px',
     backgroundColor: '#0f3460',
     color: '#eee',
     border: '1px solid #1a1a2e',
-    borderRadius: '3px',
+    borderRadius: '4px',
     textAlign: 'center' as const,
   },
-  smoothButton: {
-    padding: '4px 8px',
-    fontSize: '10px',
+  actionButton: {
+    padding: '6px 12px',
+    fontSize: '11px',
     backgroundColor: '#0f3460',
     color: '#aaa',
     border: '1px solid #1a1a2e',
-    borderRadius: '3px',
+    borderRadius: '4px',
     cursor: 'pointer',
-    marginLeft: 'auto',
+  },
+  primaryActionButton: {
+    padding: '6px 12px',
+    fontSize: '11px',
+    backgroundColor: '#4ecdc4',
+    color: '#000',
+    border: '1px solid #4ecdc4',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontWeight: 500,
+  },
+  pillButton: {
+    padding: '3px 8px',
+    fontSize: '10px',
+    borderRadius: '10px',
+    cursor: 'pointer',
+    border: '1px solid #1a1a2e',
+  },
+  toggleButton: {
+    padding: '3px 10px',
+    fontSize: '10px',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    border: '1px solid #1a1a2e',
   },
 }
 
-export default function ShapeManager() {
+// ---------- Line Tools Modal ----------
+
+function LineToolsModal({
+  line,
+  onClose,
+}: {
+  line: ReturnType<typeof useStore.getState>['drawnLines'][0]
+  onClose: () => void
+}) {
   const {
     drawnLines,
-    activeLineId,
-    selectedEmbedding,
-    selectedCellIndices,
     activeCellMask,
-    setActiveLine,
-    removeLine,
-    renameLine,
-    setLineVisibility,
-    projectSelectedCellsOntoLine,
-    clearLineProjections,
     smoothLine,
+    clearLineProjections,
     lineSmoothingParams,
     setLineSmoothingParams,
+    setSchema,
   } = useStore()
 
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editName, setEditName] = useState('')
   const [associationError, setAssociationError] = useState<string | null>(null)
   const [isCreatingEmbedding, setIsCreatingEmbedding] = useState(false)
   const [embeddingMessage, setEmbeddingMessage] = useState<string | null>(null)
@@ -173,7 +246,6 @@ export default function ShapeManager() {
 
   const { runAssociation, isLineAssociationLoading } = useLineAssociation()
 
-  // Fetch available boolean columns for gene subsetting (on mount + after scanpy actions)
   const scanpyActionHistory = useStore((state) => state.scanpyActionHistory)
   useEffect(() => {
     fetch(`${API_BASE}/var/boolean_columns`)
@@ -182,13 +254,287 @@ export default function ShapeManager() {
       .catch(() => setGeneSubsetColumns([]))
   }, [scanpyActionHistory])
 
-  // Get setSchema to force refresh after creating embedding
-  const setSchema = useStore((state) => state.setSchema)
+  const getCellIndices = useCallback(() => {
+    if (!activeCellMask) return undefined
+    return activeCellMask
+      .map((visible, idx) => (visible ? idx : -1))
+      .filter((idx) => idx >= 0)
+  }, [activeCellMask])
 
-  // Filter lines to show only those for current embedding
+  const handleFindAssociatedGenes = useCallback(async () => {
+    setAssociationError(null)
+    try {
+      const cellIndices = getCellIndices()
+      let geneSubset: string | { columns: string[]; operation: string } | null = null
+      if (selectedGeneColumns.length === 1) {
+        geneSubset = selectedGeneColumns[0]
+      } else if (selectedGeneColumns.length > 1) {
+        geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
+      }
+      await runAssociation(line.name, { cellIndices, geneSubset, testVariable })
+      onClose()
+    } catch (err) {
+      setAssociationError((err as Error).message)
+    }
+  }, [runAssociation, getCellIndices, selectedGeneColumns, geneSubsetOperation, testVariable, line.name, onClose])
+
+  const handleCreateProjectionEmbedding = useCallback(async () => {
+    setEmbeddingMessage(null)
+    setIsCreatingEmbedding(true)
+    try {
+      const cellIndices = getCellIndices()
+      const result = await createLineEmbedding(
+        { lineName: line.name, cellIndices },
+        drawnLines
+      )
+      const schemaResponse = await fetch('/api/schema')
+      const schema = await schemaResponse.json()
+      setSchema(schema)
+      setEmbeddingMessage(`Created embedding "${result.embedding_name}"`)
+    } catch (err) {
+      setEmbeddingMessage(`Error: ${(err as Error).message}`)
+    } finally {
+      setIsCreatingEmbedding(false)
+    }
+  }, [drawnLines, setSchema, getCellIndices, line.name])
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <h2 style={styles.modalTitle}>Line Tools: {line.name}</h2>
+          <button style={styles.modalClose} onClick={onClose}>&times;</button>
+        </div>
+
+        <div style={styles.modalContent}>
+          {/* Smoothing */}
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>Smoothing</div>
+            <div style={styles.row}>
+              <span>Window</span>
+              <input
+                type="number"
+                min="3"
+                max="21"
+                step="2"
+                value={lineSmoothingParams.windowSize}
+                onChange={(e) => setLineSmoothingParams({ windowSize: parseInt(e.target.value) || 5 })}
+                style={styles.smallInput}
+              />
+              <span>Iterations</span>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                value={lineSmoothingParams.iterations}
+                onChange={(e) => setLineSmoothingParams({ iterations: parseInt(e.target.value) || 1 })}
+                style={styles.smallInput}
+              />
+              <button
+                style={styles.actionButton}
+                onClick={() => smoothLine(line.id)}
+                title="Apply smoothing to this line"
+              >
+                Smooth
+              </button>
+            </div>
+            {line.smoothedPoints && (
+              <div style={{ marginTop: '6px', fontSize: '11px', color: '#4ecdc4' }}>
+                Line is smoothed
+              </div>
+            )}
+          </div>
+
+          {/* Projections */}
+          {line.projections.length > 0 && (
+            <div style={styles.section}>
+              <div style={styles.sectionTitle}>Projections</div>
+              <div style={styles.row}>
+                <span>{line.projections.length} cells projected</span>
+                <button
+                  style={{ ...styles.actionButton, color: '#e94560' }}
+                  onClick={() => clearLineProjections(line.id)}
+                  title="Clear all projections for this line"
+                >
+                  Clear Projections
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Gene Association */}
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>Gene Association</div>
+
+            {/* Gene subset selector */}
+            {geneSubsetColumns.length > 0 && (
+              <div style={{ marginBottom: '10px' }}>
+                <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>
+                  Genes {selectedGeneColumns.length === 0 ? '(all)' : ''}:
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  {geneSubsetColumns.map((col) => {
+                    const isSelected = selectedGeneColumns.includes(col.name)
+                    return (
+                      <button
+                        key={col.name}
+                        onClick={() => {
+                          if (isSelected) {
+                            setSelectedGeneColumns(selectedGeneColumns.filter((c) => c !== col.name))
+                          } else {
+                            setSelectedGeneColumns([...selectedGeneColumns, col.name])
+                          }
+                        }}
+                        style={{
+                          ...styles.pillButton,
+                          backgroundColor: isSelected ? '#4ecdc4' : '#0f3460',
+                          color: isSelected ? '#000' : '#aaa',
+                          borderColor: isSelected ? '#4ecdc4' : '#1a1a2e',
+                          fontWeight: isSelected ? 600 : 400,
+                        }}
+                        title={`${col.n_true.toLocaleString()} of ${col.n_total.toLocaleString()} genes`}
+                      >
+                        {col.name} ({col.n_true.toLocaleString()})
+                      </button>
+                    )
+                  })}
+                </div>
+                {selectedGeneColumns.length >= 2 && (
+                  <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px' }}>
+                    <span style={{ color: '#888' }}>Combine:</span>
+                    <button
+                      onClick={() => setGeneSubsetOperation('intersection')}
+                      style={{
+                        ...styles.toggleButton,
+                        backgroundColor: geneSubsetOperation === 'intersection' ? '#4ecdc4' : '#0f3460',
+                        color: geneSubsetOperation === 'intersection' ? '#000' : '#aaa',
+                      }}
+                    >
+                      AND
+                    </button>
+                    <button
+                      onClick={() => setGeneSubsetOperation('union')}
+                      style={{
+                        ...styles.toggleButton,
+                        backgroundColor: geneSubsetOperation === 'union' ? '#4ecdc4' : '#0f3460',
+                        color: geneSubsetOperation === 'union' ? '#000' : '#aaa',
+                      }}
+                    >
+                      OR
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Test variable */}
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>Test against:</div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  onClick={() => setTestVariable('position')}
+                  style={{
+                    ...styles.toggleButton,
+                    backgroundColor: testVariable === 'position' ? '#4ecdc4' : '#0f3460',
+                    color: testVariable === 'position' ? '#000' : '#aaa',
+                    borderColor: testVariable === 'position' ? '#4ecdc4' : '#1a1a2e',
+                    fontWeight: testVariable === 'position' ? 600 : 400,
+                  }}
+                  title="Test gene expression vs. position along the line (0=start, 1=end)"
+                >
+                  Position along line
+                </button>
+                <button
+                  onClick={() => setTestVariable('distance')}
+                  style={{
+                    ...styles.toggleButton,
+                    backgroundColor: testVariable === 'distance' ? '#4ecdc4' : '#0f3460',
+                    color: testVariable === 'distance' ? '#000' : '#aaa',
+                    borderColor: testVariable === 'distance' ? '#4ecdc4' : '#1a1a2e',
+                    fontWeight: testVariable === 'distance' ? 600 : 400,
+                  }}
+                  title="Test gene expression vs. perpendicular distance from the line"
+                >
+                  Distance from line
+                </button>
+              </div>
+            </div>
+
+            <button
+              style={{
+                ...styles.primaryActionButton,
+                opacity: isLineAssociationLoading ? 0.6 : 1,
+              }}
+              onClick={handleFindAssociatedGenes}
+              disabled={isLineAssociationLoading}
+              title={testVariable === 'position'
+                ? 'Find genes whose expression is associated with position along this line'
+                : 'Find genes whose expression is associated with distance from this line'}
+            >
+              {isLineAssociationLoading ? 'Analyzing...' : 'Find Associated Genes'}
+            </button>
+            {associationError && (
+              <div style={{ marginTop: '6px', fontSize: '11px', color: '#e94560' }}>
+                {associationError}
+              </div>
+            )}
+          </div>
+
+          {/* Projection Embedding */}
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>Projection Embedding</div>
+            <button
+              style={{
+                ...styles.actionButton,
+                opacity: isCreatingEmbedding ? 0.6 : 1,
+              }}
+              onClick={handleCreateProjectionEmbedding}
+              disabled={isCreatingEmbedding}
+              title="Create a new embedding where X=position along line, Y=distance from line"
+            >
+              {isCreatingEmbedding ? 'Creating...' : 'Create Projection Embedding'}
+            </button>
+            {embeddingMessage && (
+              <div style={{
+                marginTop: '6px',
+                fontSize: '11px',
+                color: embeddingMessage.startsWith('Error') ? '#e94560' : '#4ecdc4',
+              }}>
+                {embeddingMessage}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------- Lines Panel ----------
+
+export default function ShapeManager() {
+  const {
+    drawnLines,
+    activeLineId,
+    selectedEmbedding,
+    selectedCellIndices,
+    setActiveLine,
+    removeLine,
+    renameLine,
+    setLineVisibility,
+    projectSelectedCellsOntoLine,
+  } = useStore()
+
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const [toolsLineId, setToolsLineId] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState(false)
+
   const currentEmbeddingLines = drawnLines.filter(
     (l) => l.embeddingName === selectedEmbedding
   )
+  const hasAnyLines = drawnLines.length > 0
+  const toolsLine = toolsLineId ? drawnLines.find((l) => l.id === toolsLineId) : null
 
   const handleStartEdit = useCallback((id: string, name: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -213,383 +559,137 @@ export default function ShapeManager() {
     projectSelectedCellsOntoLine(lineId)
   }, [selectedCellIndices, projectSelectedCellsOntoLine])
 
-  const handleFindAssociatedGenes = useCallback(async (line: typeof drawnLines[0]) => {
-    setAssociationError(null)
-    try {
-      // Determine which cells to use:
-      // 1. If active cell mask exists, use only masked (visible) cells
-      // 2. Otherwise, use all cells
-      let cellIndices: number[] | undefined = undefined
-
-      if (activeCellMask) {
-        // Get indices where mask is true
-        cellIndices = activeCellMask
-          .map((visible, idx) => visible ? idx : -1)
-          .filter(idx => idx >= 0)
-      }
-
-      // Build gene subset spec
-      let geneSubset: string | { columns: string[]; operation: string } | null = null
-      if (selectedGeneColumns.length === 1) {
-        geneSubset = selectedGeneColumns[0]
-      } else if (selectedGeneColumns.length > 1) {
-        geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
-      }
-
-      await runAssociation(line.name, { cellIndices, geneSubset, testVariable })
-    } catch (err) {
-      setAssociationError((err as Error).message)
-    }
-  }, [runAssociation, activeCellMask, selectedGeneColumns, geneSubsetOperation, testVariable])
-
-  const handleCreateProjectionEmbedding = useCallback(async (line: typeof drawnLines[0]) => {
-    setEmbeddingMessage(null)
-    setIsCreatingEmbedding(true)
-    try {
-      // Determine which cells to use:
-      // 1. If active cell mask exists, use only masked (visible) cells
-      // 2. Otherwise, use all cells
-      let cellIndices: number[] | undefined = undefined
-
-      if (activeCellMask) {
-        cellIndices = activeCellMask
-          .map((visible, idx) => visible ? idx : -1)
-          .filter(idx => idx >= 0)
-      }
-
-      const result = await createLineEmbedding(
-        { lineName: line.name, cellIndices },
-        drawnLines
-      )
-
-      // Force schema refresh to pick up the new embedding
-      const schemaResponse = await fetch('/api/schema')
-      const schema = await schemaResponse.json()
-      setSchema(schema)
-
-      setEmbeddingMessage(`Created embedding "${result.embedding_name}"`)
-    } catch (err) {
-      setEmbeddingMessage(`Error: ${(err as Error).message}`)
-    } finally {
-      setIsCreatingEmbedding(false)
-    }
-  }, [drawnLines, setSchema, activeCellMask])
-
-  const activeLine = drawnLines.find((l) => l.id === activeLineId)
-
-  // Always show the panel, even if empty
-  const hasAnyLines = drawnLines.length > 0
-
   return (
-    <div style={styles.panel}>
-      <div style={styles.header}>
-        <span style={styles.title}>Shapes</span>
-      </div>
+    <>
+      <div style={{
+        ...styles.panel,
+        ...(collapsed ? { minHeight: 0 } : { minHeight: '80px', maxHeight: '250px' }),
+      }}>
+        <div
+          style={styles.header}
+          onClick={() => setCollapsed(!collapsed)}
+          title={collapsed ? 'Expand Lines panel' : 'Collapse Lines panel'}
+        >
+          <span style={styles.title}>Lines</span>
+          <span style={styles.collapseIcon}>{collapsed ? '\u25B6' : '\u25BC'}</span>
+        </div>
 
-      <div style={styles.content}>
-        {currentEmbeddingLines.length === 0 && (
-          <div style={styles.emptyState}>
-            {hasAnyLines
-              ? `No shapes on "${selectedEmbedding}". Draw a line using the Draw tool.`
-              : 'No shapes yet. Use the Draw tool to create a line.'}
+        {!collapsed && (
+          <div style={styles.content}>
+            {currentEmbeddingLines.length === 0 && (
+              <div style={styles.emptyState}>
+                {hasAnyLines
+                  ? `No lines on "${selectedEmbedding}". Draw a line using the Draw tool.`
+                  : 'No lines yet. Use the Draw tool to create a line.'}
+              </div>
+            )}
+            {currentEmbeddingLines.map((line) => (
+              <div
+                key={line.id}
+                style={{
+                  ...styles.lineRow,
+                  ...(line.id === activeLineId ? styles.lineRowActive : {}),
+                }}
+                onClick={() => setActiveLine(line.id === activeLineId ? null : line.id)}
+              >
+                {editingId === line.id ? (
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onBlur={handleSaveEdit}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveEdit()
+                      if (e.key === 'Escape') {
+                        setEditingId(null)
+                        setEditName('')
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    autoFocus
+                    style={styles.lineNameInput}
+                  />
+                ) : (
+                  <span
+                    style={styles.lineName}
+                    onDoubleClick={(e) => handleStartEdit(line.id, line.name, e)}
+                    title={`${line.name}\nEmbedding: ${line.embeddingName}\nDouble-click to rename`}
+                  >
+                    {line.name}
+                    {line.smoothedPoints && <span style={{ color: '#4ecdc4', marginLeft: '4px' }}>~</span>}
+                  </span>
+                )}
+
+                <span style={styles.cellCount} title={`${line.projections.length} cells projected`}>
+                  {line.projections.length}
+                </span>
+
+                {/* Tools button */}
+                <button
+                  style={styles.iconButton}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setToolsLineId(line.id)
+                  }}
+                  title="Line tools: smooth, analyze, project"
+                >
+                  &#9881;
+                </button>
+
+                {/* Add cells button */}
+                <button
+                  style={{
+                    ...styles.iconButton,
+                    ...styles.addButton,
+                    ...(selectedCellIndices.length === 0 ? styles.iconButtonDisabled : {}),
+                  }}
+                  onClick={(e) => handleProjectCells(line.id, e)}
+                  title={selectedCellIndices.length > 0
+                    ? `Project ${selectedCellIndices.length} selected cells onto this line`
+                    : 'Select cells first to project'}
+                >
+                  +
+                </button>
+
+                {/* Visibility toggle */}
+                <button
+                  style={{
+                    ...styles.iconButton,
+                    ...(line.visible ? styles.iconButtonActive : {}),
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setLineVisibility(line.id, !line.visible)
+                  }}
+                  title={line.visible ? 'Hide line' : 'Show line'}
+                >
+                  {line.visible ? '\u25CF' : '\u25CB'}
+                </button>
+
+                {/* Delete button */}
+                <button
+                  style={styles.iconButton}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    removeLine(line.id)
+                  }}
+                  title="Delete line and projections"
+                >
+                  &times;
+                </button>
+              </div>
+            ))}
           </div>
         )}
-        {currentEmbeddingLines.map((line) => (
-          <div
-            key={line.id}
-            style={{
-              ...styles.shapeRow,
-              ...(line.id === activeLineId ? styles.shapeRowActive : {}),
-            }}
-            onClick={() => setActiveLine(line.id === activeLineId ? null : line.id)}
-          >
-            {editingId === line.id ? (
-              <input
-                type="text"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                onBlur={handleSaveEdit}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSaveEdit()
-                  if (e.key === 'Escape') {
-                    setEditingId(null)
-                    setEditName('')
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
-                autoFocus
-                style={styles.shapeNameInput}
-              />
-            ) : (
-              <span
-                style={styles.shapeName}
-                onDoubleClick={(e) => handleStartEdit(line.id, line.name, e)}
-                title={`${line.name}\nEmbedding: ${line.embeddingName}\nDouble-click to rename`}
-              >
-                {line.name}
-                {line.smoothedPoints && <span style={{ color: '#4ecdc4', marginLeft: '4px' }}>~</span>}
-              </span>
-            )}
-
-            <span style={styles.cellCount} title={`${line.projections.length} cells projected`}>
-              {line.projections.length}
-            </span>
-
-            {/* Add cells button */}
-            <button
-              style={{
-                ...styles.iconButton,
-                ...styles.addButton,
-                ...(selectedCellIndices.length === 0 ? styles.iconButtonDisabled : {}),
-              }}
-              onClick={(e) => handleProjectCells(line.id, e)}
-              title={selectedCellIndices.length > 0
-                ? `Project ${selectedCellIndices.length} selected cells onto this line`
-                : 'Select cells first to project'}
-            >
-              +
-            </button>
-
-            {/* Visibility toggle */}
-            <button
-              style={{
-                ...styles.iconButton,
-                ...(line.visible ? styles.iconButtonActive : {}),
-              }}
-              onClick={(e) => {
-                e.stopPropagation()
-                setLineVisibility(line.id, !line.visible)
-              }}
-              title={line.visible ? 'Hide line' : 'Show line'}
-            >
-              {line.visible ? '👁' : '○'}
-            </button>
-
-            {/* Delete button */}
-            <button
-              style={styles.iconButton}
-              onClick={(e) => {
-                e.stopPropagation()
-                removeLine(line.id)
-              }}
-              title="Delete line and projections"
-            >
-              ×
-            </button>
-          </div>
-        ))}
       </div>
 
-      {/* Smoothing controls for active line */}
-      {activeLineId && activeLine && activeLine.embeddingName === selectedEmbedding && (
-        <div style={styles.smoothingSection}>
-          <div style={styles.smoothingRow}>
-            <span>Smooth:</span>
-            <span>Win</span>
-            <input
-              type="number"
-              min="3"
-              max="21"
-              step="2"
-              value={lineSmoothingParams.windowSize}
-              onChange={(e) => setLineSmoothingParams({ windowSize: parseInt(e.target.value) || 5 })}
-              style={styles.smallInput}
-            />
-            <span>Iter</span>
-            <input
-              type="number"
-              min="1"
-              max="10"
-              value={lineSmoothingParams.iterations}
-              onChange={(e) => setLineSmoothingParams({ iterations: parseInt(e.target.value) || 1 })}
-              style={styles.smallInput}
-            />
-            <button
-              style={styles.smoothButton}
-              onClick={() => smoothLine(activeLineId)}
-              title="Apply smoothing"
-            >
-              Apply
-            </button>
-          </div>
-          {activeLine.projections.length > 0 && (
-            <div style={{ marginTop: '6px' }}>
-              <button
-                style={{ ...styles.smoothButton, marginLeft: 0, color: '#e94560' }}
-                onClick={() => clearLineProjections(activeLineId)}
-                title="Clear all projections for this line"
-              >
-                Clear Projections
-              </button>
-            </div>
-          )}
-
-          {/* Gene subset selector for association */}
-          {geneSubsetColumns.length > 0 && (
-            <div style={{ marginTop: '8px' }}>
-              <div style={{ fontSize: '10px', color: '#888', marginBottom: '4px' }}>
-                Genes {selectedGeneColumns.length === 0 ? '(all)' : ''}:
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                {geneSubsetColumns.map((col) => {
-                  const isSelected = selectedGeneColumns.includes(col.name)
-                  return (
-                    <button
-                      key={col.name}
-                      onClick={() => {
-                        if (isSelected) {
-                          setSelectedGeneColumns(selectedGeneColumns.filter(c => c !== col.name))
-                        } else {
-                          setSelectedGeneColumns([...selectedGeneColumns, col.name])
-                        }
-                      }}
-                      style={{
-                        padding: '2px 6px',
-                        fontSize: '9px',
-                        backgroundColor: isSelected ? '#4ecdc4' : '#0f3460',
-                        color: isSelected ? '#000' : '#aaa',
-                        border: `1px solid ${isSelected ? '#4ecdc4' : '#1a1a2e'}`,
-                        borderRadius: '10px',
-                        cursor: 'pointer',
-                        fontWeight: isSelected ? 600 : 400,
-                      }}
-                      title={`${col.n_true.toLocaleString()} of ${col.n_total.toLocaleString()} genes`}
-                    >
-                      {col.name} ({col.n_true.toLocaleString()})
-                    </button>
-                  )
-                })}
-              </div>
-              {selectedGeneColumns.length >= 2 && (
-                <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px' }}>
-                  <span style={{ color: '#888' }}>Combine:</span>
-                  <button
-                    onClick={() => setGeneSubsetOperation('intersection')}
-                    style={{
-                      padding: '1px 5px',
-                      fontSize: '9px',
-                      backgroundColor: geneSubsetOperation === 'intersection' ? '#4ecdc4' : '#0f3460',
-                      color: geneSubsetOperation === 'intersection' ? '#000' : '#aaa',
-                      border: '1px solid #1a1a2e',
-                      borderRadius: '3px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    AND
-                  </button>
-                  <button
-                    onClick={() => setGeneSubsetOperation('union')}
-                    style={{
-                      padding: '1px 5px',
-                      fontSize: '9px',
-                      backgroundColor: geneSubsetOperation === 'union' ? '#4ecdc4' : '#0f3460',
-                      color: geneSubsetOperation === 'union' ? '#000' : '#aaa',
-                      border: '1px solid #1a1a2e',
-                      borderRadius: '3px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    OR
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Test variable toggle */}
-          <div style={{ marginTop: '8px' }}>
-            <div style={{ fontSize: '10px', color: '#888', marginBottom: '4px' }}>
-              Test against:
-            </div>
-            <div style={{ display: 'flex', gap: '4px' }}>
-              <button
-                onClick={() => setTestVariable('position')}
-                style={{
-                  padding: '2px 8px',
-                  fontSize: '9px',
-                  backgroundColor: testVariable === 'position' ? '#4ecdc4' : '#0f3460',
-                  color: testVariable === 'position' ? '#000' : '#aaa',
-                  border: `1px solid ${testVariable === 'position' ? '#4ecdc4' : '#1a1a2e'}`,
-                  borderRadius: '3px',
-                  cursor: 'pointer',
-                  fontWeight: testVariable === 'position' ? 600 : 400,
-                }}
-                title="Test gene expression vs. position along the line (0=start, 1=end)"
-              >
-                Position along line
-              </button>
-              <button
-                onClick={() => setTestVariable('distance')}
-                style={{
-                  padding: '2px 8px',
-                  fontSize: '9px',
-                  backgroundColor: testVariable === 'distance' ? '#4ecdc4' : '#0f3460',
-                  color: testVariable === 'distance' ? '#000' : '#aaa',
-                  border: `1px solid ${testVariable === 'distance' ? '#4ecdc4' : '#1a1a2e'}`,
-                  borderRadius: '3px',
-                  cursor: 'pointer',
-                  fontWeight: testVariable === 'distance' ? 600 : 400,
-                }}
-                title="Test gene expression vs. perpendicular distance from the line"
-              >
-                Distance from line
-              </button>
-            </div>
-          </div>
-
-          {/* Find Associated Genes button */}
-          <div style={{ marginTop: '8px' }}>
-            <button
-              style={{
-                ...styles.smoothButton,
-                marginLeft: 0,
-                backgroundColor: '#4ecdc4',
-                color: '#000',
-                fontWeight: 500,
-                opacity: isLineAssociationLoading ? 0.6 : 1,
-              }}
-              onClick={() => handleFindAssociatedGenes(activeLine)}
-              disabled={isLineAssociationLoading}
-              title={testVariable === 'position'
-                ? "Find genes whose expression is associated with position along this line"
-                : "Find genes whose expression is associated with distance from this line"
-              }
-            >
-              {isLineAssociationLoading ? 'Analyzing...' : 'Find Associated Genes'}
-            </button>
-            {associationError && (
-              <div style={{ marginTop: '4px', fontSize: '10px', color: '#e94560' }}>
-                {associationError}
-              </div>
-            )}
-          </div>
-
-          {/* Create Projection Embedding button */}
-          <div style={{ marginTop: '6px' }}>
-            <button
-              style={{
-                ...styles.smoothButton,
-                marginLeft: 0,
-                opacity: isCreatingEmbedding ? 0.6 : 1,
-              }}
-              onClick={() => handleCreateProjectionEmbedding(activeLine)}
-              disabled={isCreatingEmbedding}
-              title="Create a new embedding where X=position along line, Y=distance from line"
-            >
-              {isCreatingEmbedding ? 'Creating...' : 'Create Projection Embedding'}
-            </button>
-            {embeddingMessage && (
-              <div style={{
-                marginTop: '4px',
-                fontSize: '10px',
-                color: embeddingMessage.startsWith('Error') ? '#e94560' : '#4ecdc4',
-              }}>
-                {embeddingMessage}
-              </div>
-            )}
-          </div>
-        </div>
+      {/* Line Tools Modal */}
+      {toolsLine && (
+        <LineToolsModal
+          line={toolsLine}
+          onClose={() => setToolsLineId(null)}
+        />
       )}
-    </div>
+    </>
   )
 }

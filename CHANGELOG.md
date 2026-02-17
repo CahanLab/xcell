@@ -14,6 +14,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Renamed "Shapes" panel to "Lines" panel.
 - Line tools (smoothing, gene association, projection embedding) moved from an inline section that obscured the panel into a dedicated modal, launched via a gear button on each line row.
 - Lines panel is now collapsible (click the header to toggle).
+- Cells (left) and Genes (right) panels are now horizontally collapsible. Collapsing either or both gives more space to the scatter plot.
 
 ### Fixed
 - Gene set export now includes genes from all categories and folders (previously only exported the legacy flat list, which was often empty).

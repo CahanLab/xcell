@@ -484,6 +484,8 @@ export default function App() {
   const [browseCurrent, setBrowseCurrent] = useState<string | null>(null)
   const [browseParent, setBrowseParent] = useState<string | null>(null)
   const [browseLoading, setBrowseLoading] = useState(false)
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
 
   // Handle escape key to exit lasso/draw mode
   useEffect(() => {
@@ -801,16 +803,65 @@ export default function App() {
       </header>
 
       <div style={styles.body}>
-        <div style={{
-          display: 'flex',
-          flexDirection: 'column',
-          height: '100%',
-          overflow: 'hidden',
-          flexShrink: 0,
-        }}>
-          <CellPanel />
-          <ShapeManager />
-        </div>
+        {leftPanelCollapsed ? (
+          <div
+            style={{
+              width: '28px',
+              flexShrink: 0,
+              backgroundColor: '#16213e',
+              borderRight: '1px solid #0f3460',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              cursor: 'pointer',
+              userSelect: 'none',
+            }}
+            onClick={() => setLeftPanelCollapsed(false)}
+            title="Expand Cells panel"
+          >
+            <span style={{ fontSize: '11px', color: '#888', marginTop: '10px' }}>{'\u25B6'}</span>
+            <span style={{
+              writingMode: 'vertical-rl',
+              fontSize: '11px',
+              color: '#e94560',
+              fontWeight: 600,
+              marginTop: '8px',
+              letterSpacing: '1px',
+            }}>
+              Cells
+            </span>
+          </div>
+        ) : (
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            overflow: 'hidden',
+            flexShrink: 0,
+            position: 'relative',
+          }}>
+            <button
+              onClick={() => setLeftPanelCollapsed(true)}
+              title="Collapse Cells panel"
+              style={{
+                position: 'absolute',
+                top: '10px',
+                right: '8px',
+                zIndex: 10,
+                background: 'none',
+                border: 'none',
+                color: '#888',
+                fontSize: '10px',
+                cursor: 'pointer',
+                padding: '2px 4px',
+              }}
+            >
+              {'\u25C0'}
+            </button>
+            <CellPanel />
+            <ShapeManager />
+          </div>
+        )}
 
         <main style={styles.main}>
           {/* Tab bar (rollback: remove this block and restore plain <main> content) */}
@@ -948,7 +999,57 @@ export default function App() {
           </div>
         </main>
 
-        <GenePanel />
+        {rightPanelCollapsed ? (
+          <div
+            style={{
+              width: '28px',
+              flexShrink: 0,
+              backgroundColor: '#16213e',
+              borderLeft: '1px solid #0f3460',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              cursor: 'pointer',
+              userSelect: 'none',
+            }}
+            onClick={() => setRightPanelCollapsed(false)}
+            title="Expand Genes panel"
+          >
+            <span style={{ fontSize: '11px', color: '#888', marginTop: '10px' }}>{'\u25C0'}</span>
+            <span style={{
+              writingMode: 'vertical-rl',
+              fontSize: '11px',
+              color: '#e94560',
+              fontWeight: 600,
+              marginTop: '8px',
+              letterSpacing: '1px',
+            }}>
+              Genes
+            </span>
+          </div>
+        ) : (
+          <div style={{ position: 'relative', height: '100%', flexShrink: 0 }}>
+            <button
+              onClick={() => setRightPanelCollapsed(true)}
+              title="Collapse Genes panel"
+              style={{
+                position: 'absolute',
+                top: '10px',
+                left: '8px',
+                zIndex: 10,
+                background: 'none',
+                border: 'none',
+                color: '#888',
+                fontSize: '10px',
+                cursor: 'pointer',
+                padding: '2px 4px',
+              }}
+            >
+              {'\u25B6'}
+            </button>
+            <GenePanel />
+          </div>
+        )}
       </div>
 
       <DiffExpModal />

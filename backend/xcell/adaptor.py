@@ -3275,3 +3275,135 @@ class DataAdaptor:
             'modules': self.adata.uns['gene_modules'],
             'n_modules': len(self.adata.uns['gene_modules']),
         }
+
+    def run_marker_genes(
+        self,
+        obs_column: str,
+        groups: list[str] | None = None,
+        top_n: int = 25,
+        min_in_group_fraction: float | None = None,
+        max_out_group_fraction: float | None = None,
+        min_fold_change: float | None = None,
+    ) -> dict[str, Any]:
+        """Run one-vs-rest marker gene analysis using scanpy.
+
+        Identifies marker genes for each group in a categorical obs column
+        using Wilcoxon rank-sum test (one-vs-rest).
+
+        Args:
+            obs_column: Name of a categorical column in .obs
+            groups: Optional list of group names to include. If None, uses all groups.
+            top_n: Number of top marker genes per group
+            min_in_group_fraction: Min fraction of cells in group expressing the gene
+            max_out_group_fraction: Max fraction of cells outside group expressing the gene
+            min_fold_change: Minimum fold change threshold
+
+        Returns:
+            Dictionary with obs_column, results (per-group gene lists), and params
+
+        Raises:
+            ValueError: If column doesn't exist, isn't categorical, or has < 2 groups
+        """
+        # Validate obs_column exists
+        if obs_column not in self.adata.obs.columns:
+            raise ValueError(f"Column '{obs_column}' not found in .obs")
+
+        # Validate it's categorical
+        dtype = self.adata.obs[obs_column].dtype
+        if not pd.api.types.is_categorical_dtype(dtype) and not pd.api.types.is_string_dtype(dtype):
+            raise ValueError(f"Column '{obs_column}' is not categorical (dtype: {dtype})")
+
+        # Work on a copy to avoid polluting the main adata.uns
+        work_adata = self.adata.copy()
+
+        # Ensure the column is categorical
+        if not pd.api.types.is_categorical_dtype(work_adata.obs[obs_column].dtype):
+            work_adata.obs[obs_column] = pd.Categorical(work_adata.obs[obs_column])
+
+        # If groups specified, subset to only those cells
+        if groups is not None:
+            all_categories = list(work_adata.obs[obs_column].cat.categories)
+            invalid = [g for g in groups if g not in all_categories]
+            if invalid:
+                raise ValueError(f"Groups not found in column '{obs_column}': {invalid}")
+            mask = work_adata.obs[obs_column].isin(groups)
+            work_adata = work_adata[mask].copy()
+            # Remove unused categories after subsetting
+            work_adata.obs[obs_column] = work_adata.obs[obs_column].cat.remove_unused_categories()
+
+        # Validate we have at least 2 groups
+        n_groups = len(work_adata.obs[obs_column].cat.categories)
+        if n_groups < 2:
+            raise ValueError(f"Need at least 2 groups for marker gene analysis, got {n_groups}")
+
+        # Run rank_genes_groups (one-vs-rest)
+        sc.tl.rank_genes_groups(
+            work_adata,
+            groupby=obs_column,
+            method='wilcoxon',
+            key_added='marker_genes',
+        )
+
+        # Apply filters if specified
+        has_filters = any(x is not None for x in [min_in_group_fraction, max_out_group_fraction, min_fold_change])
+        if has_filters:
+            filter_kwargs: dict[str, Any] = {'key': 'marker_genes', 'key_added': 'marker_genes_filtered'}
+            if min_in_group_fraction is not None:
+                filter_kwargs['min_in_group_fraction'] = min_in_group_fraction
+            if max_out_group_fraction is not None:
+                filter_kwargs['max_out_group_fraction'] = max_out_group_fraction
+            if min_fold_change is not None:
+                filter_kwargs['min_fold_change'] = min_fold_change
+            sc.tl.filter_rank_genes_groups(work_adata, **filter_kwargs)
+
+        # Extract results per group
+        result_groups = []
+        for group in work_adata.obs[obs_column].cat.categories:
+            group_str = str(group)
+            try:
+                if has_filters:
+                    df = sc.get.rank_genes_groups_df(work_adata, group=group_str, key='marker_genes_filtered')
+                    # filter_rank_genes_groups sets filtered genes to NaN
+                    df = df.dropna(subset=['names'])
+                else:
+                    df = sc.get.rank_genes_groups_df(work_adata, group=group_str, key='marker_genes')
+
+                # Take top N
+                df = df.head(top_n)
+
+                genes = []
+                for _, row in df.iterrows():
+                    genes.append({
+                        'gene': str(row['names']),
+                        'log2fc': float(row['logfoldchanges']),
+                        'pval': float(row['pvals']),
+                        'pval_adj': float(row['pvals_adj']),
+                    })
+
+                result_groups.append({
+                    'group': group_str,
+                    'genes': genes,
+                })
+            except Exception:
+                # If a group fails (e.g., too few cells), include empty result
+                result_groups.append({
+                    'group': group_str,
+                    'genes': [],
+                })
+
+        self._log_action('marker_genes', {
+            'obs_column': obs_column,
+            'groups': groups,
+            'top_n': top_n,
+            'min_in_group_fraction': min_in_group_fraction,
+            'max_out_group_fraction': max_out_group_fraction,
+            'min_fold_change': min_fold_change,
+        }, {
+            'n_groups': len(result_groups),
+            'total_genes': sum(len(g['genes']) for g in result_groups),
+        })
+
+        return {
+            'obs_column': obs_column,
+            'results': result_groups,
+        }

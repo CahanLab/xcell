@@ -9,13 +9,14 @@ const API_BASE = '/api'
 const GENE_DRAG_TYPE = 'application/x-gene'
 
 // Category display order and icons
-const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp']
+const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'marker_genes']
 const CATEGORY_ICONS: Record<GeneSetCategoryType, string> = {
   manual: '📁',
   gene_clusters: '🧬',
   similar_genes: '🔗',
   diff_exp: '📊',
   spatial: '🗺️',
+  marker_genes: '🏷️',
 }
 
 const styles = {

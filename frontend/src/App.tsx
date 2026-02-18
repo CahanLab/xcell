@@ -10,6 +10,7 @@ import LineAssociationModal from './components/LineAssociationModal'
 import ScanpyModal from './components/ScanpyModal'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
+import MarkerGenesModal from './components/MarkerGenesModal'
 
 const styles = {
   container: {
@@ -1060,6 +1061,7 @@ export default function App() {
       <DiffExpModal />
       <LineAssociationModal />
       <ScanpyModal />
+      <MarkerGenesModal />
 
       {/* Export modal */}
       {isExportModalOpen && (

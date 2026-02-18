@@ -625,6 +625,39 @@ export function useLineAssociation() {
   }
 }
 
+// Marker genes (one-vs-rest) API types and function
+export interface MarkerGeneEntry {
+  gene: string
+  log2fc: number
+  pval: number
+  pval_adj: number
+}
+
+export interface MarkerGenesGroupResult {
+  group: string
+  genes: MarkerGeneEntry[]
+}
+
+export interface MarkerGenesResponse {
+  obs_column: string
+  results: MarkerGenesGroupResult[]
+}
+
+export async function runMarkerGenes(params: {
+  obs_column: string
+  groups?: string[]
+  top_n?: number
+  min_in_group_fraction?: number
+  max_out_group_fraction?: number
+  min_fold_change?: number
+}): Promise<MarkerGenesResponse> {
+  return fetchJson<MarkerGenesResponse>(`${API_BASE}/marker-genes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+}
+
 // Create projection embedding API function
 export interface CreateLineEmbeddingParams {
   lineName: string

@@ -44,7 +44,7 @@ export interface GeneSet {
 }
 
 // Category types for organizing gene sets
-export type GeneSetCategoryType = 'manual' | 'gene_clusters' | 'similar_genes' | 'diff_exp' | 'spatial'
+export type GeneSetCategoryType = 'manual' | 'gene_clusters' | 'similar_genes' | 'diff_exp' | 'spatial' | 'marker_genes'
 
 export interface GeneSetFolder {
   id: string
@@ -95,6 +95,13 @@ const createDefaultCategories = (): Record<GeneSetCategoryType, GeneSetCategory>
   spatial: {
     type: 'spatial',
     name: 'Spatially Variable',
+    expanded: true,
+    folders: [],
+    geneSets: [],
+  },
+  marker_genes: {
+    type: 'marker_genes',
+    name: 'Marker Genes',
     expanded: true,
     folders: [],
     geneSets: [],
@@ -325,6 +332,10 @@ interface AppState {
   // Observable summaries refresh trigger
   obsSummariesVersion: number
 
+  // Marker genes modal state
+  isMarkerGenesModalOpen: boolean
+  markerGenesColumn: string | null
+
   // Heatmap tab state (rollback: remove this block)
   centerPanelView: CenterPanelView
   heatmapConfig: HeatmapConfig | null
@@ -428,6 +439,10 @@ interface AppState {
   // Observable summaries refresh
   refreshObsSummaries: () => void
 
+  // Marker genes modal actions
+  setMarkerGenesModalOpen: (open: boolean) => void
+  setMarkerGenesColumn: (column: string | null) => void
+
   // Heatmap tab actions (rollback: remove this block)
   setCenterPanelView: (view: CenterPanelView) => void
   setHeatmapConfig: (config: HeatmapConfig | null) => void
@@ -488,6 +503,8 @@ export const useStore = create<AppState>((set) => ({
   isScanpyModalOpen: false,
   scanpyActionHistory: [],
   obsSummariesVersion: 0,
+  isMarkerGenesModalOpen: false,
+  markerGenesColumn: null,
   centerPanelView: 'scatter',
   heatmapConfig: null,
 
@@ -1167,6 +1184,10 @@ export const useStore = create<AppState>((set) => ({
   // Observable summaries refresh
   refreshObsSummaries: () =>
     set((state) => ({ obsSummariesVersion: state.obsSummariesVersion + 1 })),
+
+  // Marker genes modal actions
+  setMarkerGenesModalOpen: (open) => set({ isMarkerGenesModalOpen: open }),
+  setMarkerGenesColumn: (column) => set({ markerGenesColumn: column }),
 
   // Heatmap tab actions
   setCenterPanelView: (view) => set({ centerPanelView: view }),

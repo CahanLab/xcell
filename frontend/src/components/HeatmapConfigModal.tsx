@@ -15,13 +15,14 @@
 import { useState, useEffect } from 'react'
 import { useStore, HeatmapConfig, GeneSet, GeneSetCategoryType } from '../store'
 
-const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial']
+const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial', 'marker_genes']
 const CATEGORY_NAMES: Record<GeneSetCategoryType, string> = {
   manual: 'Manual',
   gene_clusters: 'Gene Clusters',
   similar_genes: 'Similar Genes',
   diff_exp: 'Diff. Expression',
   spatial: 'Spatial',
+  marker_genes: 'Marker Genes',
 }
 
 interface FlatGeneSet {

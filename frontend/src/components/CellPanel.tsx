@@ -438,9 +438,10 @@ interface CategoryColumnProps {
   group2Categories: Set<string>
   onHide: () => void
   onRename: (newName: string) => void
+  onFindMarkers: () => void
 }
 
-function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup, onSelectCells, group1Categories, group2Categories, onHide, onRename }: CategoryColumnProps) {
+function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup, onSelectCells, group1Categories, group2Categories, onHide, onRename, onFindMarkers }: CategoryColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -531,6 +532,19 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup,
             </button>
           </div>
         )}
+        <button
+          style={{
+            ...styles.colorButton,
+            marginLeft: '4px',
+          }}
+          onClick={(e) => {
+            e.stopPropagation()
+            onFindMarkers()
+          }}
+          title="Find marker genes for each group in this column"
+        >
+          Markers
+        </button>
         <button
           style={{
             ...styles.colorButton,
@@ -747,6 +761,8 @@ export default function CellPanel() {
     setColorBy,
     setExpressionData,
     setInteractionMode,
+    setMarkerGenesModalOpen,
+    setMarkerGenesColumn,
   } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
   const { selectColorColumn } = useDataActions()
@@ -1079,6 +1095,10 @@ export default function CellPanel() {
                   group2Categories={group2Categories}
                   onHide={() => hideColumn(summary.name)}
                   onRename={(newName) => setColumnDisplayName(summary.name, newName)}
+                  onFindMarkers={() => {
+                    setMarkerGenesColumn(summary.name)
+                    setMarkerGenesModalOpen(true)
+                  }}
                 />
               ))}
           </div>

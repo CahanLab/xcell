@@ -623,6 +623,73 @@ def run_diffexp(request: DiffExpRequest):
 
 
 # =========================================================================
+# Marker genes (one-vs-rest) endpoints
+# =========================================================================
+
+
+class MarkerGenesRequest(BaseModel):
+    """Request model for one-vs-rest marker gene analysis."""
+    obs_column: str
+    groups: list[str] | None = None
+    top_n: int = 25
+    min_in_group_fraction: float | None = None
+    max_out_group_fraction: float | None = None
+    min_fold_change: float | None = None
+
+
+class MarkerGeneEntry(BaseModel):
+    """A single gene result from marker gene analysis."""
+    gene: str
+    log2fc: float
+    pval: float
+    pval_adj: float
+
+
+class MarkerGenesGroupResult(BaseModel):
+    """Results for one group in marker gene analysis."""
+    group: str
+    genes: list[MarkerGeneEntry]
+
+
+class MarkerGenesResponse(BaseModel):
+    """Response model for marker gene analysis."""
+    obs_column: str
+    results: list[MarkerGenesGroupResult]
+
+
+@router.post("/marker-genes", response_model=MarkerGenesResponse)
+def run_marker_genes(request: MarkerGenesRequest):
+    """Run one-vs-rest marker gene analysis for groups in a categorical column.
+
+    Uses scanpy's rank_genes_groups with Wilcoxon rank-sum test to identify
+    marker genes for each group (one-vs-rest).
+
+    Args:
+        obs_column: Categorical column in .obs to group by
+        groups: Optional subset of groups to include (default: all)
+        top_n: Number of top marker genes per group (default: 25)
+        min_in_group_fraction: Min fraction of cells in group expressing gene
+        max_out_group_fraction: Max fraction of cells outside group expressing gene
+        min_fold_change: Minimum fold change threshold
+
+    Returns:
+        Per-group lists of marker genes with statistics
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_marker_genes(
+            obs_column=request.obs_column,
+            groups=request.groups,
+            top_n=request.top_n,
+            min_in_group_fraction=request.min_in_group_fraction,
+            max_out_group_fraction=request.max_out_group_fraction,
+            min_fold_change=request.min_fold_change,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
 # Line / trajectory endpoints
 # =========================================================================
 

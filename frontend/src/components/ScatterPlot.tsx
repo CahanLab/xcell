@@ -12,7 +12,7 @@ interface ScatterPlotProps {
   colorMode: ColorMode
   interactionMode: InteractionMode
   selectedCellIndices: number[]
-  onSelectionComplete: (indices: number[]) => void
+  onSelectionComplete: (indices: number[], additive: boolean) => void
   onLineDrawn: (points: [number, number][]) => void
   onTransformEmbedding: (rotationDegrees: number) => void
 }
@@ -486,7 +486,7 @@ export default function ScatterPlot({
     }
   }, [isDrawing, interactionMode, screenToData, embedding.name])
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: React.MouseEvent) => {
     // Handle adjust rotation release
     if (isRotating.current) {
       isRotating.current = false
@@ -516,7 +516,8 @@ export default function ScatterPlot({
         }
       }
 
-      onSelectionComplete(selectedIndices)
+      // Hold Shift to add to existing selection instead of replacing
+      onSelectionComplete(selectedIndices, e.shiftKey)
       setIsDrawing(false)
       setLassoPoints([])
     } else if (interactionMode === 'draw') {
@@ -734,7 +735,7 @@ export default function ScatterPlot({
             fontWeight: 500,
           }}
         >
-          Lasso Mode: Click and drag to select cells
+          Lasso Mode: Click and drag to select cells (hold Shift to add to selection)
         </div>
       )}
 

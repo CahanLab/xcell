@@ -442,6 +442,7 @@ export default function App() {
     selectedCellIndices,
     setInteractionMode,
     setSelectedCellIndices,
+    addToSelection,
     clearSelection,
     invertSelection,
     // cellSortOrder, sortCellsByExpression, resetCellOrder - now auto-applied
@@ -500,10 +501,14 @@ export default function App() {
   }, [setInteractionMode])
 
   const handleSelectionComplete = useCallback(
-    (indices: number[]) => {
-      setSelectedCellIndices(indices)
+    (indices: number[], additive: boolean) => {
+      if (additive) {
+        addToSelection(indices)
+      } else {
+        setSelectedCellIndices(indices)
+      }
     },
-    [setSelectedCellIndices]
+    [setSelectedCellIndices, addToSelection]
   )
 
   const toggleLassoMode = useCallback(() => {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore } from './store'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, runDiffExp } from './hooks/useData'
 import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor } from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
@@ -456,6 +456,15 @@ export default function App() {
     centerPanelView,
     setCenterPanelView,
     setEmbedding,
+    comparisonCheckedColumn,
+    comparisonCheckedCategories,
+    setComparisonGroup1,
+    setComparisonGroup2,
+    setDiffExpModalOpen,
+    setDiffExpResult,
+    setDiffExpLoading,
+    setMarkerGenesModalOpen,
+    setMarkerGenesColumn,
   } = useStore()
 
   const schema = useSchema()
@@ -474,6 +483,9 @@ export default function App() {
   // State for export modal
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
   const [exportLoading, setExportLoading] = useState<string | null>(null)
+
+  // State for compare button
+  const [isCompareLoading, setIsCompareLoading] = useState(false)
 
   // State for load data modal
   const [isLoadModalOpen, setIsLoadModalOpen] = useState(false)
@@ -565,6 +577,68 @@ export default function App() {
     setPendingLinePoints(null)
     setNewLineName('')
   }, [])
+
+  // Handle Compare button click (checkbox-based comparison)
+  const handleCompare = useCallback(async () => {
+    if (!comparisonCheckedColumn || comparisonCheckedCategories.size < 2) return
+
+    const column = comparisonCheckedColumn
+    const checkedGroups = [...comparisonCheckedCategories]
+
+    setIsCompareLoading(true)
+    try {
+      // Fetch the column data to resolve cell indices
+      const response = await fetch(`/api/obs/${encodeURIComponent(column)}`)
+      if (!response.ok) throw new Error('Failed to fetch column data')
+      const data = await response.json()
+
+      // Build category → indices map for checked categories
+      const categoryIndices: Record<string, number[]> = {}
+      for (const cat of checkedGroups) {
+        categoryIndices[cat] = []
+      }
+
+      const categories = data.categories || []
+      if (data.dtype === 'category' && categories.length > 0) {
+        data.values.forEach((val: number, idx: number) => {
+          const catName = categories[val]
+          if (catName !== undefined && categoryIndices[catName]) {
+            categoryIndices[catName].push(idx)
+          }
+        })
+      } else {
+        data.values.forEach((val: string, idx: number) => {
+          if (categoryIndices[val]) {
+            categoryIndices[val].push(idx)
+          }
+        })
+      }
+
+      if (checkedGroups.length === 2) {
+        // Pairwise diff exp
+        const group1 = categoryIndices[checkedGroups[0]]
+        const group2 = categoryIndices[checkedGroups[1]]
+        setComparisonGroup1(group1, checkedGroups[0])
+        setComparisonGroup2(group2, checkedGroups[1])
+        setDiffExpLoading(true)
+        setDiffExpModalOpen(true)
+        try {
+          const result = await runDiffExp(group1, group2, 25)
+          setDiffExpResult(result)
+        } finally {
+          setDiffExpLoading(false)
+        }
+      } else {
+        // 3+ groups → marker gene analysis
+        setMarkerGenesColumn(column)
+        setMarkerGenesModalOpen(true)
+      }
+    } catch (err) {
+      alert(`Comparison failed: ${(err as Error).message}`)
+    } finally {
+      setIsCompareLoading(false)
+    }
+  }, [comparisonCheckedColumn, comparisonCheckedCategories, setComparisonGroup1, setComparisonGroup2, setDiffExpLoading, setDiffExpModalOpen, setDiffExpResult, setMarkerGenesColumn, setMarkerGenesModalOpen])
 
   const geneSetCategories = useStore((state) => state.geneSetCategories)
 
@@ -772,6 +846,49 @@ export default function App() {
                 title="Run scanpy analysis functions"
               >
                 Scanpy
+              </button>
+
+              <button
+                style={{
+                  ...styles.toolButton,
+                  ...(comparisonCheckedCategories.size >= 2
+                    ? { backgroundColor: '#e94560', color: '#fff', borderColor: '#e94560' }
+                    : {}),
+                  opacity: comparisonCheckedCategories.size < 2 ? 0.5 : 1,
+                  position: 'relative' as const,
+                }}
+                onClick={handleCompare}
+                disabled={comparisonCheckedCategories.size < 2 || isCompareLoading}
+                title={
+                  comparisonCheckedCategories.size < 2
+                    ? 'Check 2+ categories in the cell panel to compare'
+                    : comparisonCheckedCategories.size === 2
+                      ? 'Run pairwise differential expression'
+                      : `Run marker gene analysis (${comparisonCheckedCategories.size} groups)`
+                }
+              >
+                {isCompareLoading ? 'Running...' : 'Compare'}
+                {comparisonCheckedCategories.size >= 2 && (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: '-6px',
+                      right: '-6px',
+                      backgroundColor: '#ffd700',
+                      color: '#000',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      borderRadius: '50%',
+                      width: '16px',
+                      height: '16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    {comparisonCheckedCategories.size}
+                  </span>
+                )}
               </button>
 
               <DisplaySettings />

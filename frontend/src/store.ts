@@ -336,6 +336,10 @@ interface AppState {
   isMarkerGenesModalOpen: boolean
   markerGenesColumn: string | null
 
+  // Checkbox-based comparison state
+  comparisonCheckedColumn: string | null
+  comparisonCheckedCategories: Set<string>
+
   // Heatmap tab state (rollback: remove this block)
   centerPanelView: CenterPanelView
   heatmapConfig: HeatmapConfig | null
@@ -443,6 +447,10 @@ interface AppState {
   setMarkerGenesModalOpen: (open: boolean) => void
   setMarkerGenesColumn: (column: string | null) => void
 
+  // Checkbox-based comparison actions
+  toggleComparisonCategory: (column: string, category: string) => void
+  clearComparisonCategories: () => void
+
   // Heatmap tab actions (rollback: remove this block)
   setCenterPanelView: (view: CenterPanelView) => void
   setHeatmapConfig: (config: HeatmapConfig | null) => void
@@ -505,6 +513,8 @@ export const useStore = create<AppState>((set) => ({
   obsSummariesVersion: 0,
   isMarkerGenesModalOpen: false,
   markerGenesColumn: null,
+  comparisonCheckedColumn: null,
+  comparisonCheckedCategories: new Set<string>(),
   centerPanelView: 'scatter',
   heatmapConfig: null,
 
@@ -1188,6 +1198,30 @@ export const useStore = create<AppState>((set) => ({
   // Marker genes modal actions
   setMarkerGenesModalOpen: (open) => set({ isMarkerGenesModalOpen: open }),
   setMarkerGenesColumn: (column) => set({ markerGenesColumn: column }),
+
+  // Checkbox-based comparison actions
+  toggleComparisonCategory: (column, category) =>
+    set((state) => {
+      if (state.comparisonCheckedColumn !== column) {
+        // Switching columns: clear previous and start fresh
+        return {
+          comparisonCheckedColumn: column,
+          comparisonCheckedCategories: new Set([category]),
+        }
+      }
+      const next = new Set(state.comparisonCheckedCategories)
+      if (next.has(category)) {
+        next.delete(category)
+      } else {
+        next.add(category)
+      }
+      return {
+        comparisonCheckedColumn: next.size > 0 ? column : null,
+        comparisonCheckedCategories: next,
+      }
+    }),
+  clearComparisonCategories: () =>
+    set({ comparisonCheckedColumn: null, comparisonCheckedCategories: new Set<string>() }),
 
   // Heatmap tab actions
   setCenterPanelView: (view) => set({ centerPanelView: view }),

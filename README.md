@@ -101,10 +101,14 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - Create gene sets manually in Gene Manager
 - Import gene lists from files
 
-### 9. Differential Expression
+### 9. Compare Cell Groups
 
-- Select two groups of cells (e.g., via lasso or cluster labels)
-- Open **Compare groups** to run differential expression analysis
+- Expand a categorical column in the **Cell Manager** (left panel)
+- Check the boxes next to the categories you want to compare
+- Click the **Compare** button in the toolbar:
+  - **2 checked** → pairwise differential expression
+  - **3+ checked** → one-vs-rest marker gene analysis
+- You can also use lasso selection: select cells → **Set as Group 1** / **Set as Group 2** → click **Compare** in the comparison bar
 
 ### 10. Trajectory Analysis
 

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { useObsSummaries, runMarkerGenes, MarkerGenesGroupResult } from '../hooks/useData'
 
@@ -221,6 +221,8 @@ export default function MarkerGenesModal() {
     markerGenesColumn,
     setMarkerGenesModalOpen,
     addFolderToCategory,
+    comparisonCheckedColumn,
+    comparisonCheckedCategories,
   } = useStore()
 
   const { summaries } = useObsSummaries()
@@ -244,10 +246,27 @@ export default function MarkerGenesModal() {
   const columnSummary = summaries.find((s) => s.name === markerGenesColumn)
   const categories = columnSummary?.categories || []
 
-  // Initialize selected groups when column changes
+  // Snapshot the pre-checked categories when modal opens (to avoid re-triggering on every toggle)
+  const preCheckedRef = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    if (isMarkerGenesModalOpen && markerGenesColumn) {
+      preCheckedRef.current =
+        comparisonCheckedColumn === markerGenesColumn && comparisonCheckedCategories.size > 0
+          ? new Set(comparisonCheckedCategories)
+          : null
+    }
+  // Only capture on open
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMarkerGenesModalOpen, markerGenesColumn])
+
+  // Initialize selected groups when column changes or categories load
   useEffect(() => {
     if (markerGenesColumn && categories.length > 0) {
-      setSelectedGroups(new Set(categories.map((c) => c.value)))
+      if (preCheckedRef.current && preCheckedRef.current.size > 0) {
+        setSelectedGroups(new Set(preCheckedRef.current))
+      } else {
+        setSelectedGroups(new Set(categories.map((c) => c.value)))
+      }
       setResults(null)
       setErrorMsg(null)
       setAddedToSets(false)

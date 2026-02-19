@@ -432,16 +432,14 @@ interface CategoryColumnProps {
   displayName: string
   isActive: boolean
   onColorBy: () => void
-  onSetGroup: (categoryValue: string, groupNumber: 1 | 2) => void
   onSelectCells: (categoryValue: string) => void
-  group1Categories: Set<string>
-  group2Categories: Set<string>
+  checkedCategories: Set<string>
+  onToggleCategory: (category: string) => void
   onHide: () => void
   onRename: (newName: string) => void
-  onFindMarkers: () => void
 }
 
-function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup, onSelectCells, group1Categories, group2Categories, onHide, onRename, onFindMarkers }: CategoryColumnProps) {
+function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, checkedCategories, onToggleCategory, onHide, onRename }: CategoryColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -450,9 +448,6 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup,
 
   const categories = summary.categories || []
   const totalCount = categories.reduce((sum, c) => sum + c.count, 0)
-
-  // Create a key for this category column to track group assignments
-  const getCategoryKey = (catValue: string) => `${summary.name}:${catValue}`
 
   useEffect(() => {
     if (isEditing && editInputRef.current) {
@@ -535,19 +530,6 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup,
         <button
           style={{
             ...styles.colorButton,
-            marginLeft: '4px',
-          }}
-          onClick={(e) => {
-            e.stopPropagation()
-            onFindMarkers()
-          }}
-          title="Find marker genes for each group in this column"
-        >
-          Markers
-        </button>
-        <button
-          style={{
-            ...styles.colorButton,
             ...(isActive ? styles.colorButtonActive : {}),
           }}
           onClick={(e) => {
@@ -561,53 +543,30 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSetGroup,
       </div>
       {expanded && (
         <div style={styles.categoryList}>
-          {categories.map((cat: CategoryValue) => {
-            const catKey = getCategoryKey(cat.value)
-            const isGroup1 = group1Categories.has(catKey)
-            const isGroup2 = group2Categories.has(catKey)
-            return (
+          {categories.map((cat: CategoryValue) => (
               <div key={cat.value} style={styles.categoryItem}>
-                <span
-                  style={{ ...styles.categoryName, cursor: 'pointer' }}
-                  title={`${cat.value}\nClick to select these cells`}
-                  onClick={() => onSelectCells(cat.value)}
-                >
-                  {cat.value}
-                </span>
-                <div style={{ display: 'flex', alignItems: 'center' }}>
-                  <button
-                    style={{
-                      ...styles.groupButton,
-                      ...(isGroup1 ? styles.groupButtonActive1 : {}),
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onSetGroup(cat.value, 1)
-                    }}
-                    title="Set as Group 1 for comparison"
+                <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={checkedCategories.has(cat.value)}
+                    onChange={() => onToggleCategory(cat.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ marginRight: '6px', cursor: 'pointer', flexShrink: 0 }}
+                    title="Check to include in comparison"
+                  />
+                  <span
+                    style={{ ...styles.categoryName, cursor: 'pointer' }}
+                    title={`${cat.value}\nClick to select these cells`}
+                    onClick={() => onSelectCells(cat.value)}
                   >
-                    G1
-                  </button>
-                  <button
-                    style={{
-                      ...styles.groupButton,
-                      ...(isGroup2 ? styles.groupButtonActive2 : {}),
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onSetGroup(cat.value, 2)
-                    }}
-                    title="Set as Group 2 for comparison"
-                  >
-                    G2
-                  </button>
-                  <span style={styles.categoryCount}>
-                    {cat.count.toLocaleString()} ({((cat.count / totalCount) * 100).toFixed(1)}%)
+                    {cat.value}
                   </span>
                 </div>
+                <span style={styles.categoryCount}>
+                  {cat.count.toLocaleString()} ({((cat.count / totalCount) * 100).toFixed(1)}%)
+                </span>
               </div>
-            )
-          })}
+            ))}
         </div>
       )}
     </div>
@@ -761,8 +720,9 @@ export default function CellPanel() {
     setColorBy,
     setExpressionData,
     setInteractionMode,
-    setMarkerGenesModalOpen,
-    setMarkerGenesColumn,
+    comparisonCheckedColumn,
+    comparisonCheckedCategories,
+    toggleComparisonCategory,
   } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
   const { selectColorColumn } = useDataActions()
@@ -785,10 +745,6 @@ export default function CellPanel() {
   const [categoricalExpanded, setCategoricalExpanded] = useState(true)
   const [continuousExpanded, setContinuousExpanded] = useState(true)
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
-
-  // Track which categories are set as groups (for highlighting buttons)
-  const [group1Categories, setGroup1Categories] = useState<Set<string>>(new Set())
-  const [group2Categories, setGroup2Categories] = useState<Set<string>>(new Set())
 
   // Reset delete confirmation when selection changes
   useEffect(() => {
@@ -831,69 +787,11 @@ export default function CellPanel() {
       const label = `Selection (${selectedCellIndices.length} cells)`
       if (groupNumber === 1) {
         setComparisonGroup1([...selectedCellIndices], label)
-        setGroup1Categories(new Set())
       } else {
         setComparisonGroup2([...selectedCellIndices], label)
-        setGroup2Categories(new Set())
       }
     },
     [selectedCellIndices, setComparisonGroup1, setComparisonGroup2]
-  )
-
-  // Set a category's cells as a comparison group
-  const handleSetCategoryAsGroup = useCallback(
-    (columnName: string, categoryValue: string, groupNumber: 1 | 2) => {
-      // Fetch the column data to get cell indices for this category
-      fetch(`/api/obs/${encodeURIComponent(columnName)}`)
-        .then((res) => res.json())
-        .then((data) => {
-          const indices: number[] = []
-          const categories = data.categories || []
-          const categoryIndex = categories.indexOf(categoryValue)
-
-          if (data.dtype === 'category' && categoryIndex >= 0) {
-            // Values are category codes (indices into categories array)
-            data.values.forEach((val: number, idx: number) => {
-              if (val === categoryIndex) {
-                indices.push(idx)
-              }
-            })
-          } else {
-            // Values are direct strings
-            data.values.forEach((val: string, idx: number) => {
-              if (val === categoryValue) {
-                indices.push(idx)
-              }
-            })
-          }
-
-          const label = `${categoryValue}`
-          const catKey = `${columnName}:${categoryValue}`
-
-          if (groupNumber === 1) {
-            setComparisonGroup1(indices, label)
-            setGroup1Categories(new Set([catKey]))
-            setGroup2Categories((prev) => {
-              const next = new Set(prev)
-              next.delete(catKey)
-              return next
-            })
-          } else {
-            setComparisonGroup2(indices, label)
-            setGroup2Categories(new Set([catKey]))
-            setGroup1Categories((prev) => {
-              const next = new Set(prev)
-              next.delete(catKey)
-              return next
-            })
-          }
-        })
-        .catch((err) => {
-          console.error('Failed to fetch category data:', err)
-          alert('Failed to set group from category')
-        })
-    },
-    [setComparisonGroup1, setComparisonGroup2]
   )
 
   // Select cells by category value
@@ -939,11 +837,9 @@ export default function CellPanel() {
     }
   }, [runComparison])
 
-  // Clear comparison and reset category highlights
+  // Clear comparison
   const handleClearComparison = useCallback(() => {
     clearComparison()
-    setGroup1Categories(new Set())
-    setGroup2Categories(new Set())
   }, [clearComparison])
 
   const handleCreateAnnotation = useCallback(async () => {
@@ -1085,20 +981,19 @@ export default function CellPanel() {
                   displayName={getDisplayName(summary.name)}
                   isActive={colorMode === 'metadata' && selectedColorColumn === summary.name}
                   onColorBy={() => handleColorBy(summary.name)}
-                  onSetGroup={(categoryValue, groupNumber) =>
-                    handleSetCategoryAsGroup(summary.name, categoryValue, groupNumber)
-                  }
                   onSelectCells={(categoryValue) =>
                     handleSelectCellsByCategory(summary.name, categoryValue)
                   }
-                  group1Categories={group1Categories}
-                  group2Categories={group2Categories}
+                  checkedCategories={
+                    comparisonCheckedColumn === summary.name
+                      ? comparisonCheckedCategories
+                      : new Set<string>()
+                  }
+                  onToggleCategory={(category) =>
+                    toggleComparisonCategory(summary.name, category)
+                  }
                   onHide={() => hideColumn(summary.name)}
                   onRename={(newName) => setColumnDisplayName(summary.name, newName)}
-                  onFindMarkers={() => {
-                    setMarkerGenesColumn(summary.name)
-                    setMarkerGenesModalOpen(true)
-                  }}
                 />
               ))}
           </div>

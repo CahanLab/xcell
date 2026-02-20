@@ -498,6 +498,7 @@ export default function App() {
   const [browseCurrent, setBrowseCurrent] = useState<string | null>(null)
   const [browseParent, setBrowseParent] = useState<string | null>(null)
   const [browseLoading, setBrowseLoading] = useState(false)
+  const lastBrowseDirRef = useRef<string | null>(localStorage.getItem('xcell_lastBrowseDir'))
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
 
@@ -752,7 +753,8 @@ export default function App() {
   const browseDirectory = useCallback(async (dirPath?: string) => {
     setBrowseLoading(true)
     try {
-      const url = dirPath ? `/api/browse?path=${encodeURIComponent(dirPath)}` : '/api/browse'
+      const target = dirPath ?? lastBrowseDirRef.current
+      const url = target ? `/api/browse?path=${encodeURIComponent(target)}` : '/api/browse'
       const response = await fetch(url)
       if (!response.ok) {
         const err = await response.json().catch(() => ({ detail: response.statusText }))
@@ -762,6 +764,8 @@ export default function App() {
       setBrowseEntries(data.entries)
       setBrowseCurrent(data.current)
       setBrowseParent(data.parent)
+      lastBrowseDirRef.current = data.current
+      localStorage.setItem('xcell_lastBrowseDir', data.current)
     } catch (err) {
       setLoadError((err as Error).message)
     } finally {

@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Backend multi-dataset support: load multiple datasets into named slots (`primary`, `secondary`, etc.). All API endpoints accept an optional `?dataset=` query parameter. New `GET /datasets` and `DELETE /datasets/{slot}` endpoints for managing loaded datasets. Existing single-dataset usage is unchanged.
 - Contourize spatial analysis: assign cells to spatial expression contour levels based on a gene set. Select genes in the Gene Panel, open Scanpy Modal > Spatial Analysis > Contourize, configure smoothing and contour levels, and run. Creates a new categorical obs column that can be used for coloring and downstream analysis.
 - One-vs-rest marker gene analysis: click "Markers" on any categorical column in the Cell Panel to identify marker genes for each group using Wilcoxon rank-sum test. Select groups, set top N genes, and optionally apply fold-change and expression fraction filters. Results can be added as gene sets to the new "Marker Genes" category in the Gene Panel.
 - Additive lasso selection: hold Shift while drawing multiple lasso shapes to select non-adjacent groups of cells without losing the previous selection.

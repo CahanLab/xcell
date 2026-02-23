@@ -53,7 +53,7 @@ async def startup_event():
     if path.exists():
         print(f"Loading data from: {path}")
         adaptor = DataAdaptor(path)
-        set_adaptor(adaptor)
+        set_adaptor(adaptor, slot="primary")
         print(f"Loaded {adaptor.n_cells} cells, {adaptor.n_genes} genes")
     else:
         print(f"Warning: Data file not found: {path}")

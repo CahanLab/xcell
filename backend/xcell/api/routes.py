@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -10,21 +10,38 @@ from xcell.adaptor import DataAdaptor
 
 router = APIRouter(prefix="/api")
 
-# Global adaptor instance - set by main.py when loading data
-_adaptor: DataAdaptor | None = None
+# Multi-dataset registry - keyed by slot name (e.g. "primary", "secondary")
+_adaptors: dict[str, DataAdaptor] = {}
 
 
-def set_adaptor(adaptor: DataAdaptor) -> None:
-    """Set the global data adaptor instance."""
-    global _adaptor
-    _adaptor = adaptor
+def set_adaptor(adaptor: DataAdaptor, slot: str = "primary") -> None:
+    """Store a DataAdaptor in a named slot."""
+    _adaptors[slot] = adaptor
 
 
-def get_adaptor() -> DataAdaptor:
-    """Get the global data adaptor instance."""
-    if _adaptor is None:
-        raise HTTPException(status_code=503, detail="No data loaded")
-    return _adaptor
+def get_adaptor(slot: str | None = None) -> DataAdaptor:
+    """Get the DataAdaptor for a slot. Defaults to 'primary'."""
+    key = slot or "primary"
+    if key not in _adaptors:
+        raise HTTPException(status_code=503, detail=f"No data loaded for slot '{key}'")
+    return _adaptors[key]
+
+
+def remove_adaptor(slot: str) -> None:
+    """Remove a DataAdaptor from a slot."""
+    _adaptors.pop(slot, None)
+
+
+def list_adaptors() -> dict[str, dict]:
+    """Return info for each loaded dataset slot."""
+    return {
+        slot: {
+            "filepath": str(a.filepath),
+            "n_cells": a.adata.n_obs,
+            "n_genes": a.adata.n_vars,
+        }
+        for slot, a in _adaptors.items()
+    }
 
 
 @router.get("/browse")
@@ -72,20 +89,23 @@ def browse_filesystem(path: str | None = None):
 
 class LoadRequest(BaseModel):
     file_path: str
+    slot: str = "primary"
 
 
 @router.post("/load")
-def load_dataset(request: LoadRequest):
+def load_dataset(request: LoadRequest, dataset: str | None = Query(None)):
     """Load a new h5ad dataset from a server-side file path.
 
-    Replaces the current global DataAdaptor with one for the new file.
+    Loads the dataset into the specified slot (defaults to 'primary').
 
     Args:
         file_path: Absolute path to an .h5ad file on the server filesystem
+        slot: Named slot to load into (default: 'primary')
 
     Returns:
-        The schema of the newly loaded dataset
+        The schema of the newly loaded dataset plus the slot name
     """
+    target_slot = request.slot
     path = Path(request.file_path)
     if not path.suffix == '.h5ad':
         raise HTTPException(status_code=400, detail="File must have .h5ad extension")
@@ -93,14 +113,29 @@ def load_dataset(request: LoadRequest):
         raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
     try:
         adaptor = DataAdaptor(path)
-        set_adaptor(adaptor)
-        return adaptor.get_schema()
+        set_adaptor(adaptor, slot=target_slot)
+        return {"slot": target_slot, **adaptor.get_schema()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load file: {e}")
 
 
+@router.get("/datasets")
+def get_datasets():
+    """List all loaded dataset slots with basic info."""
+    return list_adaptors()
+
+
+@router.delete("/datasets/{slot}")
+def unload_dataset(slot: str):
+    """Unload a dataset from a slot."""
+    if slot not in _adaptors:
+        raise HTTPException(status_code=404, detail=f"No dataset in slot '{slot}'")
+    remove_adaptor(slot)
+    return {"status": "ok", "slot": slot}
+
+
 @router.get("/schema")
-def get_schema():
+def get_schema(dataset: str | None = Query(None)):
     """Get dataset schema including available embeddings and metadata columns.
 
     Returns:
@@ -111,12 +146,12 @@ def get_schema():
         - obs_columns: List of cell metadata column names
         - obs_dtypes: Dictionary mapping column names to their dtypes
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     return adaptor.get_schema()
 
 
 @router.get("/embedding/{name}")
-def get_embedding(name: str):
+def get_embedding(name: str, dataset: str | None = Query(None)):
     """Get embedding coordinates by name.
 
     Args:
@@ -127,7 +162,7 @@ def get_embedding(name: str):
         - name: The embedding name
         - coordinates: Array of [x, y] coordinate pairs
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.get_embedding(name)
     except KeyError as e:
@@ -141,7 +176,7 @@ class TransformEmbeddingRequest(BaseModel):
 
 
 @router.post("/embedding/{name}/transform")
-def transform_embedding(name: str, request: TransformEmbeddingRequest):
+def transform_embedding(name: str, request: TransformEmbeddingRequest, dataset: str | None = Query(None)):
     """Apply rotation and/or reflection to an embedding.
 
     Transforms are applied in-place around the centroid (reflections first, then rotation).
@@ -153,7 +188,7 @@ def transform_embedding(name: str, request: TransformEmbeddingRequest):
     Returns:
         Updated embedding coordinates
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.transform_embedding(
             name,
@@ -172,18 +207,18 @@ def transform_embedding(name: str, request: TransformEmbeddingRequest):
 
 
 @router.get("/obs/summaries")
-def get_all_obs_summaries():
+def get_all_obs_summaries(dataset: str | None = Query(None)):
     """Get summary statistics for all cell metadata columns.
 
     Returns:
         Array of summary objects for each obs column.
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     return adaptor.get_all_obs_summaries()
 
 
 @router.get("/obs/summary/{column}")
-def get_obs_summary(column: str):
+def get_obs_summary(column: str, dataset: str | None = Query(None)):
     """Get summary statistics for a cell metadata column.
 
     For categorical columns: returns categories with cell counts.
@@ -199,7 +234,7 @@ def get_obs_summary(column: str):
         - For categorical: categories (array of {value, count} objects)
         - For numeric: min, max, mean
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.get_obs_column_summary(column)
     except KeyError as e:
@@ -207,7 +242,7 @@ def get_obs_summary(column: str):
 
 
 @router.get("/obs/{column}")
-def get_obs_column(column: str):
+def get_obs_column(column: str, dataset: str | None = Query(None)):
     """Get cell metadata column values.
 
     Args:
@@ -220,7 +255,7 @@ def get_obs_column(column: str):
         - dtype: Data type ('category', 'numeric', or 'string')
         - categories: Array of category names (only for categorical columns)
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.get_obs_column(column)
     except KeyError as e:
@@ -228,9 +263,9 @@ def get_obs_column(column: str):
 
 
 @router.get("/health")
-def health_check():
+def health_check(dataset: str | None = Query(None)):
     """Health check endpoint."""
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     return {
         "status": "healthy",
         "n_cells": adaptor.n_cells,
@@ -244,7 +279,7 @@ def health_check():
 
 
 @router.get("/genes")
-def get_genes():
+def get_genes(dataset: str | None = Query(None)):
     """Get all gene names in the dataset.
 
     Returns:
@@ -252,7 +287,7 @@ def get_genes():
         - genes: Array of all gene names
         - count: Total number of genes
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     genes = adaptor.get_gene_names()
     return {
         "genes": genes,
@@ -261,7 +296,7 @@ def get_genes():
 
 
 @router.get("/genes/browse")
-def browse_genes(offset: int = 0, limit: int = 50):
+def browse_genes(offset: int = 0, limit: int = 50, dataset: str | None = Query(None)):
     """Browse genes with pagination (sorted alphabetically).
 
     Args:
@@ -275,7 +310,7 @@ def browse_genes(offset: int = 0, limit: int = 50):
         - limit: The page size used
         - total: Total number of genes
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     all_genes = sorted(adaptor.get_gene_names(), key=str.lower)
     total = len(all_genes)
     page = all_genes[offset:offset + limit]
@@ -288,7 +323,7 @@ def browse_genes(offset: int = 0, limit: int = 50):
 
 
 @router.get("/genes/search")
-def search_genes(q: str, limit: int = 20):
+def search_genes(q: str, limit: int = 20, dataset: str | None = Query(None)):
     """Search for genes by name.
 
     Args:
@@ -300,7 +335,7 @@ def search_genes(q: str, limit: int = 20):
         - query: The search query
         - genes: Array of matching gene names
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     matches = adaptor.search_genes(q, limit=limit)
     return {
         "query": q,
@@ -309,7 +344,7 @@ def search_genes(q: str, limit: int = 20):
 
 
 @router.get("/expression/{gene}")
-def get_expression(gene: str, transform: str | None = None):
+def get_expression(gene: str, transform: str | None = None, dataset: str | None = Query(None)):
     """Get expression values for a single gene.
 
     Args:
@@ -325,7 +360,7 @@ def get_expression(gene: str, transform: str | None = None):
         - max: Maximum expression value
         - transform: The transformation applied (if any)
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.get_expression(gene, transform=transform)
     except KeyError as e:
@@ -340,7 +375,7 @@ class MultiExpressionRequest(BaseModel):
 
 
 @router.post("/expression/multi")
-def get_multi_expression(request: MultiExpressionRequest):
+def get_multi_expression(request: MultiExpressionRequest, dataset: str | None = Query(None)):
     """Get mean expression values for multiple genes.
 
     Args:
@@ -356,7 +391,7 @@ def get_multi_expression(request: MultiExpressionRequest):
         - max: Maximum mean expression value
         - transform: The transformation applied (if any)
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.get_multi_gene_expression(
             request.genes,
@@ -377,7 +412,7 @@ class BivariateExpressionRequest(BaseModel):
 
 
 @router.post("/expression/bivariate")
-def get_bivariate_expression(request: BivariateExpressionRequest):
+def get_bivariate_expression(request: BivariateExpressionRequest, dataset: str | None = Query(None)):
     """Get normalized expression for two gene sets for bivariate visualization.
 
     Uses robust scoring: mean-centers each gene, scales by MAD to handle outliers,
@@ -397,7 +432,7 @@ def get_bivariate_expression(request: BivariateExpressionRequest):
         - values2: Normalized [0,1] expression values for gene set 2
         - transform: The transformation applied (if any)
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.get_bivariate_expression(
             genes1=request.genes1,
@@ -434,7 +469,7 @@ class ExportAnnotationsRequest(BaseModel):
 
 
 @router.post("/annotations")
-def create_annotation(request: CreateAnnotationRequest):
+def create_annotation(request: CreateAnnotationRequest, dataset: str | None = Query(None)):
     """Create a new categorical annotation column.
 
     Args:
@@ -444,7 +479,7 @@ def create_annotation(request: CreateAnnotationRequest):
     Returns:
         Summary of the new annotation column
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.create_annotation(request.name, request.default_value)
     except ValueError as e:
@@ -452,7 +487,7 @@ def create_annotation(request: CreateAnnotationRequest):
 
 
 @router.post("/annotations/{name}/labels")
-def add_label_to_annotation(name: str, request: AddLabelRequest):
+def add_label_to_annotation(name: str, request: AddLabelRequest, dataset: str | None = Query(None)):
     """Add a new label to an annotation column.
 
     Args:
@@ -462,7 +497,7 @@ def add_label_to_annotation(name: str, request: AddLabelRequest):
     Returns:
         Updated annotation summary
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.add_label_to_annotation(name, request.label)
     except (KeyError, ValueError) as e:
@@ -470,7 +505,7 @@ def add_label_to_annotation(name: str, request: AddLabelRequest):
 
 
 @router.post("/annotations/{name}/label-cells")
-def label_cells(name: str, request: LabelCellsRequest):
+def label_cells(name: str, request: LabelCellsRequest, dataset: str | None = Query(None)):
     """Assign a label to specific cells.
 
     Args:
@@ -481,7 +516,7 @@ def label_cells(name: str, request: LabelCellsRequest):
     Returns:
         Updated annotation summary
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.label_cells(name, request.label, request.cell_indices)
     except (KeyError, ValueError) as e:
@@ -489,7 +524,7 @@ def label_cells(name: str, request: LabelCellsRequest):
 
 
 @router.delete("/annotations/{name}")
-def delete_annotation(name: str):
+def delete_annotation(name: str, dataset: str | None = Query(None)):
     """Delete an annotation column.
 
     Args:
@@ -498,7 +533,7 @@ def delete_annotation(name: str):
     Returns:
         Success message
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         adaptor.delete_annotation(name)
         return {"status": "ok", "message": f"Deleted annotation '{name}'"}
@@ -507,7 +542,7 @@ def delete_annotation(name: str):
 
 
 @router.post("/annotations/export")
-def export_annotations(request: ExportAnnotationsRequest):
+def export_annotations(request: ExportAnnotationsRequest, dataset: str | None = Query(None)):
     """Export cell annotations as TSV.
 
     Args:
@@ -516,7 +551,7 @@ def export_annotations(request: ExportAnnotationsRequest):
     Returns:
         TSV file as text
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         tsv = adaptor.export_annotations(request.columns)
         return PlainTextResponse(
@@ -546,7 +581,7 @@ class DeleteCellsResponse(BaseModel):
 
 
 @router.post("/cells/delete", response_model=DeleteCellsResponse)
-def delete_cells(request: DeleteCellsRequest):
+def delete_cells(request: DeleteCellsRequest, dataset: str | None = Query(None)):
     """Permanently remove specific cells from the dataset.
 
     This is irreversible within the current session. The cells are removed
@@ -558,7 +593,7 @@ def delete_cells(request: DeleteCellsRequest):
     Returns:
         Before/after cell counts and number deleted
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.delete_cells(cell_indices=request.cell_indices)
     except ValueError as e:
@@ -594,7 +629,7 @@ class DiffExpResponse(BaseModel):
 
 
 @router.post("/diffexp", response_model=DiffExpResponse)
-def run_diffexp(request: DiffExpRequest):
+def run_diffexp(request: DiffExpRequest, dataset: str | None = Query(None)):
     """Run differential expression analysis between two cell groups.
 
     Uses Welch's t-test to identify differentially expressed genes.
@@ -611,7 +646,7 @@ def run_diffexp(request: DiffExpRequest):
         - group1_count: Number of cells in group 1
         - group2_count: Number of cells in group 2
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_diffexp(
             group1_indices=request.group1,
@@ -658,7 +693,7 @@ class MarkerGenesResponse(BaseModel):
 
 
 @router.post("/marker-genes", response_model=MarkerGenesResponse)
-def run_marker_genes(request: MarkerGenesRequest):
+def run_marker_genes(request: MarkerGenesRequest, dataset: str | None = Query(None)):
     """Run one-vs-rest marker gene analysis for groups in a categorical column.
 
     Uses scanpy's rank_genes_groups with Wilcoxon rank-sum test to identify
@@ -675,7 +710,7 @@ def run_marker_genes(request: MarkerGenesRequest):
     Returns:
         Per-group lists of marker genes with statistics
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_marker_genes(
             obs_column=request.obs_column,
@@ -708,7 +743,7 @@ class SetLinesRequest(BaseModel):
 
 
 @router.post("/lines")
-def set_lines(request: SetLinesRequest):
+def set_lines(request: SetLinesRequest, dataset: str | None = Query(None)):
     """Store drawn lines from the frontend.
 
     These lines will be included in h5ad exports with:
@@ -721,7 +756,7 @@ def set_lines(request: SetLinesRequest):
     Returns:
         Confirmation with line count
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     # Convert Pydantic models to dicts
     lines_data = [line.model_dump() for line in request.lines]
     adaptor.set_lines(lines_data)
@@ -729,25 +764,25 @@ def set_lines(request: SetLinesRequest):
 
 
 @router.get("/lines")
-def get_lines():
+def get_lines(dataset: str | None = Query(None)):
     """Get currently stored lines.
 
     Returns:
         List of stored line objects
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     return {"lines": adaptor.get_lines()}
 
 
 @router.get("/lines/debug/{line_name}")
-def debug_line_projection(line_name: str):
+def debug_line_projection(line_name: str, dataset: str | None = Query(None)):
     """Debug endpoint to inspect line projection data.
 
     Returns detailed information about the line and sample projections.
     """
     import numpy as np
 
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
 
     # Find the line
     line = None
@@ -881,7 +916,7 @@ class LineAssociationResponse(BaseModel):
 
 
 @router.post("/lines/association", response_model=LineAssociationResponse)
-def test_line_association(request: LineAssociationRequest):
+def test_line_association(request: LineAssociationRequest, dataset: str | None = Query(None)):
     """Test genes for association with position along a line.
 
     Uses cubic B-spline regression to model gene expression as a function
@@ -901,7 +936,7 @@ def test_line_association(request: LineAssociationRequest):
         - positive: genes increasing along line
         - negative: genes decreasing along line
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.test_line_association(
             line_name=request.line_name,
@@ -933,7 +968,7 @@ class CreateLineEmbeddingResponse(BaseModel):
 
 
 @router.post("/lines/create-embedding", response_model=CreateLineEmbeddingResponse)
-def create_line_embedding(request: CreateLineEmbeddingRequest):
+def create_line_embedding(request: CreateLineEmbeddingRequest, dataset: str | None = Query(None)):
     """Create an embedding from cell projections onto a line.
 
     Creates a new embedding in .obsm where:
@@ -950,7 +985,7 @@ def create_line_embedding(request: CreateLineEmbeddingRequest):
     Returns:
         The new embedding name and statistics
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         # First sync lines (they need to exist on the backend)
         result = adaptor.create_line_projection_embedding(
@@ -987,7 +1022,7 @@ class HeatmapRequest(BaseModel):
 
 
 @router.post("/heatmap/data")
-def get_heatmap_data(request: HeatmapRequest):
+def get_heatmap_data(request: HeatmapRequest, dataset: str | None = Query(None)):
     """Compute expression heatmap matrix.
 
     Returns a per-row normalized expression matrix with cells ordered
@@ -995,7 +1030,7 @@ def get_heatmap_data(request: HeatmapRequest):
     """
     from xcell.heatmap import compute_heatmap_data
 
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         gene_set_groups = None
         if request.gene_set_groups:
@@ -1095,18 +1130,18 @@ class LeidenRequest(BaseModel):
 
 
 @router.get("/scanpy/history")
-def get_action_history():
+def get_action_history(dataset: str | None = Query(None)):
     """Get the history of scanpy operations performed.
 
     Returns:
         List of action records with timestamps
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     return {"history": adaptor.get_action_history()}
 
 
 @router.get("/scanpy/prerequisites/{action}")
-def check_prerequisites(action: str):
+def check_prerequisites(action: str, dataset: str | None = Query(None)):
     """Check if prerequisites are met for a scanpy action.
 
     Args:
@@ -1115,18 +1150,18 @@ def check_prerequisites(action: str):
     Returns:
         Dict with satisfied (bool) and missing prerequisites
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     return adaptor.check_prerequisites(action)
 
 
 @router.post("/scanpy/filter_genes")
-def run_filter_genes(request: FilterGenesRequest):
+def run_filter_genes(request: FilterGenesRequest, dataset: str | None = Query(None)):
     """Filter genes based on counts or number of cells expressing.
 
     Returns:
         Before/after gene counts
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_filter_genes(
             min_counts=request.min_counts,
@@ -1140,13 +1175,13 @@ def run_filter_genes(request: FilterGenesRequest):
 
 
 @router.post("/scanpy/filter_cells")
-def run_filter_cells(request: FilterCellsRequest):
+def run_filter_cells(request: FilterCellsRequest, dataset: str | None = Query(None)):
     """Filter cells based on counts or number of genes expressed.
 
     Returns:
         Before/after cell counts
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_filter_cells(
             min_counts=request.min_counts,
@@ -1160,13 +1195,13 @@ def run_filter_cells(request: FilterCellsRequest):
 
 
 @router.post("/scanpy/normalize_total")
-def run_normalize_total(request: NormalizeTotalRequest):
+def run_normalize_total(request: NormalizeTotalRequest, dataset: str | None = Query(None)):
     """Normalize total counts per cell.
 
     Returns:
         Operation status
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_normalize_total(target_sum=request.target_sum, active_cell_indices=request.active_cell_indices)
     except Exception as e:
@@ -1178,13 +1213,13 @@ class Log1pRequest(BaseModel):
 
 
 @router.post("/scanpy/log1p")
-def run_log1p(request: Log1pRequest = Log1pRequest()):
+def run_log1p(request: Log1pRequest = Log1pRequest(), dataset: str | None = Query(None)):
     """Apply log1p transformation.
 
     Returns:
         Operation status
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_log1p(active_cell_indices=request.active_cell_indices)
     except Exception as e:
@@ -1192,7 +1227,7 @@ def run_log1p(request: Log1pRequest = Log1pRequest()):
 
 
 @router.post("/scanpy/highly_variable_genes")
-def run_highly_variable_genes(request: HighlyVariableGenesRequest):
+def run_highly_variable_genes(request: HighlyVariableGenesRequest, dataset: str | None = Query(None)):
     """Identify highly variable genes.
 
     Adds 'highly_variable' boolean column to .var.
@@ -1200,7 +1235,7 @@ def run_highly_variable_genes(request: HighlyVariableGenesRequest):
     Returns:
         Operation status and number of HVGs
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_highly_variable_genes(
             n_top_genes=request.n_top_genes,
@@ -1217,7 +1252,7 @@ def run_highly_variable_genes(request: HighlyVariableGenesRequest):
 
 
 @router.post("/scanpy/pca")
-def run_pca(request: PcaRequest):
+def run_pca(request: PcaRequest, dataset: str | None = Query(None)):
     """Run PCA dimensionality reduction.
 
     Args (via request):
@@ -1226,7 +1261,7 @@ def run_pca(request: PcaRequest):
     Returns:
         Operation status and variance explained
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         # Convert Pydantic model to dict if needed
         gene_subset = request.gene_subset
@@ -1244,7 +1279,7 @@ def run_pca(request: PcaRequest):
 
 
 @router.post("/scanpy/neighbors")
-def run_neighbors(request: NeighborsRequest):
+def run_neighbors(request: NeighborsRequest, dataset: str | None = Query(None)):
     """Compute neighborhood graph.
 
     Requires: PCA must be computed first.
@@ -1252,7 +1287,7 @@ def run_neighbors(request: NeighborsRequest):
     Returns:
         Operation status
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_neighbors(
             n_neighbors=request.n_neighbors,
@@ -1267,7 +1302,7 @@ def run_neighbors(request: NeighborsRequest):
 
 
 @router.post("/scanpy/umap")
-def run_umap(request: UmapRequest):
+def run_umap(request: UmapRequest, dataset: str | None = Query(None)):
     """Compute UMAP embedding.
 
     Requires: Neighbors must be computed first.
@@ -1275,7 +1310,7 @@ def run_umap(request: UmapRequest):
     Returns:
         Operation status and embedding name
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_umap(
             min_dist=request.min_dist,
@@ -1290,7 +1325,7 @@ def run_umap(request: UmapRequest):
 
 
 @router.post("/scanpy/leiden")
-def run_leiden(request: LeidenRequest):
+def run_leiden(request: LeidenRequest, dataset: str | None = Query(None)):
     """Run Leiden clustering.
 
     Requires: Neighbors must be computed first.
@@ -1298,7 +1333,7 @@ def run_leiden(request: LeidenRequest):
     Returns:
         Operation status and cluster info
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_leiden(
             resolution=request.resolution,
@@ -1356,18 +1391,18 @@ class BuildGeneGraphRequest(BaseModel):
 
 
 @router.get("/var/boolean_columns")
-def get_var_boolean_columns():
+def get_var_boolean_columns(dataset: str | None = Query(None)):
     """Get list of boolean columns in .var that can be used for gene filtering.
 
     Returns:
         List of columns with name, count of True values, and total genes
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     return adaptor.get_var_boolean_columns()
 
 
 @router.post("/scanpy/gene_pca")
-def run_gene_pca(request: GenePcaRequest):
+def run_gene_pca(request: GenePcaRequest, dataset: str | None = Query(None)):
     """Run PCA on genes (transposed expression matrix).
 
     Computes gene embeddings based on expression patterns.
@@ -1383,7 +1418,7 @@ def run_gene_pca(request: GenePcaRequest):
     Returns:
         Operation status, n_comps, variance explained, subset info
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         # Convert Pydantic model to dict if needed
         gene_subset = request.gene_subset
@@ -1403,13 +1438,13 @@ def run_gene_pca(request: GenePcaRequest):
 
 
 @router.get("/scanpy/gene_pca_variance")
-def get_gene_pca_variance():
+def get_gene_pca_variance(dataset: str | None = Query(None)):
     """Get gene PCA variance information for visualization.
 
     Returns:
         Variance ratios, cumulative variance, elbow point
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.get_gene_pca_variance()
     except ValueError as e:
@@ -1417,7 +1452,7 @@ def get_gene_pca_variance():
 
 
 @router.post("/scanpy/gene_neighbors")
-def run_gene_neighbors(request: GeneNeighborsRequest):
+def run_gene_neighbors(request: GeneNeighborsRequest, dataset: str | None = Query(None)):
     """Compute gene-gene kNN graph from gene PCA.
 
     Requires: gene_pca must be computed first.
@@ -1426,7 +1461,7 @@ def run_gene_neighbors(request: GeneNeighborsRequest):
     Returns:
         Operation status
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_gene_neighbors(
             n_neighbors=request.n_neighbors,
@@ -1439,7 +1474,7 @@ def run_gene_neighbors(request: GeneNeighborsRequest):
 
 
 @router.post("/scanpy/find_similar_genes")
-def run_find_similar_genes(request: FindSimilarGenesRequest):
+def run_find_similar_genes(request: FindSimilarGenesRequest, dataset: str | None = Query(None)):
     """Find genes with similar expression patterns.
 
     Requires: gene_neighbors must be computed first.
@@ -1447,7 +1482,7 @@ def run_find_similar_genes(request: FindSimilarGenesRequest):
     Returns:
         List of similar genes with scores
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_find_similar_genes(
             gene=request.gene,
@@ -1459,7 +1494,7 @@ def run_find_similar_genes(request: FindSimilarGenesRequest):
 
 
 @router.post("/scanpy/cluster_genes")
-def run_cluster_genes(request: ClusterGenesRequest):
+def run_cluster_genes(request: ClusterGenesRequest, dataset: str | None = Query(None)):
     """Cluster genes into co-expression modules using Leiden.
 
     Requires: gene_neighbors must be computed first.
@@ -1468,7 +1503,7 @@ def run_cluster_genes(request: ClusterGenesRequest):
     Returns:
         Cluster info and module composition
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_cluster_genes(
             resolution=request.resolution,
@@ -1481,13 +1516,13 @@ def run_cluster_genes(request: ClusterGenesRequest):
 
 
 @router.get("/scanpy/gene_modules")
-def get_gene_modules():
+def get_gene_modules(dataset: str | None = Query(None)):
     """Get gene modules from the last cluster_genes run.
 
     Returns:
         Dict with modules (module_name -> gene list)
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.get_gene_modules()
     except ValueError as e:
@@ -1495,13 +1530,13 @@ def get_gene_modules():
 
 
 @router.post("/scanpy/build_gene_graph")
-def run_build_gene_graph(request: BuildGeneGraphRequest):
+def run_build_gene_graph(request: BuildGeneGraphRequest, dataset: str | None = Query(None)):
     """Convenience: run gene_pca and gene_neighbors in one step.
 
     Returns:
         Combined results from both steps
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_build_gene_graph(
             n_pcs=request.n_pcs,
@@ -1552,13 +1587,13 @@ class ContourizeRequest(BaseModel):
 
 
 @router.get("/scanpy/has_spatial")
-def check_has_spatial():
+def check_has_spatial(dataset: str | None = Query(None)):
     """Check if spatial coordinates are available.
 
     Returns:
         Dict with has_spatial (bool) and spatial_key if found
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     has_spatial = adaptor._has_spatial_coordinates()
     spatial_key = adaptor._get_spatial_key() if has_spatial else None
     return {
@@ -1568,7 +1603,7 @@ def check_has_spatial():
 
 
 @router.post("/scanpy/spatial_neighbors")
-def run_spatial_neighbors(request: SpatialNeighborsRequest):
+def run_spatial_neighbors(request: SpatialNeighborsRequest, dataset: str | None = Query(None)):
     """Compute spatial neighborhood graph using Squidpy.
 
     Requires: spatial coordinates in .obsm
@@ -1576,7 +1611,7 @@ def run_spatial_neighbors(request: SpatialNeighborsRequest):
     Returns:
         Operation status and graph info
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_spatial_neighbors(
             n_neighs=request.n_neighs,
@@ -1593,7 +1628,7 @@ def run_spatial_neighbors(request: SpatialNeighborsRequest):
 
 
 @router.post("/scanpy/spatial_autocorr")
-def run_spatial_autocorr(request: SpatialAutocorrRequest):
+def run_spatial_autocorr(request: SpatialAutocorrRequest, dataset: str | None = Query(None)):
     """Compute spatial autocorrelation to identify spatially variable genes.
 
     Requires: spatial_neighbors must be computed first.
@@ -1601,7 +1636,7 @@ def run_spatial_autocorr(request: SpatialAutocorrRequest):
     Returns:
         Operation status, number of spatially variable genes, top genes
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_spatial_autocorr(
             mode=request.mode,
@@ -1618,7 +1653,7 @@ def run_spatial_autocorr(request: SpatialAutocorrRequest):
 
 
 @router.post("/scanpy/spatially_variable_genes")
-def get_spatially_variable_genes(request: GetSpatiallyVariableGenesRequest):
+def get_spatially_variable_genes(request: GetSpatiallyVariableGenesRequest, dataset: str | None = Query(None)):
     """Get list of spatially variable genes.
 
     Requires: spatial_autocorr must be computed first.
@@ -1626,7 +1661,7 @@ def get_spatially_variable_genes(request: GetSpatiallyVariableGenesRequest):
     Returns:
         List of genes with statistics
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.get_spatially_variable_genes(
             top_n=request.top_n,
@@ -1637,7 +1672,7 @@ def get_spatially_variable_genes(request: GetSpatiallyVariableGenesRequest):
 
 
 @router.post("/scanpy/contourize")
-def run_contourize(request: ContourizeRequest):
+def run_contourize(request: ContourizeRequest, dataset: str | None = Query(None)):
     """Compute spatial expression contours from a gene set.
 
     Requires: spatial coordinates in .obsm
@@ -1645,7 +1680,7 @@ def run_contourize(request: ContourizeRequest):
     Returns:
         Operation status, annotation key, contour info
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         return adaptor.run_contourize(
             genes=request.genes,
@@ -1671,7 +1706,7 @@ import os
 
 
 @router.get("/export/h5ad")
-def export_h5ad():
+def export_h5ad(dataset: str | None = Query(None)):
     """Export the current AnnData object as an h5ad file.
 
     This includes:
@@ -1682,7 +1717,7 @@ def export_h5ad():
     Returns:
         The h5ad file as a download
     """
-    adaptor = get_adaptor()
+    adaptor = get_adaptor(dataset)
     try:
         # Create a temporary file
         fd, temp_path = tempfile.mkstemp(suffix='.h5ad')

@@ -1542,6 +1542,15 @@ class GetSpatiallyVariableGenesRequest(BaseModel):
     pval_threshold: float | None = None
 
 
+class ContourizeRequest(BaseModel):
+    genes: list[str]
+    contour_levels: int = 6
+    log_transform: bool = True
+    smooth_sigma: float = 2.0
+    grid_res: int = 200
+    annotation_key: str | None = None
+
+
 @router.get("/scanpy/has_spatial")
 def check_has_spatial():
     """Check if spatial coordinates are available.
@@ -1625,6 +1634,31 @@ def get_spatially_variable_genes(request: GetSpatiallyVariableGenesRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/contourize")
+def run_contourize(request: ContourizeRequest):
+    """Compute spatial expression contours from a gene set.
+
+    Requires: spatial coordinates in .obsm
+
+    Returns:
+        Operation status, annotation key, contour info
+    """
+    adaptor = get_adaptor()
+    try:
+        return adaptor.run_contourize(
+            genes=request.genes,
+            contour_levels=request.contour_levels,
+            log_transform=request.log_transform,
+            smooth_sigma=request.smooth_sigma,
+            grid_res=request.grid_res,
+            annotation_key=request.annotation_key,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =========================================================================

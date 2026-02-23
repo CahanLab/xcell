@@ -335,6 +335,18 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'n_jobs', label: 'Parallel Jobs', type: 'number', default: 1, description: 'Number of parallel jobs' },
         ],
       },
+      contourize: {
+        label: 'Contourize',
+        description: 'Assign cells to spatial expression contour levels based on selected genes. Select genes in the Gene Panel first.',
+        prerequisites: ['has_spatial'],
+        params: [
+          { name: 'contour_levels', label: 'Contour levels', type: 'number', default: 6, description: 'Number of contour thresholds' },
+          { name: 'smooth_sigma', label: 'Smoothing sigma', type: 'number', default: 2.0, description: 'Gaussian smoothing strength' },
+          { name: 'grid_res', label: 'Grid resolution', type: 'number', default: 200, description: 'Interpolation grid size' },
+          { name: 'log_transform', label: 'Log transform', type: 'select', default: 'true', options: ['true', 'false'], description: 'Apply log1p before contouring' },
+          { name: 'annotation_key', label: 'Column name', type: 'text', default: null, description: 'Name for result column (auto-generated if empty)' },
+        ],
+      },
     },
   },
 }
@@ -543,7 +555,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, selectedGenes } = useStore()
 
   const [selectedCategory, setSelectedCategory] = useState<CategoryKey>('preprocessing')
   const [selectedFunction, setSelectedFunction] = useState<FunctionKey>('filter_genes')
@@ -685,6 +697,24 @@ export default function ScanpyModal() {
         }
       }
 
+      // Inject selected genes for contourize
+      if (selectedFunction === 'contourize') {
+        if (selectedGenes.length === 0) {
+          setResult({ success: false, message: 'No genes selected. Select genes in the Gene Panel first.' })
+          setIsRunning(false)
+          return
+        }
+        requestParams['genes'] = selectedGenes
+        // Convert log_transform from string to boolean
+        if (requestParams['log_transform'] !== undefined) {
+          requestParams['log_transform'] = requestParams['log_transform'] === 'true'
+        }
+        // Remove empty annotation_key so backend auto-generates
+        if (!requestParams['annotation_key']) {
+          delete requestParams['annotation_key']
+        }
+      }
+
       // Add active cell indices if a cell mask is active
       if (activeCellMask) {
         const activeIndices: number[] = []
@@ -785,6 +815,9 @@ export default function ScanpyModal() {
           const setName = `Top SVG (${data.mode === 'moran' ? "Moran's I" : "Geary's C"}) ${timestamp}`
           useStore.getState().addGeneSetToCategory('manual', setName, data.top_sv_genes)
         }
+      } else if (data.annotation_key !== undefined && data.contour_levels !== undefined) {
+        // contourize result
+        message = `Contourize: created "${data.annotation_key}" with ${data.contour_levels} levels from ${data.n_genes} gene${data.n_genes > 1 ? 's' : ''}`
       } else if (data.n_highly_variable !== undefined) {
         // highly_variable_genes result
         message = `Identified ${data.n_highly_variable.toLocaleString()} highly variable genes (${data.flavor} method)`
@@ -802,9 +835,9 @@ export default function ScanpyModal() {
       addScanpyAction(actionRecord)
 
       // Refresh schema if data shape may have changed
-      if (['filter_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes'].includes(selectedFunction)) {
+      if (['filter_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize'].includes(selectedFunction)) {
         await refreshSchema()
-        // Also refresh obs summaries so Cell Manager shows new/updated columns (e.g. leiden clusters)
+        // Also refresh obs summaries so Cell Manager shows new/updated columns (e.g. leiden clusters, contour levels)
         refreshObsSummaries()
       }
 
@@ -840,7 +873,7 @@ export default function ScanpyModal() {
     } finally {
       setIsRunning(false)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, selectedGenes])
 
   if (!isScanpyModalOpen) return null
 
@@ -923,6 +956,18 @@ export default function ScanpyModal() {
           <div style={{ fontSize: '12px', color: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.1)',
             padding: '8px', borderRadius: '4px', marginBottom: '16px', borderLeft: '3px solid #4ecdc4' }}>
             Cell mask active: operating on {activeCellMask.filter(Boolean).length.toLocaleString()} of {schema?.n_cells.toLocaleString()} cells
+          </div>
+        )}
+
+        {/* Gene input indicator for contourize */}
+        {selectedFunction === 'contourize' && (
+          <div style={{ fontSize: '12px', padding: '8px', borderRadius: '4px', marginBottom: '16px',
+            borderLeft: `3px solid ${selectedGenes.length > 0 ? '#4ecdc4' : '#e94560'}`,
+            backgroundColor: selectedGenes.length > 0 ? 'rgba(78,205,196,0.1)' : 'rgba(233,69,96,0.1)',
+            color: selectedGenes.length > 0 ? '#4ecdc4' : '#e94560' }}>
+            {selectedGenes.length > 0
+              ? `Using ${selectedGenes.length} selected gene${selectedGenes.length > 1 ? 's' : ''}: ${selectedGenes.slice(0, 5).join(', ')}${selectedGenes.length > 5 ? '...' : ''}`
+              : 'No genes selected. Select genes in the Gene Panel first.'}
           </div>
         )}
 

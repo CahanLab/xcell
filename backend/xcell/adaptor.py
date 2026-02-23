@@ -1657,6 +1657,7 @@ class DataAdaptor:
             # Spatial analysis
             'spatial_neighbors': ['has_spatial'],
             'spatial_autocorr': ['spatial_neighbors'],
+            'contourize': ['has_spatial'],
         }
 
         required = prereqs.get(action, [])
@@ -3202,6 +3203,122 @@ class DataAdaptor:
             'n_perms': n_perms,
             'corr_method': corr_method,
             'pval_threshold': pval_threshold,
+        }, result)
+        return result
+
+    def run_contourize(
+        self,
+        genes: list[str],
+        contour_levels: int = 6,
+        log_transform: bool = True,
+        smooth_sigma: float = 2.0,
+        grid_res: int = 200,
+        clip_percentiles: tuple = (1, 99),
+        annotation_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Compute spatial expression contours from a gene set and assign each cell a contour level.
+
+        For each gene: extract expression, optionally log1p, percentile-clip,
+        min-max normalize to [0,1]. Average across genes per cell. Interpolate
+        onto a grid, Gaussian smooth, compute N thresholds, and assign each cell
+        the highest threshold it meets. Result stored as an ordered categorical
+        column in .obs.
+
+        Args:
+            genes: List of gene names defining the module
+            contour_levels: Number of contour thresholds
+            log_transform: Apply log1p before contouring
+            smooth_sigma: Gaussian smoothing strength
+            grid_res: Interpolation grid size per axis
+            clip_percentiles: Percentile clipping range
+            annotation_key: Name for the result .obs column (auto-generated if None)
+
+        Returns:
+            Dict with status, annotation_key, n_genes, genes, contour_levels, n_cells
+        """
+        from scipy.interpolate import griddata
+        from scipy.ndimage import gaussian_filter
+
+        # Validate genes
+        missing = [g for g in genes if g not in self.adata.var_names]
+        if missing:
+            raise ValueError(f"Genes not found: {missing}")
+
+        # Get spatial coordinates
+        spatial_key = self._get_spatial_key()
+        if spatial_key is None:
+            raise ValueError("No spatial coordinates found")
+        coords = self.adata.obsm[spatial_key]
+        x, y = coords[:, 0], coords[:, 1]
+        n_cells = x.shape[0]
+
+        # Helper for sparse arrays
+        def _get_array(xmat):
+            return xmat.toarray().flatten() if hasattr(xmat, 'toarray') else xmat.flatten()
+
+        # 1) Preprocess and normalize each gene
+        normed = []
+        for g in genes:
+            vals = _get_array(self.adata[:, g].X)
+            if log_transform:
+                vals = np.log1p(vals)
+            lo, hi = np.percentile(vals, clip_percentiles)
+            clipped = np.clip(vals, lo, hi)
+            normalized = (clipped - lo) / (hi - lo) if hi > lo else np.zeros_like(clipped)
+            normed.append(normalized)
+
+        # 2) Average across genes per cell
+        M = np.column_stack(normed)
+        summary = np.mean(M, axis=1)
+
+        # 3) Interpolate onto grid
+        xi = np.linspace(x.min(), x.max(), grid_res)
+        yi = np.linspace(y.min(), y.max(), grid_res)
+        Xi, Yi = np.meshgrid(xi, yi)
+        Zi = griddata((x, y), summary, (Xi, Yi), method='cubic', fill_value=0.0)
+
+        # 4) Gaussian smooth
+        Zi_s = gaussian_filter(Zi, sigma=smooth_sigma, mode='nearest')
+        vmax = np.nanmax(Zi_s)
+
+        # 5) Compute thresholds
+        N = contour_levels
+        thresholds = np.linspace(0, vmax, N + 2)[1:-1]
+
+        # 6) Sample smoothed grid at cell positions (nearest)
+        pts = np.vstack((Xi.ravel(), Yi.ravel())).T
+        val_grid = Zi_s.ravel()
+        cell_vals = griddata(pts, val_grid, (x, y), method='nearest')
+
+        # 7) Assign each cell the highest threshold it meets
+        annotation = np.zeros(n_cells, dtype=float)
+        for t in sorted(thresholds):
+            mask = cell_vals >= t
+            annotation[mask] = t
+
+        # 8) Store as ordered categorical
+        cats = np.unique(np.concatenate(([0.0], thresholds)))
+        annotation_cat = pd.Categorical(annotation, categories=cats, ordered=True)
+
+        if annotation_key is None:
+            annotation_key = f"contour_{genes[0]}_{len(genes)}"
+        self.adata.obs[annotation_key] = annotation_cat
+
+        result = {
+            'status': 'completed',
+            'annotation_key': annotation_key,
+            'n_genes': len(genes),
+            'genes': genes,
+            'contour_levels': contour_levels,
+            'n_cells': n_cells,
+        }
+        self._log_action('contourize', {
+            'genes': genes,
+            'contour_levels': contour_levels,
+            'log_transform': log_transform,
+            'smooth_sigma': smooth_sigma,
+            'grid_res': grid_res,
+            'annotation_key': annotation_key,
         }, result)
         return result
 

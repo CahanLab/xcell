@@ -121,7 +121,15 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
   1. **Build Gene Graph** — compute gene-gene similarity
   2. **Cluster Genes** — group genes by expression pattern
 
-### 12. Export Results
+### 12. Spatial Contouring
+
+- Select genes in the **Gene Panel** (click individual genes or use a gene set)
+- Open the **Scanpy** modal, go to **Spatial Analysis** > **Contourize**
+- Adjust smoothing sigma, contour levels, and grid resolution as needed
+- Click **Run** — a new categorical column appears in the Cell Panel
+- Color cells by the contour column to visualize spatial expression zones
+
+### 13. Export Results
 
 - Click **Export** in the toolbar to download annotations and results
 
@@ -130,7 +138,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - **Interactive scatter plot** — deck.gl-powered visualization with pan, zoom, lasso selection
 - **Cell Manager** — browse/color by metadata, mask/delete cells
 - **Gene Manager** — search genes, create gene sets, import gene lists
-- **Scanpy integration** — run preprocessing, cell analysis (PCA, Neighbors, UMAP, Leiden), gene analysis, and differential expression directly in the browser
+- **Scanpy integration** — run preprocessing, cell analysis (PCA, Neighbors, UMAP, Leiden), gene analysis, spatial analysis (contourize), and differential expression directly in the browser
 - **Trajectory analysis** — draw lines and associate genes with spatial trajectories
 - **Display settings** — adjust point size, opacity, colormaps, bivariate coloring
 - **Export** — download annotations and analysis results

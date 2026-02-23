@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
-import { useStore } from './store'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, runDiffExp } from './hooks/useData'
+import { useStore, DatasetSlot } from './store'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, runDiffExp, appendDataset } from './hooks/useData'
 import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor } from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
@@ -465,6 +465,10 @@ export default function App() {
     setDiffExpLoading,
     setMarkerGenesModalOpen,
     setMarkerGenesColumn,
+    activeSlot,
+    setActiveSlot,
+    loadDatasetIntoSlot,
+    datasets,
   } = useStore()
 
   const schema = useSchema()
@@ -488,6 +492,7 @@ export default function App() {
   const [isCompareLoading, setIsCompareLoading] = useState(false)
 
   // State for load data modal
+  const [loadSlot, setLoadSlot] = useState<DatasetSlot>('primary')
   const [isLoadModalOpen, setIsLoadModalOpen] = useState(false)
   const [loadFilePath, setLoadFilePath] = useState('')
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -540,7 +545,7 @@ export default function App() {
   const handleTransformEmbedding = useCallback(async (opts: { rotation_degrees?: number; reflect_x?: boolean; reflect_y?: boolean }) => {
     if (!selectedEmbedding) return
     try {
-      const response = await fetch(`/api/embedding/${selectedEmbedding}/transform`, {
+      const response = await fetch(appendDataset(`/api/embedding/${selectedEmbedding}/transform`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opts),
@@ -589,7 +594,7 @@ export default function App() {
     setIsCompareLoading(true)
     try {
       // Fetch the column data to resolve cell indices
-      const response = await fetch(`/api/obs/${encodeURIComponent(column)}`)
+      const response = await fetch(appendDataset(`/api/obs/${encodeURIComponent(column)}`))
       if (!response.ok) throw new Error('Failed to fetch column data')
       const data = await response.json()
 
@@ -670,7 +675,7 @@ export default function App() {
           points: line.points,
           smoothedPoints: line.smoothedPoints,
         }))
-        const linesResponse = await fetch('/api/lines', {
+        const linesResponse = await fetch(appendDataset('/api/lines'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ lines: linesPayload }),
@@ -681,7 +686,7 @@ export default function App() {
       }
 
       // Now export h5ad
-      const response = await fetch('/api/export/h5ad')
+      const response = await fetch(appendDataset('/api/export/h5ad'))
       if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: response.statusText }))
         throw new Error(error.detail || `HTTP ${response.status}`)
@@ -778,23 +783,37 @@ export default function App() {
     setLoadLoading(true)
     setLoadError(null)
     try {
+      // Load into the selected slot (backend reads slot from request body)
       const response = await fetch('/api/load', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_path: loadFilePath.trim() }),
+        body: JSON.stringify({ file_path: loadFilePath.trim(), slot: loadSlot }),
       })
       if (!response.ok) {
         const err = await response.json().catch(() => ({ detail: response.statusText }))
         throw new Error(err.detail || `HTTP ${response.status}`)
       }
-      // Success — reload page to reset all frontend state
-      window.location.reload()
+      // Fetch schema for the loaded slot
+      const schemaUrl = loadSlot === 'primary'
+        ? '/api/schema'
+        : `/api/schema?dataset=${loadSlot}`
+      const schemaData = await fetch(schemaUrl).then(r => {
+        if (!r.ok) throw new Error(`Failed to fetch schema: ${r.statusText}`)
+        return r.json()
+      })
+      // Update store
+      loadDatasetIntoSlot(loadSlot, schemaData)
+      // Switch to the loaded slot
+      if (loadSlot !== activeSlot) {
+        setActiveSlot(loadSlot)
+      }
+      setIsLoadModalOpen(false)
     } catch (err) {
       setLoadError((err as Error).message)
     } finally {
       setLoadLoading(false)
     }
-  }, [loadFilePath])
+  }, [loadFilePath, loadSlot, activeSlot, loadDatasetIntoSlot, setActiveSlot])
 
   return (
     <div style={styles.container}>
@@ -809,6 +828,21 @@ export default function App() {
         </div>
 
         <div style={styles.controls}>
+          {datasets.secondary.schema && (
+            <select
+              value={activeSlot}
+              onChange={(e) => setActiveSlot(e.target.value as DatasetSlot)}
+              style={{ ...styles.embeddingSelect, fontSize: '12px' }}
+              title="Switch active dataset"
+            >
+              <option value="primary">
+                Primary ({datasets.primary.schema?.n_cells.toLocaleString() ?? '\u2014'} cells)
+              </option>
+              <option value="secondary">
+                Secondary ({datasets.secondary.schema?.n_cells.toLocaleString() ?? '\u2014'} cells)
+              </option>
+            </select>
+          )}
           {schema && (
             <>
               <button
@@ -1346,6 +1380,19 @@ export default function App() {
           >
             <div style={{ fontSize: '16px', fontWeight: 600, color: '#e94560', marginBottom: '16px' }}>
               Load Dataset
+            </div>
+
+            {/* Slot selector */}
+            <div style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '12px', color: '#888' }}>Load into:</span>
+              <select
+                value={loadSlot}
+                onChange={(e) => setLoadSlot(e.target.value as DatasetSlot)}
+                style={styles.embeddingSelect}
+              >
+                <option value="primary">Primary</option>
+                <option value="secondary">Secondary</option>
+              </select>
             </div>
 
             {/* File browser */}

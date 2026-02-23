@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useStore, ScanpyActionRecord } from '../store'
+import { appendDataset } from '../hooks/useData'
 
 const API_BASE = '/api'
 
@@ -594,7 +595,7 @@ export default function ScanpyModal() {
       return
     }
 
-    fetch(`${API_BASE}/scanpy/prerequisites/${selectedFunction}`)
+    fetch(appendDataset(`${API_BASE}/scanpy/prerequisites/${selectedFunction}`))
       .then((res) => res.json())
       .then(setPrereqStatus)
       .catch(() => setPrereqStatus({ satisfied: false, missing: ['unknown'] }))
@@ -604,7 +605,7 @@ export default function ScanpyModal() {
   useEffect(() => {
     if (!isScanpyModalOpen) return
 
-    fetch(`${API_BASE}/var/boolean_columns`)
+    fetch(appendDataset(`${API_BASE}/var/boolean_columns`))
       .then((res) => res.json())
       .then(setBooleanColumns)
       .catch(() => setBooleanColumns([]))
@@ -636,7 +637,7 @@ export default function ScanpyModal() {
   // Refresh schema after operations that change data shape
   const refreshSchema = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/schema`)
+      const response = await fetch(appendDataset(`${API_BASE}/schema`))
       if (response.ok) {
         const newSchema = await response.json()
         setSchema(newSchema)
@@ -649,7 +650,7 @@ export default function ScanpyModal() {
   // Load variance chart data (for viewing existing gene PCA)
   const loadVarianceChart = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/scanpy/gene_pca_variance`)
+      const response = await fetch(appendDataset(`${API_BASE}/scanpy/gene_pca_variance`))
       if (response.ok) {
         const data = await response.json()
         setVarianceData(data)
@@ -727,7 +728,7 @@ export default function ScanpyModal() {
         requestParams['active_cell_indices'] = activeIndices
       }
 
-      const response = await fetch(`${API_BASE}/scanpy/${selectedFunction}`, {
+      const response = await fetch(appendDataset(`${API_BASE}/scanpy/${selectedFunction}`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestParams),
@@ -752,7 +753,7 @@ export default function ScanpyModal() {
 
         // Fetch the gene modules and add them to the gene_clusters category
         try {
-          const modulesResponse = await fetch(`${API_BASE}/scanpy/gene_modules`)
+          const modulesResponse = await fetch(appendDataset(`${API_BASE}/scanpy/gene_modules`))
           if (modulesResponse.ok) {
             const modulesData = await modulesResponse.json()
             const timestamp = new Date().toLocaleString('en-US', {
@@ -859,7 +860,7 @@ export default function ScanpyModal() {
       // Fetch variance data for visualization after gene PCA functions
       if (['gene_pca', 'build_gene_graph'].includes(selectedFunction)) {
         try {
-          const varResponse = await fetch(`${API_BASE}/scanpy/gene_pca_variance`)
+          const varResponse = await fetch(appendDataset(`${API_BASE}/scanpy/gene_pca_variance`))
           if (varResponse.ok) {
             const varData = await varResponse.json()
             setVarianceData(varData)

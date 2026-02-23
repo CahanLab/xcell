@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 - Backend multi-dataset support: load multiple datasets into named slots (`primary`, `secondary`, etc.). All API endpoints accept an optional `?dataset=` query parameter. New `GET /datasets` and `DELETE /datasets/{slot}` endpoints for managing loaded datasets. Existing single-dataset usage is unchanged.
+- Dataset slot selector in Load modal — load a second h5ad file into the Secondary slot without losing the Primary dataset.
+- Dataset switcher dropdown in header toolbar (appears when two datasets are loaded) — switch between primary and secondary views seamlessly.
 - Contourize spatial analysis: assign cells to spatial expression contour levels based on a gene set. Select genes in the Gene Panel, open Scanpy Modal > Spatial Analysis > Contourize, configure smoothing and contour levels, and run. Creates a new categorical obs column that can be used for coloring and downstream analysis.
 - One-vs-rest marker gene analysis: click "Markers" on any categorical column in the Cell Panel to identify marker genes for each group using Wilcoxon rank-sum test. Select groups, set top N genes, and optionally apply fold-change and expression fraction filters. Results can be added as gene sets to the new "Marker Genes" category in the Gene Panel.
 - Additive lasso selection: hold Shift while drawing multiple lasso shapes to select non-adjacent groups of cells without losing the previous selection.
@@ -15,6 +17,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Preferred embedding auto-selection on dataset load: spatial > umap > pca (case-insensitive substring match).
 
 ### Changed
+- Loading a dataset no longer reloads the page; the store is updated in-place for seamless transitions.
+- All frontend API calls now include `?dataset=` query parameter when targeting the secondary dataset slot.
 - Replaced "Markers" button and "G1"/"G2" group buttons on categorical columns with checkboxes and a unified "Compare" button in the header toolbar. Check 2 categories for pairwise differential expression, or 3+ for one-vs-rest marker gene analysis. Checked categories are pre-selected in the Marker Genes modal.
 - Renamed "Shapes" panel to "Lines" panel.
 - Line tools (smoothing, gene association, projection embedding) moved from an inline section that obscured the panel into a dedicated modal, launched via a gear button on each line row.

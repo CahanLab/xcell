@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType } from '../store'
-import { useGeneSearch, useGeneBrowse, useDataActions } from '../hooks/useData'
+import { useGeneSearch, useGeneBrowse, useDataActions, appendDataset } from '../hooks/useData'
 import ImportModal from './ImportModal'
 
 const API_BASE = '/api'
@@ -939,7 +939,7 @@ export default function GenePanel() {
   useEffect(() => {
     const checkPrerequisites = async () => {
       try {
-        const response = await fetch(`${API_BASE}/scanpy/prerequisites/find_similar_genes`)
+        const response = await fetch(appendDataset(`${API_BASE}/scanpy/prerequisites/find_similar_genes`))
         if (response.ok) {
           const data = await response.json()
           setHasGeneNeighbors(data.satisfied)
@@ -962,7 +962,7 @@ export default function GenePanel() {
     setSimilarGenesError(null)
 
     try {
-      const response = await fetch(`${API_BASE}/scanpy/find_similar_genes`, {
+      const response = await fetch(appendDataset(`${API_BASE}/scanpy/find_similar_genes`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

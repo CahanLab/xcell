@@ -1,7 +1,15 @@
 import { useEffect, useCallback, useState } from 'react'
-import { useStore, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult } from '../store'
+import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult } from '../store'
 
 const API_BASE = '/api'
+
+/** Append `?dataset=<slot>` to a URL for non-primary slots. */
+export function appendDataset(url: string, slot?: DatasetSlot): string {
+  const s = slot ?? useStore.getState().activeSlot
+  if (s === 'primary') return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}dataset=${s}`
+}
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options)
@@ -19,7 +27,7 @@ export function useSchema() {
     if (schema) return // Already loaded
 
     setLoading(true)
-    fetchJson<Schema>(`${API_BASE}/schema`)
+    fetchJson<Schema>(appendDataset(`${API_BASE}/schema`))
       .then((data) => {
         setSchema(data)
         // Auto-select embedding by preference: spatial > umap > pca > first available
@@ -46,7 +54,7 @@ export function useEmbedding() {
     if (embedding?.name === selectedEmbedding) return // Already loaded
 
     setLoading(true)
-    fetchJson<EmbeddingData>(`${API_BASE}/embedding/${selectedEmbedding}`)
+    fetchJson<EmbeddingData>(appendDataset(`${API_BASE}/embedding/${selectedEmbedding}`))
       .then(setEmbedding)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
@@ -70,7 +78,7 @@ export function useColorBy() {
     if (colorBy?.name === selectedColorColumn) return // Already loaded
 
     setLoading(true)
-    fetchJson<ObsColumnData>(`${API_BASE}/obs/${selectedColorColumn}`)
+    fetchJson<ObsColumnData>(appendDataset(`${API_BASE}/obs/${selectedColorColumn}`))
       .then(setColorBy)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
@@ -103,12 +111,12 @@ export function useExpressionTransformEffect() {
       try {
         if (selectedGenes.length === 1) {
           const url = transform
-            ? `${API_BASE}/expression/${encodeURIComponent(selectedGenes[0])}?transform=${transform}`
-            : `${API_BASE}/expression/${encodeURIComponent(selectedGenes[0])}`
+            ? appendDataset(`${API_BASE}/expression/${encodeURIComponent(selectedGenes[0])}?transform=${transform}`)
+            : appendDataset(`${API_BASE}/expression/${encodeURIComponent(selectedGenes[0])}`)
           const data = await fetchJson<ExpressionData>(url)
           setExpressionData(data)
         } else {
-          const data = await fetchJson<ExpressionData>(`${API_BASE}/expression/multi`, {
+          const data = await fetchJson<ExpressionData>(appendDataset(`${API_BASE}/expression/multi`), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -153,7 +161,7 @@ export function useBivariateTransformEffect() {
     const fetchBivariate = async () => {
       setLoading(true)
       try {
-        const data = await fetchJson<BivariateExpressionData>(`${API_BASE}/expression/bivariate`, {
+        const data = await fetchJson<BivariateExpressionData>(appendDataset(`${API_BASE}/expression/bivariate`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -219,8 +227,8 @@ export function useDataActions() {
         // Use provided transform or fall back to display preferences
         const effectiveTransform = transform ?? (displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined)
         const url = effectiveTransform
-          ? `${API_BASE}/expression/${encodeURIComponent(gene)}?transform=${effectiveTransform}`
-          : `${API_BASE}/expression/${encodeURIComponent(gene)}`
+          ? appendDataset(`${API_BASE}/expression/${encodeURIComponent(gene)}?transform=${effectiveTransform}`)
+          : appendDataset(`${API_BASE}/expression/${encodeURIComponent(gene)}`)
         const data = await fetchJson<ExpressionData>(url)
         setExpressionData(data)
         setSelectedGenes([gene])
@@ -249,7 +257,7 @@ export function useDataActions() {
       try {
         // Use provided transform or fall back to display preferences
         const effectiveTransform = transform ?? (displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined)
-        const data = await fetchJson<ExpressionData>(`${API_BASE}/expression/multi`, {
+        const data = await fetchJson<ExpressionData>(appendDataset(`${API_BASE}/expression/multi`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -284,7 +292,7 @@ export function useDataActions() {
       setLoading(true)
       try {
         const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined
-        const data = await fetchJson<BivariateExpressionData>(`${API_BASE}/expression/bivariate`, {
+        const data = await fetchJson<BivariateExpressionData>(appendDataset(`${API_BASE}/expression/bivariate`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -338,7 +346,7 @@ export function useGeneSearch() {
     setIsSearching(true)
     try {
       const data = await fetchJson<{ genes: string[] }>(
-        `${API_BASE}/genes/search?q=${encodeURIComponent(query)}&limit=20`
+        appendDataset(`${API_BASE}/genes/search?q=${encodeURIComponent(query)}&limit=20`)
       )
       setResults(data.genes)
     } catch (err) {
@@ -372,7 +380,7 @@ export function useGeneBrowse(pageSize: number = 50) {
     setIsLoading(true)
     try {
       const data = await fetchJson<GeneBrowseResult>(
-        `${API_BASE}/genes/browse?offset=${offset}&limit=${pageSize}`
+        appendDataset(`${API_BASE}/genes/browse?offset=${offset}&limit=${pageSize}`)
       )
       setPage(data)
     } catch (err) {
@@ -414,7 +422,7 @@ export function useObsSummaries() {
 
   useEffect(() => {
     setIsLoading(true)
-    fetchJson<ObsSummary[]>(`${API_BASE}/obs/summaries`)
+    fetchJson<ObsSummary[]>(appendDataset(`${API_BASE}/obs/summaries`))
       .then(setSummaries)
       .catch((err) => setError(err.message))
       .finally(() => setIsLoading(false))
@@ -428,16 +436,16 @@ export function useObsSummaries() {
 }
 
 // Annotation API functions
-export async function createAnnotation(name: string, defaultValue: string = 'unassigned'): Promise<ObsSummary> {
-  return fetchJson<ObsSummary>(`${API_BASE}/annotations`, {
+export async function createAnnotation(name: string, defaultValue: string = 'unassigned', slot?: DatasetSlot): Promise<ObsSummary> {
+  return fetchJson<ObsSummary>(appendDataset(`${API_BASE}/annotations`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, default_value: defaultValue }),
   })
 }
 
-export async function addLabelToAnnotation(annotationName: string, label: string): Promise<ObsSummary> {
-  return fetchJson<ObsSummary>(`${API_BASE}/annotations/${encodeURIComponent(annotationName)}/labels`, {
+export async function addLabelToAnnotation(annotationName: string, label: string, slot?: DatasetSlot): Promise<ObsSummary> {
+  return fetchJson<ObsSummary>(appendDataset(`${API_BASE}/annotations/${encodeURIComponent(annotationName)}/labels`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ label }),
@@ -447,23 +455,24 @@ export async function addLabelToAnnotation(annotationName: string, label: string
 export async function labelCells(
   annotationName: string,
   label: string,
-  cellIndices: number[]
+  cellIndices: number[],
+  slot?: DatasetSlot
 ): Promise<ObsSummary> {
-  return fetchJson<ObsSummary>(`${API_BASE}/annotations/${encodeURIComponent(annotationName)}/label-cells`, {
+  return fetchJson<ObsSummary>(appendDataset(`${API_BASE}/annotations/${encodeURIComponent(annotationName)}/label-cells`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ label, cell_indices: cellIndices }),
   })
 }
 
-export async function deleteAnnotation(name: string): Promise<void> {
-  await fetchJson<{ status: string }>(`${API_BASE}/annotations/${encodeURIComponent(name)}`, {
+export async function deleteAnnotation(name: string, slot?: DatasetSlot): Promise<void> {
+  await fetchJson<{ status: string }>(appendDataset(`${API_BASE}/annotations/${encodeURIComponent(name)}`, slot), {
     method: 'DELETE',
   })
 }
 
-export async function exportAnnotations(columns?: string[]): Promise<string> {
-  const response = await fetch(`${API_BASE}/annotations/export`, {
+export async function exportAnnotations(columns?: string[], slot?: DatasetSlot): Promise<string> {
+  const response = await fetch(appendDataset(`${API_BASE}/annotations/export`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ columns: columns || null }),
@@ -479,9 +488,10 @@ export async function exportAnnotations(columns?: string[]): Promise<string> {
 export async function runDiffExp(
   group1: number[],
   group2: number[],
-  topN: number = 25
+  topN: number = 25,
+  slot?: DatasetSlot
 ): Promise<DiffExpResult> {
-  return fetchJson<DiffExpResult>(`${API_BASE}/diffexp`, {
+  return fetchJson<DiffExpResult>(appendDataset(`${API_BASE}/diffexp`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ group1, group2, top_n: topN }),
@@ -553,22 +563,22 @@ export interface LineAssociationParams {
 }
 
 // Sync lines to backend
-async function syncLinesToBackend(lines: { name: string; embeddingName: string; points: [number, number][]; smoothedPoints: [number, number][] | null }[]) {
+async function syncLinesToBackend(lines: { name: string; embeddingName: string; points: [number, number][]; smoothedPoints: [number, number][] | null }[], slot?: DatasetSlot) {
   const payload = lines.map((line) => ({
     name: line.name,
     embeddingName: line.embeddingName,
     points: line.points,
     smoothedPoints: line.smoothedPoints,
   }))
-  await fetchJson(`${API_BASE}/lines`, {
+  await fetchJson(appendDataset(`${API_BASE}/lines`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ lines: payload }),
   })
 }
 
-export async function runLineAssociation(params: LineAssociationParams): Promise<LineAssociationResult> {
-  return fetchJson<LineAssociationResult>(`${API_BASE}/lines/association`, {
+export async function runLineAssociation(params: LineAssociationParams, slot?: DatasetSlot): Promise<LineAssociationResult> {
+  return fetchJson<LineAssociationResult>(appendDataset(`${API_BASE}/lines/association`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -650,8 +660,8 @@ export async function runMarkerGenes(params: {
   min_in_group_fraction?: number
   max_out_group_fraction?: number
   min_fold_change?: number
-}): Promise<MarkerGenesResponse> {
-  return fetchJson<MarkerGenesResponse>(`${API_BASE}/marker-genes`, {
+}, slot?: DatasetSlot): Promise<MarkerGenesResponse> {
+  return fetchJson<MarkerGenesResponse>(appendDataset(`${API_BASE}/marker-genes`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
@@ -673,7 +683,8 @@ export interface CreateLineEmbeddingResult {
 
 export async function createLineEmbedding(
   params: CreateLineEmbeddingParams,
-  lines: { name: string; embeddingName: string; points: [number, number][]; smoothedPoints: [number, number][] | null }[]
+  lines: { name: string; embeddingName: string; points: [number, number][]; smoothedPoints: [number, number][] | null }[],
+  slot?: DatasetSlot
 ): Promise<CreateLineEmbeddingResult> {
   // First sync lines to backend
   const payload = lines.map((line) => ({
@@ -682,14 +693,14 @@ export async function createLineEmbedding(
     points: line.points,
     smoothedPoints: line.smoothedPoints,
   }))
-  await fetchJson(`${API_BASE}/lines`, {
+  await fetchJson(appendDataset(`${API_BASE}/lines`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ lines: payload }),
   })
 
   // Then create the embedding
-  return fetchJson<CreateLineEmbeddingResult>(`${API_BASE}/lines/create-embedding`, {
+  return fetchJson<CreateLineEmbeddingResult>(appendDataset(`${API_BASE}/lines/create-embedding`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

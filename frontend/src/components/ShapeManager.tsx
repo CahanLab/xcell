@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useStore } from '../store'
-import { useLineAssociation, createLineEmbedding } from '../hooks/useData'
+import { useLineAssociation, createLineEmbedding, appendDataset } from '../hooks/useData'
 
 const API_BASE = '/api'
 
@@ -248,7 +248,7 @@ function LineToolsModal({
 
   const scanpyActionHistory = useStore((state) => state.scanpyActionHistory)
   useEffect(() => {
-    fetch(`${API_BASE}/var/boolean_columns`)
+    fetch(appendDataset(`${API_BASE}/var/boolean_columns`))
       .then((res) => res.json())
       .then(setGeneSubsetColumns)
       .catch(() => setGeneSubsetColumns([]))
@@ -287,7 +287,7 @@ function LineToolsModal({
         { lineName: line.name, cellIndices },
         drawnLines
       )
-      const schemaResponse = await fetch('/api/schema')
+      const schemaResponse = await fetch(appendDataset('/api/schema'))
       const schema = await schemaResponse.json()
       setSchema(schema)
       setEmbeddingMessage(`Created embedding "${result.embedding_name}"`)

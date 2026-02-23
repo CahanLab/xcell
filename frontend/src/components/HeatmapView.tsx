@@ -11,7 +11,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useStore, HeatmapConfig } from '../store'
-import { useDataActions } from '../hooks/useData'
+import { useDataActions, appendDataset } from '../hooks/useData'
 import HeatmapConfigModal from './HeatmapConfigModal'
 
 // ---------------------------------------------------------------------------
@@ -346,7 +346,7 @@ export default function HeatmapView() {
           points: l.points,
           smoothedPoints: l.smoothedPoints,
         }))
-        await fetch('/api/lines', {
+        await fetch(appendDataset('/api/lines'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ lines: linesPayload }),
@@ -371,7 +371,7 @@ export default function HeatmapView() {
 
       const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' : null
 
-      const response = await fetch('/api/heatmap/data', {
+      const response = await fetch(appendDataset('/api/heatmap/data'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

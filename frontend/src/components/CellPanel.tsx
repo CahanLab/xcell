@@ -8,6 +8,7 @@ import {
   createAnnotation,
   labelCells,
   useDiffExp,
+  appendDataset,
 } from '../hooks/useData'
 
 const API_BASE = '/api'
@@ -797,7 +798,7 @@ export default function CellPanel() {
   // Select cells by category value
   const handleSelectCellsByCategory = useCallback(
     (columnName: string, categoryValue: string) => {
-      fetch(`/api/obs/${encodeURIComponent(columnName)}`)
+      fetch(appendDataset(`/api/obs/${encodeURIComponent(columnName)}`))
         .then((res) => res.json())
         .then((data) => {
           const indices: number[] = []
@@ -877,7 +878,7 @@ export default function CellPanel() {
     if (selectedCellIndices.length === 0) return
     setIsDeleting(true)
     try {
-      const response = await fetch(`${API_BASE}/cells/delete`, {
+      const response = await fetch(appendDataset(`${API_BASE}/cells/delete`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cell_indices: selectedCellIndices }),
@@ -887,7 +888,7 @@ export default function CellPanel() {
         throw new Error(err.detail || 'Delete failed')
       }
       // Refresh schema (cell count changed)
-      const schemaRes = await fetch(`${API_BASE}/schema`)
+      const schemaRes = await fetch(appendDataset(`${API_BASE}/schema`))
       if (schemaRes.ok) {
         setSchema(await schemaRes.json())
       }

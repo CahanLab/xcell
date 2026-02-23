@@ -523,6 +523,7 @@ interface AppState {
 
   // Multi-dataset actions
   setActiveSlot: (slot: DatasetSlot) => void
+  loadDatasetIntoSlot: (slot: DatasetSlot, schema: Schema) => void
 }
 
 export const useStore = create<AppState>((set, get) => {
@@ -1396,6 +1397,26 @@ export const useStore = create<AppState>((set, get) => {
         activeSlot: slot,
         ...syncFlatFields(slot, state.datasets),
       })
+    },
+
+    loadDatasetIntoSlot: (slot, schema) => {
+      const state = get()
+      const freshDs = createDefaultDatasetState()
+      freshDs.schema = schema
+      // Auto-select embedding by preference: spatial > umap > pca > first
+      if (schema.embeddings.length > 0) {
+        const preferred = ['spatial', 'umap', 'pca']
+        const lower = schema.embeddings.map(e => e.toLowerCase())
+        const pick = preferred.find(p => lower.some(l => l.includes(p)))
+        const idx = pick != null ? lower.findIndex(l => l.includes(pick)) : 0
+        freshDs.selectedEmbedding = schema.embeddings[idx]
+      }
+      const newDatasets = { ...state.datasets, [slot]: freshDs }
+      if (slot === state.activeSlot) {
+        set({ datasets: newDatasets, ...syncFlatFields(slot, newDatasets) })
+      } else {
+        set({ datasets: newDatasets })
+      }
     },
   }
 })

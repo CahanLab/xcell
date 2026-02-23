@@ -262,8 +262,70 @@ export interface ScanpyActionRecord {
   timestamp: string
 }
 
+// Multi-dataset slot identifiers
+export type DatasetSlot = 'primary' | 'secondary'
+
+// Per-dataset state: fields that are unique to each loaded dataset
+export interface DatasetState {
+  schema: Schema | null
+  embedding: EmbeddingData | null
+  colorBy: ObsColumnData | null
+  expressionData: ExpressionData | null
+  bivariateData: BivariateExpressionData | null
+  selectedGenes: string[]
+  selectedEmbedding: string | null
+  selectedColorColumn: string | null
+  colorMode: ColorMode
+  selectedCellIndices: number[]
+  activeCellMask: boolean[] | null
+  showMaskedCells: boolean
+  cellSortOrder: number[] | null
+  cellSortVersion: number
+  bivariateSortReversed: boolean
+  displayPreferences: DisplayPreferences
+  drawnLines: DrawnLine[]
+  hiddenColumns: Set<string>
+  columnDisplayNames: Record<string, string>
+  obsSummariesVersion: number
+  scanpyActionHistory: ScanpyActionRecord[]
+}
+
+export function createDefaultDatasetState(): DatasetState {
+  return {
+    schema: null,
+    embedding: null,
+    colorBy: null,
+    expressionData: null,
+    bivariateData: null,
+    selectedGenes: [],
+    selectedEmbedding: null,
+    selectedColorColumn: null,
+    colorMode: 'none',
+    selectedCellIndices: [],
+    activeCellMask: null,
+    showMaskedCells: true,
+    cellSortOrder: null,
+    cellSortVersion: 0,
+    bivariateSortReversed: false,
+    displayPreferences: {
+      pointSize: 3,
+      backgroundColor: '#1a1a2e',
+      colorScale: 'viridis',
+      bivariateColormap: 'default',
+      geneSetScoringMethod: 'mean',
+      pointOpacity: 0.85,
+      expressionTransform: 'none',
+    },
+    drawnLines: [],
+    hiddenColumns: new Set<string>(),
+    columnDisplayNames: {},
+    obsSummariesVersion: 0,
+    scanpyActionHistory: [],
+  }
+}
+
 interface AppState {
-  // Data
+  // Data (flat per-dataset fields — backward compat)
   schema: Schema | null
   embedding: EmbeddingData | null
   colorBy: ObsColumnData | null
@@ -343,6 +405,10 @@ interface AppState {
   // Heatmap tab state (rollback: remove this block)
   centerPanelView: CenterPanelView
   heatmapConfig: HeatmapConfig | null
+
+  // Multi-dataset support
+  datasets: Record<DatasetSlot, DatasetState>
+  activeSlot: DatasetSlot
 
   // Actions
   setSchema: (schema: Schema) => void
@@ -454,575 +520,648 @@ interface AppState {
   // Heatmap tab actions (rollback: remove this block)
   setCenterPanelView: (view: CenterPanelView) => void
   setHeatmapConfig: (config: HeatmapConfig | null) => void
+
+  // Multi-dataset actions
+  setActiveSlot: (slot: DatasetSlot) => void
 }
 
-export const useStore = create<AppState>((set) => ({
-  // Initial state
-  schema: null,
-  embedding: null,
-  colorBy: null,
-  expressionData: null,
-  bivariateData: null,
-  geneSetCategories: createDefaultCategories(),
-  geneSets: [],  // Legacy, kept for backward compatibility
-  selectedGenes: [],
-  selectedCellIndices: [],
-  interactionMode: 'pan',
-  selectedEmbedding: null,
-  selectedColorColumn: null,
-  colorMode: 'none',
-  isLoading: false,
-  error: null,
-  displayPreferences: {
-    pointSize: 3,
-    backgroundColor: '#1a1a2e',
-    colorScale: 'viridis',
-    bivariateColormap: 'default',
-    geneSetScoringMethod: 'mean',
-    pointOpacity: 0.85,
-    expressionTransform: 'none',
-  },
-  comparison: {
-    group1: null,
-    group2: null,
-    group1Label: null,
-    group2Label: null,
-  },
-  diffExpResult: null,
-  isDiffExpLoading: false,
-  isDiffExpModalOpen: false,
-  lineAssociationResult: null,
-  isLineAssociationLoading: false,
-  isLineAssociationModalOpen: false,
-  hiddenColumns: new Set<string>(),
-  columnDisplayNames: {},
-  activeCellMask: null,
-  showMaskedCells: true,
-  cellSortOrder: null,
-  cellSortVersion: 0,
-  bivariateSortReversed: false,
-  drawnLines: [],
-  activeLineId: null,
-  lineSmoothingParams: {
-    windowSize: 5,
-    iterations: 2,
-  },
-  isImportModalOpen: false,
-  isScanpyModalOpen: false,
-  scanpyActionHistory: [],
-  obsSummariesVersion: 0,
-  isMarkerGenesModalOpen: false,
-  markerGenesColumn: null,
-  comparisonCheckedColumn: null,
-  comparisonCheckedCategories: new Set<string>(),
-  centerPanelView: 'scatter',
-  heatmapConfig: null,
+export const useStore = create<AppState>((set, get) => {
+  // Helper: dual-write a per-dataset patch to both flat fields and datasets[activeSlot]
+  function dsUpdate(patch: Partial<DatasetState>): Partial<AppState> {
+    const { activeSlot, datasets } = get()
+    return {
+      ...patch,
+      datasets: {
+        ...datasets,
+        [activeSlot]: { ...datasets[activeSlot], ...patch },
+      },
+    } as Partial<AppState>
+  }
 
-  // Actions
-  setSchema: (schema) => set({ schema }),
-  setEmbedding: (embedding) => set({ embedding }),
-  setColorBy: (colorBy) => set({ colorBy }),
-  setExpressionData: (data) =>
-    set((state) => {
-      if (!data || !state.schema) {
-        return { expressionData: data, cellSortOrder: null, cellSortVersion: 0 }
-      }
-      // Auto-sort by expression (ascending, so high values render last/on top)
-      const values = data.values
-      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
-      indices.sort((a, b) => {
-        const va = values[a] ?? -Infinity
-        const vb = values[b] ?? -Infinity
-        return va - vb
-      })
-      return {
-        expressionData: data,
-        cellSortOrder: indices,
-        cellSortVersion: state.cellSortVersion + 1,
-      }
-    }),
-  setBivariateData: (data) =>
-    set((state) => {
-      if (!data || !state.schema) {
-        return { bivariateData: data, cellSortOrder: null, cellSortVersion: 0 }
-      }
-      // Sort by sum of both values
-      // Respect bivariateSortReversed setting
-      const reversed = state.bivariateSortReversed
-      const { values1, values2 } = data
-      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
-      indices.sort((a, b) => {
-        const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
-        const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
-        return reversed ? sumB - sumA : sumA - sumB
-      })
-      return {
-        bivariateData: data,
-        cellSortOrder: indices,
-        cellSortVersion: state.cellSortVersion + 1,
-      }
-    }),
-  clearBivariateMode: () => set({ bivariateData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 }),
-  setSelectedEmbedding: (name) => set({ selectedEmbedding: name }),
-  setSelectedColorColumn: (name) => set({ selectedColorColumn: name }),
-  setColorMode: (mode) => set({ colorMode: mode }),
-  setLoading: (loading) => set({ isLoading: loading }),
-  setError: (error) => set({ error }),
+  // Helper: callback-style dual-write where the patch depends on current state
+  function dsUpdateFn(fn: (state: AppState) => Partial<DatasetState>): Partial<AppState> {
+    const state = get()
+    const patch = fn(state)
+    if (Object.keys(patch).length === 0) return {}
+    const { activeSlot, datasets } = state
+    return {
+      ...patch,
+      datasets: {
+        ...datasets,
+        [activeSlot]: { ...datasets[activeSlot], ...patch },
+      },
+    } as Partial<AppState>
+  }
 
-  // Gene set actions
-  addGeneSet: (name, genes) =>
-    set((state) => {
-      const newGeneSet = { id: generateGeneSetId(), name, genes }
-      return {
-        // Add to legacy flat list
-        geneSets: [...state.geneSets, newGeneSet],
-        // Also add to manual category in hierarchical structure
+  // Helper: copy all per-dataset fields from a slot to flat top-level fields
+  function syncFlatFields(slot: DatasetSlot, datasets: Record<DatasetSlot, DatasetState>): Partial<AppState> {
+    const ds = datasets[slot]
+    return {
+      schema: ds.schema,
+      embedding: ds.embedding,
+      colorBy: ds.colorBy,
+      expressionData: ds.expressionData,
+      bivariateData: ds.bivariateData,
+      selectedGenes: ds.selectedGenes,
+      selectedEmbedding: ds.selectedEmbedding,
+      selectedColorColumn: ds.selectedColorColumn,
+      colorMode: ds.colorMode,
+      selectedCellIndices: ds.selectedCellIndices,
+      activeCellMask: ds.activeCellMask,
+      showMaskedCells: ds.showMaskedCells,
+      cellSortOrder: ds.cellSortOrder,
+      cellSortVersion: ds.cellSortVersion,
+      bivariateSortReversed: ds.bivariateSortReversed,
+      displayPreferences: ds.displayPreferences,
+      drawnLines: ds.drawnLines,
+      hiddenColumns: ds.hiddenColumns,
+      columnDisplayNames: ds.columnDisplayNames,
+      obsSummariesVersion: ds.obsSummariesVersion,
+      scanpyActionHistory: ds.scanpyActionHistory,
+    }
+  }
+
+  return {
+    // Initial state
+    schema: null,
+    embedding: null,
+    colorBy: null,
+    expressionData: null,
+    bivariateData: null,
+    geneSetCategories: createDefaultCategories(),
+    geneSets: [],  // Legacy, kept for backward compatibility
+    selectedGenes: [],
+    selectedCellIndices: [],
+    interactionMode: 'pan',
+    selectedEmbedding: null,
+    selectedColorColumn: null,
+    colorMode: 'none',
+    isLoading: false,
+    error: null,
+    displayPreferences: {
+      pointSize: 3,
+      backgroundColor: '#1a1a2e',
+      colorScale: 'viridis',
+      bivariateColormap: 'default',
+      geneSetScoringMethod: 'mean',
+      pointOpacity: 0.85,
+      expressionTransform: 'none',
+    },
+    comparison: {
+      group1: null,
+      group2: null,
+      group1Label: null,
+      group2Label: null,
+    },
+    diffExpResult: null,
+    isDiffExpLoading: false,
+    isDiffExpModalOpen: false,
+    lineAssociationResult: null,
+    isLineAssociationLoading: false,
+    isLineAssociationModalOpen: false,
+    hiddenColumns: new Set<string>(),
+    columnDisplayNames: {},
+    activeCellMask: null,
+    showMaskedCells: true,
+    cellSortOrder: null,
+    cellSortVersion: 0,
+    bivariateSortReversed: false,
+    drawnLines: [],
+    activeLineId: null,
+    lineSmoothingParams: {
+      windowSize: 5,
+      iterations: 2,
+    },
+    isImportModalOpen: false,
+    isScanpyModalOpen: false,
+    scanpyActionHistory: [],
+    obsSummariesVersion: 0,
+    isMarkerGenesModalOpen: false,
+    markerGenesColumn: null,
+    comparisonCheckedColumn: null,
+    comparisonCheckedCategories: new Set<string>(),
+    centerPanelView: 'scatter',
+    heatmapConfig: null,
+
+    // Multi-dataset state
+    datasets: {
+      primary: createDefaultDatasetState(),
+      secondary: createDefaultDatasetState(),
+    },
+    activeSlot: 'primary' as DatasetSlot,
+
+    // === Per-dataset actions (dual-write) ===
+
+    setSchema: (schema) => set(dsUpdate({ schema })),
+    setEmbedding: (embedding) => set(dsUpdate({ embedding })),
+    setColorBy: (colorBy) => set(dsUpdate({ colorBy })),
+
+    setExpressionData: (data) =>
+      set(dsUpdateFn((state) => {
+        if (!data || !state.schema) {
+          return { expressionData: data, cellSortOrder: null, cellSortVersion: 0 }
+        }
+        // Auto-sort by expression (ascending, so high values render last/on top)
+        const values = data.values
+        const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+        indices.sort((a, b) => {
+          const va = values[a] ?? -Infinity
+          const vb = values[b] ?? -Infinity
+          return va - vb
+        })
+        return {
+          expressionData: data,
+          cellSortOrder: indices,
+          cellSortVersion: state.cellSortVersion + 1,
+        }
+      })),
+
+    setBivariateData: (data) =>
+      set(dsUpdateFn((state) => {
+        if (!data || !state.schema) {
+          return { bivariateData: data, cellSortOrder: null, cellSortVersion: 0 }
+        }
+        // Sort by sum of both values
+        // Respect bivariateSortReversed setting
+        const reversed = state.bivariateSortReversed
+        const { values1, values2 } = data
+        const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+        indices.sort((a, b) => {
+          const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
+          const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
+          return reversed ? sumB - sumA : sumA - sumB
+        })
+        return {
+          bivariateData: data,
+          cellSortOrder: indices,
+          cellSortVersion: state.cellSortVersion + 1,
+        }
+      })),
+
+    clearBivariateMode: () => set(dsUpdate({ bivariateData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 })),
+    setSelectedEmbedding: (name) => set(dsUpdate({ selectedEmbedding: name })),
+    setSelectedColorColumn: (name) => set(dsUpdate({ selectedColorColumn: name })),
+    setColorMode: (mode) => set(dsUpdate({ colorMode: mode })),
+
+    // Global-only actions (no dual-write needed)
+    setLoading: (loading) => set({ isLoading: loading }),
+    setError: (error) => set({ error }),
+
+    // Gene set actions (global)
+    addGeneSet: (name, genes) =>
+      set((state) => {
+        const newGeneSet = { id: generateGeneSetId(), name, genes }
+        return {
+          // Add to legacy flat list
+          geneSets: [...state.geneSets, newGeneSet],
+          // Also add to manual category in hierarchical structure
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            manual: {
+              ...state.geneSetCategories.manual,
+              geneSets: [...state.geneSetCategories.manual.geneSets, newGeneSet],
+            },
+          },
+        }
+      }),
+
+    removeGeneSet: (name) =>
+      set((state) => ({
+        geneSets: state.geneSets.filter((gs) => gs.name !== name),
+      })),
+
+    addGenesToSet: (setName, genes) =>
+      set((state) => ({
+        geneSets: state.geneSets.map((gs) =>
+          gs.name === setName
+            ? { ...gs, genes: [...new Set([...gs.genes, ...genes])] }
+            : gs
+        ),
+      })),
+
+    removeGenesFromSet: (setName, genes) =>
+      set((state) => ({
+        geneSets: state.geneSets.map((gs) =>
+          gs.name === setName
+            ? { ...gs, genes: gs.genes.filter((g) => !genes.includes(g)) }
+            : gs
+        ),
+      })),
+
+    renameGeneSet: (oldName, newName) =>
+      set((state) => ({
+        geneSets: state.geneSets.map((gs) =>
+          gs.name === oldName ? { ...gs, name: newName } : gs
+        ),
+      })),
+
+    setSelectedGenes: (genes) => set(dsUpdate({ selectedGenes: genes })),
+    clearSelectedGenes: () => set(dsUpdate({ selectedGenes: [], expressionData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 })),
+
+    // Gene set category actions (hierarchical — global)
+    toggleCategoryExpanded: (categoryType) =>
+      set((state) => ({
         geneSetCategories: {
           ...state.geneSetCategories,
-          manual: {
-            ...state.geneSetCategories.manual,
-            geneSets: [...state.geneSetCategories.manual.geneSets, newGeneSet],
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            expanded: !state.geneSetCategories[categoryType].expanded,
           },
         },
-      }
-    }),
+      })),
 
-  removeGeneSet: (name) =>
-    set((state) => ({
-      geneSets: state.geneSets.filter((gs) => gs.name !== name),
-    })),
-
-  addGenesToSet: (setName, genes) =>
-    set((state) => ({
-      geneSets: state.geneSets.map((gs) =>
-        gs.name === setName
-          ? { ...gs, genes: [...new Set([...gs.genes, ...genes])] }
-          : gs
-      ),
-    })),
-
-  removeGenesFromSet: (setName, genes) =>
-    set((state) => ({
-      geneSets: state.geneSets.map((gs) =>
-        gs.name === setName
-          ? { ...gs, genes: gs.genes.filter((g) => !genes.includes(g)) }
-          : gs
-      ),
-    })),
-
-  renameGeneSet: (oldName, newName) =>
-    set((state) => ({
-      geneSets: state.geneSets.map((gs) =>
-        gs.name === oldName ? { ...gs, name: newName } : gs
-      ),
-    })),
-
-  setSelectedGenes: (genes) => set({ selectedGenes: genes }),
-  clearSelectedGenes: () => set({ selectedGenes: [], expressionData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 }),
-
-  // Gene set category actions (hierarchical)
-  toggleCategoryExpanded: (categoryType) =>
-    set((state) => ({
-      geneSetCategories: {
-        ...state.geneSetCategories,
-        [categoryType]: {
-          ...state.geneSetCategories[categoryType],
-          expanded: !state.geneSetCategories[categoryType].expanded,
+    toggleFolderExpanded: (categoryType, folderId) =>
+      set((state) => ({
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            folders: state.geneSetCategories[categoryType].folders.map((f) =>
+              f.id === folderId ? { ...f, expanded: !f.expanded } : f
+            ),
+          },
         },
-      },
-    })),
+      })),
 
-  toggleFolderExpanded: (categoryType, folderId) =>
-    set((state) => ({
-      geneSetCategories: {
-        ...state.geneSetCategories,
-        [categoryType]: {
-          ...state.geneSetCategories[categoryType],
-          folders: state.geneSetCategories[categoryType].folders.map((f) =>
-            f.id === folderId ? { ...f, expanded: !f.expanded } : f
-          ),
+    addGeneSetToCategory: (categoryType, name, genes) =>
+      set((state) => ({
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            geneSets: [
+              ...state.geneSetCategories[categoryType].geneSets,
+              { id: generateGeneSetId(), name, genes },
+            ],
+          },
         },
-      },
-    })),
+      })),
 
-  addGeneSetToCategory: (categoryType, name, genes) =>
-    set((state) => ({
-      geneSetCategories: {
-        ...state.geneSetCategories,
-        [categoryType]: {
-          ...state.geneSetCategories[categoryType],
-          geneSets: [
-            ...state.geneSetCategories[categoryType].geneSets,
-            { id: generateGeneSetId(), name, genes },
-          ],
+    addFolderToCategory: (categoryType, folderName, geneSets) =>
+      set((state) => ({
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            folders: [
+              ...state.geneSetCategories[categoryType].folders,
+              {
+                id: generateFolderId(),
+                name: folderName,
+                expanded: true,
+                createdAt: new Date().toISOString(),
+                geneSets: geneSets.map((gs) => ({
+                  id: generateGeneSetId(),
+                  name: gs.name,
+                  genes: gs.genes,
+                })),
+              },
+            ],
+          },
         },
-      },
-    })),
+      })),
 
-  addFolderToCategory: (categoryType, folderName, geneSets) =>
-    set((state) => ({
-      geneSetCategories: {
-        ...state.geneSetCategories,
-        [categoryType]: {
-          ...state.geneSetCategories[categoryType],
-          folders: [
-            ...state.geneSetCategories[categoryType].folders,
-            {
-              id: generateFolderId(),
-              name: folderName,
-              expanded: true,
-              createdAt: new Date().toISOString(),
-              geneSets: geneSets.map((gs) => ({
-                id: generateGeneSetId(),
-                name: gs.name,
-                genes: gs.genes,
+    addGeneSetToFolder: (categoryType, folderId, name, genes) =>
+      set((state) => ({
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            folders: state.geneSetCategories[categoryType].folders.map((f) =>
+              f.id === folderId
+                ? {
+                    ...f,
+                    geneSets: [...f.geneSets, { id: generateGeneSetId(), name, genes }],
+                  }
+                : f
+            ),
+          },
+        },
+      })),
+
+    removeGeneSetFromCategory: (categoryType, geneSetId) =>
+      set((state) => ({
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            geneSets: state.geneSetCategories[categoryType].geneSets.filter(
+              (gs) => gs.id !== geneSetId
+            ),
+          },
+        },
+      })),
+
+    removeGeneSetFromFolder: (categoryType, folderId, geneSetId) =>
+      set((state) => ({
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            folders: state.geneSetCategories[categoryType].folders.map((f) =>
+              f.id === folderId
+                ? { ...f, geneSets: f.geneSets.filter((gs) => gs.id !== geneSetId) }
+                : f
+            ),
+          },
+        },
+      })),
+
+    removeFolder: (categoryType, folderId) =>
+      set((state) => ({
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            folders: state.geneSetCategories[categoryType].folders.filter(
+              (f) => f.id !== folderId
+            ),
+          },
+        },
+      })),
+
+    addGenesToCategorySet: (categoryType, geneSetId, genes) =>
+      set((state) => {
+        const category = state.geneSetCategories[categoryType]
+        // Check if it's a direct gene set
+        const directSet = category.geneSets.find((gs) => gs.id === geneSetId)
+        if (directSet) {
+          return {
+            geneSetCategories: {
+              ...state.geneSetCategories,
+              [categoryType]: {
+                ...category,
+                geneSets: category.geneSets.map((gs) =>
+                  gs.id === geneSetId
+                    ? { ...gs, genes: [...new Set([...gs.genes, ...genes])] }
+                    : gs
+                ),
+              },
+            },
+          }
+        }
+        // Check folders
+        return {
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            [categoryType]: {
+              ...category,
+              folders: category.folders.map((f) => ({
+                ...f,
+                geneSets: f.geneSets.map((gs) =>
+                  gs.id === geneSetId
+                    ? { ...gs, genes: [...new Set([...gs.genes, ...genes])] }
+                    : gs
+                ),
               })),
             },
-          ],
-        },
-      },
-    })),
+          },
+        }
+      }),
 
-  addGeneSetToFolder: (categoryType, folderId, name, genes) =>
-    set((state) => ({
-      geneSetCategories: {
-        ...state.geneSetCategories,
-        [categoryType]: {
-          ...state.geneSetCategories[categoryType],
-          folders: state.geneSetCategories[categoryType].folders.map((f) =>
-            f.id === folderId
-              ? {
-                  ...f,
-                  geneSets: [...f.geneSets, { id: generateGeneSetId(), name, genes }],
-                }
-              : f
-          ),
-        },
-      },
-    })),
-
-  removeGeneSetFromCategory: (categoryType, geneSetId) =>
-    set((state) => ({
-      geneSetCategories: {
-        ...state.geneSetCategories,
-        [categoryType]: {
-          ...state.geneSetCategories[categoryType],
-          geneSets: state.geneSetCategories[categoryType].geneSets.filter(
-            (gs) => gs.id !== geneSetId
-          ),
-        },
-      },
-    })),
-
-  removeGeneSetFromFolder: (categoryType, folderId, geneSetId) =>
-    set((state) => ({
-      geneSetCategories: {
-        ...state.geneSetCategories,
-        [categoryType]: {
-          ...state.geneSetCategories[categoryType],
-          folders: state.geneSetCategories[categoryType].folders.map((f) =>
-            f.id === folderId
-              ? { ...f, geneSets: f.geneSets.filter((gs) => gs.id !== geneSetId) }
-              : f
-          ),
-        },
-      },
-    })),
-
-  removeFolder: (categoryType, folderId) =>
-    set((state) => ({
-      geneSetCategories: {
-        ...state.geneSetCategories,
-        [categoryType]: {
-          ...state.geneSetCategories[categoryType],
-          folders: state.geneSetCategories[categoryType].folders.filter(
-            (f) => f.id !== folderId
-          ),
-        },
-      },
-    })),
-
-  addGenesToCategorySet: (categoryType, geneSetId, genes) =>
-    set((state) => {
-      const category = state.geneSetCategories[categoryType]
-      // Check if it's a direct gene set
-      const directSet = category.geneSets.find((gs) => gs.id === geneSetId)
-      if (directSet) {
+    removeGenesFromCategorySet: (categoryType, geneSetId, genes) =>
+      set((state) => {
+        const category = state.geneSetCategories[categoryType]
+        const genesSet = new Set(genes)
+        // Check if it's a direct gene set
+        const directSet = category.geneSets.find((gs) => gs.id === geneSetId)
+        if (directSet) {
+          return {
+            geneSetCategories: {
+              ...state.geneSetCategories,
+              [categoryType]: {
+                ...category,
+                geneSets: category.geneSets.map((gs) =>
+                  gs.id === geneSetId
+                    ? { ...gs, genes: gs.genes.filter((g) => !genesSet.has(g)) }
+                    : gs
+                ),
+              },
+            },
+          }
+        }
+        // Check folders
         return {
           geneSetCategories: {
             ...state.geneSetCategories,
             [categoryType]: {
               ...category,
-              geneSets: category.geneSets.map((gs) =>
-                gs.id === geneSetId
-                  ? { ...gs, genes: [...new Set([...gs.genes, ...genes])] }
-                  : gs
-              ),
+              folders: category.folders.map((f) => ({
+                ...f,
+                geneSets: f.geneSets.map((gs) =>
+                  gs.id === geneSetId
+                    ? { ...gs, genes: gs.genes.filter((g) => !genesSet.has(g)) }
+                    : gs
+                ),
+              })),
             },
           },
         }
-      }
-      // Check folders
-      return {
-        geneSetCategories: {
-          ...state.geneSetCategories,
-          [categoryType]: {
-            ...category,
-            folders: category.folders.map((f) => ({
-              ...f,
-              geneSets: f.geneSets.map((gs) =>
-                gs.id === geneSetId
-                  ? { ...gs, genes: [...new Set([...gs.genes, ...genes])] }
-                  : gs
-              ),
-            })),
-          },
-        },
-      }
-    }),
+      }),
 
-  removeGenesFromCategorySet: (categoryType, geneSetId, genes) =>
-    set((state) => {
-      const category = state.geneSetCategories[categoryType]
-      const genesSet = new Set(genes)
-      // Check if it's a direct gene set
-      const directSet = category.geneSets.find((gs) => gs.id === geneSetId)
-      if (directSet) {
+    renameCategoryGeneSet: (categoryType, geneSetId, newName) =>
+      set((state) => {
+        const category = state.geneSetCategories[categoryType]
+        // Check if it's a direct gene set
+        const directSet = category.geneSets.find((gs) => gs.id === geneSetId)
+        if (directSet) {
+          return {
+            geneSetCategories: {
+              ...state.geneSetCategories,
+              [categoryType]: {
+                ...category,
+                geneSets: category.geneSets.map((gs) =>
+                  gs.id === geneSetId ? { ...gs, name: newName } : gs
+                ),
+              },
+            },
+          }
+        }
+        // Check folders
         return {
           geneSetCategories: {
             ...state.geneSetCategories,
             [categoryType]: {
               ...category,
-              geneSets: category.geneSets.map((gs) =>
-                gs.id === geneSetId
-                  ? { ...gs, genes: gs.genes.filter((g) => !genesSet.has(g)) }
-                  : gs
-              ),
+              folders: category.folders.map((f) => ({
+                ...f,
+                geneSets: f.geneSets.map((gs) =>
+                  gs.id === geneSetId ? { ...gs, name: newName } : gs
+                ),
+              })),
             },
           },
         }
-      }
-      // Check folders
-      return {
-        geneSetCategories: {
-          ...state.geneSetCategories,
-          [categoryType]: {
-            ...category,
-            folders: category.folders.map((f) => ({
-              ...f,
-              geneSets: f.geneSets.map((gs) =>
-                gs.id === geneSetId
-                  ? { ...gs, genes: gs.genes.filter((g) => !genesSet.has(g)) }
-                  : gs
-              ),
-            })),
-          },
-        },
-      }
-    }),
+      }),
 
-  renameCategoryGeneSet: (categoryType, geneSetId, newName) =>
-    set((state) => {
-      const category = state.geneSetCategories[categoryType]
-      // Check if it's a direct gene set
-      const directSet = category.geneSets.find((gs) => gs.id === geneSetId)
-      if (directSet) {
+    // Cell selection actions (per-dataset)
+    setSelectedCellIndices: (indices) => set(dsUpdate({ selectedCellIndices: indices })),
+    addToSelection: (indices) =>
+      set(dsUpdateFn((state) => ({
+        selectedCellIndices: [...new Set([...state.selectedCellIndices, ...indices])],
+      }))),
+    clearSelection: () => set(dsUpdate({ selectedCellIndices: [] })),
+    invertSelection: () =>
+      set(dsUpdateFn((state) => {
+        if (!state.schema || state.selectedCellIndices.length === 0) return {}
+        const selected = new Set(state.selectedCellIndices)
+        const inverted: number[] = []
+        for (let i = 0; i < state.schema.n_cells; i++) {
+          if (!selected.has(i)) inverted.push(i)
+        }
+        return { selectedCellIndices: inverted }
+      })),
+
+    // Global-only
+    setInteractionMode: (mode) => set({ interactionMode: mode }),
+
+    // Display preferences (per-dataset)
+    setDisplayPreferences: (prefs) =>
+      set(dsUpdateFn((state) => ({
+        displayPreferences: { ...state.displayPreferences, ...prefs },
+      }))),
+
+    // Comparison actions (global)
+    setComparisonGroup1: (indices, label) =>
+      set((state) => ({
+        comparison: { ...state.comparison, group1: indices, group1Label: label },
+      })),
+    setComparisonGroup2: (indices, label) =>
+      set((state) => ({
+        comparison: { ...state.comparison, group2: indices, group2Label: label },
+      })),
+    clearComparison: () =>
+      set({
+        comparison: { group1: null, group2: null, group1Label: null, group2Label: null },
+        diffExpResult: null,
+      }),
+    setDiffExpResult: (result) => set({ diffExpResult: result }),
+    setDiffExpLoading: (loading) => set({ isDiffExpLoading: loading }),
+    setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
+
+    // Line association actions (global)
+    setLineAssociationResult: (result) => set({ lineAssociationResult: result }),
+    setLineAssociationLoading: (loading) => set({ isLineAssociationLoading: loading }),
+    setLineAssociationModalOpen: (open) => set({ isLineAssociationModalOpen: open }),
+
+    // Column management actions (per-dataset)
+    hideColumn: (name) =>
+      set(dsUpdateFn((state) => ({
+        hiddenColumns: new Set([...state.hiddenColumns, name]),
+      }))),
+    showColumn: (name) =>
+      set(dsUpdateFn((state) => {
+        const next = new Set(state.hiddenColumns)
+        next.delete(name)
+        return { hiddenColumns: next }
+      })),
+    setColumnDisplayName: (originalName, displayName) =>
+      set(dsUpdateFn((state) => ({
+        columnDisplayNames: { ...state.columnDisplayNames, [originalName]: displayName },
+      }))),
+    clearColumnDisplayName: (originalName) =>
+      set(dsUpdateFn((state) => {
+        const next = { ...state.columnDisplayNames }
+        delete next[originalName]
+        return { columnDisplayNames: next }
+      })),
+
+    // Cell masking actions (per-dataset)
+    setActiveCellsFromSelection: () =>
+      set(dsUpdateFn((state) => {
+        if (state.selectedCellIndices.length === 0 || !state.schema) return {}
+        const mask = new Array(state.schema.n_cells).fill(false)
+        state.selectedCellIndices.forEach((i) => {
+          mask[i] = true
+        })
+        return { activeCellMask: mask }
+      })),
+
+    addSelectionToActive: () =>
+      set(dsUpdateFn((state) => {
+        if (state.selectedCellIndices.length === 0 || !state.schema) return {}
+        // If no mask exists, all cells are currently active - create mask with all true
+        const mask = state.activeCellMask
+          ? [...state.activeCellMask]
+          : new Array(state.schema.n_cells).fill(true)
+        state.selectedCellIndices.forEach((i) => {
+          mask[i] = true
+        })
+        return { activeCellMask: mask }
+      })),
+
+    removeSelectionFromActive: () =>
+      set(dsUpdateFn((state) => {
+        if (state.selectedCellIndices.length === 0 || !state.schema) return {}
+        // If no mask exists, all cells are currently active - create mask with all true first
+        const mask = state.activeCellMask
+          ? [...state.activeCellMask]
+          : new Array(state.schema.n_cells).fill(true)
+        state.selectedCellIndices.forEach((i) => {
+          mask[i] = false
+        })
+        return { activeCellMask: mask }
+      })),
+
+    resetActiveCells: () => set(dsUpdate({ activeCellMask: null })),
+
+    setShowMaskedCells: (show) => set(dsUpdate({ showMaskedCells: show })),
+
+    // Cell ordering actions (per-dataset)
+    sortCellsByExpression: () =>
+      set(dsUpdateFn((state) => {
+        if (!state.expressionData || !state.schema) return {}
+        const values = state.expressionData.values
+        // Create array of indices and sort by expression value (ascending, so high values render last/on top)
+        const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+        indices.sort((a, b) => {
+          const va = values[a] ?? -Infinity
+          const vb = values[b] ?? -Infinity
+          return va - vb  // Ascending: low values first, high values last (on top)
+        })
+        return { cellSortOrder: indices, cellSortVersion: state.cellSortVersion + 1 }
+      })),
+
+    sortCellsByBivariate: () =>
+      set(dsUpdateFn((state) => {
+        if (!state.bivariateData || !state.schema) return {}
+        const { values1, values2 } = state.bivariateData
+        const reversed = state.bivariateSortReversed
+        // Sort by sum of both normalized values
+        // Normal: ascending (low first, high last/on top)
+        // Reversed: descending (high first, low last/on top)
+        const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+        indices.sort((a, b) => {
+          const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
+          const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
+          return reversed ? sumB - sumA : sumA - sumB
+        })
+        return { cellSortOrder: indices, cellSortVersion: state.cellSortVersion + 1 }
+      })),
+
+    toggleBivariateSortOrder: () =>
+      set(dsUpdateFn((state) => {
+        if (!state.bivariateData || !state.schema) return {}
+        const { values1, values2 } = state.bivariateData
+        const newReversed = !state.bivariateSortReversed
+        // Re-sort with new direction
+        const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+        indices.sort((a, b) => {
+          const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
+          const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
+          return newReversed ? sumB - sumA : sumA - sumB
+        })
         return {
-          geneSetCategories: {
-            ...state.geneSetCategories,
-            [categoryType]: {
-              ...category,
-              geneSets: category.geneSets.map((gs) =>
-                gs.id === geneSetId ? { ...gs, name: newName } : gs
-              ),
-            },
-          },
+          bivariateSortReversed: newReversed,
+          cellSortOrder: indices,
+          cellSortVersion: state.cellSortVersion + 1,
         }
-      }
-      // Check folders
-      return {
-        geneSetCategories: {
-          ...state.geneSetCategories,
-          [categoryType]: {
-            ...category,
-            folders: category.folders.map((f) => ({
-              ...f,
-              geneSets: f.geneSets.map((gs) =>
-                gs.id === geneSetId ? { ...gs, name: newName } : gs
-              ),
-            })),
-          },
-        },
-      }
-    }),
+      })),
 
-  // Cell selection actions
-  setSelectedCellIndices: (indices) => set({ selectedCellIndices: indices }),
-  addToSelection: (indices) =>
-    set((state) => ({
-      selectedCellIndices: [...new Set([...state.selectedCellIndices, ...indices])],
-    })),
-  clearSelection: () => set({ selectedCellIndices: [] }),
-  invertSelection: () =>
-    set((state) => {
-      if (!state.schema || state.selectedCellIndices.length === 0) return {}
-      const selected = new Set(state.selectedCellIndices)
-      const inverted: number[] = []
-      for (let i = 0; i < state.schema.n_cells; i++) {
-        if (!selected.has(i)) inverted.push(i)
-      }
-      return { selectedCellIndices: inverted }
-    }),
-  setInteractionMode: (mode) => set({ interactionMode: mode }),
+    resetCellOrder: () => set(dsUpdate({ cellSortOrder: null, cellSortVersion: 0, bivariateSortReversed: false })),
 
-  // Display preferences
-  setDisplayPreferences: (prefs) =>
-    set((state) => ({
-      displayPreferences: { ...state.displayPreferences, ...prefs },
-    })),
-
-  // Comparison actions
-  setComparisonGroup1: (indices, label) =>
-    set((state) => ({
-      comparison: { ...state.comparison, group1: indices, group1Label: label },
-    })),
-  setComparisonGroup2: (indices, label) =>
-    set((state) => ({
-      comparison: { ...state.comparison, group2: indices, group2Label: label },
-    })),
-  clearComparison: () =>
-    set({
-      comparison: { group1: null, group2: null, group1Label: null, group2Label: null },
-      diffExpResult: null,
-    }),
-  setDiffExpResult: (result) => set({ diffExpResult: result }),
-  setDiffExpLoading: (loading) => set({ isDiffExpLoading: loading }),
-  setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
-
-  // Line association actions
-  setLineAssociationResult: (result) => set({ lineAssociationResult: result }),
-  setLineAssociationLoading: (loading) => set({ isLineAssociationLoading: loading }),
-  setLineAssociationModalOpen: (open) => set({ isLineAssociationModalOpen: open }),
-
-  // Column management actions
-  hideColumn: (name) =>
-    set((state) => ({
-      hiddenColumns: new Set([...state.hiddenColumns, name]),
-    })),
-  showColumn: (name) =>
-    set((state) => {
-      const next = new Set(state.hiddenColumns)
-      next.delete(name)
-      return { hiddenColumns: next }
-    }),
-  setColumnDisplayName: (originalName, displayName) =>
-    set((state) => ({
-      columnDisplayNames: { ...state.columnDisplayNames, [originalName]: displayName },
-    })),
-  clearColumnDisplayName: (originalName) =>
-    set((state) => {
-      const next = { ...state.columnDisplayNames }
-      delete next[originalName]
-      return { columnDisplayNames: next }
-    }),
-
-  // Cell masking actions
-  setActiveCellsFromSelection: () =>
-    set((state) => {
-      if (state.selectedCellIndices.length === 0 || !state.schema) return {}
-      const mask = new Array(state.schema.n_cells).fill(false)
-      state.selectedCellIndices.forEach((i) => {
-        mask[i] = true
-      })
-      return { activeCellMask: mask }
-    }),
-
-  addSelectionToActive: () =>
-    set((state) => {
-      if (state.selectedCellIndices.length === 0 || !state.schema) return {}
-      // If no mask exists, all cells are currently active - create mask with all true
-      const mask = state.activeCellMask
-        ? [...state.activeCellMask]
-        : new Array(state.schema.n_cells).fill(true)
-      state.selectedCellIndices.forEach((i) => {
-        mask[i] = true
-      })
-      return { activeCellMask: mask }
-    }),
-
-  removeSelectionFromActive: () =>
-    set((state) => {
-      if (state.selectedCellIndices.length === 0 || !state.schema) return {}
-      // If no mask exists, all cells are currently active - create mask with all true first
-      const mask = state.activeCellMask
-        ? [...state.activeCellMask]
-        : new Array(state.schema.n_cells).fill(true)
-      state.selectedCellIndices.forEach((i) => {
-        mask[i] = false
-      })
-      return { activeCellMask: mask }
-    }),
-
-  resetActiveCells: () => set({ activeCellMask: null }),
-
-  setShowMaskedCells: (show) => set({ showMaskedCells: show }),
-
-  // Cell ordering actions
-  sortCellsByExpression: () =>
-    set((state) => {
-      if (!state.expressionData || !state.schema) return {}
-      const values = state.expressionData.values
-      // Create array of indices and sort by expression value (ascending, so high values render last/on top)
-      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
-      indices.sort((a, b) => {
-        const va = values[a] ?? -Infinity
-        const vb = values[b] ?? -Infinity
-        return va - vb  // Ascending: low values first, high values last (on top)
-      })
-      return { cellSortOrder: indices, cellSortVersion: state.cellSortVersion + 1 }
-    }),
-
-  sortCellsByBivariate: () =>
-    set((state) => {
-      if (!state.bivariateData || !state.schema) return {}
-      const { values1, values2 } = state.bivariateData
-      const reversed = state.bivariateSortReversed
-      // Sort by sum of both normalized values
-      // Normal: ascending (low first, high last/on top)
-      // Reversed: descending (high first, low last/on top)
-      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
-      indices.sort((a, b) => {
-        const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
-        const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
-        return reversed ? sumB - sumA : sumA - sumB
-      })
-      return { cellSortOrder: indices, cellSortVersion: state.cellSortVersion + 1 }
-    }),
-
-  toggleBivariateSortOrder: () =>
-    set((state) => {
-      if (!state.bivariateData || !state.schema) return {}
-      const { values1, values2 } = state.bivariateData
-      const newReversed = !state.bivariateSortReversed
-      // Re-sort with new direction
-      const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
-      indices.sort((a, b) => {
-        const sumA = (values1[a] ?? 0) + (values2[a] ?? 0)
-        const sumB = (values1[b] ?? 0) + (values2[b] ?? 0)
-        return newReversed ? sumB - sumA : sumA - sumB
-      })
-      return {
-        bivariateSortReversed: newReversed,
-        cellSortOrder: indices,
-        cellSortVersion: state.cellSortVersion + 1,
-      }
-    }),
-
-  resetCellOrder: () => set({ cellSortOrder: null, cellSortVersion: 0, bivariateSortReversed: false }),
-
-  // Line/shape drawing actions
-  addLine: (name, points, embeddingName) =>
-    set((state) => {
+    // Line/shape drawing actions — mixed (drawnLines is per-dataset, activeLineId is global)
+    addLine: (name, points, embeddingName) => {
       const id = `line_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
       const newLine: DrawnLine = {
         id,
@@ -1033,197 +1172,235 @@ export const useStore = create<AppState>((set) => ({
         visible: true,
         projections: [],
       }
-      return {
+      const state = get()
+      const dsPatch: Partial<DatasetState> = {
         drawnLines: [...state.drawnLines, newLine],
-        activeLineId: id,  // Auto-select newly drawn line
       }
-    }),
+      const { activeSlot, datasets } = state
+      set({
+        ...dsPatch,
+        activeLineId: id,  // global field
+        datasets: {
+          ...datasets,
+          [activeSlot]: { ...datasets[activeSlot], ...dsPatch },
+        },
+      })
+    },
 
-  removeLine: (id) =>
-    set((state) => ({
-      drawnLines: state.drawnLines.filter((l) => l.id !== id),
-      activeLineId: state.activeLineId === id ? null : state.activeLineId,
-    })),
+    removeLine: (id) => {
+      const state = get()
+      const dsPatch: Partial<DatasetState> = {
+        drawnLines: state.drawnLines.filter((l) => l.id !== id),
+      }
+      const { activeSlot, datasets } = state
+      set({
+        ...dsPatch,
+        activeLineId: state.activeLineId === id ? null : state.activeLineId,  // global
+        datasets: {
+          ...datasets,
+          [activeSlot]: { ...datasets[activeSlot], ...dsPatch },
+        },
+      })
+    },
 
-  setActiveLine: (id) =>
-    set({ activeLineId: id }),
+    // Global-only line actions
+    setActiveLine: (id) => set({ activeLineId: id }),
 
-  renameLine: (id, name) =>
-    set((state) => ({
-      drawnLines: state.drawnLines.map((l) => (l.id === id ? { ...l, name } : l)),
-    })),
+    // Per-dataset line actions
+    renameLine: (id, name) =>
+      set(dsUpdateFn((state) => ({
+        drawnLines: state.drawnLines.map((l) => (l.id === id ? { ...l, name } : l)),
+      }))),
 
-  smoothLine: (id) =>
-    set((state) => {
-      const line = state.drawnLines.find((l) => l.id === id)
-      if (!line || line.points.length < 3) return {}
+    smoothLine: (id) =>
+      set(dsUpdateFn((state) => {
+        const line = state.drawnLines.find((l) => l.id === id)
+        if (!line || line.points.length < 3) return {}
 
-      const { windowSize, iterations } = state.lineSmoothingParams
-      let smoothed = [...line.points] as [number, number][]
+        const { windowSize, iterations } = state.lineSmoothingParams
+        let smoothed = [...line.points] as [number, number][]
 
-      // Apply moving average smoothing multiple times
-      for (let iter = 0; iter < iterations; iter++) {
-        const newSmoothed: [number, number][] = []
-        for (let i = 0; i < smoothed.length; i++) {
-          const halfWindow = Math.floor(windowSize / 2)
-          let sumX = 0, sumY = 0, count = 0
-          for (let j = Math.max(0, i - halfWindow); j <= Math.min(smoothed.length - 1, i + halfWindow); j++) {
-            sumX += smoothed[j][0]
-            sumY += smoothed[j][1]
-            count++
+        // Apply moving average smoothing multiple times
+        for (let iter = 0; iter < iterations; iter++) {
+          const newSmoothed: [number, number][] = []
+          for (let i = 0; i < smoothed.length; i++) {
+            const halfWindow = Math.floor(windowSize / 2)
+            let sumX = 0, sumY = 0, count = 0
+            for (let j = Math.max(0, i - halfWindow); j <= Math.min(smoothed.length - 1, i + halfWindow); j++) {
+              sumX += smoothed[j][0]
+              sumY += smoothed[j][1]
+              count++
+            }
+            newSmoothed.push([sumX / count, sumY / count])
           }
-          newSmoothed.push([sumX / count, sumY / count])
-        }
-        smoothed = newSmoothed
-      }
-
-      return {
-        drawnLines: state.drawnLines.map((l) =>
-          l.id === id ? { ...l, smoothedPoints: smoothed } : l
-        ),
-      }
-    }),
-
-  setLineSmoothingParams: (params) =>
-    set((state) => ({
-      lineSmoothingParams: { ...state.lineSmoothingParams, ...params },
-    })),
-
-  setLineVisibility: (id, visible) =>
-    set((state) => ({
-      drawnLines: state.drawnLines.map((l) => (l.id === id ? { ...l, visible } : l)),
-    })),
-
-  projectSelectedCellsOntoLine: (lineId) =>
-    set((state) => {
-      const line = state.drawnLines.find((l) => l.id === lineId)
-      if (!line || !state.embedding || state.selectedCellIndices.length === 0) return {}
-
-      const linePoints = line.smoothedPoints || line.points
-      if (linePoints.length < 2) return {}
-
-      // Compute cumulative distances along the line
-      const cumulativeDistances: number[] = [0]
-      for (let i = 1; i < linePoints.length; i++) {
-        const dx = linePoints[i][0] - linePoints[i - 1][0]
-        const dy = linePoints[i][1] - linePoints[i - 1][1]
-        cumulativeDistances.push(cumulativeDistances[i - 1] + Math.sqrt(dx * dx + dy * dy))
-      }
-      const totalLength = cumulativeDistances[cumulativeDistances.length - 1]
-
-      // Get existing projection cell indices to avoid duplicates
-      const existingCellIndices = new Set(line.projections.map((p) => p.cellIndex))
-
-      // Project each selected cell onto the line
-      const newProjections: CellProjection[] = []
-      const coords = state.embedding.coordinates
-
-      for (const cellIndex of state.selectedCellIndices) {
-        // Skip if already projected
-        if (existingCellIndices.has(cellIndex)) continue
-
-        const [cx, cy] = coords[cellIndex]
-        let minDist = Infinity
-        let bestPosition = 0
-
-        // Find closest point on each line segment
-        for (let i = 0; i < linePoints.length - 1; i++) {
-          const [x1, y1] = linePoints[i]
-          const [x2, y2] = linePoints[i + 1]
-
-          // Project point onto line segment
-          const dx = x2 - x1
-          const dy = y2 - y1
-          const segmentLength = Math.sqrt(dx * dx + dy * dy)
-
-          if (segmentLength === 0) continue
-
-          // Parameter t for projection (clamped to [0, 1] for segment)
-          let t = ((cx - x1) * dx + (cy - y1) * dy) / (segmentLength * segmentLength)
-          t = Math.max(0, Math.min(1, t))
-
-          // Closest point on segment
-          const projX = x1 + t * dx
-          const projY = y1 + t * dy
-
-          // Distance from cell to closest point
-          const dist = Math.sqrt((cx - projX) * (cx - projX) + (cy - projY) * (cy - projY))
-
-          if (dist < minDist) {
-            minDist = dist
-            // Position along the entire line (normalized 0-1)
-            bestPosition = (cumulativeDistances[i] + t * segmentLength) / totalLength
-          }
+          smoothed = newSmoothed
         }
 
-        newProjections.push({
-          cellIndex,
-          positionOnLine: bestPosition,
-          distanceToLine: minDist,
-        })
-      }
-
-      // Merge new projections with existing ones
-      return {
-        drawnLines: state.drawnLines.map((l) =>
-          l.id === lineId
-            ? { ...l, projections: [...l.projections, ...newProjections] }
-            : l
-        ),
-      }
-    }),
-
-  clearLineProjections: (lineId) =>
-    set((state) => ({
-      drawnLines: state.drawnLines.map((l) =>
-        l.id === lineId ? { ...l, projections: [] } : l
-      ),
-    })),
-
-  // Import modal actions
-  setImportModalOpen: (open) => set({ isImportModalOpen: open }),
-
-  // Scanpy modal actions
-  setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),
-  setScanpyActionHistory: (history) => set({ scanpyActionHistory: history }),
-  addScanpyAction: (action) =>
-    set((state) => ({
-      scanpyActionHistory: [...state.scanpyActionHistory, action],
-    })),
-
-  // Observable summaries refresh
-  refreshObsSummaries: () =>
-    set((state) => ({ obsSummariesVersion: state.obsSummariesVersion + 1 })),
-
-  // Marker genes modal actions
-  setMarkerGenesModalOpen: (open) => set({ isMarkerGenesModalOpen: open }),
-  setMarkerGenesColumn: (column) => set({ markerGenesColumn: column }),
-
-  // Checkbox-based comparison actions
-  toggleComparisonCategory: (column, category) =>
-    set((state) => {
-      if (state.comparisonCheckedColumn !== column) {
-        // Switching columns: clear previous and start fresh
         return {
-          comparisonCheckedColumn: column,
-          comparisonCheckedCategories: new Set([category]),
+          drawnLines: state.drawnLines.map((l) =>
+            l.id === id ? { ...l, smoothedPoints: smoothed } : l
+          ),
         }
-      }
-      const next = new Set(state.comparisonCheckedCategories)
-      if (next.has(category)) {
-        next.delete(category)
-      } else {
-        next.add(category)
-      }
-      return {
-        comparisonCheckedColumn: next.size > 0 ? column : null,
-        comparisonCheckedCategories: next,
-      }
-    }),
-  clearComparisonCategories: () =>
-    set({ comparisonCheckedColumn: null, comparisonCheckedCategories: new Set<string>() }),
+      })),
 
-  // Heatmap tab actions
-  setCenterPanelView: (view) => set({ centerPanelView: view }),
-  setHeatmapConfig: (config) => set({ heatmapConfig: config }),
-}))
+    // Global-only
+    setLineSmoothingParams: (params) =>
+      set((state) => ({
+        lineSmoothingParams: { ...state.lineSmoothingParams, ...params },
+      })),
+
+    // Per-dataset
+    setLineVisibility: (id, visible) =>
+      set(dsUpdateFn((state) => ({
+        drawnLines: state.drawnLines.map((l) => (l.id === id ? { ...l, visible } : l)),
+      }))),
+
+    projectSelectedCellsOntoLine: (lineId) =>
+      set(dsUpdateFn((state) => {
+        const line = state.drawnLines.find((l) => l.id === lineId)
+        if (!line || !state.embedding || state.selectedCellIndices.length === 0) return {}
+
+        const linePoints = line.smoothedPoints || line.points
+        if (linePoints.length < 2) return {}
+
+        // Compute cumulative distances along the line
+        const cumulativeDistances: number[] = [0]
+        for (let i = 1; i < linePoints.length; i++) {
+          const dx = linePoints[i][0] - linePoints[i - 1][0]
+          const dy = linePoints[i][1] - linePoints[i - 1][1]
+          cumulativeDistances.push(cumulativeDistances[i - 1] + Math.sqrt(dx * dx + dy * dy))
+        }
+        const totalLength = cumulativeDistances[cumulativeDistances.length - 1]
+
+        // Get existing projection cell indices to avoid duplicates
+        const existingCellIndices = new Set(line.projections.map((p) => p.cellIndex))
+
+        // Project each selected cell onto the line
+        const newProjections: CellProjection[] = []
+        const coords = state.embedding.coordinates
+
+        for (const cellIndex of state.selectedCellIndices) {
+          // Skip if already projected
+          if (existingCellIndices.has(cellIndex)) continue
+
+          const [cx, cy] = coords[cellIndex]
+          let minDist = Infinity
+          let bestPosition = 0
+
+          // Find closest point on each line segment
+          for (let i = 0; i < linePoints.length - 1; i++) {
+            const [x1, y1] = linePoints[i]
+            const [x2, y2] = linePoints[i + 1]
+
+            // Project point onto line segment
+            const dx = x2 - x1
+            const dy = y2 - y1
+            const segmentLength = Math.sqrt(dx * dx + dy * dy)
+
+            if (segmentLength === 0) continue
+
+            // Parameter t for projection (clamped to [0, 1] for segment)
+            let t = ((cx - x1) * dx + (cy - y1) * dy) / (segmentLength * segmentLength)
+            t = Math.max(0, Math.min(1, t))
+
+            // Closest point on segment
+            const projX = x1 + t * dx
+            const projY = y1 + t * dy
+
+            // Distance from cell to closest point
+            const dist = Math.sqrt((cx - projX) * (cx - projX) + (cy - projY) * (cy - projY))
+
+            if (dist < minDist) {
+              minDist = dist
+              // Position along the entire line (normalized 0-1)
+              bestPosition = (cumulativeDistances[i] + t * segmentLength) / totalLength
+            }
+          }
+
+          newProjections.push({
+            cellIndex,
+            positionOnLine: bestPosition,
+            distanceToLine: minDist,
+          })
+        }
+
+        // Merge new projections with existing ones
+        return {
+          drawnLines: state.drawnLines.map((l) =>
+            l.id === lineId
+              ? { ...l, projections: [...l.projections, ...newProjections] }
+              : l
+          ),
+        }
+      })),
+
+    clearLineProjections: (lineId) =>
+      set(dsUpdateFn((state) => ({
+        drawnLines: state.drawnLines.map((l) =>
+          l.id === lineId ? { ...l, projections: [] } : l
+        ),
+      }))),
+
+    // Import modal actions (global)
+    setImportModalOpen: (open) => set({ isImportModalOpen: open }),
+
+    // Scanpy modal actions
+    setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),  // global
+    setScanpyActionHistory: (history) => set(dsUpdate({ scanpyActionHistory: history })),  // per-dataset
+    addScanpyAction: (action) =>
+      set(dsUpdateFn((state) => ({
+        scanpyActionHistory: [...state.scanpyActionHistory, action],
+      }))),
+
+    // Observable summaries refresh (per-dataset)
+    refreshObsSummaries: () =>
+      set(dsUpdateFn((state) => ({ obsSummariesVersion: state.obsSummariesVersion + 1 }))),
+
+    // Marker genes modal actions (global)
+    setMarkerGenesModalOpen: (open) => set({ isMarkerGenesModalOpen: open }),
+    setMarkerGenesColumn: (column) => set({ markerGenesColumn: column }),
+
+    // Checkbox-based comparison actions (global)
+    toggleComparisonCategory: (column, category) =>
+      set((state) => {
+        if (state.comparisonCheckedColumn !== column) {
+          // Switching columns: clear previous and start fresh
+          return {
+            comparisonCheckedColumn: column,
+            comparisonCheckedCategories: new Set([category]),
+          }
+        }
+        const next = new Set(state.comparisonCheckedCategories)
+        if (next.has(category)) {
+          next.delete(category)
+        } else {
+          next.add(category)
+        }
+        return {
+          comparisonCheckedColumn: next.size > 0 ? column : null,
+          comparisonCheckedCategories: next,
+        }
+      }),
+    clearComparisonCategories: () =>
+      set({ comparisonCheckedColumn: null, comparisonCheckedCategories: new Set<string>() }),
+
+    // Heatmap tab actions (global)
+    setCenterPanelView: (view) => set({ centerPanelView: view }),
+    setHeatmapConfig: (config) => set({ heatmapConfig: config }),
+
+    // Multi-dataset actions
+    setActiveSlot: (slot) => {
+      const state = get()
+      if (slot === state.activeSlot) return
+      set({
+        activeSlot: slot,
+        ...syncFlatFields(slot, state.datasets),
+      })
+    },
+  }
+})
+
+/** Convenience hook: returns the DatasetState for the active slot. */
+export function useActiveDataset(): DatasetState {
+  return useStore((state) => state.datasets[state.activeSlot])
+}

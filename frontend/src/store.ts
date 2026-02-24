@@ -217,6 +217,9 @@ export interface LineAssociationResult {
 // Center panel view mode
 export type CenterPanelView = 'scatter' | 'heatmap'
 
+// Layout mode for scatter view
+export type LayoutMode = 'single' | 'dual'
+
 // Heatmap configuration
 export interface HeatmapConfig {
   selectedGeneSets: { name: string; genes: string[] }[]
@@ -406,6 +409,9 @@ interface AppState {
   centerPanelView: CenterPanelView
   heatmapConfig: HeatmapConfig | null
 
+  // Layout mode (single vs side-by-side dual scatter)
+  layoutMode: LayoutMode
+
   // Multi-dataset support
   datasets: Record<DatasetSlot, DatasetState>
   activeSlot: DatasetSlot
@@ -521,9 +527,13 @@ interface AppState {
   setCenterPanelView: (view: CenterPanelView) => void
   setHeatmapConfig: (config: HeatmapConfig | null) => void
 
+  // Layout mode actions
+  setLayoutMode: (mode: LayoutMode) => void
+
   // Multi-dataset actions
   setActiveSlot: (slot: DatasetSlot) => void
   loadDatasetIntoSlot: (slot: DatasetSlot, schema: Schema) => void
+  patchSlotState: (slot: DatasetSlot, patch: Partial<DatasetState>) => void
 }
 
 export const useStore = create<AppState>((set, get) => {
@@ -643,6 +653,9 @@ export const useStore = create<AppState>((set, get) => {
     comparisonCheckedCategories: new Set<string>(),
     centerPanelView: 'scatter',
     heatmapConfig: null,
+
+    // Layout mode
+    layoutMode: 'single' as LayoutMode,
 
     // Multi-dataset state
     datasets: {
@@ -1389,6 +1402,9 @@ export const useStore = create<AppState>((set, get) => {
     setCenterPanelView: (view) => set({ centerPanelView: view }),
     setHeatmapConfig: (config) => set({ heatmapConfig: config }),
 
+    // Layout mode actions
+    setLayoutMode: (mode) => set({ layoutMode: mode }),
+
     // Multi-dataset actions
     setActiveSlot: (slot) => {
       const state = get()
@@ -1414,6 +1430,19 @@ export const useStore = create<AppState>((set, get) => {
       const newDatasets = { ...state.datasets, [slot]: freshDs }
       if (slot === state.activeSlot) {
         set({ datasets: newDatasets, ...syncFlatFields(slot, newDatasets) })
+      } else {
+        set({ datasets: newDatasets })
+      }
+    },
+
+    patchSlotState: (slot, patch) => {
+      const state = get()
+      const newDatasets = {
+        ...state.datasets,
+        [slot]: { ...state.datasets[slot], ...patch },
+      }
+      if (slot === state.activeSlot) {
+        set({ ...patch, datasets: newDatasets } as Partial<AppState>)
       } else {
         set({ datasets: newDatasets })
       }

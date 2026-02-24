@@ -96,6 +96,8 @@ export function useExpressionTransformEffect() {
     setExpressionData,
     setLoading,
     setError,
+    layoutMode,
+    activeSlot,
   } = useStore()
 
   useEffect(() => {
@@ -127,6 +129,11 @@ export function useExpressionTransformEffect() {
           })
           setExpressionData(data)
         }
+
+        // Mirror to other slot in dual mode
+        if (layoutMode === 'dual') {
+          mirrorExpressionToSlot(otherSlot(activeSlot), selectedGenes, transform, displayPreferences.geneSetScoringMethod)
+        }
       } catch (err) {
         setError((err as Error).message)
       } finally {
@@ -147,6 +154,8 @@ export function useBivariateTransformEffect() {
     setBivariateData,
     setLoading,
     setError,
+    layoutMode,
+    activeSlot,
   } = useStore()
 
   useEffect(() => {
@@ -173,6 +182,11 @@ export function useBivariateTransformEffect() {
           }),
         })
         setBivariateData(data)
+
+        // Mirror to other slot in dual mode
+        if (layoutMode === 'dual') {
+          mirrorBivariateToSlot(otherSlot(activeSlot), genes1, genes2, transform, displayPreferences.geneSetScoringMethod)
+        }
       } catch (err) {
         setError((err as Error).message)
       } finally {
@@ -182,6 +196,88 @@ export function useBivariateTransformEffect() {
 
     fetchBivariate()
   }, [displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod]) // Re-run when transform or scoring method changes
+}
+
+// Helper: fetch expression data for a specific slot and patch its DatasetState.
+// Used to mirror gene coloring to the non-active plot in dual mode.
+// Errors are silently ignored (gene may not exist in the other dataset).
+async function mirrorExpressionToSlot(
+  slot: DatasetSlot,
+  genes: string[],
+  transform?: string,
+  scoringMethod?: string,
+) {
+  const state = useStore.getState()
+  const ds = state.datasets[slot]
+  if (!ds.schema) return
+  try {
+    let data: ExpressionData
+    if (genes.length === 1) {
+      const url = transform
+        ? appendDataset(`${API_BASE}/expression/${encodeURIComponent(genes[0])}?transform=${transform}`, slot)
+        : appendDataset(`${API_BASE}/expression/${encodeURIComponent(genes[0])}`, slot)
+      data = await fetchJson<ExpressionData>(url)
+    } else {
+      data = await fetchJson<ExpressionData>(appendDataset(`${API_BASE}/expression/multi`, slot), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ genes, transform, scoring_method: scoringMethod }),
+      })
+    }
+    // Compute sort order for the other slot
+    const indices = Array.from({ length: ds.schema.n_cells }, (_, i) => i)
+    indices.sort((a, b) => (data.values[a] ?? -Infinity) - (data.values[b] ?? -Infinity))
+    useStore.getState().patchSlotState(slot, {
+      expressionData: data,
+      selectedGenes: genes,
+      colorMode: 'expression',
+      selectedColorColumn: null,
+      bivariateData: null,
+      cellSortOrder: indices,
+      cellSortVersion: ds.cellSortVersion + 1,
+    })
+  } catch {
+    // Gene may not exist in this dataset — ignore
+  }
+}
+
+// Helper: fetch bivariate data for a specific slot and patch its DatasetState.
+async function mirrorBivariateToSlot(
+  slot: DatasetSlot,
+  genes1: string[],
+  genes2: string[],
+  transform?: string,
+  scoringMethod?: string,
+) {
+  const state = useStore.getState()
+  const ds = state.datasets[slot]
+  if (!ds.schema) return
+  try {
+    const data = await fetchJson<BivariateExpressionData>(appendDataset(`${API_BASE}/expression/bivariate`, slot), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ genes1, genes2, transform, clip_percentile: 1.0, scoring_method: scoringMethod }),
+    })
+    const { values1, values2 } = data
+    const indices = Array.from({ length: ds.schema.n_cells }, (_, i) => i)
+    indices.sort((a, b) => ((values1[a] ?? 0) + (values2[a] ?? 0)) - ((values1[b] ?? 0) + (values2[b] ?? 0)))
+    useStore.getState().patchSlotState(slot, {
+      bivariateData: data,
+      colorMode: 'bivariate',
+      selectedColorColumn: null,
+      expressionData: null,
+      selectedGenes: [],
+      cellSortOrder: indices,
+      cellSortVersion: ds.cellSortVersion + 1,
+    })
+  } catch {
+    // Genes may not exist in this dataset — ignore
+  }
+}
+
+// Helper: get the other slot (for dual-mode mirroring)
+function otherSlot(slot: DatasetSlot): DatasetSlot {
+  return slot === 'primary' ? 'secondary' : 'primary'
 }
 
 export function useDataActions() {
@@ -197,6 +293,9 @@ export function useDataActions() {
     setLoading,
     setError,
     displayPreferences,
+    layoutMode,
+    activeSlot,
+    patchSlotState,
   } = useStore()
 
   const selectEmbedding = useCallback(
@@ -234,19 +333,31 @@ export function useDataActions() {
         setSelectedGenes([gene])
         setColorMode('expression')
         setSelectedColorColumn(null)
+
+        // Mirror to other slot in dual mode (fire-and-forget)
+        if (layoutMode === 'dual') {
+          mirrorExpressionToSlot(otherSlot(activeSlot), [gene], effectiveTransform)
+        }
       } catch (err) {
         setError((err as Error).message)
       } finally {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, displayPreferences.expressionTransform]
+    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, displayPreferences.expressionTransform, layoutMode, activeSlot]
   )
 
   const colorByGenes = useCallback(
     async (genes: string[], transform?: string) => {
       if (genes.length === 0) {
         clearSelectedGenes()
+        // Mirror clear to other slot in dual mode
+        if (layoutMode === 'dual') {
+          patchSlotState(otherSlot(activeSlot), {
+            selectedGenes: [], expressionData: null, colorMode: 'none',
+            cellSortOrder: null, cellSortVersion: 0,
+          })
+        }
         return
       }
       if (genes.length === 1) {
@@ -270,18 +381,30 @@ export function useDataActions() {
         setSelectedGenes(genes)
         setColorMode('expression')
         setSelectedColorColumn(null)
+
+        // Mirror to other slot in dual mode (fire-and-forget)
+        if (layoutMode === 'dual') {
+          mirrorExpressionToSlot(otherSlot(activeSlot), genes, effectiveTransform, displayPreferences.geneSetScoringMethod)
+        }
       } catch (err) {
         setError((err as Error).message)
       } finally {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod]
+    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod, layoutMode, activeSlot, patchSlotState]
   )
 
   const clearExpressionColor = useCallback(() => {
     clearSelectedGenes()
-  }, [clearSelectedGenes])
+    // Mirror clear to other slot in dual mode
+    if (layoutMode === 'dual') {
+      patchSlotState(otherSlot(activeSlot), {
+        selectedGenes: [], expressionData: null, colorMode: 'none',
+        cellSortOrder: null, cellSortVersion: 0,
+      })
+    }
+  }, [clearSelectedGenes, layoutMode, activeSlot, patchSlotState])
 
   const colorByBivariate = useCallback(
     async (genes1: string[], genes2: string[]) => {
@@ -308,18 +431,30 @@ export function useDataActions() {
         setSelectedColorColumn(null)
         setExpressionData(null)
         setSelectedGenes([])
+
+        // Mirror to other slot in dual mode (fire-and-forget)
+        if (layoutMode === 'dual') {
+          mirrorBivariateToSlot(otherSlot(activeSlot), genes1, genes2, transform, displayPreferences.geneSetScoringMethod)
+        }
       } catch (err) {
         setError((err as Error).message)
       } finally {
         setLoading(false)
       }
     },
-    [setLoading, setBivariateData, setColorMode, setSelectedColorColumn, setExpressionData, setSelectedGenes, setError, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod]
+    [setLoading, setBivariateData, setColorMode, setSelectedColorColumn, setExpressionData, setSelectedGenes, setError, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod, layoutMode, activeSlot]
   )
 
   const clearBivariateColor = useCallback(() => {
     clearBivariateMode()
-  }, [clearBivariateMode])
+    // Mirror clear to other slot in dual mode
+    if (layoutMode === 'dual') {
+      patchSlotState(otherSlot(activeSlot), {
+        bivariateData: null, colorMode: 'none',
+        cellSortOrder: null, cellSortVersion: 0,
+      })
+    }
+  }, [clearBivariateMode, layoutMode, activeSlot, patchSlotState])
 
   return {
     selectEmbedding,

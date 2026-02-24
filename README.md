@@ -135,6 +135,9 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - Choose **Secondary** from the "Load into" dropdown
 - Browse or enter the path to a second h5ad file and click **Load**
 - A dataset switcher dropdown appears in the header — switch between Primary and Secondary to compare datasets
+- Click the **Split** button to view both datasets side by side
+- Click on either plot to make it the active dataset — the Cell and Gene panels update accordingly
+- Each plot has its own embedding selector, legend, and independent pan/zoom
 
 ### 14. Export Results
 
@@ -148,7 +151,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - **Scanpy integration** — run preprocessing, cell analysis (PCA, Neighbors, UMAP, Leiden), gene analysis, spatial analysis (contourize), and differential expression directly in the browser
 - **Trajectory analysis** — draw lines and associate genes with spatial trajectories
 - **Display settings** — adjust point size, opacity, colormaps, bivariate coloring
-- **Multi-dataset support** — load two h5ad files side by side and switch between them
+- **Multi-dataset support** — load two h5ad files, switch between them, or view side by side in split mode
 - **Export** — download annotations and analysis results
 
 ## Project Structure

@@ -556,7 +556,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, selectedGenes } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes } = useStore()
 
   const [selectedCategory, setSelectedCategory] = useState<CategoryKey>('preprocessing')
   const [selectedFunction, setSelectedFunction] = useState<FunctionKey>('filter_genes')
@@ -850,6 +850,10 @@ export default function ScanpyModal() {
       // Invalidate cached embedding so it re-fetches (e.g. new UMAP coordinates)
       if (['umap', 'pca', 'filter_cells'].includes(selectedFunction)) {
         setEmbedding(null)
+        // Auto-select the newly created embedding (important when dataset had none initially)
+        if (data.embedding_name) {
+          setSelectedEmbedding(data.embedding_name)
+        }
       }
 
       // Reset cell mask after filter_cells removes cells (indices become stale)
@@ -874,7 +878,7 @@ export default function ScanpyModal() {
     } finally {
       setIsRunning(false)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, selectedGenes])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes])
 
   if (!isScanpyModalOpen) return null
 

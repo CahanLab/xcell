@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Side-by-side dual scatter plot view: click "Split" in the toolbar to view both primary and secondary datasets simultaneously. Click a plot to make it the active dataset. Each plot has independent pan/zoom, its own embedding selector, and its own legend. Interaction tools (lasso, draw, adjust) work on whichever plot you click. Gene and gene set coloring applies to both plots simultaneously.
+- Embeddings created by Scanpy (PCA, UMAP) are now automatically selected for viewing, even when the dataset had no embeddings initially.
 - Backend multi-dataset support: load multiple datasets into named slots (`primary`, `secondary`, etc.). All API endpoints accept an optional `?dataset=` query parameter. New `GET /datasets` and `DELETE /datasets/{slot}` endpoints for managing loaded datasets. Existing single-dataset usage is unchanged.
 - Dataset slot selector in Load modal — load a second h5ad file into the Secondary slot without losing the Primary dataset.
 - Dataset switcher dropdown in header toolbar (appears when two datasets are loaded) — switch between primary and secondary views seamlessly.

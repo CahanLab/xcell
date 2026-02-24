@@ -2,9 +2,10 @@ import { useMemo, useState, useRef, useCallback, useEffect } from 'react'
 import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
-import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, ColorScale } from '../store'
+import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, ColorScale, DatasetSlot } from '../store'
 
 interface ScatterPlotProps {
+  slot?: DatasetSlot
   embedding: EmbeddingData
   colorBy: ObsColumnData | null
   expressionData: ExpressionData | null
@@ -191,6 +192,7 @@ function pointInPolygon(x: number, y: number, polygon: [number, number][]): bool
 }
 
 export default function ScatterPlot({
+  slot,
   embedding,
   colorBy,
   expressionData,
@@ -215,13 +217,26 @@ export default function ScatterPlot({
   const preRotationCoords = useRef<[number, number][] | null>(null)
 
   // Get display preferences, cell masking, sort state, and drawn lines from store
-  const displayPreferences = useStore((state) => state.displayPreferences)
-  const activeCellMask = useStore((state) => state.activeCellMask)
-  const showMaskedCells = useStore((state) => state.showMaskedCells)
-  const cellSortOrder = useStore((state) => state.cellSortOrder)
-  const cellSortVersion = useStore((state) => state.cellSortVersion)
-  const drawnLines = useStore((state) => state.drawnLines)
-  const activeLineId = useStore((state) => state.activeLineId)
+  // When a `slot` prop is provided, read from datasets[slot] instead of flat top-level fields
+  const displayPreferences = useStore((state) =>
+    slot ? state.datasets[slot].displayPreferences : state.displayPreferences
+  )
+  const activeCellMask = useStore((state) =>
+    slot ? state.datasets[slot].activeCellMask : state.activeCellMask
+  )
+  const showMaskedCells = useStore((state) =>
+    slot ? state.datasets[slot].showMaskedCells : state.showMaskedCells
+  )
+  const cellSortOrder = useStore((state) =>
+    slot ? state.datasets[slot].cellSortOrder : state.cellSortOrder
+  )
+  const cellSortVersion = useStore((state) =>
+    slot ? state.datasets[slot].cellSortVersion : state.cellSortVersion
+  )
+  const drawnLines = useStore((state) =>
+    slot ? state.datasets[slot].drawnLines : state.drawnLines
+  )
+  const activeLineId = useStore((state) => state.activeLineId) // stays global
 
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])

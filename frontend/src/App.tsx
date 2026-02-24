@@ -469,6 +469,8 @@ export default function App() {
     setActiveSlot,
     loadDatasetIntoSlot,
     datasets,
+    layoutMode,
+    setLayoutMode,
   } = useStore()
 
   const schema = useSchema()
@@ -829,19 +831,31 @@ export default function App() {
 
         <div style={styles.controls}>
           {datasets.secondary.schema && (
-            <select
-              value={activeSlot}
-              onChange={(e) => setActiveSlot(e.target.value as DatasetSlot)}
-              style={{ ...styles.embeddingSelect, fontSize: '12px' }}
-              title="Switch active dataset"
-            >
-              <option value="primary">
-                Primary ({datasets.primary.schema?.n_cells.toLocaleString() ?? '\u2014'} cells)
-              </option>
-              <option value="secondary">
-                Secondary ({datasets.secondary.schema?.n_cells.toLocaleString() ?? '\u2014'} cells)
-              </option>
-            </select>
+            <>
+              <select
+                value={activeSlot}
+                onChange={(e) => setActiveSlot(e.target.value as DatasetSlot)}
+                style={{ ...styles.embeddingSelect, fontSize: '12px' }}
+                title="Switch active dataset"
+              >
+                <option value="primary">
+                  Primary ({datasets.primary.schema?.n_cells.toLocaleString() ?? '\u2014'} cells)
+                </option>
+                <option value="secondary">
+                  Secondary ({datasets.secondary.schema?.n_cells.toLocaleString() ?? '\u2014'} cells)
+                </option>
+              </select>
+              <button
+                style={{
+                  ...styles.toolButton,
+                  ...(layoutMode === 'dual' ? styles.toolButtonActive : {}),
+                }}
+                onClick={() => setLayoutMode(layoutMode === 'dual' ? 'single' : 'dual')}
+                title={layoutMode === 'dual' ? 'Switch to single view' : 'Show both datasets side by side'}
+              >
+                Split
+              </button>
+            </>
           )}
           {schema && (
             <>
@@ -1052,104 +1066,287 @@ export default function App() {
                   </div>
                 )}
 
-                {embedding && !error && (
-                  <>
-                    <ScatterPlot
-                      embedding={embedding}
-                      colorBy={colorBy}
-                      expressionData={expressionData}
-                      bivariateData={bivariateData}
-                      colorMode={colorMode}
-                      interactionMode={interactionMode}
-                      selectedCellIndices={selectedCellIndices}
-                      onSelectionComplete={handleSelectionComplete}
-                      onLineDrawn={handleLineDrawn}
-                      onTransformEmbedding={handleRotateEmbedding}
-                    />
-
-                    {/* Embedding selector - bottom left */}
-                    {schema && (schema.embeddings.length > 1 || interactionMode === 'adjust') && (
-                      <div style={{ ...styles.embeddingSelector, flexDirection: 'column' as const, alignItems: 'flex-start', gap: '6px' }}>
-                        {schema.embeddings.length > 1 && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={styles.embeddingLabel}>Embedding:</span>
-                            <select
-                              style={styles.embeddingSelect}
-                              value={selectedEmbedding || ''}
-                              onChange={(e) => selectEmbedding(e.target.value)}
-                            >
-                              {schema.embeddings.map((emb) => (
-                                <option key={emb} value={emb}>
-                                  {emb}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-                        {interactionMode === 'adjust' && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <button
-                              style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
-                              onClick={() => handleTransformEmbedding({ reflect_y: true })}
-                              title="Mirror x-coordinates (reflect about y-axis)"
-                            >
-                              &#8596; Flip X
-                            </button>
-                            <button
-                              style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
-                              onClick={() => handleTransformEmbedding({ reflect_x: true })}
-                              title="Mirror y-coordinates (reflect about x-axis)"
-                            >
-                              &#8597; Flip Y
-                            </button>
-                            <span style={{ fontSize: '10px', color: '#666' }}>Shift+drag to rotate</span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {/* Legends - bottom right */}
-                    {colorMode === 'metadata' && colorBy && colorBy.dtype === 'category' && (
-                      <CategoryLegend colorBy={colorBy} />
-                    )}
-                    {colorMode === 'metadata' && colorBy && colorBy.dtype === 'numeric' && (
-                      <ContinuousLegend
-                        name={colorBy.name}
-                        min={Math.min(...(colorBy.values.filter((v) => v !== null) as number[]))}
-                        max={Math.max(...(colorBy.values.filter((v) => v !== null) as number[]))}
-                      />
-                    )}
-                    {colorMode === 'expression' && expressionData && (
-                      <div style={styles.expressionLegend}>
-                        <div style={styles.legendTitle}>
-                          {selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
-                          {expressionData.transform === 'log1p' && (
-                            <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
-                              (log1p)
-                            </span>
+                {layoutMode === 'dual' && datasets.secondary.schema ? (
+                  /* Dual scatter layout — side by side */
+                  <div style={{ display: 'flex', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' }}>
+                    {/* Primary plot */}
+                    <div
+                      style={{
+                        flex: 1,
+                        position: 'relative',
+                        overflow: 'hidden',
+                        borderRight: '1px solid #0f3460',
+                        outline: activeSlot === 'primary' ? '2px solid #e94560' : '2px solid transparent',
+                        outlineOffset: '-2px',
+                      }}
+                      onPointerDown={() => { if (activeSlot !== 'primary') setActiveSlot('primary') }}
+                    >
+                      {datasets.primary.embedding ? (
+                        <>
+                          <ScatterPlot
+                            slot="primary"
+                            embedding={datasets.primary.embedding}
+                            colorBy={datasets.primary.colorBy}
+                            expressionData={datasets.primary.expressionData}
+                            bivariateData={datasets.primary.bivariateData}
+                            colorMode={datasets.primary.colorMode}
+                            interactionMode={interactionMode}
+                            selectedCellIndices={datasets.primary.selectedCellIndices}
+                            onSelectionComplete={handleSelectionComplete}
+                            onLineDrawn={handleLineDrawn}
+                            onTransformEmbedding={handleRotateEmbedding}
+                          />
+                          {/* Per-plot embedding selector */}
+                          {datasets.primary.schema && datasets.primary.schema.embeddings.length > 1 && (
+                            <div style={{ ...styles.embeddingSelector }}>
+                              <span style={styles.embeddingLabel}>Embedding:</span>
+                              <select
+                                style={styles.embeddingSelect}
+                                value={datasets.primary.selectedEmbedding || ''}
+                                onChange={(e) => {
+                                  if (activeSlot !== 'primary') setActiveSlot('primary')
+                                  selectEmbedding(e.target.value)
+                                }}
+                              >
+                                {datasets.primary.schema.embeddings.map((emb) => (
+                                  <option key={emb} value={emb}>{emb}</option>
+                                ))}
+                              </select>
+                            </div>
                           )}
-                        </div>
-                        <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
-                        <div style={styles.colorBarLabels}>
-                          <span>{expressionData.min.toFixed(2)}</span>
-                          <span>{expressionData.max.toFixed(2)}</span>
-                        </div>
+                          {/* Per-plot legend */}
+                          {datasets.primary.colorMode === 'metadata' && datasets.primary.colorBy?.dtype === 'category' && (
+                            <CategoryLegend colorBy={datasets.primary.colorBy} />
+                          )}
+                          {datasets.primary.colorMode === 'metadata' && datasets.primary.colorBy?.dtype === 'numeric' && (
+                            <ContinuousLegend
+                              name={datasets.primary.colorBy.name}
+                              min={Math.min(...(datasets.primary.colorBy.values.filter((v) => v !== null) as number[]))}
+                              max={Math.max(...(datasets.primary.colorBy.values.filter((v) => v !== null) as number[]))}
+                            />
+                          )}
+                          {datasets.primary.colorMode === 'expression' && datasets.primary.expressionData && (
+                            <div style={styles.expressionLegend}>
+                              <div style={styles.legendTitle}>
+                                {datasets.primary.selectedGenes.length === 1 ? datasets.primary.selectedGenes[0] : `${datasets.primary.selectedGenes.length} genes`}
+                                {datasets.primary.expressionData.transform === 'log1p' && (
+                                  <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>(log1p)</span>
+                                )}
+                              </div>
+                              <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[datasets.primary.displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
+                              <div style={styles.colorBarLabels}>
+                                <span>{datasets.primary.expressionData.min.toFixed(2)}</span>
+                                <span>{datasets.primary.expressionData.max.toFixed(2)}</span>
+                              </div>
+                            </div>
+                          )}
+                          {datasets.primary.colorMode === 'bivariate' && datasets.primary.bivariateData && (
+                            <BivariateLegend
+                              bivariateData={datasets.primary.bivariateData}
+                              colormap={datasets.primary.displayPreferences.bivariateColormap}
+                              sortReversed={datasets.primary.bivariateSortReversed}
+                              onToggleSort={toggleBivariateSortOrder}
+                            />
+                          )}
+                        </>
+                      ) : (
+                        <div style={{ ...styles.loading, position: 'absolute' }}>No embedding loaded</div>
+                      )}
+                      <div style={{ position: 'absolute', top: 6, left: 8, fontSize: '11px', color: '#888', pointerEvents: 'none' }}>
+                        Primary
                       </div>
+                    </div>
+
+                    {/* Secondary plot */}
+                    <div
+                      style={{
+                        flex: 1,
+                        position: 'relative',
+                        overflow: 'hidden',
+                        outline: activeSlot === 'secondary' ? '2px solid #e94560' : '2px solid transparent',
+                        outlineOffset: '-2px',
+                      }}
+                      onPointerDown={() => { if (activeSlot !== 'secondary') setActiveSlot('secondary') }}
+                    >
+                      {datasets.secondary.embedding ? (
+                        <>
+                          <ScatterPlot
+                            slot="secondary"
+                            embedding={datasets.secondary.embedding}
+                            colorBy={datasets.secondary.colorBy}
+                            expressionData={datasets.secondary.expressionData}
+                            bivariateData={datasets.secondary.bivariateData}
+                            colorMode={datasets.secondary.colorMode}
+                            interactionMode={interactionMode}
+                            selectedCellIndices={datasets.secondary.selectedCellIndices}
+                            onSelectionComplete={handleSelectionComplete}
+                            onLineDrawn={handleLineDrawn}
+                            onTransformEmbedding={handleRotateEmbedding}
+                          />
+                          {/* Per-plot embedding selector */}
+                          {datasets.secondary.schema && datasets.secondary.schema.embeddings.length > 1 && (
+                            <div style={{ ...styles.embeddingSelector }}>
+                              <span style={styles.embeddingLabel}>Embedding:</span>
+                              <select
+                                style={styles.embeddingSelect}
+                                value={datasets.secondary.selectedEmbedding || ''}
+                                onChange={(e) => {
+                                  if (activeSlot !== 'secondary') setActiveSlot('secondary')
+                                  selectEmbedding(e.target.value)
+                                }}
+                              >
+                                {datasets.secondary.schema.embeddings.map((emb) => (
+                                  <option key={emb} value={emb}>{emb}</option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+                          {/* Per-plot legend */}
+                          {datasets.secondary.colorMode === 'metadata' && datasets.secondary.colorBy?.dtype === 'category' && (
+                            <CategoryLegend colorBy={datasets.secondary.colorBy} />
+                          )}
+                          {datasets.secondary.colorMode === 'metadata' && datasets.secondary.colorBy?.dtype === 'numeric' && (
+                            <ContinuousLegend
+                              name={datasets.secondary.colorBy.name}
+                              min={Math.min(...(datasets.secondary.colorBy.values.filter((v) => v !== null) as number[]))}
+                              max={Math.max(...(datasets.secondary.colorBy.values.filter((v) => v !== null) as number[]))}
+                            />
+                          )}
+                          {datasets.secondary.colorMode === 'expression' && datasets.secondary.expressionData && (
+                            <div style={styles.expressionLegend}>
+                              <div style={styles.legendTitle}>
+                                {datasets.secondary.selectedGenes.length === 1 ? datasets.secondary.selectedGenes[0] : `${datasets.secondary.selectedGenes.length} genes`}
+                                {datasets.secondary.expressionData.transform === 'log1p' && (
+                                  <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>(log1p)</span>
+                                )}
+                              </div>
+                              <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[datasets.secondary.displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
+                              <div style={styles.colorBarLabels}>
+                                <span>{datasets.secondary.expressionData.min.toFixed(2)}</span>
+                                <span>{datasets.secondary.expressionData.max.toFixed(2)}</span>
+                              </div>
+                            </div>
+                          )}
+                          {datasets.secondary.colorMode === 'bivariate' && datasets.secondary.bivariateData && (
+                            <BivariateLegend
+                              bivariateData={datasets.secondary.bivariateData}
+                              colormap={datasets.secondary.displayPreferences.bivariateColormap}
+                              sortReversed={datasets.secondary.bivariateSortReversed}
+                              onToggleSort={toggleBivariateSortOrder}
+                            />
+                          )}
+                        </>
+                      ) : (
+                        <div style={{ ...styles.loading, position: 'absolute' }}>No embedding loaded</div>
+                      )}
+                      <div style={{ position: 'absolute', top: 6, left: 8, fontSize: '11px', color: '#888', pointerEvents: 'none' }}>
+                        Secondary
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* Single scatter layout — existing behavior */
+                  <>
+                    {embedding && !error && (
+                      <>
+                        <ScatterPlot
+                          embedding={embedding}
+                          colorBy={colorBy}
+                          expressionData={expressionData}
+                          bivariateData={bivariateData}
+                          colorMode={colorMode}
+                          interactionMode={interactionMode}
+                          selectedCellIndices={selectedCellIndices}
+                          onSelectionComplete={handleSelectionComplete}
+                          onLineDrawn={handleLineDrawn}
+                          onTransformEmbedding={handleRotateEmbedding}
+                        />
+
+                        {/* Embedding selector - bottom left */}
+                        {schema && (schema.embeddings.length > 1 || interactionMode === 'adjust') && (
+                          <div style={{ ...styles.embeddingSelector, flexDirection: 'column' as const, alignItems: 'flex-start', gap: '6px' }}>
+                            {schema.embeddings.length > 1 && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={styles.embeddingLabel}>Embedding:</span>
+                                <select
+                                  style={styles.embeddingSelect}
+                                  value={selectedEmbedding || ''}
+                                  onChange={(e) => selectEmbedding(e.target.value)}
+                                >
+                                  {schema.embeddings.map((emb) => (
+                                    <option key={emb} value={emb}>
+                                      {emb}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+                            {interactionMode === 'adjust' && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <button
+                                  style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
+                                  onClick={() => handleTransformEmbedding({ reflect_y: true })}
+                                  title="Mirror x-coordinates (reflect about y-axis)"
+                                >
+                                  &#8596; Flip X
+                                </button>
+                                <button
+                                  style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
+                                  onClick={() => handleTransformEmbedding({ reflect_x: true })}
+                                  title="Mirror y-coordinates (reflect about x-axis)"
+                                >
+                                  &#8597; Flip Y
+                                </button>
+                                <span style={{ fontSize: '10px', color: '#666' }}>Shift+drag to rotate</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {/* Legends - bottom right */}
+                        {colorMode === 'metadata' && colorBy && colorBy.dtype === 'category' && (
+                          <CategoryLegend colorBy={colorBy} />
+                        )}
+                        {colorMode === 'metadata' && colorBy && colorBy.dtype === 'numeric' && (
+                          <ContinuousLegend
+                            name={colorBy.name}
+                            min={Math.min(...(colorBy.values.filter((v) => v !== null) as number[]))}
+                            max={Math.max(...(colorBy.values.filter((v) => v !== null) as number[]))}
+                          />
+                        )}
+                        {colorMode === 'expression' && expressionData && (
+                          <div style={styles.expressionLegend}>
+                            <div style={styles.legendTitle}>
+                              {selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
+                              {expressionData.transform === 'log1p' && (
+                                <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
+                                  (log1p)
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
+                            <div style={styles.colorBarLabels}>
+                              <span>{expressionData.min.toFixed(2)}</span>
+                              <span>{expressionData.max.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        )}
+                        {colorMode === 'bivariate' && bivariateData && (
+                          <BivariateLegend
+                            bivariateData={bivariateData}
+                            colormap={displayPreferences.bivariateColormap}
+                            sortReversed={bivariateSortReversed}
+                            onToggleSort={toggleBivariateSortOrder}
+                          />
+                        )}
+                      </>
                     )}
-                    {colorMode === 'bivariate' && bivariateData && (
-                      <BivariateLegend
-                        bivariateData={bivariateData}
-                        colormap={displayPreferences.bivariateColormap}
-                        sortReversed={bivariateSortReversed}
-                        onToggleSort={toggleBivariateSortOrder}
-                      />
+
+                    {!embedding && !isLoading && !error && (
+                      <div style={styles.loading}>
+                        No data loaded. Start the backend with an h5ad file.
+                      </div>
                     )}
                   </>
-                )}
-
-                {!embedding && !isLoading && !error && (
-                  <div style={styles.loading}>
-                    No data loaded. Start the backend with an h5ad file.
-                  </div>
                 )}
               </>
             )}

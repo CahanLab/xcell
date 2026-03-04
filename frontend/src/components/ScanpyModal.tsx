@@ -143,6 +143,7 @@ interface ParamDef {
   default: string | number | null
   description: string
   options?: string[]
+  visibleWhen?: { param: string; value: string }
 }
 
 interface FunctionDef {
@@ -285,10 +286,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
       gene_neighbors: {
         label: 'Gene Neighbors',
         description: 'Compute gene-gene kNN graph',
-        prerequisites: ['gene_pca'],
+        prerequisites: [],
         params: [
+          { name: 'basis', label: 'Basis', type: 'select', default: 'gene_pca', options: ['gene_pca', 'expression'], description: 'Use gene PCA embedding or raw expression' },
           { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 15, description: 'Number of neighbors per gene' },
           { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine'], description: 'Distance metric' },
+          { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: null, description: 'Filter to specific genes using boolean columns from .var', visibleWhen: { param: 'basis', value: 'expression' } },
+          { name: 'scale', label: 'Scale', type: 'select', default: 'true', options: ['true', 'false'], description: 'Z-score scale genes before computing neighbors', visibleWhen: { param: 'basis', value: 'expression' } },
         ],
       },
       find_similar_genes: {
@@ -672,9 +676,18 @@ export default function ScanpyModal() {
     setResult(null)
 
     try {
+      // Build set of hidden param names (visibleWhen condition not met)
+      const hiddenParams = new Set<string>()
+      for (const p of functionDef.params) {
+        if (p.visibleWhen && String(paramValues[p.visibleWhen.param]) !== p.visibleWhen.value) {
+          hiddenParams.add(p.name)
+        }
+      }
+
       // Convert 'true'/'false' strings to actual booleans for the request
       const requestParams: Record<string, unknown> = {}
       for (const [key, value] of Object.entries(paramValues)) {
+        if (hiddenParams.has(key)) continue
         if (value === 'true') {
           requestParams[key] = true
         } else if (value === 'false') {
@@ -684,8 +697,8 @@ export default function ScanpyModal() {
         }
       }
 
-      // Handle gene_subset parameter specially
-      if (functionDef.params.some(p => p.type === 'gene_subset')) {
+      // Handle gene_subset parameter specially (only if visible)
+      if (functionDef.params.some(p => p.type === 'gene_subset' && !hiddenParams.has(p.name))) {
         if (selectedGeneColumns.length === 0) {
           requestParams['gene_subset'] = null
         } else if (selectedGeneColumns.length === 1) {
@@ -979,7 +992,13 @@ export default function ScanpyModal() {
         {/* Parameters */}
         {functionDef && functionDef.params.length > 0 && (
           <div style={styles.paramsSection}>
-            {functionDef.params.map((param) => (
+            {functionDef.params.map((param) => {
+              // Skip params whose visibleWhen condition is not met
+              if (param.visibleWhen) {
+                const refValue = paramValues[param.visibleWhen.param]
+                if (String(refValue) !== param.visibleWhen.value) return null
+              }
+              return (
               <div key={param.name}>
                 {param.type === 'gene_subset' ? (
                   /* Special UI for gene subset selection */
@@ -1088,7 +1107,7 @@ export default function ScanpyModal() {
                   </>
                 )}
               </div>
-            ))}
+            )})}
           </div>
         )}
 

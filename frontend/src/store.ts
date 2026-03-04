@@ -232,7 +232,7 @@ export interface HeatmapConfig {
 }
 
 // Interaction mode for the scatter plot
-export type InteractionMode = 'pan' | 'lasso' | 'draw' | 'adjust'
+export type InteractionMode = 'pan' | 'lasso' | 'draw' | 'adjust' | 'quilt'
 
 // Color scale options for expression data
 export type ColorScale = 'viridis' | 'plasma' | 'magma' | 'inferno' | 'cividis' | 'coolwarm' | 'blues' | 'reds'
@@ -412,6 +412,10 @@ interface AppState {
   // Layout mode (single vs side-by-side dual scatter)
   layoutMode: LayoutMode
 
+  // Quilt mode phase
+  quiltPhase: 'lasso' | 'transform'
+  quiltUndoDepth: number
+
   // Multi-dataset support
   datasets: Record<DatasetSlot, DatasetState>
   activeSlot: DatasetSlot
@@ -457,6 +461,8 @@ interface AppState {
   clearSelection: () => void
   invertSelection: () => void
   setInteractionMode: (mode: InteractionMode) => void
+  setQuiltPhase: (phase: 'lasso' | 'transform') => void
+  setQuiltUndoDepth: (depth: number) => void
 
   // Display preferences actions
   setDisplayPreferences: (prefs: Partial<DisplayPreferences>) => void
@@ -656,6 +662,10 @@ export const useStore = create<AppState>((set, get) => {
 
     // Layout mode
     layoutMode: 'single' as LayoutMode,
+
+    // Quilt mode phase
+    quiltPhase: 'lasso' as const,
+    quiltUndoDepth: 0,
 
     // Multi-dataset state
     datasets: {
@@ -1027,7 +1037,9 @@ export const useStore = create<AppState>((set, get) => {
       })),
 
     // Global-only
-    setInteractionMode: (mode) => set({ interactionMode: mode }),
+    setInteractionMode: (mode) => set({ interactionMode: mode, quiltPhase: 'lasso', quiltUndoDepth: 0 }),
+    setQuiltPhase: (phase) => set({ quiltPhase: phase }),
+    setQuiltUndoDepth: (depth) => set({ quiltUndoDepth: depth }),
 
     // Display preferences (per-dataset)
     setDisplayPreferences: (prefs) =>

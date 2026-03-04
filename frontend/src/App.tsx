@@ -471,6 +471,10 @@ export default function App() {
     datasets,
     layoutMode,
     setLayoutMode,
+    quiltPhase,
+    setQuiltPhase,
+    quiltUndoDepth,
+    setQuiltUndoDepth,
   } = useStore()
 
   const schema = useSchema()
@@ -509,17 +513,45 @@ export default function App() {
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
 
-  // Handle escape key to exit lasso/draw mode
+  const handleQuiltUndo = useCallback(async () => {
+    if (!selectedEmbedding) return
+    try {
+      const response = await fetch(appendDataset(`/api/embedding/${selectedEmbedding}/undo`), {
+        method: 'POST',
+      })
+      if (!response.ok) return
+      const data = await response.json()
+      setEmbedding(data)
+      setQuiltUndoDepth(data.undo_depth ?? 0)
+      clearSelection()
+      setQuiltPhase('lasso')
+    } catch (err) {
+      console.error('Quilt undo failed:', err)
+    }
+  }, [selectedEmbedding, setEmbedding, setQuiltUndoDepth, clearSelection, setQuiltPhase])
+
+  // Handle escape key to exit lasso/draw/quilt mode, and Ctrl/Cmd+Z for quilt undo
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z' && interactionMode === 'quilt' && quiltUndoDepth > 0) {
+        e.preventDefault()
+        handleQuiltUndo()
+        return
+      }
       if (e.key === 'Escape') {
+        if (interactionMode === 'quilt' && quiltPhase === 'transform') {
+          // In quilt transform phase: clear selection, return to lasso phase
+          clearSelection()
+          setQuiltPhase('lasso')
+          return
+        }
         setInteractionMode('pan')
         setPendingLinePoints(null)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [setInteractionMode])
+  }, [setInteractionMode, interactionMode, quiltPhase, clearSelection, setQuiltPhase, quiltUndoDepth, handleQuiltUndo])
 
   const handleSelectionComplete = useCallback(
     (indices: number[], additive: boolean) => {
@@ -544,6 +576,10 @@ export default function App() {
     setInteractionMode(interactionMode === 'adjust' ? 'pan' : 'adjust')
   }, [interactionMode, setInteractionMode])
 
+  const toggleQuiltMode = useCallback(() => {
+    setInteractionMode(interactionMode === 'quilt' ? 'pan' : 'quilt')
+  }, [interactionMode, setInteractionMode])
+
   const handleTransformEmbedding = useCallback(async (opts: { rotation_degrees?: number; reflect_x?: boolean; reflect_y?: boolean }) => {
     if (!selectedEmbedding) return
     try {
@@ -566,6 +602,33 @@ export default function App() {
   const handleRotateEmbedding = useCallback((rotationDegrees: number) => {
     handleTransformEmbedding({ rotation_degrees: rotationDegrees })
   }, [handleTransformEmbedding])
+
+  const handleTransformEmbeddingSubset = useCallback(async (opts: {
+    rotation_degrees?: number
+    reflect_x?: boolean
+    reflect_y?: boolean
+    translate_x?: number
+    translate_y?: number
+    cell_indices: number[]
+  }) => {
+    if (!selectedEmbedding) return
+    try {
+      const response = await fetch(appendDataset(`/api/embedding/${selectedEmbedding}/transform`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      })
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(err.detail || `HTTP ${response.status}`)
+      }
+      const data = await response.json()
+      setEmbedding(data)
+      setQuiltUndoDepth(data.undo_depth ?? 0)
+    } catch (err) {
+      console.error('Transform embedding subset failed:', err)
+    }
+  }, [selectedEmbedding, setEmbedding, setQuiltUndoDepth])
 
   const handleLineDrawn = useCallback((points: [number, number][]) => {
     setPendingLinePoints(points)
@@ -893,6 +956,17 @@ export default function App() {
               </button>
 
               <button
+                style={{
+                  ...styles.toolButton,
+                  ...(interactionMode === 'quilt' ? { ...styles.toolButtonActive, backgroundColor: '#9b59b6' } : {}),
+                }}
+                onClick={toggleQuiltMode}
+                title="Quilt mode: lasso cells then drag/rotate/flip to reposition (Escape to exit)"
+              >
+                <span>&#9638;</span> Quilt
+              </button>
+
+              <button
                 style={styles.toolButton}
                 onClick={() => setScanpyModalOpen(true)}
                 title="Run scanpy analysis functions"
@@ -1095,6 +1169,7 @@ export default function App() {
                             onSelectionComplete={handleSelectionComplete}
                             onLineDrawn={handleLineDrawn}
                             onTransformEmbedding={handleRotateEmbedding}
+                            onTransformEmbeddingSubset={handleTransformEmbeddingSubset}
                           />
                           {/* Per-plot embedding selector */}
                           {datasets.primary.schema && datasets.primary.schema.embeddings.length > 1 && (
@@ -1182,6 +1257,7 @@ export default function App() {
                             onSelectionComplete={handleSelectionComplete}
                             onLineDrawn={handleLineDrawn}
                             onTransformEmbedding={handleRotateEmbedding}
+                            onTransformEmbeddingSubset={handleTransformEmbeddingSubset}
                           />
                           {/* Per-plot embedding selector */}
                           {datasets.secondary.schema && datasets.secondary.schema.embeddings.length > 1 && (
@@ -1260,10 +1336,11 @@ export default function App() {
                           onSelectionComplete={handleSelectionComplete}
                           onLineDrawn={handleLineDrawn}
                           onTransformEmbedding={handleRotateEmbedding}
+                          onTransformEmbeddingSubset={handleTransformEmbeddingSubset}
                         />
 
                         {/* Embedding selector - bottom left */}
-                        {schema && (schema.embeddings.length > 1 || interactionMode === 'adjust') && (
+                        {schema && (schema.embeddings.length > 1 || interactionMode === 'adjust' || interactionMode === 'quilt') && (
                           <div style={{ ...styles.embeddingSelector, flexDirection: 'column' as const, alignItems: 'flex-start', gap: '6px' }}>
                             {schema.embeddings.length > 1 && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1298,6 +1375,36 @@ export default function App() {
                                   &#8597; Flip Y
                                 </button>
                                 <span style={{ fontSize: '10px', color: '#666' }}>Shift+drag to rotate</span>
+                              </div>
+                            )}
+                            {interactionMode === 'quilt' && quiltPhase === 'transform' && selectedCellIndices.length > 0 && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <button
+                                  style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
+                                  onClick={() => handleTransformEmbeddingSubset({ reflect_y: true, cell_indices: selectedCellIndices })}
+                                  title="Flip selected cells horizontally"
+                                >
+                                  &#8596; Flip X
+                                </button>
+                                <button
+                                  style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
+                                  onClick={() => handleTransformEmbeddingSubset({ reflect_x: true, cell_indices: selectedCellIndices })}
+                                  title="Flip selected cells vertically"
+                                >
+                                  &#8597; Flip Y
+                                </button>
+                                <span style={{ fontSize: '10px', color: '#9b59b6' }}>Drag to move, Shift+drag to rotate</span>
+                              </div>
+                            )}
+                            {interactionMode === 'quilt' && quiltUndoDepth > 0 && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <button
+                                  style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
+                                  onClick={handleQuiltUndo}
+                                  title={`Undo last quilt transform (${quiltUndoDepth} remaining) — Ctrl/Cmd+Z`}
+                                >
+                                  &#8617; Undo
+                                </button>
                               </div>
                             )}
                           </div>

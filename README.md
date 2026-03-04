@@ -150,6 +150,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - **Gene Manager** — search genes, create gene sets, import gene lists
 - **Scanpy integration** — run preprocessing, cell analysis (PCA, Neighbors, UMAP, Leiden), gene analysis, spatial analysis (contourize), and differential expression directly in the browser
 - **Trajectory analysis** — draw lines and associate genes with spatial trajectories
+- **Quilt mode** — lasso and rearrange tissue pieces: drag to translate, shift+drag to rotate, flip to reflect selected cell subsets
 - **Display settings** — adjust point size, opacity, colormaps, bivariate coloring
 - **Multi-dataset support** — load two h5ad files, switch between them, or view side by side in split mode
 - **Export** — download annotations and analysis results

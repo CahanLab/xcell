@@ -41,6 +41,7 @@ class DataAdaptor:
         self._normalized_adata: anndata.AnnData | None = None
         self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
         self._action_history: list[dict[str, Any]] = []  # Track scanpy operations
+        self._embedding_undo_stacks: dict[str, list[np.ndarray]] = {}  # Undo stacks for quilt transforms
 
     @property
     def n_cells(self) -> int:
@@ -144,17 +145,25 @@ class DataAdaptor:
         rotation_degrees: float = 0,
         reflect_x: bool = False,
         reflect_y: bool = False,
+        cell_indices: list[int] | None = None,
+        translate_x: float = 0.0,
+        translate_y: float = 0.0,
     ) -> dict[str, Any]:
-        """Apply rotation and/or reflection to an embedding in-place.
+        """Apply rotation, reflection, and/or translation to an embedding in-place.
 
-        Transforms are applied around the centroid of the embedding:
-        reflections first, then rotation.
+        Transforms are applied around the centroid (of the subset if cell_indices
+        is provided, otherwise of all cells): reflections first, then rotation,
+        then translation.
 
         Args:
             name: Name of the embedding in .obsm
             rotation_degrees: Counter-clockwise rotation angle in degrees
             reflect_x: If True, negate y-coordinates (reflect about x-axis)
             reflect_y: If True, negate x-coordinates (reflect about y-axis)
+            cell_indices: Optional list of cell indices to transform (subset mode).
+                          If None, all cells are transformed.
+            translate_x: Translation offset along x-axis
+            translate_y: Translation offset along y-axis
 
         Returns:
             Updated embedding dict (same format as get_embedding)
@@ -162,35 +171,92 @@ class DataAdaptor:
         if name not in self.adata.obsm:
             raise KeyError(f"Embedding '{name}' not found. Available: {list(self.adata.obsm.keys())}")
 
-        coords = np.array(self.adata.obsm[name][:, :2], dtype=np.float64)
-        centroid = coords.mean(axis=0)
+        if cell_indices is not None:
+            # Snapshot for undo before quilt transform
+            stack = self._embedding_undo_stacks.setdefault(name, [])
+            stack.append(np.array(self.adata.obsm[name][:, :2], copy=True))
 
-        # Center at origin
-        coords -= centroid
+            # Subset mode: only transform specified cells
+            idx = np.array(cell_indices, dtype=int)
+            coords = np.array(self.adata.obsm[name][idx, :2], dtype=np.float64)
+            centroid = coords.mean(axis=0)
 
-        # Apply reflections first
-        if reflect_y:
-            coords[:, 0] *= -1
-        if reflect_x:
-            coords[:, 1] *= -1
+            coords -= centroid
 
-        # Apply rotation
-        if rotation_degrees != 0:
-            theta = np.radians(rotation_degrees)
-            cos_t, sin_t = np.cos(theta), np.sin(theta)
-            rot = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
-            coords = coords @ rot.T
+            if reflect_y:
+                coords[:, 0] *= -1
+            if reflect_x:
+                coords[:, 1] *= -1
 
-        # Shift back
-        coords += centroid
+            if rotation_degrees != 0:
+                theta = np.radians(rotation_degrees)
+                cos_t, sin_t = np.cos(theta), np.sin(theta)
+                rot = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+                coords = coords @ rot.T
 
-        # Write back in-place
-        self.adata.obsm[name][:, :2] = coords
+            coords += centroid
+
+            # Apply translation
+            coords[:, 0] += translate_x
+            coords[:, 1] += translate_y
+
+            # Write back only the subset
+            self.adata.obsm[name][idx, :2] = coords
+        else:
+            # Full-embedding mode (original behavior)
+            coords = np.array(self.adata.obsm[name][:, :2], dtype=np.float64)
+            centroid = coords.mean(axis=0)
+
+            coords -= centroid
+
+            if reflect_y:
+                coords[:, 0] *= -1
+            if reflect_x:
+                coords[:, 1] *= -1
+
+            if rotation_degrees != 0:
+                theta = np.radians(rotation_degrees)
+                cos_t, sin_t = np.cos(theta), np.sin(theta)
+                rot = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+                coords = coords @ rot.T
+
+            coords += centroid
+
+            # Apply translation (for full embedding too, though less common)
+            if translate_x != 0 or translate_y != 0:
+                coords[:, 0] += translate_x
+                coords[:, 1] += translate_y
+
+            self.adata.obsm[name][:, :2] = coords
 
         # Clear normalized cache (it may share obsm references)
         self._normalized_adata = None
 
-        return self.get_embedding(name)
+        result = self.get_embedding(name)
+        result["undo_depth"] = len(self._embedding_undo_stacks.get(name, []))
+        return result
+
+    def undo_transform_embedding(self, name: str) -> dict[str, Any]:
+        """Undo the last quilt transform for an embedding.
+
+        Pops the most recent snapshot from the undo stack and restores the
+        embedding coordinates.
+
+        Args:
+            name: Name of the embedding in .obsm
+
+        Returns:
+            Updated embedding dict with undo_depth
+        """
+        stack = self._embedding_undo_stacks.get(name, [])
+        if not stack:
+            raise ValueError(f"No undo history for embedding '{name}'")
+        coords = stack.pop()
+        self.adata.obsm[name][:, :2] = coords
+        self._normalized_adata = None
+        result = self.get_embedding(name)
+        result["undo_depth"] = len(stack)
+        return result
 
     def get_obs_column(self, name: str) -> dict[str, Any]:
         """Get cell metadata column values.
@@ -1650,7 +1716,7 @@ class DataAdaptor:
             'leiden': ['neighbors'],
             # Gene analysis
             'gene_pca': [],
-            'gene_neighbors': ['gene_pca'],
+            'gene_neighbors': [],
             'find_similar_genes': ['gene_neighbors'],
             'cluster_genes': ['gene_neighbors'],
             'build_gene_graph': [],  # Convenience function, no prereqs
@@ -2697,15 +2763,23 @@ class DataAdaptor:
         self,
         n_neighbors: int = 15,
         metric: str = 'euclidean',
+        basis: str = 'gene_pca',
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        scale: bool = True,
+        active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
-        """Compute gene-gene kNN graph from gene PCA embedding.
+        """Compute gene-gene kNN graph from gene PCA embedding or raw expression.
 
         Results are stored in .varp['gene_connectivities'] and .varp['gene_distances'].
-        If gene_pca was computed on a subset, neighbors are only computed for that subset.
 
         Args:
             n_neighbors: Number of neighbors per gene
             metric: Distance metric ('euclidean', 'cosine')
+            basis: 'gene_pca' to use PCA embedding, 'expression' to use raw expression
+            gene_subset: Gene filtering (only used when basis='expression').
+                Can be str (boolean column), list[str] (gene names), or dict (multi-column spec).
+            scale: Z-score scale genes before computing neighbors (only used when basis='expression')
+            active_cell_indices: Optional cell subset (only used when basis='expression')
 
         Returns:
             Dict with operation status
@@ -2713,33 +2787,69 @@ class DataAdaptor:
         from sklearn.neighbors import NearestNeighbors
         from scipy import sparse
 
-        # Check prerequisites
-        prereq = self.check_prerequisites('gene_neighbors')
-        if not prereq['satisfied']:
-            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+        n_genes_total = self.adata.n_vars
+        subset_type = 'all'
 
-        # Get gene PCA embedding
-        gene_pcs = self.adata.varm['X_gene_pca']
-        n_genes_total = gene_pcs.shape[0]
+        if basis == 'gene_pca':
+            # Existing behavior: use gene PCA embedding
+            if 'X_gene_pca' not in self.adata.varm:
+                raise ValueError("Gene PCA has not been computed. Run gene_pca first.")
 
-        # Identify genes with valid embeddings (not NaN)
-        valid_mask = ~np.isnan(gene_pcs[:, 0])
-        valid_indices = np.where(valid_mask)[0]
+            gene_pcs = self.adata.varm['X_gene_pca']
+            valid_mask = ~np.isnan(gene_pcs[:, 0])
+            valid_indices = np.where(valid_mask)[0]
+            representation = gene_pcs[valid_mask, :]
+
+            # Get subset info from gene_pca
+            pca_info = self.adata.uns.get('gene_pca', {})
+            subset_type = pca_info.get('gene_subset_type', 'all')
+
+        elif basis == 'expression':
+            # New path: use raw expression matrix (genes x cells)
+            from sklearn.preprocessing import StandardScaler
+
+            # Resolve gene subset
+            if gene_subset is not None:
+                gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+            else:
+                gene_mask = np.ones(self.adata.n_vars, dtype=bool)
+
+            valid_mask = gene_mask
+            valid_indices = np.where(valid_mask)[0]
+
+            # Subset cells if provided
+            cell_indices = self._validate_cell_indices(active_cell_indices)
+            if cell_indices is not None:
+                X = self.adata.X[cell_indices][:, gene_mask].T
+            else:
+                X = self.adata.X[:, gene_mask].T
+
+            # Densify if sparse
+            if sparse.issparse(X):
+                X = X.toarray()
+            X = np.asarray(X, dtype=np.float64)
+            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+            # Optional z-score scaling
+            if scale:
+                scaler = StandardScaler()
+                X = scaler.fit_transform(X)
+
+            representation = X
+        else:
+            raise ValueError(f"Unknown basis: {basis}. Must be 'gene_pca' or 'expression'.")
+
         n_genes_valid = len(valid_indices)
-
         if n_genes_valid == 0:
-            raise ValueError("No genes with valid PCA embeddings")
-
-        # Extract valid gene embeddings
-        gene_pcs_valid = gene_pcs[valid_mask, :]
+            raise ValueError("No genes with valid embeddings/expression")
 
         # Limit n_neighbors to valid range
         n_neighbors = min(n_neighbors, n_genes_valid - 1)
 
         # Compute kNN on valid genes
         nn = NearestNeighbors(n_neighbors=n_neighbors + 1, metric=metric)
-        nn.fit(gene_pcs_valid)
-        distances, indices = nn.kneighbors(gene_pcs_valid)
+        nn.fit(representation)
+        distances, indices = nn.kneighbors(representation)
 
         # Build sparse distance matrix (exclude self)
         # Map back to original gene indices
@@ -2771,14 +2881,11 @@ class DataAdaptor:
         self.adata.varp['gene_distances'] = dist_matrix
         self.adata.varp['gene_connectivities'] = conn_matrix
 
-        # Get subset info from gene_pca
-        subset_info = self.adata.uns.get('gene_pca', {})
-        subset_type = subset_info.get('gene_subset_type', 'all')
-
         # Store metadata
         self.adata.uns['gene_neighbors'] = {
             'n_neighbors': n_neighbors,
             'metric': metric,
+            'basis': basis,
             'n_genes_in_graph': n_genes_valid,
             'gene_subset_type': subset_type,
         }
@@ -2787,6 +2894,7 @@ class DataAdaptor:
             'status': 'completed',
             'n_neighbors': n_neighbors,
             'metric': metric,
+            'basis': basis,
             'n_genes': n_genes_valid,
             'n_genes_total': n_genes_total,
             'gene_subset_type': subset_type,
@@ -2794,6 +2902,7 @@ class DataAdaptor:
         self._log_action('gene_neighbors', {
             'n_neighbors': n_neighbors,
             'metric': metric,
+            'basis': basis,
         }, result)
         return result
 
@@ -2903,10 +3012,10 @@ class DataAdaptor:
         conn_sym = conn + conn.T
         conn_sym.data = conn_sym.data / 2
 
-        # Identify genes with valid embeddings (genes that have connections)
-        # Genes outside the PCA subset will have no connections
-        gene_pcs = self.adata.varm['X_gene_pca']
-        valid_mask = ~np.isnan(gene_pcs[:, 0])
+        # Identify genes that are in the neighbor graph (have connections)
+        # Works for both gene_pca and expression basis
+        row_nnz = np.diff(conn_sym.indptr)
+        valid_mask = row_nnz > 0
         valid_indices = np.where(valid_mask)[0]
         n_genes_valid = len(valid_indices)
 

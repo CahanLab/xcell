@@ -16,6 +16,14 @@ interface ScatterPlotProps {
   onSelectionComplete: (indices: number[], additive: boolean) => void
   onLineDrawn: (points: [number, number][]) => void
   onTransformEmbedding: (rotationDegrees: number) => void
+  onTransformEmbeddingSubset: (opts: {
+    rotation_degrees?: number
+    reflect_x?: boolean
+    reflect_y?: boolean
+    translate_x?: number
+    translate_y?: number
+    cell_indices: number[]
+  }) => void
 }
 
 // Color palette for categorical data (similar to d3 category10)
@@ -203,6 +211,7 @@ export default function ScatterPlot({
   onSelectionComplete,
   onLineDrawn,
   onTransformEmbedding,
+  onTransformEmbeddingSubset,
 }: ScatterPlotProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [lassoPoints, setLassoPoints] = useState<[number, number][]>([])
@@ -215,6 +224,17 @@ export default function ScatterPlot({
   const rotateStartAngle = useRef(0)
   const accumulatedRotation = useRef(0)
   const preRotationCoords = useRef<[number, number][] | null>(null)
+
+  // Quilt mode state
+  const quiltPhase = useStore((state) => state.quiltPhase)
+  const setQuiltPhase = useStore((state) => state.setQuiltPhase)
+  const quiltSelectedIndices = useRef<number[]>([])
+  const isDraggingQuilt = useRef(false)
+  const isRotatingQuilt = useRef(false)
+  const quiltDragStartData = useRef<[number, number] | null>(null)
+  const quiltPreTransformCoords = useRef<[number, number][] | null>(null)
+  const quiltRotateStartAngle = useRef(0)
+  const quiltAccumulatedRotation = useRef(0)
 
   // Get display preferences, cell masking, sort state, and drawn lines from store
   // When a `slot` prop is provided, read from datasets[slot] instead of flat top-level fields
@@ -433,7 +453,7 @@ export default function ScatterPlot({
     return [dataX, dataY]
   }, [viewState])
 
-  // Handle lasso, line drawing, and adjust rotation
+  // Handle lasso, line drawing, adjust rotation, and quilt mode
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (interactionMode === 'lasso') {
       const point = screenToData(e.clientX, e.clientY)
@@ -456,8 +476,44 @@ export default function ScatterPlot({
       rotateStartAngle.current = angle
       accumulatedRotation.current = 0
       preRotationCoords.current = embedding.coordinates.map(c => [c[0], c[1]] as [number, number])
+    } else if (interactionMode === 'quilt') {
+      if (quiltPhase === 'lasso') {
+        // Start lasso to select cells
+        const point = screenToData(e.clientX, e.clientY)
+        if (point) {
+          setIsDrawing(true)
+          setLassoPoints([point])
+        }
+      } else if (quiltPhase === 'transform' && quiltSelectedIndices.current.length > 0) {
+        const point = screenToData(e.clientX, e.clientY)
+        if (!point) return
+        if (e.shiftKey && containerRef.current) {
+          // Shift+drag: rotate selected cells around their centroid
+          const indices = quiltSelectedIndices.current
+          const coords = embedding.coordinates
+          let cx = 0, cy = 0
+          for (const i of indices) { cx += coords[i][0]; cy += coords[i][1] }
+          cx /= indices.length; cy /= indices.length
+          const rect = containerRef.current.getBoundingClientRect()
+          // Use data-space centroid projected to screen for rotation center
+          const scale = viewState ? Math.pow(2, typeof viewState.zoom === 'number' ? viewState.zoom : 0) : 1
+          const target = viewState?.target as [number, number, number] | undefined
+          const screenCx = target ? (cx - target[0]) * scale + rect.width / 2 + rect.left : rect.left + rect.width / 2
+          const screenCy = target ? (cy - target[1]) * scale + rect.height / 2 + rect.top : rect.top + rect.height / 2
+          const angle = Math.atan2(e.clientY - screenCy, e.clientX - screenCx)
+          isRotatingQuilt.current = true
+          quiltRotateStartAngle.current = angle
+          quiltAccumulatedRotation.current = 0
+          quiltPreTransformCoords.current = coords.map(c => [c[0], c[1]] as [number, number])
+        } else {
+          // Plain drag: translate selected cells
+          isDraggingQuilt.current = true
+          quiltDragStartData.current = point
+          quiltPreTransformCoords.current = embedding.coordinates.map(c => [c[0], c[1]] as [number, number])
+        }
+      }
     }
-  }, [interactionMode, screenToData, embedding.coordinates])
+  }, [interactionMode, screenToData, embedding.coordinates, quiltPhase, viewState])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     // Handle adjust rotation independently of isDrawing
@@ -489,6 +545,61 @@ export default function ScatterPlot({
       return
     }
 
+    // Handle quilt transform drag/rotate
+    if (interactionMode === 'quilt' && quiltPreTransformCoords.current) {
+      const indices = quiltSelectedIndices.current
+      const coords = quiltPreTransformCoords.current
+      const setEmbedding = useStore.getState().setEmbedding
+
+      if (isRotatingQuilt.current && containerRef.current) {
+        // Compute centroid of selected cells (from snapshot)
+        let cx = 0, cy = 0
+        for (const i of indices) { cx += coords[i][0]; cy += coords[i][1] }
+        cx /= indices.length; cy /= indices.length
+        // Get screen center of centroid
+        const rect = containerRef.current.getBoundingClientRect()
+        const scale = viewState ? Math.pow(2, typeof viewState.zoom === 'number' ? viewState.zoom : 0) : 1
+        const target = viewState?.target as [number, number, number] | undefined
+        const screenCx = target ? (cx - target[0]) * scale + rect.width / 2 + rect.left : rect.left + rect.width / 2
+        const screenCy = target ? (cy - target[1]) * scale + rect.height / 2 + rect.top : rect.top + rect.height / 2
+        const currentAngle = Math.atan2(e.clientY - screenCy, e.clientX - screenCx)
+        const totalDelta = currentAngle - quiltRotateStartAngle.current
+        const totalDegrees = -(totalDelta * 180) / Math.PI
+        quiltAccumulatedRotation.current = totalDegrees
+
+        const theta = (totalDegrees * Math.PI) / 180
+        const cosT = Math.cos(theta)
+        const sinT = Math.sin(theta)
+
+        // Build new coordinates: rotate only selected, keep others unchanged
+        const selectedSet = new Set(indices)
+        const newCoords: [number, number][] = coords.map(([x, y], i) => {
+          if (!selectedSet.has(i)) return [x, y]
+          const dx = x - cx
+          const dy = y - cy
+          return [cx + dx * cosT - dy * sinT, cy + dx * sinT + dy * cosT]
+        })
+        setEmbedding({ name: embedding.name, coordinates: newCoords })
+        return
+      }
+
+      if (isDraggingQuilt.current && quiltDragStartData.current) {
+        const point = screenToData(e.clientX, e.clientY)
+        if (!point) return
+        const dx = point[0] - quiltDragStartData.current[0]
+        const dy = point[1] - quiltDragStartData.current[1]
+
+        // Build new coordinates: translate only selected, keep others unchanged
+        const selectedSet = new Set(indices)
+        const newCoords: [number, number][] = coords.map(([x, y], i) => {
+          if (!selectedSet.has(i)) return [x, y]
+          return [x + dx, y + dy]
+        })
+        setEmbedding({ name: embedding.name, coordinates: newCoords })
+        return
+      }
+    }
+
     if (!isDrawing) return
 
     const point = screenToData(e.clientX, e.clientY)
@@ -498,8 +609,10 @@ export default function ScatterPlot({
       setLassoPoints((prev) => [...prev, point])
     } else if (interactionMode === 'draw') {
       setLinePoints((prev) => [...prev, point])
+    } else if (interactionMode === 'quilt' && quiltPhase === 'lasso') {
+      setLassoPoints((prev) => [...prev, point])
     }
-  }, [isDrawing, interactionMode, screenToData, embedding.name])
+  }, [isDrawing, interactionMode, screenToData, embedding.name, quiltPhase, viewState])
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
     // Handle adjust rotation release
@@ -511,6 +624,48 @@ export default function ScatterPlot({
         onTransformEmbedding(totalDeg)
       }
       return
+    }
+
+    // Handle quilt transform release (rotation or drag)
+    if (interactionMode === 'quilt') {
+      if (isRotatingQuilt.current) {
+        isRotatingQuilt.current = false
+        const totalDeg = quiltAccumulatedRotation.current
+        quiltPreTransformCoords.current = null
+        if (Math.abs(totalDeg) > 0.1) {
+          onTransformEmbeddingSubset({
+            rotation_degrees: totalDeg,
+            cell_indices: quiltSelectedIndices.current,
+          })
+        }
+        return
+      }
+      if (isDraggingQuilt.current && quiltDragStartData.current) {
+        isDraggingQuilt.current = false
+        const point = screenToData(e.clientX, e.clientY)
+        if (point && quiltPreTransformCoords.current) {
+          const dx = point[0] - quiltDragStartData.current[0]
+          const dy = point[1] - quiltDragStartData.current[1]
+          quiltDragStartData.current = null
+          quiltPreTransformCoords.current = null
+          if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001) {
+            onTransformEmbeddingSubset({
+              translate_x: dx,
+              translate_y: dy,
+              cell_indices: quiltSelectedIndices.current,
+            })
+          } else {
+            // Click with no significant movement in transform phase: clear selection, return to lasso
+            onSelectionComplete([], false)
+            quiltSelectedIndices.current = []
+            setQuiltPhase('lasso')
+          }
+        } else {
+          quiltDragStartData.current = null
+          quiltPreTransformCoords.current = null
+        }
+        return
+      }
     }
 
     if (!isDrawing) return
@@ -541,8 +696,30 @@ export default function ScatterPlot({
       }
       setIsDrawing(false)
       setLinePoints([])
+    } else if (interactionMode === 'quilt' && quiltPhase === 'lasso') {
+      // Quilt lasso phase: select cells then transition to transform phase
+      setIsDrawing(false)
+      if (lassoPoints.length < 3) {
+        setLassoPoints([])
+        return
+      }
+
+      const selectedIndices: number[] = []
+      for (let i = 0; i < embedding.coordinates.length; i++) {
+        const [x, y] = embedding.coordinates[i]
+        if (pointInPolygon(x, y, lassoPoints)) {
+          selectedIndices.push(i)
+        }
+      }
+      setLassoPoints([])
+
+      if (selectedIndices.length > 0) {
+        quiltSelectedIndices.current = selectedIndices
+        onSelectionComplete(selectedIndices, false)
+        setQuiltPhase('transform')
+      }
     }
-  }, [isDrawing, interactionMode, lassoPoints, linePoints, embedding.coordinates, onSelectionComplete, onLineDrawn, onTransformEmbedding])
+  }, [isDrawing, interactionMode, lassoPoints, linePoints, embedding.coordinates, onSelectionComplete, onLineDrawn, onTransformEmbedding, onTransformEmbeddingSubset, quiltPhase, setQuiltPhase, screenToData])
 
   // Convert data points to screen coordinates
   const dataToScreen = useCallback((points: [number, number][]): string[] => {
@@ -661,7 +838,12 @@ export default function ScatterPlot({
         controller={interactionMode === 'pan'}
         layers={layers}
         style={{ position: 'absolute', width: '100%', height: '100%', background: 'transparent' }}
-        getCursor={() => (interactionMode === 'lasso' || interactionMode === 'draw' ? 'crosshair' : interactionMode === 'adjust' ? 'move' : 'grab')}
+        getCursor={() => (
+          interactionMode === 'lasso' || interactionMode === 'draw' ? 'crosshair'
+          : interactionMode === 'adjust' ? 'move'
+          : interactionMode === 'quilt' ? (quiltPhase === 'lasso' ? 'crosshair' : 'move')
+          : 'grab'
+        )}
       />
 
       {/* SVG overlay for lasso, lines, and stored lines */}
@@ -716,6 +898,17 @@ export default function ScatterPlot({
             d={lassoPath}
             fill="rgba(233, 69, 96, 0.2)"
             stroke="#e94560"
+            strokeWidth={2}
+            strokeDasharray="5,5"
+          />
+        )}
+
+        {/* Quilt lasso (orange) */}
+        {isDrawing && interactionMode === 'quilt' && quiltPhase === 'lasso' && lassoPoints.length > 1 && (
+          <path
+            d={lassoPath}
+            fill="rgba(155, 89, 182, 0.2)"
+            stroke="#9b59b6"
             strokeWidth={2}
             strokeDasharray="5,5"
           />
@@ -791,6 +984,28 @@ export default function ScatterPlot({
           }}
         >
           Adjust Mode: Shift+drag to rotate
+        </div>
+      )}
+
+      {/* Quilt mode indicator */}
+      {interactionMode === 'quilt' && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            padding: '6px 12px',
+            backgroundColor: 'rgba(155, 89, 182, 0.9)',
+            color: 'white',
+            borderRadius: 4,
+            fontSize: 12,
+            fontWeight: 500,
+          }}
+        >
+          {quiltPhase === 'lasso'
+            ? 'Quilt Mode: Lasso cells to select a patch'
+            : 'Quilt Mode: Drag to move, Shift+drag to rotate (Esc to re-select)'}
         </div>
       )}
     </div>

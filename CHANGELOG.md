@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Gene Neighbors basis selection: choose between gene PCA embeddings or raw expression as the basis for computing gene-gene neighbors. When using expression basis, optional gene subset filtering and z-score scaling are available. This lets you compare PCA-based and expression-based gene similarity results.
+- Quilt mode undo: after rearranging cells in quilt mode, click the "Undo" button or press Ctrl/Cmd+Z to revert the last transform. Supports multiple levels of undo within a quilt session. The undo stack resets when exiting and re-entering quilt mode.
+- Quilt mode: a new interaction mode for rearranging tissue pieces in spatial transcriptomics data. Click "Quilt" in the toolbar, lasso a group of cells, then drag to translate, shift+drag to rotate, or use flip buttons to reposition the selected patch. Press Escape to re-select, or Escape again to exit. Transforms persist in h5ad export.
 - Side-by-side dual scatter plot view: click "Split" in the toolbar to view both primary and secondary datasets simultaneously. Click a plot to make it the active dataset. Each plot has independent pan/zoom, its own embedding selector, and its own legend. Interaction tools (lasso, draw, adjust) work on whichever plot you click. Gene and gene set coloring applies to both plots simultaneously.
 - Embeddings created by Scanpy (PCA, UMAP) are now automatically selected for viewing, even when the dataset had no embeddings initially.
 - Backend multi-dataset support: load multiple datasets into named slots (`primary`, `secondary`, etc.). All API endpoints accept an optional `?dataset=` query parameter. New `GET /datasets` and `DELETE /datasets/{slot}` endpoints for managing loaded datasets. Existing single-dataset usage is unchanged.

@@ -173,6 +173,9 @@ class TransformEmbeddingRequest(BaseModel):
     rotation_degrees: float = 0
     reflect_x: bool = False
     reflect_y: bool = False
+    cell_indices: list[int] | None = None
+    translate_x: float = 0.0
+    translate_y: float = 0.0
 
 
 @router.post("/embedding/{name}/transform")
@@ -195,9 +198,22 @@ def transform_embedding(name: str, request: TransformEmbeddingRequest, dataset: 
             rotation_degrees=request.rotation_degrees,
             reflect_x=request.reflect_x,
             reflect_y=request.reflect_y,
+            cell_indices=request.cell_indices,
+            translate_x=request.translate_x,
+            translate_y=request.translate_y,
         )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/embedding/{name}/undo")
+def undo_transform_embedding(name: str, dataset: str | None = Query(None)):
+    """Undo the last quilt transform for an embedding."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.undo_transform_embedding(name)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # =========================================================================
@@ -1368,6 +1384,10 @@ class GenePcaRequest(BaseModel):
 class GeneNeighborsRequest(BaseModel):
     n_neighbors: int = 15
     metric: str = 'euclidean'
+    basis: str = 'gene_pca'
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    scale: bool = True
+    active_cell_indices: list[int] | None = None
 
 
 class FindSimilarGenesRequest(BaseModel):
@@ -1453,9 +1473,10 @@ def get_gene_pca_variance(dataset: str | None = Query(None)):
 
 @router.post("/scanpy/gene_neighbors")
 def run_gene_neighbors(request: GeneNeighborsRequest, dataset: str | None = Query(None)):
-    """Compute gene-gene kNN graph from gene PCA.
+    """Compute gene-gene kNN graph from gene PCA or raw expression.
 
-    Requires: gene_pca must be computed first.
+    When basis='gene_pca', requires gene_pca to be computed first.
+    When basis='expression', computes directly from the expression matrix.
     Results stored in .varp['gene_connectivities'] and .varp['gene_distances'].
 
     Returns:
@@ -1463,9 +1484,18 @@ def run_gene_neighbors(request: GeneNeighborsRequest, dataset: str | None = Quer
     """
     adaptor = get_adaptor(dataset)
     try:
+        # Convert Pydantic model to dict if needed
+        gene_subset = request.gene_subset
+        if isinstance(gene_subset, GeneSubsetSpec):
+            gene_subset = {'columns': gene_subset.columns, 'operation': gene_subset.operation}
+
         return adaptor.run_gene_neighbors(
             n_neighbors=request.n_neighbors,
             metric=request.metric,
+            basis=request.basis,
+            gene_subset=gene_subset,
+            scale=request.scale,
+            active_cell_indices=request.active_cell_indices,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

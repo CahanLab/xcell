@@ -46,13 +46,13 @@ def list_adaptors() -> dict[str, dict]:
 
 @router.get("/browse")
 def browse_filesystem(path: str | None = None):
-    """List directories and .h5ad files at the given path.
+    """List directories and .h5ad/.h5 files at the given path.
 
     Args:
         path: Directory path to list. Defaults to the user's home directory.
 
     Returns:
-        JSON object with current path, parent path, and entries (dirs + h5ad files).
+        JSON object with current path, parent path, and entries (dirs + h5ad/h5 files).
     """
     if path:
         directory = Path(path).expanduser().resolve()
@@ -71,7 +71,7 @@ def browse_filesystem(path: str | None = None):
                 continue
             if item.is_dir():
                 entries.append({"name": item.name, "type": "directory", "path": str(item)})
-            elif item.suffix == '.h5ad':
+            elif item.suffix in ('.h5ad', '.h5'):
                 try:
                     size = item.stat().st_size
                 except OSError:
@@ -94,12 +94,12 @@ class LoadRequest(BaseModel):
 
 @router.post("/load")
 def load_dataset(request: LoadRequest, dataset: str | None = Query(None)):
-    """Load a new h5ad dataset from a server-side file path.
+    """Load a new dataset from a server-side file path.
 
     Loads the dataset into the specified slot (defaults to 'primary').
 
     Args:
-        file_path: Absolute path to an .h5ad file on the server filesystem
+        file_path: Absolute path to an .h5ad or .h5 file on the server filesystem
         slot: Named slot to load into (default: 'primary')
 
     Returns:
@@ -107,8 +107,8 @@ def load_dataset(request: LoadRequest, dataset: str | None = Query(None)):
     """
     target_slot = request.slot
     path = Path(request.file_path)
-    if not path.suffix == '.h5ad':
-        raise HTTPException(status_code=400, detail="File must have .h5ad extension")
+    if path.suffix not in ('.h5ad', '.h5'):
+        raise HTTPException(status_code=400, detail="File must have .h5ad or .h5 extension")
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
     try:

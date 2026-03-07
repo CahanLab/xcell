@@ -1022,7 +1022,7 @@ export default function App() {
               <button
                 style={styles.exportButton}
                 onClick={() => { setIsLoadModalOpen(true); setLoadError(null); setLoadFilePath(''); browseDirectory() }}
-                title="Load a different h5ad file"
+                title="Load a different dataset file"
               >
                 Load
               </button>
@@ -1450,7 +1450,7 @@ export default function App() {
 
                     {!embedding && !isLoading && !error && (
                       <div style={styles.loading}>
-                        No data loaded. Start the backend with an h5ad file.
+                        No data loaded. Start the backend with an h5ad or h5 file.
                       </div>
                     )}
                   </>
@@ -1742,7 +1742,7 @@ export default function App() {
               {browseLoading ? (
                 <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '12px' }}>Loading...</div>
               ) : browseEntries.length === 0 ? (
-                <div style={{ padding: '20px', textAlign: 'center', color: '#666', fontSize: '12px' }}>No folders or .h5ad files here</div>
+                <div style={{ padding: '20px', textAlign: 'center', color: '#666', fontSize: '12px' }}>No folders or data files here</div>
               ) : (
                 browseEntries.map((entry) => (
                   <div
@@ -1798,7 +1798,7 @@ export default function App() {
               value={loadFilePath}
               onChange={(e) => setLoadFilePath(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && !loadLoading && loadFilePath.trim() && handleLoadDataset()}
-              placeholder="/path/to/data.h5ad"
+              placeholder="/path/to/data.h5ad or .h5"
               disabled={loadLoading}
               style={{
                 width: '100%',

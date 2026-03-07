@@ -45,7 +45,7 @@ async def startup_event():
             data_path = str(bundled)
             print("No XCELL_DATA_PATH set — using bundled toy_spatial.h5ad")
         else:
-            print("Warning: XCELL_DATA_PATH not set. Set it to load an h5ad file.")
+            print("Warning: XCELL_DATA_PATH not set. Set it to load an h5ad or h5 file.")
             print("Example: XCELL_DATA_PATH=/path/to/data.h5ad uvicorn xcell.main:app --reload")
             return
 

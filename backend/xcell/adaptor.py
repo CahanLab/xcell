@@ -31,13 +31,17 @@ class DataAdaptor:
     """
 
     def __init__(self, filepath: str | Path):
-        """Load an h5ad file and initialize the adaptor.
+        """Load an h5ad or 10x h5 file and initialize the adaptor.
 
         Args:
-            filepath: Path to the .h5ad file to load
+            filepath: Path to the .h5ad or .h5 file to load
         """
         self.filepath = Path(filepath)
-        self.adata = anndata.read_h5ad(self.filepath)
+        if self.filepath.suffix == '.h5':
+            self.adata = sc.read_10x_h5(self.filepath)
+            self.adata.var_names_make_unique()
+        else:
+            self.adata = anndata.read_h5ad(self.filepath)
         self._normalized_adata: anndata.AnnData | None = None
         self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
         self._action_history: list[dict[str, Any]] = []  # Track scanpy operations

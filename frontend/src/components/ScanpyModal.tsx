@@ -170,7 +170,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         params: [
           { name: 'min_counts', label: 'Min counts', type: 'number', default: null, description: 'Minimum total counts' },
           { name: 'max_counts', label: 'Max counts', type: 'number', default: null, description: 'Maximum total counts' },
-          { name: 'min_cells', label: 'Min cells', type: 'number', default: null, description: 'Minimum cells expressing' },
+          { name: 'min_cells', label: 'Min cells', type: 'number', default: 25, description: 'Minimum cells expressing' },
           { name: 'max_cells', label: 'Max cells', type: 'number', default: null, description: 'Maximum cells expressing' },
         ],
       },
@@ -181,7 +181,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         params: [
           { name: 'min_counts', label: 'Min counts', type: 'number', default: null, description: 'Minimum total counts' },
           { name: 'max_counts', label: 'Max counts', type: 'number', default: null, description: 'Maximum total counts' },
-          { name: 'min_genes', label: 'Min genes', type: 'number', default: null, description: 'Minimum genes expressed' },
+          { name: 'min_genes', label: 'Min genes', type: 'number', default: 25, description: 'Minimum genes expressed' },
           { name: 'max_genes', label: 'Max genes', type: 'number', default: null, description: 'Maximum genes expressed' },
         ],
       },
@@ -251,7 +251,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         description: 'Leiden clustering algorithm',
         prerequisites: ['neighbors'],
         params: [
-          { name: 'resolution', label: 'Resolution', type: 'number', default: 1.0, description: 'Higher = more clusters' },
+          { name: 'resolution', label: 'Resolution', type: 'number', default: 0.5, description: 'Higher = more clusters' },
           { name: 'key_added', label: 'Column name', type: 'text', default: 'leiden', description: 'Name for cluster labels' },
         ],
       },

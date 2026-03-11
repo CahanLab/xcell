@@ -38,6 +38,8 @@ export function useSchema() {
           const idx = pick != null ? lower.findIndex((l) => l.includes(pick)) : 0
           setSelectedEmbedding(data.embeddings[idx])
         }
+        // Fetch var identifier columns for gene name switching
+        fetchVarIdentifierColumns()
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
@@ -532,6 +534,72 @@ export function useGeneBrowse(pageSize: number = 50) {
   return { page, isLoading, fetchPage, reset }
 }
 
+// Fetch available var identifier columns for gene name switching
+export async function fetchVarIdentifierColumns(slot?: DatasetSlot): Promise<void> {
+  try {
+    const data = await fetchJson<{ columns: string[]; current: string }>(
+      appendDataset(`${API_BASE}/var/identifier_columns`, slot)
+    )
+    const store = useStore.getState()
+    const targetSlot = slot ?? store.activeSlot
+    store.patchSlotState(targetSlot, {
+      varIdentifierColumns: data.columns,
+      currentVarIndex: data.current,
+    })
+    // Also update flat fields if active slot
+    if (targetSlot === store.activeSlot) {
+      store.setVarIdentifierColumns(data.columns)
+      store.setCurrentVarIndex(data.current)
+    }
+  } catch (err) {
+    console.error('Failed to fetch var identifier columns:', err)
+  }
+}
+
+// Swap the var index to a different column (changes gene identifiers)
+export async function swapVarIndex(column: string, slot?: DatasetSlot): Promise<void> {
+  const store = useStore.getState()
+  const targetSlot = slot ?? store.activeSlot
+
+  const data = await fetchJson<{
+    schema: Schema
+    old_genes: string[]
+    new_genes: string[]
+  }>(
+    appendDataset(`${API_BASE}/var/swap_index`, targetSlot),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ column }),
+    }
+  )
+
+  // Build positional old→new mapping
+  const oldToNew = new Map<string, string>()
+  for (let i = 0; i < data.old_genes.length; i++) {
+    if (data.old_genes[i] !== data.new_genes[i]) {
+      oldToNew.set(data.old_genes[i], data.new_genes[i])
+    }
+  }
+
+  // Remap gene names in store (gene sets, selectedGenes)
+  if (oldToNew.size > 0) {
+    store.remapAllGeneNames(oldToNew)
+  }
+
+  // Update schema without resetting everything
+  store.setSchema(data.schema)
+
+  // Refresh identifier columns
+  await fetchVarIdentifierColumns(targetSlot)
+
+  // If coloring by expression, clear and let user re-select
+  const currentState = useStore.getState()
+  if (currentState.colorMode === 'expression' && currentState.selectedGenes.length > 0) {
+    store.clearSelectedGenes()
+  }
+}
+
 // Types for obs summaries
 export interface CategoryValue {
   value: string
@@ -554,14 +622,17 @@ export function useObsSummaries() {
   const [error, setError] = useState<string | null>(null)
   const [refreshCounter, setRefreshCounter] = useState(0)
   const obsSummariesVersion = useStore((s) => s.obsSummariesVersion)
+  const activeSlot = useStore((s) => s.activeSlot)
+  const schema = useStore((s) => s.schema)
 
   useEffect(() => {
+    if (!schema) return // No dataset loaded yet
     setIsLoading(true)
     fetchJson<ObsSummary[]>(appendDataset(`${API_BASE}/obs/summaries`))
       .then(setSummaries)
       .catch((err) => setError(err.message))
       .finally(() => setIsLoading(false))
-  }, [refreshCounter, obsSummariesVersion])
+  }, [refreshCounter, obsSummariesVersion, activeSlot, schema])
 
   const refresh = useCallback(() => {
     setRefreshCounter((c) => c + 1)

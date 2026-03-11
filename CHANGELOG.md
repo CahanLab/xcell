@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Gene identifier column switching: dropdown in Gene Panel header to switch between .var columns (e.g., Ensembl IDs vs gene symbols) when alternatives are available. Gene sets and selections are automatically remapped.
+- CahanLab logo in header now links to https://cahanlab.org/
+
+### Changed
+- Load modal redesigned with Finder-inspired two-column layout: sidebar with quick-access shortcuts (Home, Desktop, Documents, Downloads) and recently loaded files, breadcrumb path navigation for clicking any ancestor directory
+- Gene Panel: more compact layout with reduced padding, Browse button moved to header next to Import, empty auto-generated categories (Gene Clusters, Similar Genes, etc.) hidden until populated
+- Cell Panel: lasso selection is now cleared after running a lasso-based comparison (Set as Group 1/2 → Compare)
+
+### Fixed
+- Cell Panel now properly refreshes when switching between datasets or loading a new dataset
 - Support for loading `.rds` files containing Seurat objects. Requires R and the Seurat/SeuratDisk R packages to be installed. RDS files are automatically converted to h5ad format on load.
 - Load 10x Genomics Cell Ranger `.h5` files in addition to `.h5ad` files. The file browser now shows both formats, and the Load modal accepts either.
 - Gene Neighbors basis selection: choose between gene PCA embeddings or raw expression as the basis for computing gene-gene neighbors. When using expression basis, optional gene subset filtering and z-score scaling are available. This lets you compare PCA-based and expression-based gene similarity results.

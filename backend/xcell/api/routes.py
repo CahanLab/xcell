@@ -83,10 +83,25 @@ def browse_filesystem(path: str | None = None):
     except PermissionError:
         raise HTTPException(status_code=403, detail=f"Permission denied: {directory}")
 
+    # Standard quick-access locations
+    home = Path.home()
+    shortcut_defs = [
+        ("Home", home),
+        ("Desktop", home / "Desktop"),
+        ("Documents", home / "Documents"),
+        ("Downloads", home / "Downloads"),
+    ]
+    shortcuts = [
+        {"name": name, "path": str(p)}
+        for name, p in shortcut_defs
+        if p.is_dir()
+    ]
+
     return {
         "current": str(directory),
         "parent": parent,
         "entries": entries,
+        "shortcuts": shortcuts,
     }
 
 
@@ -1480,6 +1495,40 @@ def get_var_boolean_columns(dataset: str | None = Query(None)):
     """
     adaptor = get_adaptor(dataset)
     return adaptor.get_var_boolean_columns()
+
+
+class SwapVarIndexRequest(BaseModel):
+    column: str
+
+
+@router.get("/var/identifier_columns")
+def get_var_identifier_columns(dataset: str | None = Query(None)):
+    """Get .var columns suitable as gene identifiers."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.get_var_identifier_columns()
+
+
+@router.post("/var/swap_index")
+def swap_var_index(request: SwapVarIndexRequest, dataset: str | None = Query(None)):
+    """Swap the .var index with another column.
+
+    Returns:
+        Updated schema after swap, plus old and new gene lists for remapping.
+    """
+    adaptor = get_adaptor(dataset)
+    # Capture old gene names (positional order)
+    old_genes = adaptor.get_gene_names()
+    try:
+        schema = adaptor.swap_var_index(request.column)
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # Capture new gene names (same positional order)
+    new_genes = adaptor.get_gene_names()
+    return {
+        'schema': schema,
+        'old_genes': old_genes,
+        'new_genes': new_genes,
+    }
 
 
 @router.post("/scanpy/gene_pca")

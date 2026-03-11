@@ -511,8 +511,13 @@ export default function App() {
   // State for file browser
   const [browseEntries, setBrowseEntries] = useState<{ name: string; type: string; path: string; size?: number }[]>([])
   const [browseCurrent, setBrowseCurrent] = useState<string | null>(null)
-  const [browseParent, setBrowseParent] = useState<string | null>(null)
   const [browseLoading, setBrowseLoading] = useState(false)
+  const [browseShortcuts, setBrowseShortcuts] = useState<{ name: string; path: string }[]>([])
+  const [recentFiles, setRecentFiles] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('xcell_recentFiles') || '[]')
+    } catch { return [] }
+  })
   const lastBrowseDirRef = useRef<string | null>(localStorage.getItem('xcell_lastBrowseDir'))
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
@@ -837,7 +842,7 @@ export default function App() {
       const data = await response.json()
       setBrowseEntries(data.entries)
       setBrowseCurrent(data.current)
-      setBrowseParent(data.parent)
+      if (data.shortcuts) setBrowseShortcuts(data.shortcuts)
       lastBrowseDirRef.current = data.current
       localStorage.setItem('xcell_lastBrowseDir', data.current)
     } catch (err) {
@@ -876,6 +881,13 @@ export default function App() {
       if (loadSlot !== activeSlot) {
         setActiveSlot(loadSlot)
       }
+      // Track recently loaded files
+      const filePath = loadFilePath.trim()
+      setRecentFiles(prev => {
+        const updated = [filePath, ...prev.filter(f => f !== filePath)].slice(0, 5)
+        localStorage.setItem('xcell_recentFiles', JSON.stringify(updated))
+        return updated
+      })
       setIsLoadModalOpen(false)
     } catch (err) {
       setLoadError((err as Error).message)
@@ -1054,7 +1066,9 @@ export default function App() {
           )}
         </div>
         <div style={styles.logoGroup}>
-          <img src="/logoGlow.png" alt="CahanLab" style={{ height: '32px' }} />
+          <a href="https://cahanlab.org/" target="_blank" rel="noopener noreferrer">
+            <img src="/logoGlow.png" alt="CahanLab" style={{ height: '32px' }} />
+          </a>
         </div>
       </header>
 
@@ -1681,125 +1695,230 @@ export default function App() {
               backgroundColor: '#16213e',
               border: '1px solid #0f3460',
               borderRadius: '8px',
-              padding: '24px',
-              width: '500px',
+              padding: '20px',
+              width: '640px',
               maxHeight: '80vh',
               display: 'flex',
               flexDirection: 'column',
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ fontSize: '16px', fontWeight: 600, color: '#e94560', marginBottom: '16px' }}>
-              Load Dataset
+            {/* Header row: title + slot selector */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <div style={{ fontSize: '16px', fontWeight: 600, color: '#e94560' }}>
+                Load Dataset
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '12px', color: '#888' }}>Load into:</span>
+                <select
+                  value={loadSlot}
+                  onChange={(e) => setLoadSlot(e.target.value as DatasetSlot)}
+                  style={styles.embeddingSelect}
+                >
+                  <option value="primary">Primary</option>
+                  <option value="secondary">Secondary</option>
+                </select>
+              </div>
             </div>
 
-            {/* Slot selector */}
-            <div style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '12px', color: '#888' }}>Load into:</span>
-              <select
-                value={loadSlot}
-                onChange={(e) => setLoadSlot(e.target.value as DatasetSlot)}
-                style={styles.embeddingSelect}
-              >
-                <option value="primary">Primary</option>
-                <option value="secondary">Secondary</option>
-              </select>
-            </div>
+            {/* Two-column browser */}
+            <div style={{ display: 'flex', gap: '12px', flex: 1, minHeight: 0 }}>
 
-            {/* File browser */}
-            <div style={{ fontSize: '11px', color: '#888', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              {browseCurrent && (
-                <>
-                  {browseParent && (
-                    <button
-                      onClick={() => browseDirectory(browseParent)}
-                      disabled={browseLoading}
-                      style={{
-                        padding: '2px 6px',
-                        fontSize: '11px',
-                        backgroundColor: '#0f3460',
-                        color: '#aaa',
-                        border: '1px solid #1a1a2e',
-                        borderRadius: '3px',
-                        cursor: 'pointer',
-                        flexShrink: 0,
-                      }}
-                    >
-                      Up
-                    </button>
-                  )}
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }}>
-                    {browseCurrent}
-                  </span>
-                </>
-              )}
-            </div>
-            <div
-              style={{
-                flex: 1,
-                minHeight: '200px',
-                maxHeight: '300px',
-                overflowY: 'auto',
-                backgroundColor: '#0d1b30',
-                border: '1px solid #1a1a2e',
-                borderRadius: '4px',
-                marginBottom: '12px',
-              }}
-            >
-              {browseLoading ? (
-                <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '12px' }}>Loading...</div>
-              ) : browseEntries.length === 0 ? (
-                <div style={{ padding: '20px', textAlign: 'center', color: '#666', fontSize: '12px' }}>No folders or data files here</div>
-              ) : (
-                browseEntries.map((entry) => (
+              {/* Sidebar */}
+              <div style={{
+                width: '130px',
+                flexShrink: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '2px',
+                fontSize: '12px',
+              }}>
+                {browseShortcuts.map((sc) => (
                   <div
-                    key={entry.path}
-                    onClick={() => {
-                      if (entry.type === 'directory') {
-                        browseDirectory(entry.path)
-                      } else {
-                        setLoadFilePath(entry.path)
-                        setLoadError(null)
-                      }
-                    }}
+                    key={sc.path}
+                    onClick={() => browseDirectory(sc.path)}
                     style={{
-                      padding: '6px 10px',
-                      fontSize: '13px',
-                      color: entry.type === 'directory' ? '#aaa' : '#e94560',
+                      padding: '5px 8px',
+                      borderRadius: '4px',
                       cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      backgroundColor: entry.path === loadFilePath ? 'rgba(233, 69, 96, 0.15)' : 'transparent',
-                      borderBottom: '1px solid #1a1a2e',
+                      color: browseCurrent === sc.path ? '#e94560' : '#aaa',
+                      backgroundColor: browseCurrent === sc.path ? 'rgba(233, 69, 96, 0.1)' : 'transparent',
                     }}
-                    onMouseEnter={(e) => {
-                      if (entry.path !== loadFilePath) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.03)'
-                    }}
-                    onMouseLeave={(e) => {
-                      if (entry.path !== loadFilePath) e.currentTarget.style.backgroundColor = 'transparent'
-                    }}
+                    onMouseEnter={(e) => { if (browseCurrent !== sc.path) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.03)' }}
+                    onMouseLeave={(e) => { if (browseCurrent !== sc.path) e.currentTarget.style.backgroundColor = 'transparent' }}
                   >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
-                      <span style={{ flexShrink: 0 }}>{entry.type === 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4'}</span>
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</span>
-                    </span>
-                    {entry.type === 'file' && entry.size != null && (
-                      <span style={{ fontSize: '11px', color: '#666', flexShrink: 0, marginLeft: '8px' }}>
-                        {entry.size < 1024 * 1024
-                          ? `${(entry.size / 1024).toFixed(0)} KB`
-                          : entry.size < 1024 * 1024 * 1024
-                            ? `${(entry.size / (1024 * 1024)).toFixed(1)} MB`
-                            : `${(entry.size / (1024 * 1024 * 1024)).toFixed(2)} GB`}
-                      </span>
-                    )}
+                    {sc.name}
                   </div>
-                ))
-              )}
+                ))}
+
+                {recentFiles.length > 0 && (
+                  <>
+                    <div style={{
+                      borderTop: '1px solid #0f3460',
+                      marginTop: '6px',
+                      paddingTop: '6px',
+                      fontSize: '10px',
+                      color: '#666',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px',
+                      paddingLeft: '8px',
+                    }}>
+                      Recent
+                    </div>
+                    {recentFiles.map((fp) => {
+                      const fname = fp.split('/').pop() || fp
+                      return (
+                        <div
+                          key={fp}
+                          onClick={() => {
+                            setLoadFilePath(fp)
+                            setLoadError(null)
+                            const parentDir = fp.substring(0, fp.lastIndexOf('/'))
+                            if (parentDir) browseDirectory(parentDir)
+                          }}
+                          title={fp}
+                          style={{
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            color: loadFilePath === fp ? '#e94560' : '#888',
+                            backgroundColor: loadFilePath === fp ? 'rgba(233, 69, 96, 0.1)' : 'transparent',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            fontSize: '11px',
+                          }}
+                          onMouseEnter={(e) => { if (loadFilePath !== fp) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.03)' }}
+                          onMouseLeave={(e) => { if (loadFilePath !== fp) e.currentTarget.style.backgroundColor = 'transparent' }}
+                        >
+                          {fname}
+                        </div>
+                      )
+                    })}
+                  </>
+                )}
+              </div>
+
+              {/* Main browser area */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+
+                {/* Breadcrumb path bar */}
+                {browseCurrent && (
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '2px',
+                    marginBottom: '6px',
+                    fontSize: '11px',
+                    overflowX: 'auto',
+                    whiteSpace: 'nowrap',
+                    padding: '4px 0',
+                  }}>
+                    {(() => {
+                      const parts = browseCurrent.split('/').filter(Boolean)
+                      return (
+                        <>
+                          <span
+                            onClick={() => browseDirectory('/')}
+                            style={{ cursor: 'pointer', color: '#888', padding: '1px 3px', borderRadius: '3px' }}
+                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.06)' }}
+                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
+                          >/</span>
+                          {parts.map((part, i) => {
+                            const fullPath = '/' + parts.slice(0, i + 1).join('/')
+                            const isLast = i === parts.length - 1
+                            return (
+                              <span key={fullPath} style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                <span style={{ color: '#555' }}>&rsaquo;</span>
+                                <span
+                                  onClick={() => !isLast && browseDirectory(fullPath)}
+                                  style={{
+                                    cursor: isLast ? 'default' : 'pointer',
+                                    color: isLast ? '#ccc' : '#888',
+                                    fontWeight: isLast ? 600 : 400,
+                                    padding: '1px 3px',
+                                    borderRadius: '3px',
+                                  }}
+                                  onMouseEnter={(e) => { if (!isLast) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.06)' }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
+                                >
+                                  {part}
+                                </span>
+                              </span>
+                            )
+                          })}
+                        </>
+                      )
+                    })()}
+                  </div>
+                )}
+
+                {/* File/directory list */}
+                <div style={{
+                  flex: 1,
+                  minHeight: '200px',
+                  maxHeight: '300px',
+                  overflowY: 'auto',
+                  backgroundColor: '#0d1b30',
+                  border: '1px solid #1a1a2e',
+                  borderRadius: '4px',
+                }}>
+                  {browseLoading ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '12px' }}>Loading...</div>
+                  ) : browseEntries.length === 0 ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: '#666', fontSize: '12px' }}>No folders or data files here</div>
+                  ) : (
+                    browseEntries.map((entry) => (
+                      <div
+                        key={entry.path}
+                        onClick={() => {
+                          if (entry.type === 'directory') {
+                            browseDirectory(entry.path)
+                          } else {
+                            setLoadFilePath(entry.path)
+                            setLoadError(null)
+                          }
+                        }}
+                        style={{
+                          padding: '5px 10px',
+                          fontSize: '12px',
+                          color: entry.type === 'directory' ? '#aaa' : '#e94560',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          backgroundColor: entry.path === loadFilePath ? 'rgba(233, 69, 96, 0.15)' : 'transparent',
+                          borderBottom: '1px solid #1a1a2e',
+                        }}
+                        onMouseEnter={(e) => {
+                          if (entry.path !== loadFilePath) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.03)'
+                        }}
+                        onMouseLeave={(e) => {
+                          if (entry.path !== loadFilePath) e.currentTarget.style.backgroundColor = 'transparent'
+                        }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
+                          <span style={{ flexShrink: 0 }}>{entry.type === 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4'}</span>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</span>
+                        </span>
+                        {entry.type === 'file' && entry.size != null && (
+                          <span style={{ fontSize: '11px', color: '#666', flexShrink: 0, marginLeft: '8px' }}>
+                            {entry.size < 1024 * 1024
+                              ? `${(entry.size / 1024).toFixed(0)} KB`
+                              : entry.size < 1024 * 1024 * 1024
+                                ? `${(entry.size / (1024 * 1024)).toFixed(1)} MB`
+                                : `${(entry.size / (1024 * 1024 * 1024)).toFixed(2)} GB`}
+                          </span>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
 
-            {/* Path input (also accepts manual typing) */}
-            <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Or enter path directly:</div>
+            {/* Path input */}
+            <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px', marginTop: '12px' }}>Or enter path directly:</div>
             <input
               type="text"
               value={loadFilePath}

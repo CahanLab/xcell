@@ -833,10 +833,12 @@ export default function CellPanel() {
   const handleRunComparison = useCallback(async () => {
     try {
       await runComparison(25)
+      // Clear lasso selection after comparison so highlighted cells are deselected
+      clearSelection()
     } catch (err) {
       alert(`Differential expression failed: ${(err as Error).message}`)
     }
-  }, [runComparison])
+  }, [runComparison, clearSelection])
 
   // Clear comparison
   const handleClearComparison = useCallback(() => {

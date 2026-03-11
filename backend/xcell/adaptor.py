@@ -319,6 +319,80 @@ class DataAdaptor:
         """
         return self.adata.var.index.tolist()
 
+    def get_var_identifier_columns(self) -> dict[str, Any]:
+        """Get .var columns that could serve as gene identifiers.
+
+        Returns columns with string/object dtype and >90% unique values.
+        Includes '_index' representing the current index.
+
+        Returns:
+            Dictionary with 'columns' (list of column names including '_index')
+            and 'current' (name of the current index, or '_index' if unnamed).
+        """
+        candidates = ['_index']  # Always include current index
+        n_genes = self.adata.n_vars
+        if n_genes == 0:
+            index_name = self.adata.var.index.name or '_index'
+            return {'columns': candidates, 'current': index_name if index_name != '_index' else '_index'}
+
+        for col in self.adata.var.columns:
+            series = self.adata.var[col]
+            # Must be string/object dtype
+            if series.dtype not in ('object', 'string', 'str'):
+                if not pd.api.types.is_string_dtype(series):
+                    continue
+            # Skip boolean-like columns
+            unique_vals = series.dropna().unique()
+            if len(unique_vals) <= 2 and set(str(v).lower() for v in unique_vals).issubset({'true', 'false', '0', '1', 'yes', 'no'}):
+                continue
+            # Must have >90% unique values
+            n_unique = series.nunique()
+            if n_unique / n_genes > 0.9:
+                candidates.append(col)
+
+        current = self.adata.var.index.name or '_index'
+        return {'columns': candidates, 'current': current}
+
+    def swap_var_index(self, column_name: str) -> dict[str, Any]:
+        """Swap the .var index with another column.
+
+        Moves the current index into a .var column and promotes the
+        specified column to the index. Clears expression caches.
+
+        Args:
+            column_name: Name of the .var column to use as the new index.
+
+        Returns:
+            Updated schema dict (same format as get_schema()).
+
+        Raises:
+            KeyError: If column_name is not in .var columns.
+        """
+        if column_name not in self.adata.var.columns:
+            raise KeyError(f"Column '{column_name}' not found in .var")
+
+        # Save current index as a column
+        old_index_name = self.adata.var.index.name or '_prev_index'
+        # Avoid collision if column already exists
+        save_name = old_index_name
+        if save_name in self.adata.var.columns:
+            save_name = f"{save_name}_orig"
+        self.adata.var[save_name] = self.adata.var.index
+
+        # Set new index
+        self.adata.var.index = self.adata.var[column_name].values
+        self.adata.var.index.name = column_name
+        # Remove the column (it's now the index)
+        self.adata.var.drop(columns=[column_name], inplace=True)
+
+        # Handle duplicates
+        self.adata.var_names_make_unique()
+
+        # Clear caches
+        self._normalized_adata = None
+
+        return self.get_schema()
+
     def search_genes(self, query: str, limit: int = 20) -> list[str]:
         """Search for genes by name prefix.
 

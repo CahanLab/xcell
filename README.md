@@ -94,6 +94,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 ### 7. Color by Gene Expression
 
 - Open **Gene Manager** (right panel)
+- If the dataset has alternative gene identifier columns (e.g., gene symbols alongside Ensembl IDs), use the **Gene IDs** dropdown at the top of the panel to switch
 - Search or browse genes
 - Click a gene to color cells by its expression
 
@@ -132,7 +133,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 
 ### 13. Load a Second Dataset
 
-- Click **Load** in the toolbar
+- Click **Load** in the toolbar — the modal shows a sidebar with quick-access locations (Home, Desktop, Documents, Downloads) and recently loaded files, plus breadcrumb path navigation for clicking any ancestor directory
 - Choose **Secondary** from the "Load into" dropdown
 - Browse or enter the path to a second h5ad, h5, or rds file and click **Load**
 - A dataset switcher dropdown appears in the header — switch between Primary and Secondary to compare datasets

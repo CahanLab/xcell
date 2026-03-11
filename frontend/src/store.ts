@@ -291,6 +291,8 @@ export interface DatasetState {
   columnDisplayNames: Record<string, string>
   obsSummariesVersion: number
   scanpyActionHistory: ScanpyActionRecord[]
+  varIdentifierColumns: string[]
+  currentVarIndex: string
 }
 
 export function createDefaultDatasetState(): DatasetState {
@@ -324,6 +326,8 @@ export function createDefaultDatasetState(): DatasetState {
     columnDisplayNames: {},
     obsSummariesVersion: 0,
     scanpyActionHistory: [],
+    varIdentifierColumns: [],
+    currentVarIndex: '_index',
   }
 }
 
@@ -396,6 +400,10 @@ interface AppState {
 
   // Observable summaries refresh trigger
   obsSummariesVersion: number
+
+  // Var identifier column switching (per-dataset, flat mirror)
+  varIdentifierColumns: string[]
+  currentVarIndex: string
 
   // Marker genes modal state
   isMarkerGenesModalOpen: boolean
@@ -525,6 +533,11 @@ interface AppState {
   setMarkerGenesModalOpen: (open: boolean) => void
   setMarkerGenesColumn: (column: string | null) => void
 
+  // Var identifier switching actions
+  setVarIdentifierColumns: (columns: string[]) => void
+  setCurrentVarIndex: (name: string) => void
+  remapAllGeneNames: (oldToNew: Map<string, string>) => void
+
   // Checkbox-based comparison actions
   toggleComparisonCategory: (column: string, category: string) => void
   clearComparisonCategories: () => void
@@ -595,6 +608,8 @@ export const useStore = create<AppState>((set, get) => {
       columnDisplayNames: ds.columnDisplayNames,
       obsSummariesVersion: ds.obsSummariesVersion,
       scanpyActionHistory: ds.scanpyActionHistory,
+      varIdentifierColumns: ds.varIdentifierColumns,
+      currentVarIndex: ds.currentVarIndex,
     }
   }
 
@@ -653,6 +668,8 @@ export const useStore = create<AppState>((set, get) => {
     isScanpyModalOpen: false,
     scanpyActionHistory: [],
     obsSummariesVersion: 0,
+    varIdentifierColumns: [],
+    currentVarIndex: '_index',
     isMarkerGenesModalOpen: false,
     markerGenesColumn: null,
     comparisonCheckedColumn: null,
@@ -1385,6 +1402,47 @@ export const useStore = create<AppState>((set, get) => {
     // Marker genes modal actions (global)
     setMarkerGenesModalOpen: (open) => set({ isMarkerGenesModalOpen: open }),
     setMarkerGenesColumn: (column) => set({ markerGenesColumn: column }),
+
+    // Var identifier switching actions
+    setVarIdentifierColumns: (columns) => set(dsUpdate({ varIdentifierColumns: columns })),
+    setCurrentVarIndex: (name) => set(dsUpdate({ currentVarIndex: name })),
+
+    remapAllGeneNames: (oldToNew) => set((state) => {
+      // Remap selectedGenes
+      const newSelectedGenes = state.selectedGenes.map(g => oldToNew.get(g) ?? g)
+
+      // Deep-clone and remap all gene set categories
+      const newCategories = { ...state.geneSetCategories }
+      for (const catType of Object.keys(newCategories) as Array<keyof typeof newCategories>) {
+        const cat = newCategories[catType]
+        newCategories[catType] = {
+          ...cat,
+          geneSets: cat.geneSets.map(gs => ({
+            ...gs,
+            genes: gs.genes.map(g => oldToNew.get(g) ?? g),
+          })),
+          folders: cat.folders.map(folder => ({
+            ...folder,
+            geneSets: folder.geneSets.map(gs => ({
+              ...gs,
+              genes: gs.genes.map(g => oldToNew.get(g) ?? g),
+            })),
+          })),
+        }
+      }
+
+      // Also remap legacy geneSets
+      const newGeneSets = state.geneSets.map(gs => ({
+        ...gs,
+        genes: gs.genes.map(g => oldToNew.get(g) ?? g),
+      }))
+
+      return {
+        selectedGenes: newSelectedGenes,
+        geneSetCategories: newCategories,
+        geneSets: newGeneSets,
+      }
+    }),
 
     // Checkbox-based comparison actions (global)
     toggleComparisonCategory: (column, category) =>

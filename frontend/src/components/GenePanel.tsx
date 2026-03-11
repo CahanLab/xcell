@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType } from '../store'
-import { useGeneSearch, useGeneBrowse, useDataActions, appendDataset } from '../hooks/useData'
+import { useGeneSearch, useGeneBrowse, useDataActions, appendDataset, fetchVarIdentifierColumns, swapVarIndex } from '../hooks/useData'
 import ImportModal from './ImportModal'
 
 const API_BASE = '/api'
@@ -30,14 +30,14 @@ const styles = {
     overflow: 'hidden',
   },
   header: {
-    padding: '12px 16px',
+    padding: '8px 12px',
     borderBottom: '1px solid #0f3460',
   },
   title: {
     fontSize: '14px',
     fontWeight: 600,
     color: '#e94560',
-    marginBottom: '12px',
+    marginBottom: '0',
   },
   searchContainer: {
     position: 'relative' as const,
@@ -77,16 +77,16 @@ const styles = {
   content: {
     flex: 1,
     overflowY: 'auto' as const,
-    padding: '12px 16px',
+    padding: '8px 12px',
   },
   section: {
-    marginBottom: '16px',
+    marginBottom: '10px',
   },
   sectionHeader: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: '8px',
+    marginBottom: '4px',
   },
   sectionTitle: {
     fontSize: '12px',
@@ -106,14 +106,14 @@ const styles = {
   geneSet: {
     backgroundColor: '#0f3460',
     borderRadius: '4px',
-    marginBottom: '8px',
+    marginBottom: '4px',
     overflow: 'hidden',
   },
   geneSetHeader: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '8px 12px',
+    padding: '5px 10px',
     cursor: 'pointer',
   },
   geneSetName: {
@@ -140,16 +140,16 @@ const styles = {
     fontSize: '12px',
   },
   geneList: {
-    padding: '4px 12px 8px',
+    padding: '2px 10px 4px',
     borderTop: '1px solid #1a1a2e',
   },
   gene: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '4px 8px',
-    marginBottom: '2px',
-    borderRadius: '4px',
+    padding: '2px 6px',
+    marginBottom: '1px',
+    borderRadius: '3px',
     fontSize: '12px',
     color: '#ccc',
   },
@@ -176,7 +176,7 @@ const styles = {
     fontSize: '13px',
   },
   selectedGenesBar: {
-    padding: '8px 16px',
+    padding: '5px 12px',
     backgroundColor: '#0f3460',
     borderBottom: '1px solid #1a1a2e',
     display: 'flex',
@@ -215,7 +215,7 @@ const styles = {
   searchResultItem: {
     display: 'flex',
     alignItems: 'center',
-    padding: '6px 10px',
+    padding: '3px 10px',
     fontSize: '12px',
     color: '#ccc',
     cursor: 'grab',
@@ -264,7 +264,7 @@ const styles = {
   },
   // Category styles
   category: {
-    marginBottom: '12px',
+    marginBottom: '6px',
   },
   categoryHeader: {
     display: 'flex',
@@ -338,7 +338,7 @@ const styles = {
   emptyCategory: {
     fontSize: '11px',
     color: '#555',
-    padding: '8px 12px',
+    padding: '4px 10px',
     fontStyle: 'italic',
   },
 }
@@ -347,12 +347,13 @@ interface GeneSearchProps {
   onColorByGene: (gene: string) => void
   selectedSearchGenes: Set<string>
   setSelectedSearchGenes: React.Dispatch<React.SetStateAction<Set<string>>>
+  showBrowse: boolean
+  setShowBrowse: React.Dispatch<React.SetStateAction<boolean>>
 }
 
-function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes }: GeneSearchProps) {
+function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes, showBrowse, setShowBrowse }: GeneSearchProps) {
   const [query, setQuery] = useState('')
   const [hoveredGene, setHoveredGene] = useState<string | null>(null)
-  const [showBrowse, setShowBrowse] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const { results, searchGenes, clearResults } = useGeneSearch()
   const { page, isLoading: isBrowseLoading, fetchPage } = useGeneBrowse(50)
@@ -433,27 +434,6 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
           style={styles.searchInput}
         />
       </div>
-
-      {/* Browse toggle - shown when not searching */}
-      {!isSearchMode && (
-        <button
-          onClick={() => setShowBrowse(!showBrowse)}
-          style={{
-            width: '100%',
-            marginTop: '6px',
-            padding: '5px 8px',
-            fontSize: '11px',
-            color: showBrowse ? '#4ecdc4' : '#888',
-            backgroundColor: 'transparent',
-            border: '1px solid ' + (showBrowse ? '#4ecdc4' : '#1a1a2e'),
-            borderRadius: '4px',
-            cursor: 'pointer',
-            textAlign: 'center',
-          }}
-        >
-          {showBrowse ? 'Hide gene browser' : 'Browse all genes'}
-        </button>
-      )}
 
       {showGeneList && (
         <div style={styles.searchResults}>
@@ -890,9 +870,9 @@ function GeneSetCategoryComponent({
               activeGenes={activeGenes}
             />
           ))}
-          {isEmpty && (
+          {isEmpty && category.type !== 'manual' && (
             <div style={styles.emptyCategory}>
-              {category.type === 'manual' ? 'Click + to create a gene set' : 'No gene sets yet'}
+              No gene sets yet
             </div>
           )}
         </div>
@@ -934,6 +914,29 @@ export default function GenePanel() {
   const [numSimilarGenes, setNumSimilarGenes] = useState(10)
   const [findingSimilarGenes, setFindingSimilarGenes] = useState(false)
   const [similarGenesError, setSimilarGenesError] = useState<string | null>(null)
+
+  // Var identifier column switching
+  const varIdentifierColumns = useStore((s) => s.varIdentifierColumns)
+  const currentVarIndex = useStore((s) => s.currentVarIndex)
+  const [isSwapping, setIsSwapping] = useState(false)
+  const [showBrowse, setShowBrowse] = useState(false)
+
+  // Fetch var identifier columns on mount
+  useEffect(() => {
+    fetchVarIdentifierColumns()
+  }, [])
+
+  const handleSwapVarIndex = async (column: string) => {
+    if (column === currentVarIndex) return
+    setIsSwapping(true)
+    try {
+      await swapVarIndex(column)
+    } catch (err) {
+      console.error('Failed to swap var index:', err)
+    } finally {
+      setIsSwapping(false)
+    }
+  }
 
   // Check prerequisites for find_similar_genes on mount and periodically
   useEffect(() => {
@@ -1004,7 +1007,7 @@ export default function GenePanel() {
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
           <div style={styles.title}>Genes</div>
           <button
             onClick={() => setImportModalOpen(true)}
@@ -1021,11 +1024,59 @@ export default function GenePanel() {
           >
             Import
           </button>
+          <button
+            onClick={() => setShowBrowse(!showBrowse)}
+            style={{
+              padding: '2px 8px',
+              fontSize: '10px',
+              backgroundColor: showBrowse ? 'transparent' : '#0f3460',
+              color: showBrowse ? '#4ecdc4' : '#aaa',
+              border: '1px solid ' + (showBrowse ? '#4ecdc4' : '#1a1a2e'),
+              borderRadius: '3px',
+              cursor: 'pointer',
+            }}
+            title="Browse all genes alphabetically"
+          >
+            Browse
+          </button>
         </div>
+        {varIdentifierColumns.length > 1 && (
+          <div style={{ marginBottom: '6px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <label style={{ fontSize: '11px', color: '#888', whiteSpace: 'nowrap' }}>
+                Gene IDs:
+              </label>
+              <select
+                value={currentVarIndex}
+                onChange={(e) => handleSwapVarIndex(e.target.value)}
+                disabled={isSwapping}
+                style={{
+                  flex: 1,
+                  padding: '3px 6px',
+                  fontSize: '11px',
+                  backgroundColor: '#0f3460',
+                  color: '#ccc',
+                  border: '1px solid #1a1a2e',
+                  borderRadius: '3px',
+                  cursor: isSwapping ? 'wait' : 'pointer',
+                  opacity: isSwapping ? 0.6 : 1,
+                }}
+              >
+                {varIdentifierColumns.map((col) => (
+                  <option key={col} value={col}>
+                    {col === '_index' ? '(current index)' : col}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
         <GeneSearch
           onColorByGene={colorByGene}
           selectedSearchGenes={selectedSearchGenes}
           setSelectedSearchGenes={setSelectedSearchGenes}
+          showBrowse={showBrowse}
+          setShowBrowse={setShowBrowse}
         />
       </div>
       <ImportModal />
@@ -1074,17 +1125,23 @@ export default function GenePanel() {
           </div>
         )}
 
-        {/* Gene Set Categories */}
-        {CATEGORY_ORDER.map((catType) => (
-          <GeneSetCategoryComponent
-            key={catType}
-            category={geneSetCategories[catType]}
-            onColorByGene={colorByGene}
-            onColorBySet={colorByGenes}
-            activeGenes={selectedGenes}
-            onAddNewSet={catType === 'manual' ? () => setShowNewSetInput(true) : undefined}
-          />
-        ))}
+        {/* Gene Set Categories — only show non-manual categories when they have content */}
+        {CATEGORY_ORDER.map((catType) => {
+          const cat = geneSetCategories[catType]
+          const totalSets = cat.geneSets.length + cat.folders.reduce((sum, f) => sum + f.geneSets.length, 0)
+          // Hide empty non-manual categories to save space
+          if (catType !== 'manual' && totalSets === 0) return null
+          return (
+            <GeneSetCategoryComponent
+              key={catType}
+              category={cat}
+              onColorByGene={colorByGene}
+              onColorBySet={colorByGenes}
+              activeGenes={selectedGenes}
+              onAddNewSet={catType === 'manual' ? () => setShowNewSetInput(true) : undefined}
+            />
+          )
+        })}
 
         {/* Find Similar Genes Section - only shown when gene_neighbors exists */}
         {hasGeneNeighbors && (

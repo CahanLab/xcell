@@ -1,6 +1,9 @@
 """API routes for XCell."""
 
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
@@ -46,7 +49,7 @@ def list_adaptors() -> dict[str, dict]:
 
 @router.get("/browse")
 def browse_filesystem(path: str | None = None):
-    """List directories and .h5ad/.h5 files at the given path.
+    """List directories and .h5ad/.h5/.rds files at the given path.
 
     Args:
         path: Directory path to list. Defaults to the user's home directory.
@@ -71,7 +74,7 @@ def browse_filesystem(path: str | None = None):
                 continue
             if item.is_dir():
                 entries.append({"name": item.name, "type": "directory", "path": str(item)})
-            elif item.suffix in ('.h5ad', '.h5'):
+            elif item.suffix in ('.h5ad', '.h5', '.rds'):
                 try:
                     size = item.stat().st_size
                 except OSError:
@@ -87,6 +90,56 @@ def browse_filesystem(path: str | None = None):
     }
 
 
+def _convert_rds_to_h5ad(rds_path: Path) -> Path:
+    """Convert a Seurat .rds file to .h5ad via Rscript subprocess.
+
+    Returns the path to the converted .h5ad file (in a temp directory).
+    Caller is responsible for cleanup only on error; the file is needed long-term.
+    """
+    if not shutil.which("Rscript"):
+        raise HTTPException(
+            status_code=400,
+            detail="R is not installed. Install R and the Seurat/SeuratDisk packages to load .rds files.",
+        )
+
+    r_script = Path(__file__).resolve().parent.parent / "convert_seurat.R"
+    if not r_script.exists():
+        raise HTTPException(status_code=500, detail="convert_seurat.R not found in backend package.")
+
+    # Create temp dir for intermediate and output files
+    tmp_dir = tempfile.mkdtemp(prefix="xcell_rds_")
+    h5seurat_path = Path(tmp_dir) / "converted.h5seurat"
+    h5ad_path = Path(tmp_dir) / "converted.h5ad"
+
+    try:
+        result = subprocess.run(
+            ["Rscript", str(r_script), str(rds_path), str(h5seurat_path)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"RDS conversion failed:\n{result.stderr}",
+            )
+        if not h5ad_path.exists():
+            raise HTTPException(
+                status_code=500,
+                detail="RDS conversion produced no output. Check that Seurat and SeuratDisk R packages are installed.",
+            )
+        # Clean up intermediate .h5seurat file
+        if h5seurat_path.exists():
+            h5seurat_path.unlink()
+        return h5ad_path
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="RDS conversion timed out (>10 minutes).")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RDS conversion error: {e}")
+
+
 class LoadRequest(BaseModel):
     file_path: str
     slot: str = "primary"
@@ -96,10 +149,11 @@ class LoadRequest(BaseModel):
 def load_dataset(request: LoadRequest, dataset: str | None = Query(None)):
     """Load a new dataset from a server-side file path.
 
-    Loads the dataset into the specified slot (defaults to 'primary').
+    Supports .h5ad, .h5, and .rds (Seurat) files. RDS files are converted
+    to h5ad via Rscript before loading.
 
     Args:
-        file_path: Absolute path to an .h5ad or .h5 file on the server filesystem
+        file_path: Absolute path to an .h5ad, .h5, or .rds file on the server filesystem
         slot: Named slot to load into (default: 'primary')
 
     Returns:
@@ -107,14 +161,21 @@ def load_dataset(request: LoadRequest, dataset: str | None = Query(None)):
     """
     target_slot = request.slot
     path = Path(request.file_path)
-    if path.suffix not in ('.h5ad', '.h5'):
-        raise HTTPException(status_code=400, detail="File must have .h5ad or .h5 extension")
+    if path.suffix not in ('.h5ad', '.h5', '.rds'):
+        raise HTTPException(status_code=400, detail="File must have .h5ad, .h5, or .rds extension")
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
     try:
-        adaptor = DataAdaptor(path)
+        load_path = path
+        if path.suffix == '.rds':
+            load_path = _convert_rds_to_h5ad(path)
+        adaptor = DataAdaptor(load_path)
+        # Store original filepath for display purposes
+        adaptor.filepath = path
         set_adaptor(adaptor, slot=target_slot)
         return {"slot": target_slot, **adaptor.get_schema()}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load file: {e}")
 

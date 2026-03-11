@@ -1,6 +1,6 @@
 # XCell
 
-Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad or 10x Genomics h5 file, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
+Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad, 10x Genomics h5, or Seurat .rds file, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
 
  ![Screenshot](docs/images/xcell_screenshot.jpg)   
 
@@ -10,6 +10,7 @@ Interactive web application for exploring and analyzing scRNA-seq and spatial tr
 
 - Python 3.9+
 - Node.js 18+
+- R with Seurat and SeuratDisk packages (optional, required for loading `.rds` files)
 
 ### Backend Setup
 
@@ -46,7 +47,7 @@ Open http://localhost:5173 in your browser.
 A bundled toy dataset (`toy_spatial.h5ad`) loads automatically if no data path is specified. To load your own data, set the `XCELL_DATA_PATH` environment variable:
 
 ```bash
-XCELL_DATA_PATH=/path/to/your/data.h5ad uvicorn xcell.main:app --reload  # also supports .h5
+XCELL_DATA_PATH=/path/to/your/data.h5ad uvicorn xcell.main:app --reload  # also supports .h5 and .rds
 ```
 
 ## Getting Started with Toy Data
@@ -133,7 +134,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 
 - Click **Load** in the toolbar
 - Choose **Secondary** from the "Load into" dropdown
-- Browse or enter the path to a second h5ad or h5 file and click **Load**
+- Browse or enter the path to a second h5ad, h5, or rds file and click **Load**
 - A dataset switcher dropdown appears in the header — switch between Primary and Secondary to compare datasets
 - Click the **Split** button to view both datasets side by side
 - Click on either plot to make it the active dataset — the Cell and Gene panels update accordingly
@@ -152,7 +153,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - **Trajectory analysis** — draw lines and associate genes with spatial trajectories
 - **Quilt mode** — lasso and rearrange tissue pieces: drag to translate, shift+drag to rotate, flip to reflect selected cell subsets
 - **Display settings** — adjust point size, opacity, colormaps, bivariate coloring
-- **Multi-dataset support** — load two h5ad or h5 files, switch between them, or view side by side in split mode
+- **Multi-dataset support** — load two h5ad, h5, or rds files, switch between them, or view side by side in split mode
 - **Export** — download annotations and analysis results
 
 ## Project Structure

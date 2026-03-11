@@ -31,6 +31,10 @@ const styles = {
     display: 'flex',
     alignItems: 'baseline',
     gap: '12px',
+    flex: '0 0 auto',
+  },
+  logoGroup: {
+    flex: '0 0 auto',
   },
   title: {
     fontSize: '20px',
@@ -884,7 +888,7 @@ export default function App() {
     <div style={styles.container}>
       <header style={styles.header}>
         <div style={styles.titleGroup}>
-          <h1 style={styles.title}>XCell</h1>
+          <h1 style={styles.title}>xcell</h1>
           {schema && (
             <span style={styles.statsInline}>
               {schema.n_cells.toLocaleString()} cells · {schema.n_genes.toLocaleString()} genes
@@ -1048,6 +1052,9 @@ export default function App() {
               )}
             </>
           )}
+        </div>
+        <div style={styles.logoGroup}>
+          <img src="/logoGlow.png" alt="CahanLab" style={{ height: '32px' }} />
         </div>
       </header>
 

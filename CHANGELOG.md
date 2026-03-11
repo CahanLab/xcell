@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Support for loading `.rds` files containing Seurat objects. Requires R and the Seurat/SeuratDisk R packages to be installed. RDS files are automatically converted to h5ad format on load.
 - Load 10x Genomics Cell Ranger `.h5` files in addition to `.h5ad` files. The file browser now shows both formats, and the Load modal accepts either.
 - Gene Neighbors basis selection: choose between gene PCA embeddings or raw expression as the basis for computing gene-gene neighbors. When using expression basis, optional gene subset filtering and z-score scaling are available. This lets you compare PCA-based and expression-based gene similarity results.
 - Quilt mode undo: after rearranging cells in quilt mode, click the "Undo" button or press Ctrl/Cmd+Z to revert the last transform. Supports multiple levels of undo within a quilt session. The undo stack resets when exiting and re-entering quilt mode.

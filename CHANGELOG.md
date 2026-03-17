@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Load 10x CellRanger matrix folders (`filtered_feature_bc_matrix/` etc.) directly from the file browser. Folders containing `matrix.mtx(.gz)`, `barcodes.tsv(.gz)`, and `features.tsv(.gz)` or `genes.tsv(.gz)` appear as loadable items.
+- Exclude Genes in Scanpy → Preprocessing: remove genes by exact name or regex pattern (e.g. `^mt-` for mitochondrial, `^Gm\d+` for predicted genes). Enter gene names (one per line) and/or comma-separated regex patterns.
+- PCA variance bar chart in Scanpy → Cell Analysis → Neighbors: shows % variance explained per PC with cumulative line and elbow detection to help choose the number of PCs for kNN computation.
 - Gene identifier column switching: dropdown in Gene Panel header to switch between .var columns (e.g., Ensembl IDs vs gene symbols) when alternatives are available. Gene sets and selections are automatically remapped.
 - CahanLab logo in header now links to https://cahanlab.org/
 
@@ -15,6 +18,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Cell Panel: lasso selection is now cleared after running a lasso-based comparison (Set as Group 1/2 → Compare)
 
 ### Fixed
+- Expression coloring errors (e.g., "Gene not found") no longer block the scatter plot. The error appears as a dismissable toast that auto-clears after 5 seconds, and the color mode resets so the app remains usable.
+- When a dataset is loaded with no embeddings, the message now says to use Scanpy to create embeddings, instead of the misleading "No data loaded" message.
 - Cell Panel now properly refreshes when switching between datasets or loading a new dataset
 - Support for loading `.rds` files containing Seurat objects. Requires R and the Seurat/SeuratDisk R packages to be installed. RDS files are automatically converted to h5ad format on load.
 - Load 10x Genomics Cell Ranger `.h5` files in addition to `.h5ad` files. The file browser now shows both formats, and the Load modal accepts either.

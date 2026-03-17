@@ -139,7 +139,7 @@ function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData
 interface ParamDef {
   name: string
   label: string
-  type: 'number' | 'text' | 'select' | 'gene_subset'
+  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea'
   default: string | number | null
   description: string
   options?: string[]
@@ -172,6 +172,15 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'max_counts', label: 'Max counts', type: 'number', default: null, description: 'Maximum total counts' },
           { name: 'min_cells', label: 'Min cells', type: 'number', default: 25, description: 'Minimum cells expressing' },
           { name: 'max_cells', label: 'Max cells', type: 'number', default: null, description: 'Maximum cells expressing' },
+        ],
+      },
+      exclude_genes: {
+        label: 'Exclude Genes',
+        description: 'Remove genes by name or regex pattern (e.g. ^mt- for mitochondrial, ^Gm\\d+ for predicted)',
+        prerequisites: [],
+        params: [
+          { name: 'gene_names', label: 'Gene names', type: 'textarea', default: null, description: 'One gene name per line (exact match)' },
+          { name: 'patterns', label: 'Regex patterns', type: 'text', default: null, description: 'Comma-separated regex patterns (e.g. ^mt-,^Gm\\d+)' },
         ],
       },
       filter_cells: {
@@ -569,6 +578,7 @@ export default function ScanpyModal() {
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null)
   const [prereqStatus, setPrereqStatus] = useState<PrerequisiteStatus | null>(null)
   const [varianceData, setVarianceData] = useState<VarianceData | null>(null)
+  const [cellVarianceData, setCellVarianceData] = useState<VarianceData | null>(null)
 
   // Gene subset selection state
   const [booleanColumns, setBooleanColumns] = useState<BooleanColumn[]>([])
@@ -591,6 +601,18 @@ export default function ScanpyModal() {
       setVarianceData(null)
     }
   }, [selectedFunction, functionDef])
+
+  // Fetch cell PCA variance when Neighbors is selected
+  useEffect(() => {
+    if (selectedFunction !== 'neighbors') {
+      setCellVarianceData(null)
+      return
+    }
+    fetch(appendDataset(`${API_BASE}/scanpy/cell_pca_variance`))
+      .then((res) => { if (res.ok) return res.json(); throw new Error() })
+      .then(setCellVarianceData)
+      .catch(() => setCellVarianceData(null))
+  }, [selectedFunction, scanpyActionHistory])
 
   // Check prerequisites when function changes
   useEffect(() => {
@@ -711,6 +733,19 @@ export default function ScanpyModal() {
         }
       }
 
+      // Handle exclude_genes: parse textarea into arrays
+      if (selectedFunction === 'exclude_genes') {
+        const namesStr = String(requestParams['gene_names'] || '').trim()
+        const patternsStr = String(requestParams['patterns'] || '').trim()
+        requestParams['gene_names'] = namesStr ? namesStr.split(/\n+/).map((s: string) => s.trim()).filter(Boolean) : null
+        requestParams['patterns'] = patternsStr ? patternsStr.split(',').map((s: string) => s.trim()).filter(Boolean) : null
+        if (!requestParams['gene_names'] && !requestParams['patterns']) {
+          setResult({ success: false, message: 'Provide at least one gene name or regex pattern.' })
+          setIsRunning(false)
+          return
+        }
+      }
+
       // Inject selected genes for contourize
       if (selectedFunction === 'contourize') {
         if (selectedGenes.length === 0) {
@@ -755,7 +790,11 @@ export default function ScanpyModal() {
 
       // Build result message
       let message = 'Completed successfully'
-      if (data.n_genes_removed !== undefined) {
+      if (data.n_genes_removed !== undefined && data.removed_genes) {
+        // exclude_genes — show some removed names
+        const preview = data.removed_genes.slice(0, 5).join(', ')
+        message = `Removed ${data.n_genes_removed} genes (${data.n_genes_before} → ${data.n_genes_after}): ${preview}${data.n_genes_removed > 5 ? '...' : ''}`
+      } else if (data.n_genes_removed !== undefined) {
         message = `Removed ${data.n_genes_removed} genes (${data.n_genes_before} → ${data.n_genes_after})`
       } else if (data.n_cells_removed !== undefined) {
         message = `Removed ${data.n_cells_removed} cells (${data.n_cells_before} → ${data.n_cells_after})`
@@ -849,7 +888,7 @@ export default function ScanpyModal() {
       addScanpyAction(actionRecord)
 
       // Refresh schema if data shape may have changed
-      if (['filter_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize'].includes(selectedFunction)) {
+      if (['filter_genes', 'exclude_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize'].includes(selectedFunction)) {
         await refreshSchema()
         // Also refresh obs summaries so Cell Manager shows new/updated columns (e.g. leiden clusters, contour levels)
         refreshObsSummaries()
@@ -989,6 +1028,20 @@ export default function ScanpyModal() {
           </div>
         )}
 
+        {/* Cell PCA variance chart for Neighbors */}
+        {selectedFunction === 'neighbors' && cellVarianceData && (
+          <div style={{ marginBottom: '12px' }}>
+            <div style={{ fontSize: '12px', color: '#888', marginBottom: '6px' }}>
+              Cell PCA — % Variance Explained
+            </div>
+            <VarianceChart data={cellVarianceData} width={400} height={140} />
+            <div style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
+              {cellVarianceData.n_comps_computed} PCs computed
+              {cellVarianceData.elbow_index !== null && ` · elbow at PC ${cellVarianceData.elbow_index + 1}`}
+            </div>
+          </div>
+        )}
+
         {/* Parameters */}
         {functionDef && functionDef.params.length > 0 && (
           <div style={styles.paramsSection}>
@@ -1093,6 +1146,13 @@ export default function ScanpyModal() {
                             </option>
                           ))}
                         </select>
+                      ) : param.type === 'textarea' ? (
+                        <textarea
+                          style={{ ...styles.paramInput, height: '60px', resize: 'vertical' as const, fontFamily: 'monospace', fontSize: '11px' }}
+                          value={paramValues[param.name] ?? ''}
+                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                          placeholder={param.default === null ? '(optional)' : String(param.default)}
+                        />
                       ) : (
                         <input
                           type={param.type === 'number' ? 'number' : 'text'}

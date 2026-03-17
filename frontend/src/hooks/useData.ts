@@ -138,6 +138,9 @@ export function useExpressionTransformEffect() {
         }
       } catch (err) {
         setError((err as Error).message)
+        // Reset color mode so the app doesn't get stuck showing an error
+        setExpressionData(null)
+        useStore.getState().setColorMode('none')
       } finally {
         setLoading(false)
       }
@@ -342,6 +345,9 @@ export function useDataActions() {
         }
       } catch (err) {
         setError((err as Error).message)
+        // Reset so the app can recover — don't leave colorMode stuck on 'expression'
+        setExpressionData(null)
+        setColorMode('none')
       } finally {
         setLoading(false)
       }
@@ -390,6 +396,8 @@ export function useDataActions() {
         }
       } catch (err) {
         setError((err as Error).message)
+        setExpressionData(null)
+        setColorMode('none')
       } finally {
         setLoading(false)
       }

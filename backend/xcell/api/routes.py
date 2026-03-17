@@ -73,7 +73,15 @@ def browse_filesystem(path: str | None = None):
             if item.name.startswith('.'):
                 continue
             if item.is_dir():
-                entries.append({"name": item.name, "type": "directory", "path": str(item)})
+                # Check if this is a 10x CellRanger matrix folder
+                children = {c.name for c in item.iterdir()} if item.is_dir() else set()
+                has_matrix = bool(children & {'matrix.mtx', 'matrix.mtx.gz'})
+                has_barcodes = bool(children & {'barcodes.tsv', 'barcodes.tsv.gz'})
+                has_features = bool(children & {'features.tsv', 'features.tsv.gz', 'genes.tsv', 'genes.tsv.gz'})
+                if has_matrix and has_barcodes and has_features:
+                    entries.append({"name": item.name, "type": "10x_mtx", "path": str(item)})
+                else:
+                    entries.append({"name": item.name, "type": "directory", "path": str(item)})
             elif item.suffix in ('.h5ad', '.h5', '.rds'):
                 try:
                     size = item.stat().st_size
@@ -176,9 +184,17 @@ def load_dataset(request: LoadRequest, dataset: str | None = Query(None)):
     """
     target_slot = request.slot
     path = Path(request.file_path)
-    if path.suffix not in ('.h5ad', '.h5', '.rds'):
+    if path.is_dir():
+        # Check for 10x CellRanger matrix folder
+        children = {c.name for c in path.iterdir()}
+        has_matrix = bool(children & {'matrix.mtx', 'matrix.mtx.gz'})
+        has_barcodes = bool(children & {'barcodes.tsv', 'barcodes.tsv.gz'})
+        has_features = bool(children & {'features.tsv', 'features.tsv.gz', 'genes.tsv', 'genes.tsv.gz'})
+        if not (has_matrix and has_barcodes and has_features):
+            raise HTTPException(status_code=400, detail="Directory is not a valid 10x CellRanger matrix folder")
+    elif path.suffix not in ('.h5ad', '.h5', '.rds'):
         raise HTTPException(status_code=400, detail="File must have .h5ad, .h5, or .rds extension")
-    if not path.exists():
+    elif not path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
     try:
         load_path = path
@@ -1151,6 +1167,11 @@ def get_heatmap_data(request: HeatmapRequest, dataset: str | None = Query(None))
 # =========================================================================
 
 
+class ExcludeGenesRequest(BaseModel):
+    gene_names: list[str] | None = None
+    patterns: list[str] | None = None
+
+
 class FilterGenesRequest(BaseModel):
     min_counts: int | None = None
     max_counts: int | None = None
@@ -1244,6 +1265,23 @@ def check_prerequisites(action: str, dataset: str | None = Query(None)):
     """
     adaptor = get_adaptor(dataset)
     return adaptor.check_prerequisites(action)
+
+
+@router.post("/scanpy/exclude_genes")
+def run_exclude_genes(request: ExcludeGenesRequest, dataset: str | None = Query(None)):
+    """Remove genes by exact name or regex pattern.
+
+    Returns:
+        Before/after gene counts and list of removed genes
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.run_exclude_genes(
+            gene_names=request.gene_names,
+            patterns=request.patterns,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/scanpy/filter_genes")
@@ -1564,6 +1602,20 @@ def run_gene_pca(request: GenePcaRequest, dataset: str | None = Query(None)):
             active_cell_indices=request.active_cell_indices,
         )
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/scanpy/cell_pca_variance")
+def get_cell_pca_variance(dataset: str | None = Query(None)):
+    """Get cell PCA variance information for visualization.
+
+    Returns:
+        Variance ratios, cumulative variance, elbow point
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.get_cell_pca_variance()
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 

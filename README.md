@@ -1,6 +1,6 @@
 # XCell
 
-Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad, 10x Genomics h5, or Seurat .rds file, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
+Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad, 10x Genomics h5, Seurat .rds file, or 10x CellRanger matrix folder, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
 
  ![Screenshot](docs/images/xcell_screenshot.jpg)   
 
@@ -135,7 +135,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 
 - Click **Load** in the toolbar — the modal shows a sidebar with quick-access locations (Home, Desktop, Documents, Downloads) and recently loaded files, plus breadcrumb path navigation for clicking any ancestor directory
 - Choose **Secondary** from the "Load into" dropdown
-- Browse or enter the path to a second h5ad, h5, or rds file and click **Load**
+- Browse or enter the path to a second h5ad, h5, rds file, or 10x matrix folder and click **Load**
 - A dataset switcher dropdown appears in the header — switch between Primary and Secondary to compare datasets
 - Click the **Split** button to view both datasets side by side
 - Click on either plot to make it the active dataset — the Cell and Gene panels update accordingly
@@ -154,7 +154,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - **Trajectory analysis** — draw lines and associate genes with spatial trajectories
 - **Quilt mode** — lasso and rearrange tissue pieces: drag to translate, shift+drag to rotate, flip to reflect selected cell subsets
 - **Display settings** — adjust point size, opacity, colormaps, bivariate coloring
-- **Multi-dataset support** — load two h5ad, h5, or rds files, switch between them, or view side by side in split mode
+- **Multi-dataset support** — load two datasets (h5ad, h5, rds, or 10x matrix folders), switch between them, or view side by side in split mode
 - **Export** — download annotations and analysis results
 
 ## Project Structure

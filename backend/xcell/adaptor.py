@@ -31,13 +31,16 @@ class DataAdaptor:
     """
 
     def __init__(self, filepath: str | Path):
-        """Load an h5ad or 10x h5 file and initialize the adaptor.
+        """Load an h5ad, 10x h5, or 10x mtx directory and initialize the adaptor.
 
         Args:
-            filepath: Path to the .h5ad or .h5 file to load
+            filepath: Path to the .h5ad/.h5 file or 10x CellRanger matrix directory
         """
         self.filepath = Path(filepath)
-        if self.filepath.suffix == '.h5':
+        if self.filepath.is_dir():
+            self.adata = sc.read_10x_mtx(self.filepath)
+            self.adata.var_names_make_unique()
+        elif self.filepath.suffix == '.h5':
             self.adata = sc.read_10x_h5(self.filepath)
             self.adata.var_names_make_unique()
         else:
@@ -337,8 +340,11 @@ class DataAdaptor:
 
         for col in self.adata.var.columns:
             series = self.adata.var[col]
-            # Must be string/object dtype
-            if series.dtype not in ('object', 'string', 'str'):
+            # Must be string/object dtype (including categorical with string categories)
+            if hasattr(series, 'cat'):
+                if not pd.api.types.is_string_dtype(series.cat.categories):
+                    continue
+            elif series.dtype not in ('object', 'string', 'str'):
                 if not pd.api.types.is_string_dtype(series):
                     continue
             # Skip boolean-like columns
@@ -1785,6 +1791,7 @@ class DataAdaptor:
         prereqs = {
             # Cell analysis
             'filter_genes': [],
+            'exclude_genes': [],
             'filter_cells': [],
             'normalize_total': [],
             'log1p': [],
@@ -2072,6 +2079,61 @@ class DataAdaptor:
             'n_genes_removed': n_genes_before - n_genes_after,
         }
         self._log_action('filter_genes', kwargs, result)
+        return result
+
+    def run_exclude_genes(
+        self,
+        gene_names: list[str] | None = None,
+        patterns: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Remove genes by exact name or regex pattern.
+
+        Args:
+            gene_names: List of gene names to remove (exact match)
+            patterns: List of regex patterns to match against gene names
+                (e.g. "^mt-" for mitochondrial, "^Gm\\d+" for predicted genes)
+
+        Returns:
+            Dict with before/after gene counts and removed gene names
+        """
+        import re
+
+        n_genes_before = self.n_genes
+        names = self.adata.var_names
+
+        mask = np.zeros(len(names), dtype=bool)
+
+        # Exact name matches
+        if gene_names:
+            name_set = set(gene_names)
+            mask |= names.isin(name_set)
+
+        # Pattern matches
+        if patterns:
+            for pattern in patterns:
+                try:
+                    mask |= names.str.match(pattern)
+                except re.error as e:
+                    raise ValueError(f"Invalid regex pattern '{pattern}': {e}")
+
+        removed_genes = names[mask].tolist()
+        n_removed = int(mask.sum())
+
+        if n_removed > 0:
+            self.adata = self.adata[:, ~mask].copy()
+            self._normalized_adata = None
+
+        result = {
+            'n_genes_before': n_genes_before,
+            'n_genes_after': self.n_genes,
+            'n_genes_removed': n_removed,
+            'removed_genes': removed_genes[:100],  # Cap list for large removals
+            'removed_genes_total': n_removed,
+        }
+        self._log_action('exclude_genes', {
+            'gene_names': gene_names,
+            'patterns': patterns,
+        }, result)
         return result
 
     def run_filter_cells(
@@ -2815,6 +2877,32 @@ class DataAdaptor:
             'gene_subset': gene_subset,
         }, result)
         return result
+
+    def get_cell_pca_variance(self) -> dict[str, Any]:
+        """Get cell PCA variance information for visualization.
+
+        Returns:
+            Dict with variance ratios, cumulative variance, and elbow point
+        """
+        if 'pca' not in self.adata.uns:
+            raise ValueError("Cell PCA has not been computed. Run pca first.")
+
+        info = self.adata.uns['pca']
+        variance_ratio = np.array(info['variance_ratio'])
+        cumulative = np.cumsum(variance_ratio)
+
+        # Try elbow detection
+        elbow_idx = None
+        if len(variance_ratio) > 2:
+            elbow_idx = self._find_elbow_kneedle(variance_ratio)
+
+        return {
+            'variance_ratio': variance_ratio.tolist(),
+            'cumulative_variance': cumulative.tolist(),
+            'n_comps_used': len(variance_ratio),
+            'n_comps_computed': len(variance_ratio),
+            'elbow_index': elbow_idx,
+        }
 
     def get_gene_pca_variance(self) -> dict[str, Any]:
         """Get gene PCA variance information for visualization.

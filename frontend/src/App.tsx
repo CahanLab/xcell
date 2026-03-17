@@ -11,6 +11,7 @@ import ScanpyModal from './components/ScanpyModal'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
 import MarkerGenesModal from './components/MarkerGenesModal'
+import { MESSAGES } from './messages'
 
 const styles = {
   container: {
@@ -149,14 +150,23 @@ const styles = {
   },
   error: {
     position: 'absolute' as const,
-    top: '50%',
+    top: '12px',
     left: '50%',
-    transform: 'translate(-50%, -50%)',
-    padding: '20px',
+    transform: 'translateX(-50%)',
+    padding: '8px 16px',
     backgroundColor: '#4a1c1c',
     border: '1px solid #e94560',
-    borderRadius: '8px',
+    borderRadius: '6px',
     color: '#e94560',
+    fontSize: '12px',
+    zIndex: 10,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    maxWidth: '80%',
+    whiteSpace: 'nowrap' as const,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
   },
   legend: {
     position: 'absolute' as const,
@@ -479,6 +489,7 @@ export default function App() {
     setQuiltPhase,
     quiltUndoDepth,
     setQuiltUndoDepth,
+    setError,
   } = useStore()
 
   const schema = useSchema()
@@ -489,6 +500,13 @@ export default function App() {
   // Re-fetch expression data when transform setting changes
   useExpressionTransformEffect()
   useBivariateTransformEffect()
+
+  // Auto-dismiss errors after 5 seconds
+  useEffect(() => {
+    if (!error) return
+    const timer = setTimeout(() => setError(null), 5000)
+    return () => clearTimeout(timer)
+  }, [error, setError])
 
   // State for line naming dialog
   const [pendingLinePoints, setPendingLinePoints] = useState<[number, number][] | null>(null)
@@ -1156,8 +1174,9 @@ export default function App() {
                 {isLoading && <div style={styles.loading}>Loading...</div>}
 
                 {error && (
-                  <div style={styles.error}>
-                    <strong>Error:</strong> {error}
+                  <div style={styles.error} onClick={() => setError(null)} title="Click to dismiss">
+                    <strong>{MESSAGES.errorPrefix}</strong> {error}
+                    <span style={{ marginLeft: '12px', cursor: 'pointer', opacity: 0.7, fontSize: '14px' }}>&times;</span>
                   </div>
                 )}
 
@@ -1344,7 +1363,7 @@ export default function App() {
                 ) : (
                   /* Single scatter layout — existing behavior */
                   <>
-                    {embedding && !error && (
+                    {embedding && (
                       <>
                         <ScatterPlot
                           embedding={embedding}
@@ -1471,7 +1490,7 @@ export default function App() {
 
                     {!embedding && !isLoading && !error && (
                       <div style={styles.loading}>
-                        No data loaded. Start the backend with an h5ad or h5 file.
+                        {schema ? MESSAGES.noEmbedding : MESSAGES.noDataLoaded}
                       </div>
                     )}
                   </>
@@ -1875,6 +1894,7 @@ export default function App() {
                           if (entry.type === 'directory') {
                             browseDirectory(entry.path)
                           } else {
+                            // 'file' and '10x_mtx' are both loadable
                             setLoadFilePath(entry.path)
                             setLoadError(null)
                           }
@@ -1882,7 +1902,7 @@ export default function App() {
                         style={{
                           padding: '5px 10px',
                           fontSize: '12px',
-                          color: entry.type === 'directory' ? '#aaa' : '#e94560',
+                          color: entry.type === 'directory' ? '#aaa' : '#e94560',  // 10x_mtx styled like files
                           cursor: 'pointer',
                           display: 'flex',
                           alignItems: 'center',
@@ -1898,7 +1918,7 @@ export default function App() {
                         }}
                       >
                         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
-                          <span style={{ flexShrink: 0 }}>{entry.type === 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4'}</span>
+                          <span style={{ flexShrink: 0 }}>{entry.type === 'directory' ? '\uD83D\uDCC1' : entry.type === '10x_mtx' ? '\uD83D\uDDC2\uFE0F' : '\uD83D\uDCC4'}</span>
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</span>
                         </span>
                         {entry.type === 'file' && entry.size != null && (

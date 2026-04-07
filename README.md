@@ -115,7 +115,24 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 ### 10. Trajectory Analysis
 
 - Draw lines on the scatter plot
-- Use the **Line Association** tool to analyze genes along trajectories
+- Click the gear icon on a line in the **Lines** panel to open **Line Tools**
+- Under **Gene Association**, configure:
+  - **Test against**: position along line or distance from line
+  - **Gene subset**: filter to highly variable genes or other boolean columns
+  - **Spline knots**: number of interior knots for the B-spline model (default 5; higher = more flexible fit)
+  - **FDR**: significance threshold (default 0.05)
+  - **Max genes/module**: cap on genes returned per expression module
+- Click **Find Associated Genes** to run the analysis
+- In the results modal, use the **Filters** bar to refine results interactively: adjust min R², min amplitude, max FDR, or toggle pattern types (increasing, decreasing, peak, trough, complex)
+
+#### Multi-section / replicate analysis
+
+- Draw a line on each tissue section representing the same biological axis
+- For each line, select cells (via lasso or clicking a category value in the **Cells** panel) and click **+** to associate them with the line
+- Check the lines to include using the checkboxes that appear on lines with projected cells
+- Click **Find Associated Genes** in the action bar
+- In the multi-line modal, toggle direction per line if needed (arrow button) and set analysis parameters
+- Results pool cells across all lines for a single, higher-powered analysis
 
 ### 11. Run Gene Analysis
 

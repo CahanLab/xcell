@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Line Association: analysis parameters (spline knots, FDR threshold, max genes per module) are now configurable in the Line Tools modal before running "Find Associated Genes"
+- Line Association results modal: interactive filter controls for minimum R², minimum amplitude, maximum FDR, and pattern type toggles to refine results after analysis
+- Multi-line combined association analysis: check multiple lines with projected cells in the Lines panel, then run a pooled "Find Associated Genes" across tissue sections or replicates. Per-line direction reversal ensures consistent biological axis alignment.
+- Cell Panel: clicking a category value to select cells now highlights that row with a teal left border, making the selection source visible
+
+### Previously Added
+- Draw tool subtypes: pencil (freehand), polygon (click vertices, double-click to close), segmented line (click points, double-click to finish), and smooth curve (Catmull-Rom spline through control points). Select via dropdown arrow next to the Draw button.
+- Per-shape appearance customization: stroke color, line width, fill color (with transparency), and open/closed toggle. Accessible via the gear icon (Line Tools) on each line in the Lines panel. Changes apply immediately and persist.
+- Gene subset selection across all gene-level analyses: Differential Expression, Marker Genes, Gene PCA, Build Gene Graph, Gene Neighbors, and Spatial Autocorrelation all now default to using highly variable genes (HVG) if defined, with an option to switch to all genes. This reduces multiple testing burden and makes results more interpretable.
+- Pearson correlation metric for Gene Neighbors analysis
+- Differential Expression modal now has customizable parameters for scanpy's `rank_genes_groups` (test method, p-value correction) and `filter_rank_genes_groups` (min fold change, max p-adj, min/max group fractions), with a "Re-run" button to adjust and re-analyze
 - Load 10x CellRanger matrix folders (`filtered_feature_bc_matrix/` etc.) directly from the file browser. Folders containing `matrix.mtx(.gz)`, `barcodes.tsv(.gz)`, and `features.tsv(.gz)` or `genes.tsv(.gz)` appear as loadable items.
 - Exclude Genes in Scanpy → Preprocessing: remove genes by exact name or regex pattern (e.g. `^mt-` for mitochondrial, `^Gm\d+` for predicted genes). Enter gene names (one per line) and/or comma-separated regex patterns.
 - PCA variance bar chart in Scanpy → Cell Analysis → Neighbors: shows % variance explained per PC with cumulative line and elbow detection to help choose the number of PCs for kNN computation.
@@ -13,6 +24,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - CahanLab logo in header now links to https://cahanlab.org/
 
 ### Changed
+- Renamed "Scanpy" toolbar button to "Analyze"
+- Preprocessing function order: Exclude Genes → Filter Cells → Filter Genes → Normalize → Log1p → HVG
+- Updated defaults: Exclude Genes regex patterns (`^mt-, ^Gm\d+, ^Rps, ^Rpl`), HVG max mean (6), Gene Neighbors (basis: expression, neighbors: 10, default subset: HVG), Cluster Genes (resolution: 2.0, column: gmod)
+- Compare button now resets to inactive state after returning results
 - Load modal redesigned with Finder-inspired two-column layout: sidebar with quick-access shortcuts (Home, Desktop, Documents, Downloads) and recently loaded files, breadcrumb path navigation for clicking any ancestor directory
 - Gene Panel: more compact layout with reduced padding, Browse button moved to header next to Import, empty auto-generated categories (Gene Clusters, Similar Genes, etc.) hidden until populated
 - Cell Panel: lasso selection is now cleared after running a lasso-based comparison (Set as Group 1/2 → Compare)

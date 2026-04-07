@@ -139,6 +139,9 @@ export interface ComparisonState {
 export type ColorMode = 'none' | 'metadata' | 'expression' | 'bivariate'
 
 // Drawn line/shape for trajectory/gradient analysis
+// Draw tool types
+export type DrawTool = 'pencil' | 'polygon' | 'segmented' | 'smooth_curve'
+
 export interface DrawnLine {
   id: string
   name: string
@@ -147,6 +150,11 @@ export interface DrawnLine {
   smoothedPoints: [number, number][] | null  // Smoothed version (if applied)
   visible: boolean  // Whether to display on the embedding
   projections: CellProjection[]  // Cells projected onto this line
+  drawType: DrawTool  // How this shape was drawn
+  closed: boolean  // Whether the shape is closed (polygon)
+  strokeColor: string  // Line color (hex)
+  strokeWidth: number  // Line width in pixels
+  fillColor: string | null  // Fill color (null = no fill)
 }
 
 // Cell projection onto a line
@@ -211,6 +219,8 @@ export interface LineAssociationResult {
   line_name: string
   test_variable: string  // 'position' or 'distance'
   fdr_threshold: number
+  n_lines?: number
+  lines_used?: string[]
   diagnostics?: LineAssociationDiagnostics
 }
 
@@ -276,6 +286,7 @@ export interface DatasetState {
   expressionData: ExpressionData | null
   bivariateData: BivariateExpressionData | null
   selectedGenes: string[]
+  selectedGeneSetName: string | null
   selectedEmbedding: string | null
   selectedColorColumn: string | null
   colorMode: ColorMode
@@ -303,6 +314,7 @@ export function createDefaultDatasetState(): DatasetState {
     expressionData: null,
     bivariateData: null,
     selectedGenes: [],
+    selectedGeneSetName: null,
     selectedEmbedding: null,
     selectedColorColumn: null,
     colorMode: 'none',
@@ -344,6 +356,7 @@ interface AppState {
   // Gene management (hierarchical)
   geneSetCategories: Record<GeneSetCategoryType, GeneSetCategory>
   selectedGenes: string[]  // Currently selected genes for expression coloring
+  selectedGeneSetName: string | null  // Name of the gene set being colored (null for single genes)
 
   // Legacy flat gene sets (for backward compatibility during migration)
   geneSets: GeneSet[]
@@ -390,6 +403,7 @@ interface AppState {
   drawnLines: DrawnLine[]
   activeLineId: string | null  // Currently selected line for editing/smoothing
   lineSmoothingParams: LineSmoothingParams
+  drawTool: DrawTool  // Currently selected draw tool
 
   // Import modal state
   isImportModalOpen: boolean
@@ -448,6 +462,7 @@ interface AppState {
   removeGenesFromSet: (setName: string, genes: string[]) => void
   renameGeneSet: (oldName: string, newName: string) => void
   setSelectedGenes: (genes: string[]) => void
+  setSelectedGeneSetName: (name: string | null) => void
   clearSelectedGenes: () => void
 
   // Gene set category actions (hierarchical)
@@ -508,7 +523,9 @@ interface AppState {
   resetCellOrder: () => void  // Reset to default order
 
   // Line/shape drawing actions
-  addLine: (name: string, points: [number, number][], embeddingName: string) => void
+  setDrawTool: (tool: DrawTool) => void
+  updateLineAppearance: (id: string, updates: { strokeColor?: string; strokeWidth?: number; fillColor?: string | null; closed?: boolean }) => void
+  addLine: (name: string, points: [number, number][], embeddingName: string, drawType?: DrawTool, closed?: boolean) => void
   removeLine: (id: string) => void
   setActiveLine: (id: string | null) => void
   renameLine: (id: string, name: string) => void
@@ -593,6 +610,7 @@ export const useStore = create<AppState>((set, get) => {
       expressionData: ds.expressionData,
       bivariateData: ds.bivariateData,
       selectedGenes: ds.selectedGenes,
+      selectedGeneSetName: ds.selectedGeneSetName,
       selectedEmbedding: ds.selectedEmbedding,
       selectedColorColumn: ds.selectedColorColumn,
       colorMode: ds.colorMode,
@@ -623,6 +641,7 @@ export const useStore = create<AppState>((set, get) => {
     geneSetCategories: createDefaultCategories(),
     geneSets: [],  // Legacy, kept for backward compatibility
     selectedGenes: [],
+    selectedGeneSetName: null,
     selectedCellIndices: [],
     interactionMode: 'pan',
     selectedEmbedding: null,
@@ -664,6 +683,7 @@ export const useStore = create<AppState>((set, get) => {
       windowSize: 5,
       iterations: 2,
     },
+    drawTool: 'pencil' as DrawTool,
     isImportModalOpen: false,
     isScanpyModalOpen: false,
     scanpyActionHistory: [],
@@ -797,7 +817,8 @@ export const useStore = create<AppState>((set, get) => {
       })),
 
     setSelectedGenes: (genes) => set(dsUpdate({ selectedGenes: genes })),
-    clearSelectedGenes: () => set(dsUpdate({ selectedGenes: [], expressionData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 })),
+    setSelectedGeneSetName: (name) => set(dsUpdate({ selectedGeneSetName: name })),
+    clearSelectedGenes: () => set(dsUpdate({ selectedGenes: [], selectedGeneSetName: null, expressionData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 })),
 
     // Gene set category actions (hierarchical — global)
     toggleCategoryExpanded: (categoryType) =>
@@ -1204,7 +1225,26 @@ export const useStore = create<AppState>((set, get) => {
     resetCellOrder: () => set(dsUpdate({ cellSortOrder: null, cellSortVersion: 0, bivariateSortReversed: false })),
 
     // Line/shape drawing actions — mixed (drawnLines is per-dataset, activeLineId is global)
-    addLine: (name, points, embeddingName) => {
+    setDrawTool: (tool) => set({ drawTool: tool }),
+
+    updateLineAppearance: (id, updates) => {
+      const state = get()
+      const dsPatch: Partial<DatasetState> = {
+        drawnLines: state.drawnLines.map((l) =>
+          l.id === id ? { ...l, ...updates } : l
+        ),
+      }
+      const { activeSlot, datasets } = state
+      set({
+        ...dsPatch,
+        datasets: {
+          ...datasets,
+          [activeSlot]: { ...datasets[activeSlot], ...dsPatch },
+        },
+      })
+    },
+
+    addLine: (name, points, embeddingName, drawType, closed) => {
       const id = `line_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
       const newLine: DrawnLine = {
         id,
@@ -1214,6 +1254,11 @@ export const useStore = create<AppState>((set, get) => {
         smoothedPoints: null,
         visible: true,
         projections: [],
+        drawType: drawType || 'pencil',
+        closed: closed || false,
+        strokeColor: '#4ecdc4',
+        strokeWidth: 2,
+        fillColor: null,
       }
       const state = get()
       const dsPatch: Partial<DatasetState> = {

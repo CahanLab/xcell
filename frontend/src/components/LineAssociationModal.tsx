@@ -630,6 +630,8 @@ function ProfileHeatmap({
 // Main modal
 // =========================================================================
 
+const ALL_PATTERNS = ['increasing', 'decreasing', 'peak', 'trough', 'complex'] as const
+
 export default function LineAssociationModal() {
   const {
     isLineAssociationModalOpen,
@@ -641,6 +643,10 @@ export default function LineAssociationModal() {
   const { colorByGene } = useDataActions()
 
   const [viewMode, setViewMode] = useState<ViewMode>('heatmap')
+  const [filterMinR2, setFilterMinR2] = useState(0)
+  const [filterMinAmplitude, setFilterMinAmplitude] = useState(0)
+  const [filterMaxFDR, setFilterMaxFDR] = useState(1)
+  const [filterPatterns, setFilterPatterns] = useState<Set<string>>(new Set(ALL_PATTERNS))
 
   const handleClose = () => {
     setLineAssociationModalOpen(false)
@@ -650,22 +656,69 @@ export default function LineAssociationModal() {
     colorByGene(gene)
   }
 
-  const handleAddToGeneSets = () => {
-    if (!lineAssociationResult) return
+  // Reset filters when new results arrive
+  useEffect(() => {
+    if (lineAssociationResult) {
+      setFilterMinR2(0)
+      setFilterMinAmplitude(0)
+      setFilterMaxFDR(lineAssociationResult.fdr_threshold)
+      setFilterPatterns(new Set(ALL_PATTERNS))
+    }
+  }, [lineAssociationResult])
 
+  const togglePattern = useCallback((pattern: string) => {
+    setFilterPatterns((prev) => {
+      const next = new Set(prev)
+      if (next.has(pattern)) {
+        next.delete(pattern)
+      } else {
+        next.add(pattern)
+      }
+      return next
+    })
+  }, [])
+
+  if (!isLineAssociationModalOpen || !lineAssociationResult) {
+    return null
+  }
+
+  const { n_cells, n_significant, line_name, test_variable, fdr_threshold, diagnostics, modules, n_lines, lines_used } = lineAssociationResult
+  const hasModules = modules && modules.length > 0
+
+  // Apply client-side filters to modules
+  const filteredModules: LineAssociationModule[] = hasModules
+    ? modules
+        .filter((m) => filterPatterns.has(m.pattern))
+        .map((m) => ({
+          ...m,
+          genes: m.genes.filter(
+            (g) =>
+              g.r_squared >= filterMinR2 &&
+              g.amplitude >= filterMinAmplitude &&
+              g.fdr <= filterMaxFDR
+          ),
+        }))
+        .map((m) => ({ ...m, n_genes: m.genes.length }))
+        .filter((m) => m.genes.length > 0)
+    : []
+
+  const totalModuleGenes = filteredModules.reduce((sum, m) => sum + m.n_genes, 0)
+  const unfilteredTotal = hasModules ? modules.reduce((sum, m) => sum + m.genes.length, 0) : 0
+  const isFiltered = totalModuleGenes !== unfilteredTotal
+  const hasProfiles = filteredModules.length > 0 && filteredModules.some((m) => m.genes.some((g) => g.profile && g.profile.length > 0))
+
+  const handleAddToGeneSets = () => {
     const lineName = lineAssociationResult.line_name
 
-    if (lineAssociationResult.modules && lineAssociationResult.modules.length > 0) {
-      // Add one gene set per module
-      for (const mod of lineAssociationResult.modules) {
+    if (filteredModules.length > 0) {
+      for (const mod of filteredModules) {
         const genes = mod.genes.map((g) => g.gene)
         if (genes.length > 0) {
           const label = `${lineName} - ${mod.pattern.charAt(0).toUpperCase() + mod.pattern.slice(1)}`
           addGeneSetToCategory('manual', label, genes)
         }
       }
-    } else {
-      // Fallback to positive/negative (backward compatibility)
+    } else if (lineAssociationResult.positive.length > 0 || lineAssociationResult.negative.length > 0) {
       if (lineAssociationResult.positive.length > 0) {
         const posGenes = lineAssociationResult.positive.map((g) => g.gene)
         addGeneSetToCategory('manual', `${lineName} - Increasing`, posGenes)
@@ -679,21 +732,12 @@ export default function LineAssociationModal() {
     handleClose()
   }
 
-  if (!isLineAssociationModalOpen || !lineAssociationResult) {
-    return null
-  }
-
-  const { n_cells, n_significant, line_name, test_variable, fdr_threshold, diagnostics, modules } = lineAssociationResult
-  const hasModules = modules && modules.length > 0
-  const totalModuleGenes = hasModules ? modules.reduce((sum, m) => sum + m.n_genes, 0) : 0
-  const hasProfiles = hasModules && modules.some((m) => m.genes.some((g) => g.profile && g.profile.length > 0))
-
   return (
     <div style={styles.overlay} onClick={handleClose}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
           <h2 style={styles.title}>
-            Line Association: {line_name}
+            Line Association: {lines_used && lines_used.length > 1 ? lines_used.join(' + ') : line_name}
             {test_variable === 'distance' && (
               <span style={{ fontSize: '12px', color: '#888', fontWeight: 400, marginLeft: '8px' }}>
                 (distance from line)
@@ -751,6 +795,12 @@ export default function LineAssociationModal() {
               <div style={styles.summaryLabel}>Cells Tested</div>
               <div style={styles.summaryValue}>{n_cells.toLocaleString()}</div>
             </div>
+            {n_lines != null && n_lines > 1 && (
+              <div style={styles.summaryItem}>
+                <div style={styles.summaryLabel}>Lines</div>
+                <div style={styles.summaryValue}>{n_lines}</div>
+              </div>
+            )}
             <div style={styles.summaryItem}>
               <div style={styles.summaryLabel}>Significant Genes</div>
               <div style={styles.summaryValue}>{n_significant.toLocaleString()}</div>
@@ -822,16 +872,131 @@ export default function LineAssociationModal() {
             </div>
           )}
 
+          {/* Filter controls */}
+          {hasModules && (
+            <div style={{
+              backgroundColor: '#0a0f1a',
+              borderRadius: '6px',
+              padding: '10px 14px',
+              marginBottom: '16px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <span style={{ fontSize: '11px', color: '#aaa', fontWeight: 500 }}>Filters</span>
+                {isFiltered && (
+                  <span style={{ fontSize: '11px', color: '#4ecdc4' }}>
+                    Showing {totalModuleGenes} of {unfilteredTotal} genes
+                  </span>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', fontSize: '11px', color: '#ccc' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ color: '#888' }}>Min R²</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={filterMinR2}
+                    onChange={(e) => setFilterMinR2(Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)))}
+                    style={{
+                      width: '52px',
+                      padding: '3px 5px',
+                      fontSize: '11px',
+                      backgroundColor: '#0f3460',
+                      color: '#eee',
+                      border: '1px solid #1a1a2e',
+                      borderRadius: '4px',
+                      textAlign: 'center' as const,
+                    }}
+                    title="Minimum R-squared (variance explained)"
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ color: '#888' }}>Min amplitude</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={filterMinAmplitude}
+                    onChange={(e) => setFilterMinAmplitude(Math.max(0, parseFloat(e.target.value) || 0))}
+                    style={{
+                      width: '52px',
+                      padding: '3px 5px',
+                      fontSize: '11px',
+                      backgroundColor: '#0f3460',
+                      color: '#eee',
+                      border: '1px solid #1a1a2e',
+                      borderRadius: '4px',
+                      textAlign: 'center' as const,
+                    }}
+                    title="Minimum amplitude (predicted expression range)"
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ color: '#888' }}>Max FDR</span>
+                  <input
+                    type="number"
+                    min="0.0001"
+                    max={fdr_threshold}
+                    step="0.005"
+                    value={filterMaxFDR}
+                    onChange={(e) => setFilterMaxFDR(Math.max(0.0001, Math.min(fdr_threshold, parseFloat(e.target.value) || fdr_threshold)))}
+                    style={{
+                      width: '62px',
+                      padding: '3px 5px',
+                      fontSize: '11px',
+                      backgroundColor: '#0f3460',
+                      color: '#eee',
+                      border: '1px solid #1a1a2e',
+                      borderRadius: '4px',
+                      textAlign: 'center' as const,
+                    }}
+                    title={`Maximum FDR (up to the analysis threshold of ${fdr_threshold})`}
+                  />
+                </div>
+              </div>
+
+              {/* Pattern toggles */}
+              <div style={{ display: 'flex', gap: '4px', marginTop: '8px', flexWrap: 'wrap' }}>
+                {ALL_PATTERNS.map((pattern) => {
+                  const active = filterPatterns.has(pattern)
+                  const color = PATTERN_COLORS[pattern] || '#888'
+                  const icon = PATTERN_ICONS[pattern] || ''
+                  return (
+                    <button
+                      key={pattern}
+                      onClick={() => togglePattern(pattern)}
+                      style={{
+                        padding: '2px 8px',
+                        fontSize: '10px',
+                        borderRadius: '10px',
+                        cursor: 'pointer',
+                        border: `1px solid ${active ? color + '88' : '#1a1a2e'}`,
+                        backgroundColor: active ? color + '22' : '#0f3460',
+                        color: active ? color : '#555',
+                        fontWeight: active ? 600 : 400,
+                        textTransform: 'capitalize',
+                      }}
+                    >
+                      {icon} {pattern}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Heatmap or List view */}
           {viewMode === 'heatmap' && hasProfiles ? (
             <ProfileHeatmap
-              modules={modules}
+              modules={filteredModules}
               onGeneSelect={handleGeneSelect}
               testVariable={test_variable}
             />
-          ) : hasModules ? (
+          ) : filteredModules.length > 0 ? (
             <div>
-              {modules.map((mod, idx) => (
+              {filteredModules.map((mod, idx) => (
                 <ModuleCard
                   key={mod.module_id}
                   module={mod}
@@ -841,13 +1006,13 @@ export default function LineAssociationModal() {
               ))}
               {totalModuleGenes === 0 && (
                 <div style={{ padding: '24px', color: '#666', textAlign: 'center' }}>
-                  No significant genes found
+                  No genes match current filters
                 </div>
               )}
             </div>
           ) : (
             <div style={{ padding: '24px', color: '#666', textAlign: 'center' }}>
-              No significant genes found
+              {isFiltered ? 'No genes match current filters' : 'No significant genes found'}
             </div>
           )}
         </div>
@@ -866,7 +1031,7 @@ export default function LineAssociationModal() {
             <button
               style={{ ...styles.button, ...styles.primaryButton }}
               onClick={handleAddToGeneSets}
-              disabled={!hasModules || totalModuleGenes === 0}
+              disabled={totalModuleGenes === 0}
             >
               Add to Gene Sets
             </button>

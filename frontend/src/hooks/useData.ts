@@ -293,6 +293,7 @@ export function useDataActions() {
     setExpressionData,
     setBivariateData,
     setSelectedGenes,
+    setSelectedGeneSetName,
     clearSelectedGenes,
     clearBivariateMode,
     setLoading,
@@ -336,6 +337,7 @@ export function useDataActions() {
         const data = await fetchJson<ExpressionData>(url)
         setExpressionData(data)
         setSelectedGenes([gene])
+        setSelectedGeneSetName(null)
         setColorMode('expression')
         setSelectedColorColumn(null)
 
@@ -352,17 +354,17 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, displayPreferences.expressionTransform, layoutMode, activeSlot]
+    [setLoading, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn, setError, displayPreferences.expressionTransform, layoutMode, activeSlot]
   )
 
   const colorByGenes = useCallback(
-    async (genes: string[], transform?: string) => {
+    async (genes: string[], transform?: string, geneSetName?: string) => {
       if (genes.length === 0) {
         clearSelectedGenes()
         // Mirror clear to other slot in dual mode
         if (layoutMode === 'dual') {
           patchSlotState(otherSlot(activeSlot), {
-            selectedGenes: [], expressionData: null, colorMode: 'none',
+            selectedGenes: [], selectedGeneSetName: null, expressionData: null, colorMode: 'none',
             cellSortOrder: null, cellSortVersion: 0,
           })
         }
@@ -387,6 +389,7 @@ export function useDataActions() {
         })
         setExpressionData(data)
         setSelectedGenes(genes)
+        setSelectedGeneSetName(geneSetName ?? null)
         setColorMode('expression')
         setSelectedColorColumn(null)
 
@@ -402,7 +405,7 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod, layoutMode, activeSlot, patchSlotState]
+    [setLoading, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod, layoutMode, activeSlot, patchSlotState]
   )
 
   const clearExpressionColor = useCallback(() => {
@@ -698,17 +701,37 @@ export async function exportAnnotations(columns?: string[], slot?: DatasetSlot):
   return response.text()
 }
 
+// Differential expression parameters
+export interface DiffExpParams {
+  method?: string
+  corrMethod?: string
+  minFoldChange?: number | null
+  minInGroupFraction?: number | null
+  maxOutGroupFraction?: number | null
+  maxPvalAdj?: number | null
+  geneSubset?: string | null
+}
+
 // Differential expression API function
 export async function runDiffExp(
   group1: number[],
   group2: number[],
   topN: number = 25,
-  slot?: DatasetSlot
+  slot?: DatasetSlot,
+  params?: DiffExpParams
 ): Promise<DiffExpResult> {
+  const body: Record<string, unknown> = { group1, group2, top_n: topN }
+  if (params?.method) body.method = params.method
+  if (params?.corrMethod) body.corr_method = params.corrMethod
+  if (params?.minFoldChange != null) body.min_fold_change = params.minFoldChange
+  if (params?.minInGroupFraction != null) body.min_in_group_fraction = params.minInGroupFraction
+  if (params?.maxOutGroupFraction != null) body.max_out_group_fraction = params.maxOutGroupFraction
+  if (params?.maxPvalAdj != null) body.max_pval_adj = params.maxPvalAdj
+  if (params?.geneSubset) body.gene_subset = params.geneSubset
   return fetchJson<DiffExpResult>(appendDataset(`${API_BASE}/diffexp`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ group1, group2, top_n: topN }),
+    body: JSON.stringify(body),
   })
 }
 
@@ -724,7 +747,7 @@ export function useDiffExp() {
     activeCellMask,
   } = useStore()
 
-  const runComparison = useCallback(async (topN: number = 25) => {
+  const runComparison = useCallback(async (topN: number = 25, params?: DiffExpParams) => {
     if (!comparison.group1 || !comparison.group2) {
       throw new Error('Both groups must be set before running comparison')
     }
@@ -744,7 +767,7 @@ export function useDiffExp() {
 
     setDiffExpLoading(true)
     try {
-      const result = await runDiffExp(group1, group2, topN)
+      const result = await runDiffExp(group1, group2, topN, undefined, params)
       setDiffExpResult(result)
       setDiffExpModalOpen(true)
       return result
@@ -808,6 +831,43 @@ export async function runLineAssociation(params: LineAssociationParams, slot?: D
   })
 }
 
+// Multi-line association types and API function
+export interface MultiLineEntry {
+  name: string
+  cellIndices: number[]
+  reversed: boolean
+}
+
+export interface MultiLineAssociationParams {
+  lines: MultiLineEntry[]
+  geneSubset?: string | string[] | { columns: string[]; operation: string } | null
+  testVariable?: 'position' | 'distance'
+  nSplineKnots?: number
+  minCells?: number
+  fdrThreshold?: number
+  topN?: number
+}
+
+export async function runMultiLineAssociation(params: MultiLineAssociationParams, slot?: DatasetSlot): Promise<LineAssociationResult> {
+  return fetchJson<LineAssociationResult>(appendDataset(`${API_BASE}/lines/multi-association`, slot), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      lines: params.lines.map((l) => ({
+        name: l.name,
+        cell_indices: l.cellIndices,
+        reversed: l.reversed,
+      })),
+      gene_subset: params.geneSubset ?? null,
+      test_variable: params.testVariable ?? 'position',
+      n_spline_knots: params.nSplineKnots ?? 5,
+      min_cells: params.minCells ?? 20,
+      fdr_threshold: params.fdrThreshold ?? 0.05,
+      top_n: params.topN ?? 50,
+    }),
+  })
+}
+
 // Hook for line association testing
 export function useLineAssociation() {
   const {
@@ -841,11 +901,28 @@ export function useLineAssociation() {
     }
   }, [drawnLines, setLineAssociationLoading, setLineAssociationResult, setLineAssociationModalOpen])
 
+  const runMultiAssociation = useCallback(async (params: MultiLineAssociationParams) => {
+    setLineAssociationLoading(true)
+    try {
+      await syncLinesToBackend(drawnLines)
+      const result = await runMultiLineAssociation(params)
+      setLineAssociationResult(result)
+      setLineAssociationModalOpen(true)
+      return result
+    } catch (err) {
+      setLineAssociationResult(null)
+      throw err
+    } finally {
+      setLineAssociationLoading(false)
+    }
+  }, [drawnLines, setLineAssociationLoading, setLineAssociationResult, setLineAssociationModalOpen])
+
   return {
     drawnLines,
     lineAssociationResult,
     isLineAssociationLoading,
     runAssociation,
+    runMultiAssociation,
   }
 }
 
@@ -874,6 +951,7 @@ export async function runMarkerGenes(params: {
   min_in_group_fraction?: number
   max_out_group_fraction?: number
   min_fold_change?: number
+  gene_subset?: string | null
 }, slot?: DatasetSlot): Promise<MarkerGenesResponse> {
   return fetchJson<MarkerGenesResponse>(appendDataset(`${API_BASE}/marker-genes`, slot), {
     method: 'POST',

@@ -234,6 +234,7 @@ function LineToolsModal({
     lineSmoothingParams,
     setLineSmoothingParams,
     setSchema,
+    updateLineAppearance,
   } = useStore()
 
   const [associationError, setAssociationError] = useState<string | null>(null)
@@ -243,6 +244,9 @@ function LineToolsModal({
   const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
   const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
   const [testVariable, setTestVariable] = useState<'position' | 'distance'>('position')
+  const [nSplineKnots, setNSplineKnots] = useState(5)
+  const [fdrThreshold, setFdrThreshold] = useState(0.05)
+  const [topN, setTopN] = useState(50)
 
   const { runAssociation, isLineAssociationLoading } = useLineAssociation()
 
@@ -271,12 +275,12 @@ function LineToolsModal({
       } else if (selectedGeneColumns.length > 1) {
         geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
       }
-      await runAssociation(line.name, { cellIndices, geneSubset, testVariable })
+      await runAssociation(line.name, { cellIndices, geneSubset, testVariable, nSplineKnots, fdrThreshold, topN })
       onClose()
     } catch (err) {
       setAssociationError((err as Error).message)
     }
-  }, [runAssociation, getCellIndices, selectedGeneColumns, geneSubsetOperation, testVariable, line.name, onClose])
+  }, [runAssociation, getCellIndices, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, line.name, onClose])
 
   const handleCreateProjectionEmbedding = useCallback(async () => {
     setEmbeddingMessage(null)
@@ -343,6 +347,59 @@ function LineToolsModal({
                 Line is smoothed
               </div>
             )}
+          </div>
+
+          {/* Appearance */}
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>Appearance</div>
+            <div style={styles.row}>
+              <span>Color</span>
+              <input
+                type="color"
+                value={line.strokeColor || '#4ecdc4'}
+                onChange={(e) => updateLineAppearance(line.id, { strokeColor: e.target.value })}
+                style={{ width: '32px', height: '24px', border: 'none', background: 'none', cursor: 'pointer' }}
+              />
+              <span>Width</span>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                value={line.strokeWidth || 2}
+                onChange={(e) => updateLineAppearance(line.id, { strokeWidth: Math.max(1, Math.min(10, parseInt(e.target.value) || 2)) })}
+                style={styles.smallInput}
+              />
+            </div>
+            <div style={{ ...styles.row, marginTop: '6px' }}>
+              <span>Fill</span>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', fontSize: '12px', color: '#aaa' }}>
+                <input
+                  type="checkbox"
+                  checked={!!line.fillColor}
+                  onChange={(e) => updateLineAppearance(line.id, { fillColor: e.target.checked ? (line.strokeColor || '#4ecdc4') : null })}
+                />
+                Enable
+              </label>
+              {line.fillColor && (
+                <input
+                  type="color"
+                  value={line.fillColor}
+                  onChange={(e) => updateLineAppearance(line.id, { fillColor: e.target.value })}
+                  style={{ width: '32px', height: '24px', border: 'none', background: 'none', cursor: 'pointer' }}
+                />
+              )}
+            </div>
+            <div style={{ ...styles.row, marginTop: '6px' }}>
+              <span>Closed</span>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', fontSize: '12px', color: '#aaa' }}>
+                <input
+                  type="checkbox"
+                  checked={line.closed || false}
+                  onChange={(e) => updateLineAppearance(line.id, { closed: e.target.checked })}
+                />
+                {line.closed ? 'Yes' : 'No'}
+              </label>
+            </div>
           </div>
 
           {/* Projections */}
@@ -460,6 +517,47 @@ function LineToolsModal({
               </div>
             </div>
 
+            {/* Analysis parameters */}
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>Parameters:</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', fontSize: '11px', color: '#ccc' }}>
+                <span title="Number of interior knots for the cubic B-spline. More knots capture more complex expression patterns but risk overfitting.">Spline knots</span>
+                <input
+                  type="number"
+                  min="2"
+                  max="20"
+                  value={nSplineKnots}
+                  onChange={(e) => setNSplineKnots(Math.max(2, Math.min(20, parseInt(e.target.value) || 5)))}
+                  style={styles.smallInput}
+                  title="Interior knots for the cubic B-spline basis (2-20). Higher = more flexible fit."
+                />
+                <span title="FDR (Benjamini-Hochberg) threshold for significance.">FDR</span>
+                <input
+                  type="number"
+                  min="0.001"
+                  max="0.5"
+                  step="0.01"
+                  value={fdrThreshold}
+                  onChange={(e) => setFdrThreshold(Math.max(0.001, Math.min(0.5, parseFloat(e.target.value) || 0.05)))}
+                  style={{ ...styles.smallInput, width: '56px' }}
+                  title="FDR significance threshold (0.001-0.5)"
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: '#ccc' }}>
+                <span title="Maximum number of genes to return per module.">Max genes/module</span>
+                <input
+                  type="number"
+                  min="10"
+                  max="500"
+                  step="10"
+                  value={topN}
+                  onChange={(e) => setTopN(Math.max(10, Math.min(500, parseInt(e.target.value) || 50)))}
+                  style={styles.smallInput}
+                  title="Maximum genes returned per module (10-500)"
+                />
+              </div>
+            </div>
+
             <button
               style={{
                 ...styles.primaryActionButton,
@@ -510,6 +608,255 @@ function LineToolsModal({
   )
 }
 
+// ---------- Multi-Line Tools Modal ----------
+
+function MultiLineToolsModal({
+  lines,
+  onClose,
+}: {
+  lines: ReturnType<typeof useStore.getState>['drawnLines']
+  onClose: () => void
+}) {
+  const { scanpyActionHistory } = useStore()
+  const { runMultiAssociation, isLineAssociationLoading } = useLineAssociation()
+
+  const [reversals, setReversals] = useState<Record<string, boolean>>({})
+  const [associationError, setAssociationError] = useState<string | null>(null)
+  const [geneSubsetColumns, setGeneSubsetColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])
+  const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
+  const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
+  const [testVariable, setTestVariable] = useState<'position' | 'distance'>('position')
+  const [nSplineKnots, setNSplineKnots] = useState(5)
+  const [fdrThreshold, setFdrThreshold] = useState(0.05)
+  const [topN, setTopN] = useState(50)
+
+  const API_BASE = '/api'
+  const totalCells = lines.reduce((sum, l) => sum + l.projections.length, 0)
+
+  useEffect(() => {
+    fetch(appendDataset(`${API_BASE}/var/boolean_columns`))
+      .then((res) => res.json())
+      .then(setGeneSubsetColumns)
+      .catch(() => setGeneSubsetColumns([]))
+  }, [scanpyActionHistory])
+
+  const toggleReversal = useCallback((lineId: string) => {
+    setReversals((prev) => ({ ...prev, [lineId]: !prev[lineId] }))
+  }, [])
+
+  const handleRun = useCallback(async () => {
+    setAssociationError(null)
+    try {
+      let geneSubset: string | { columns: string[]; operation: string } | null = null
+      if (selectedGeneColumns.length === 1) {
+        geneSubset = selectedGeneColumns[0]
+      } else if (selectedGeneColumns.length > 1) {
+        geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
+      }
+
+      await runMultiAssociation({
+        lines: lines.map((l) => ({
+          name: l.name,
+          cellIndices: l.projections.map((p) => p.cellIndex),
+          reversed: !!reversals[l.id],
+        })),
+        geneSubset,
+        testVariable,
+        nSplineKnots,
+        fdrThreshold,
+        topN,
+      })
+      onClose()
+    } catch (err) {
+      setAssociationError((err as Error).message)
+    }
+  }, [runMultiAssociation, lines, reversals, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, onClose])
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <h2 style={styles.modalTitle}>
+            Line Association: {lines.length} lines ({totalCells.toLocaleString()} cells)
+          </h2>
+          <button style={styles.modalClose} onClick={onClose}>&times;</button>
+        </div>
+
+        <div style={styles.modalContent}>
+          {/* Line list with direction toggles */}
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>Lines</div>
+            {lines.map((line) => (
+              <div key={line.id} style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '6px 0',
+                fontSize: '12px',
+                color: '#ccc',
+                borderBottom: '1px solid #0a0f1a',
+              }}>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+                  {line.name}
+                </span>
+                <span style={{ fontSize: '11px', color: '#888' }}>
+                  {line.projections.length} cells
+                </span>
+                <button
+                  onClick={() => toggleReversal(line.id)}
+                  style={{
+                    padding: '2px 8px',
+                    fontSize: '11px',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    border: '1px solid #1a1a2e',
+                    backgroundColor: reversals[line.id] ? '#e94560' : '#0f3460',
+                    color: reversals[line.id] ? '#fff' : '#aaa',
+                    fontWeight: reversals[line.id] ? 600 : 400,
+                  }}
+                  title={reversals[line.id] ? 'Direction: reversed (click to reset)' : 'Direction: as drawn (click to reverse)'}
+                >
+                  {reversals[line.id] ? '\u2190' : '\u2192'}
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Gene subset selector */}
+          {geneSubsetColumns.length > 0 && (
+            <div style={styles.section}>
+              <div style={styles.sectionTitle}>
+                Genes {selectedGeneColumns.length === 0 ? '(all)' : ''}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {geneSubsetColumns.map((col) => {
+                  const isSelected = selectedGeneColumns.includes(col.name)
+                  return (
+                    <button
+                      key={col.name}
+                      onClick={() => {
+                        if (isSelected) {
+                          setSelectedGeneColumns(selectedGeneColumns.filter((c) => c !== col.name))
+                        } else {
+                          setSelectedGeneColumns([...selectedGeneColumns, col.name])
+                        }
+                      }}
+                      style={{
+                        ...styles.pillButton,
+                        backgroundColor: isSelected ? '#4ecdc4' : '#0f3460',
+                        color: isSelected ? '#000' : '#aaa',
+                        borderColor: isSelected ? '#4ecdc4' : '#1a1a2e',
+                        fontWeight: isSelected ? 600 : 400,
+                      }}
+                      title={`${col.n_true.toLocaleString()} of ${col.n_total.toLocaleString()} genes`}
+                    >
+                      {col.name} ({col.n_true.toLocaleString()})
+                    </button>
+                  )
+                })}
+              </div>
+              {selectedGeneColumns.length >= 2 && (
+                <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px' }}>
+                  <span style={{ color: '#888' }}>Combine:</span>
+                  <button
+                    onClick={() => setGeneSubsetOperation('intersection')}
+                    style={{
+                      ...styles.toggleButton,
+                      backgroundColor: geneSubsetOperation === 'intersection' ? '#4ecdc4' : '#0f3460',
+                      color: geneSubsetOperation === 'intersection' ? '#000' : '#aaa',
+                    }}
+                  >
+                    AND
+                  </button>
+                  <button
+                    onClick={() => setGeneSubsetOperation('union')}
+                    style={{
+                      ...styles.toggleButton,
+                      backgroundColor: geneSubsetOperation === 'union' ? '#4ecdc4' : '#0f3460',
+                      color: geneSubsetOperation === 'union' ? '#000' : '#aaa',
+                    }}
+                  >
+                    OR
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Test variable */}
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>Test against</div>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button
+                onClick={() => setTestVariable('position')}
+                style={{
+                  ...styles.toggleButton,
+                  backgroundColor: testVariable === 'position' ? '#4ecdc4' : '#0f3460',
+                  color: testVariable === 'position' ? '#000' : '#aaa',
+                  borderColor: testVariable === 'position' ? '#4ecdc4' : '#1a1a2e',
+                  fontWeight: testVariable === 'position' ? 600 : 400,
+                }}
+              >
+                Position along line
+              </button>
+              <button
+                onClick={() => setTestVariable('distance')}
+                style={{
+                  ...styles.toggleButton,
+                  backgroundColor: testVariable === 'distance' ? '#4ecdc4' : '#0f3460',
+                  color: testVariable === 'distance' ? '#000' : '#aaa',
+                  borderColor: testVariable === 'distance' ? '#4ecdc4' : '#1a1a2e',
+                  fontWeight: testVariable === 'distance' ? 600 : 400,
+                }}
+              >
+                Distance from line
+              </button>
+            </div>
+          </div>
+
+          {/* Parameters */}
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>Parameters</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', fontSize: '11px', color: '#ccc' }}>
+              <span>Spline knots</span>
+              <input type="number" min="2" max="20" value={nSplineKnots}
+                onChange={(e) => setNSplineKnots(Math.max(2, Math.min(20, parseInt(e.target.value) || 5)))}
+                style={styles.smallInput} />
+              <span>FDR</span>
+              <input type="number" min="0.001" max="0.5" step="0.01" value={fdrThreshold}
+                onChange={(e) => setFdrThreshold(Math.max(0.001, Math.min(0.5, parseFloat(e.target.value) || 0.05)))}
+                style={{ ...styles.smallInput, width: '56px' }} />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: '#ccc' }}>
+              <span>Max genes/module</span>
+              <input type="number" min="10" max="500" step="10" value={topN}
+                onChange={(e) => setTopN(Math.max(10, Math.min(500, parseInt(e.target.value) || 50)))}
+                style={styles.smallInput} />
+            </div>
+          </div>
+
+          {/* Run button */}
+          <button
+            style={{
+              ...styles.primaryActionButton,
+              opacity: isLineAssociationLoading ? 0.6 : 1,
+            }}
+            onClick={handleRun}
+            disabled={isLineAssociationLoading}
+          >
+            {isLineAssociationLoading ? 'Analyzing...' : 'Find Associated Genes'}
+          </button>
+          {associationError && (
+            <div style={{ marginTop: '6px', fontSize: '11px', color: '#e94560' }}>
+              {associationError}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---------- Lines Panel ----------
 
 export default function ShapeManager() {
@@ -529,12 +876,17 @@ export default function ShapeManager() {
   const [editName, setEditName] = useState('')
   const [toolsLineId, setToolsLineId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  const [checkedLineIds, setCheckedLineIds] = useState<Set<string>>(new Set())
+  const [multiLineModalOpen, setMultiLineModalOpen] = useState(false)
 
   const currentEmbeddingLines = drawnLines.filter(
     (l) => l.embeddingName === selectedEmbedding
   )
   const hasAnyLines = drawnLines.length > 0
   const toolsLine = toolsLineId ? drawnLines.find((l) => l.id === toolsLineId) : null
+
+  const checkedLines = currentEmbeddingLines.filter((l) => checkedLineIds.has(l.id))
+  const checkedTotalCells = checkedLines.reduce((sum, l) => sum + l.projections.length, 0)
 
   const handleStartEdit = useCallback((id: string, name: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -558,6 +910,19 @@ export default function ShapeManager() {
     }
     projectSelectedCellsOntoLine(lineId)
   }, [selectedCellIndices, projectSelectedCellsOntoLine])
+
+  const handleToggleCheck = useCallback((lineId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setCheckedLineIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(lineId)) {
+        next.delete(lineId)
+      } else {
+        next.add(lineId)
+      }
+      return next
+    })
+  }, [])
 
   return (
     <>
@@ -592,6 +957,16 @@ export default function ShapeManager() {
                 }}
                 onClick={() => setActiveLine(line.id === activeLineId ? null : line.id)}
               >
+                {line.projections.length > 0 && (
+                  <input
+                    type="checkbox"
+                    checked={checkedLineIds.has(line.id)}
+                    onChange={() => {}}
+                    onClick={(e) => handleToggleCheck(line.id, e)}
+                    style={{ marginRight: '4px', cursor: 'pointer', flexShrink: 0 }}
+                    title={`Include in multi-line analysis (${line.projections.length} cells)`}
+                  />
+                )}
                 {editingId === line.id ? (
                   <input
                     type="text"
@@ -679,6 +1054,36 @@ export default function ShapeManager() {
                 </button>
               </div>
             ))}
+            {checkedLineIds.size > 0 && checkedLines.length > 0 && (
+              <div style={{
+                padding: '8px 16px',
+                borderTop: '1px solid #0f3460',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '8px',
+                fontSize: '11px',
+              }}>
+                <span style={{ color: '#888' }}>
+                  {checkedLines.length} line{checkedLines.length !== 1 ? 's' : ''} ({checkedTotalCells.toLocaleString()} cells)
+                </span>
+                <button
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    backgroundColor: '#4ecdc4',
+                    color: '#000',
+                    border: '1px solid #4ecdc4',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontWeight: 500,
+                  }}
+                  onClick={() => setMultiLineModalOpen(true)}
+                >
+                  Find Associated Genes
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -688,6 +1093,12 @@ export default function ShapeManager() {
         <LineToolsModal
           line={toolsLine}
           onClose={() => setToolsLineId(null)}
+        />
+      )}
+      {multiLineModalOpen && checkedLines.length > 0 && (
+        <MultiLineToolsModal
+          lines={checkedLines}
+          onClose={() => setMultiLineModalOpen(false)}
         />
       )}
     </>

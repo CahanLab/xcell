@@ -965,6 +965,13 @@ class DataAdaptor:
         group1_indices: list[int],
         group2_indices: list[int],
         top_n: int = 10,
+        method: str = "wilcoxon",
+        corr_method: str = "benjamini-hochberg",
+        min_fold_change: float | None = None,
+        min_in_group_fraction: float | None = None,
+        max_out_group_fraction: float | None = None,
+        max_pval_adj: float | None = None,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run differential expression analysis between two cell groups.
 
@@ -974,6 +981,13 @@ class DataAdaptor:
             group1_indices: Cell indices for group 1
             group2_indices: Cell indices for group 2
             top_n: Number of top genes to return for each direction
+            method: Statistical method for rank_genes_groups
+            corr_method: P-value correction method
+            min_fold_change: Minimum fold change for filtering
+            min_in_group_fraction: Minimum fraction of cells in group expressing gene
+            max_out_group_fraction: Maximum fraction of cells outside group expressing gene
+            max_pval_adj: Maximum adjusted p-value for filtering
+            gene_subset: Gene filtering specification (str column name, list of genes, or dict spec)
 
         Returns:
             Dictionary containing:
@@ -1001,12 +1015,29 @@ class DataAdaptor:
         if overlap:
             raise ValueError(f"Groups have {len(overlap)} overlapping cells")
 
-        return compute_diffexp(
-            adata=self.adata,
+        # Resolve gene subset
+        if gene_subset is not None:
+            gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+            work_adata = self.adata[:, gene_mask].copy()
+        else:
+            work_adata = self.adata
+            subset_type = 'all'
+
+        result = compute_diffexp(
+            adata=work_adata,
             group1_indices=group1_indices,
             group2_indices=group2_indices,
             top_n=top_n,
+            method=method,
+            corr_method=corr_method,
+            min_fold_change=min_fold_change,
+            min_in_group_fraction=min_in_group_fraction,
+            max_out_group_fraction=max_out_group_fraction,
+            max_pval_adj=max_pval_adj,
         )
+        result['gene_subset_type'] = subset_type
+        result['n_genes_tested'] = work_adata.n_vars
+        return result
 
     # =========================================================================
     # Drawn lines / trajectory methods
@@ -1184,123 +1215,47 @@ class DataAdaptor:
 
         return adata_export
 
-    def test_line_association(
+    def _run_spline_association(
         self,
-        line_name: str,
-        cell_indices: list[int] | None = None,
-        gene_subset: str | list[str] | dict[str, Any] | None = None,
-        test_variable: str = 'position',
+        test_values: np.ndarray,
+        cell_indices: np.ndarray,
+        gene_mask: np.ndarray,
         n_spline_knots: int = 5,
-        min_cells: int = 20,
         fdr_threshold: float = 0.05,
         top_n: int = 50,
     ) -> dict[str, Any]:
-        """Test genes for association with position along or distance from a line.
+        """Core spline regression engine for line association analysis.
 
-        Uses cubic B-spline regression to model gene expression as a function
-        of a spatial variable derived from the line, then tests whether the
-        spline model explains significantly more variance than an intercept-only
-        model (F-test).
+        Fits cubic B-spline models for each gene against the provided test
+        values and tests significance via F-test (spline model vs intercept-only).
+
+        This is a reusable helper called by both test_line_association (single
+        line) and test_multi_line_association (pooled multi-line).
 
         Args:
-            line_name: Name of the line to test against
-            cell_indices: Optional list of cell indices to use. If None, uses
-                         all cells (projected based on distance threshold).
-            gene_subset: Optional gene filter. Can be a boolean column name (str),
-                        a list of gene names, or a dict for combining columns.
-            test_variable: 'position' to test against position along the line,
-                          'distance' to test against perpendicular distance from
-                          the line.
+            test_values: 1-D array of test variable values (e.g. position along
+                        line), one per cell. Should be in [0, 1].
+            cell_indices: 1-D integer array of cell indices into self.adata.
+            gene_mask: Boolean array of length n_genes selecting which genes
+                      to test.
             n_spline_knots: Number of interior knots for the B-spline basis.
-                           Total df = n_spline_knots + 2 (for cubic splines).
-            min_cells: Minimum number of cells required for testing.
             fdr_threshold: FDR threshold for significance.
             top_n: Number of top genes to return for each direction.
 
         Returns:
-            Dict containing:
-            - modules: Gene modules clustered by expression profile shape
-            - positive: Genes with expression increasing along variable
-            - negative: Genes with expression decreasing along variable
-            - n_cells: Number of cells used
-            - n_significant: Total significant genes at FDR threshold
-            - line_name: The line name used
-
-        Raises:
-            ValueError: If line not found or too few cells
+            Dict with keys: positive, negative, modules, n_cells,
+            n_significant, n_positive, n_negative, n_modules, fdr_threshold,
+            diagnostics. Callers should add line_name, test_variable, etc.
         """
         from scipy.interpolate import BSpline
         from scipy.stats import f as f_dist
         from statsmodels.stats.multitest import multipletests
 
-        # Find the line
-        line = None
-        for l in self._drawn_lines:
-            if l.get('name') == line_name:
-                line = l
-                break
-
-        if line is None:
-            raise ValueError(f"Line '{line_name}' not found")
-
-        embedding_name = line.get('embeddingName', '')
-        if embedding_name not in self.adata.obsm:
-            raise ValueError(f"Embedding '{embedding_name}' not found")
-
-        # Get line points (smoothed if available)
-        line_points = line.get('smoothedPoints') or line.get('points', [])
-        if len(line_points) < 2:
-            raise ValueError("Line must have at least 2 points")
-
-        # Get embedding coordinates
-        coords = self.adata.obsm[embedding_name][:, :2]
-
-        # Project cells onto line
-        positions, distances = self._project_cells_onto_line(line_points, coords)
-
-        # Determine which cells to use
-        if cell_indices is not None:
-            # Use provided cell indices
-            cell_mask = np.zeros(self.n_cells, dtype=bool)
-            cell_mask[cell_indices] = True
-        else:
-            # Use all cells (could filter by distance threshold in future)
-            cell_mask = np.ones(self.n_cells, dtype=bool)
-
-        # Get positions and distances for selected cells
-        selected_indices = np.where(cell_mask)[0]
-        selected_positions = positions[cell_mask]
-        selected_distances = distances[cell_mask]
-        n_cells_used = len(selected_indices)
-
-        if n_cells_used < min_cells:
-            raise ValueError(
-                f"Too few cells ({n_cells_used}). Need at least {min_cells}."
-            )
-
-        # Select the test variable
-        if test_variable == 'distance':
-            # Normalize distances to [0, 1] for spline fitting
-            d_min = selected_distances.min()
-            d_max = selected_distances.max()
-            if d_max - d_min < 1e-10:
-                raise ValueError(
-                    "All cells have the same distance from the line. "
-                    "Cannot test distance association."
-                )
-            test_values = (selected_distances - d_min) / (d_max - d_min)
-        else:
-            test_values = selected_positions
-
-        # Resolve gene subset if provided
-        if gene_subset is not None:
-            gene_mask, _, _ = self._resolve_gene_mask(gene_subset)
-        else:
-            gene_mask = np.ones(self.n_genes, dtype=bool)
+        n_cells_used = len(cell_indices)
 
         # Get expression matrix for selected cells and genes
         # (trusts that user has already preprocessed: normalize, log1p, etc.)
-        X = self.adata.X[selected_indices][:, gene_mask]
+        X = self.adata.X[cell_indices][:, gene_mask]
 
         # Convert sparse to dense if needed
         if hasattr(X, 'toarray'):
@@ -1560,10 +1515,7 @@ class DataAdaptor:
             'n_positive': int(pos_mask.sum()),
             'n_negative': int(neg_mask.sum()),
             'n_modules': len(modules),
-            'line_name': line_name,
-            'test_variable': test_variable,
             'fdr_threshold': fdr_threshold,
-            # Diagnostic info
             'diagnostics': {
                 'n_genes_tested': n_genes,
                 'n_pval_below_05': n_pval_below_05,
@@ -1576,6 +1528,132 @@ class DataAdaptor:
                 'spline_df': k,
             },
         }
+
+    def test_line_association(
+        self,
+        line_name: str,
+        cell_indices: list[int] | None = None,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        test_variable: str = 'position',
+        n_spline_knots: int = 5,
+        min_cells: int = 20,
+        fdr_threshold: float = 0.05,
+        top_n: int = 50,
+    ) -> dict[str, Any]:
+        """Test genes for association with position along or distance from a line.
+
+        Uses cubic B-spline regression to model gene expression as a function
+        of a spatial variable derived from the line, then tests whether the
+        spline model explains significantly more variance than an intercept-only
+        model (F-test).
+
+        Args:
+            line_name: Name of the line to test against
+            cell_indices: Optional list of cell indices to use. If None, uses
+                         all cells (projected based on distance threshold).
+            gene_subset: Optional gene filter. Can be a boolean column name (str),
+                        a list of gene names, or a dict for combining columns.
+            test_variable: 'position' to test against position along the line,
+                          'distance' to test against perpendicular distance from
+                          the line.
+            n_spline_knots: Number of interior knots for the B-spline basis.
+                           Total df = n_spline_knots + 2 (for cubic splines).
+            min_cells: Minimum number of cells required for testing.
+            fdr_threshold: FDR threshold for significance.
+            top_n: Number of top genes to return for each direction.
+
+        Returns:
+            Dict containing:
+            - modules: Gene modules clustered by expression profile shape
+            - positive: Genes with expression increasing along variable
+            - negative: Genes with expression decreasing along variable
+            - n_cells: Number of cells used
+            - n_significant: Total significant genes at FDR threshold
+            - line_name: The line name used
+
+        Raises:
+            ValueError: If line not found or too few cells
+        """
+        # Find the line
+        line = None
+        for l in self._drawn_lines:
+            if l.get('name') == line_name:
+                line = l
+                break
+
+        if line is None:
+            raise ValueError(f"Line '{line_name}' not found")
+
+        embedding_name = line.get('embeddingName', '')
+        if embedding_name not in self.adata.obsm:
+            raise ValueError(f"Embedding '{embedding_name}' not found")
+
+        # Get line points (smoothed if available)
+        line_points = line.get('smoothedPoints') or line.get('points', [])
+        if len(line_points) < 2:
+            raise ValueError("Line must have at least 2 points")
+
+        # Get embedding coordinates
+        coords = self.adata.obsm[embedding_name][:, :2]
+
+        # Project cells onto line
+        positions, distances = self._project_cells_onto_line(line_points, coords)
+
+        # Determine which cells to use
+        if cell_indices is not None:
+            # Use provided cell indices
+            cell_mask = np.zeros(self.n_cells, dtype=bool)
+            cell_mask[cell_indices] = True
+        else:
+            # Use all cells (could filter by distance threshold in future)
+            cell_mask = np.ones(self.n_cells, dtype=bool)
+
+        # Get positions and distances for selected cells
+        selected_indices = np.where(cell_mask)[0]
+        selected_positions = positions[cell_mask]
+        selected_distances = distances[cell_mask]
+        n_cells_used = len(selected_indices)
+
+        if n_cells_used < min_cells:
+            raise ValueError(
+                f"Too few cells ({n_cells_used}). Need at least {min_cells}."
+            )
+
+        # Select the test variable
+        if test_variable == 'distance':
+            # Normalize distances to [0, 1] for spline fitting
+            d_min = selected_distances.min()
+            d_max = selected_distances.max()
+            if d_max - d_min < 1e-10:
+                raise ValueError(
+                    "All cells have the same distance from the line. "
+                    "Cannot test distance association."
+                )
+            test_values = (selected_distances - d_min) / (d_max - d_min)
+        else:
+            test_values = selected_positions
+
+        # Resolve gene subset if provided
+        if gene_subset is not None:
+            gene_mask, _, _ = self._resolve_gene_mask(gene_subset)
+        else:
+            gene_mask = np.ones(self.n_genes, dtype=bool)
+
+        # Delegate to the shared spline regression engine
+        result = self._run_spline_association(
+            test_values=test_values,
+            cell_indices=selected_indices,
+            gene_mask=gene_mask,
+            n_spline_knots=n_spline_knots,
+            fdr_threshold=fdr_threshold,
+            top_n=top_n,
+        )
+
+        # Add line-specific metadata
+        result['line_name'] = line_name
+        result['test_variable'] = test_variable
+
+        return result
 
     @staticmethod
     def _classify_profile_pattern(
@@ -2940,7 +3018,7 @@ class DataAdaptor:
 
         Args:
             n_neighbors: Number of neighbors per gene
-            metric: Distance metric ('euclidean', 'cosine')
+            metric: Distance metric ('euclidean', 'cosine', 'pearson')
             basis: 'gene_pca' to use PCA embedding, 'expression' to use raw expression
             gene_subset: Gene filtering (only used when basis='expression').
                 Can be str (boolean column), list[str] (gene names), or dict (multi-column spec).
@@ -3013,9 +3091,19 @@ class DataAdaptor:
         n_neighbors = min(n_neighbors, n_genes_valid - 1)
 
         # Compute kNN on valid genes
-        nn = NearestNeighbors(n_neighbors=n_neighbors + 1, metric=metric)
-        nn.fit(representation)
-        distances, indices = nn.kneighbors(representation)
+        if metric == 'pearson':
+            # Pearson correlation distance: 1 - r
+            corr_matrix = np.corrcoef(representation)
+            corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
+            dist_full = 1.0 - corr_matrix
+            np.fill_diagonal(dist_full, 0.0)
+            nn = NearestNeighbors(n_neighbors=n_neighbors + 1, metric='precomputed')
+            nn.fit(dist_full)
+            distances, indices = nn.kneighbors(dist_full)
+        else:
+            nn = NearestNeighbors(n_neighbors=n_neighbors + 1, metric=metric)
+            nn.fit(representation)
+            distances, indices = nn.kneighbors(representation)
 
         # Build sparse distance matrix (exclude self)
         # Map back to original gene indices
@@ -3258,6 +3346,7 @@ class DataAdaptor:
         n_neighbors: int = 15,
         metric: str = 'euclidean',
         active_cell_indices: list[int] | None = None,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Convenience function: run gene_pca and gene_neighbors in one step.
 
@@ -3268,6 +3357,7 @@ class DataAdaptor:
             n_neighbors: Number of neighbors for kNN graph
             metric: Distance metric for kNN
             active_cell_indices: If provided, use only these cells for gene PCA
+            gene_subset: Gene filtering specification passed to gene_pca
 
         Returns:
             Dict with combined results from both steps
@@ -3278,6 +3368,7 @@ class DataAdaptor:
             scale=scale,
             use_kneedle=use_kneedle,
             active_cell_indices=active_cell_indices,
+            gene_subset=gene_subset,
         )
 
         # Run gene neighbors
@@ -3372,6 +3463,7 @@ class DataAdaptor:
         n_jobs: int = 1,
         corr_method: str = 'fdr_bh',
         pval_threshold: float = 0.05,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Compute spatial autocorrelation to identify spatially variable genes.
 
@@ -3384,11 +3476,12 @@ class DataAdaptor:
 
         Args:
             mode: 'moran' for Moran's I, 'geary' for Geary's C
-            genes: Subset of genes to test (None for all highly variable or all)
+            genes: Explicit subset of gene names to test (takes priority over gene_subset)
             n_perms: Number of permutations for p-value (None for analytical only)
             n_jobs: Number of parallel jobs
             corr_method: Multiple testing correction method
             pval_threshold: Threshold for marking genes as spatially variable
+            gene_subset: Gene filtering via boolean column (e.g. 'highly_variable'). Ignored if genes is set.
 
         Returns:
             Dict with operation status, number of spatially variable genes
@@ -3402,6 +3495,12 @@ class DataAdaptor:
 
         if mode not in ('moran', 'geary'):
             raise ValueError("mode must be 'moran' or 'geary'")
+
+        # Resolve gene_subset to gene list if no explicit genes provided
+        subset_type = 'all'
+        if genes is None and gene_subset is not None:
+            gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+            genes = self.adata.var_names[gene_mask].tolist()
 
         # Run spatial autocorrelation
         sq.gr.spatial_autocorr(
@@ -3472,12 +3571,14 @@ class DataAdaptor:
             'n_spatially_variable': int(n_sv_genes),
             'pval_threshold': pval_threshold,
             'top_sv_genes': top_sv_genes,
+            'gene_subset_type': subset_type,
         }
         self._log_action('spatial_autocorr', {
             'mode': mode,
             'n_perms': n_perms,
             'corr_method': corr_method,
             'pval_threshold': pval_threshold,
+            'gene_subset': gene_subset,
         }, result)
         return result
 
@@ -3676,6 +3777,7 @@ class DataAdaptor:
         min_in_group_fraction: float | None = None,
         max_out_group_fraction: float | None = None,
         min_fold_change: float | None = None,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run one-vs-rest marker gene analysis using scanpy.
 
@@ -3689,6 +3791,7 @@ class DataAdaptor:
             min_in_group_fraction: Min fraction of cells in group expressing the gene
             max_out_group_fraction: Max fraction of cells outside group expressing the gene
             min_fold_change: Minimum fold change threshold
+            gene_subset: Gene filtering specification (str column name, list of genes, or dict spec)
 
         Returns:
             Dictionary with obs_column, results (per-group gene lists), and params
@@ -3705,8 +3808,13 @@ class DataAdaptor:
         if not pd.api.types.is_categorical_dtype(dtype) and not pd.api.types.is_string_dtype(dtype):
             raise ValueError(f"Column '{obs_column}' is not categorical (dtype: {dtype})")
 
-        # Work on a copy to avoid polluting the main adata.uns
-        work_adata = self.adata.copy()
+        # Resolve gene subset
+        if gene_subset is not None:
+            gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+            work_adata = self.adata[:, gene_mask].copy()
+        else:
+            work_adata = self.adata.copy()
+            subset_type = 'all'
 
         # Ensure the column is categorical
         if not pd.api.types.is_categorical_dtype(work_adata.obs[obs_column].dtype):
@@ -3790,6 +3898,7 @@ class DataAdaptor:
             'min_in_group_fraction': min_in_group_fraction,
             'max_out_group_fraction': max_out_group_fraction,
             'min_fold_change': min_fold_change,
+            'gene_subset': gene_subset,
         }, {
             'n_groups': len(result_groups),
             'total_genes': sum(len(g['genes']) for g in result_groups),
@@ -3798,4 +3907,6 @@ class DataAdaptor:
         return {
             'obs_column': obs_column,
             'results': result_groups,
+            'gene_subset_type': subset_type,
+            'n_genes_tested': work_adata.n_vars,
         }

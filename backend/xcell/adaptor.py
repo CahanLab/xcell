@@ -1655,6 +1655,129 @@ class DataAdaptor:
 
         return result
 
+    def test_multi_line_association(
+        self,
+        lines: list[dict[str, Any]],
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        test_variable: str = 'position',
+        n_spline_knots: int = 5,
+        min_cells: int = 20,
+        fdr_threshold: float = 0.05,
+        top_n: int = 50,
+    ) -> dict[str, Any]:
+        """Test genes for association across multiple lines (pooled analysis).
+
+        Projects cells from each line entry onto their respective line geometry,
+        normalizes positions per-line (optionally reversing direction), pools all
+        cells, and runs the shared spline regression engine.
+
+        Args:
+            lines: List of dicts, each with:
+                - name (str): Name of a drawn line in self._drawn_lines
+                - cell_indices (list[int]): Cell indices to use for this line
+                - reversed (bool): If True, flip positions (1 - pos) for this line
+            gene_subset: Optional gene filter (boolean column name, gene list, or dict).
+            test_variable: 'position' or 'distance'.
+            n_spline_knots: Number of interior knots for the B-spline basis.
+            min_cells: Minimum number of pooled cells required.
+            fdr_threshold: FDR threshold for significance.
+            top_n: Number of top genes to return per direction.
+
+        Returns:
+            Dict with spline association results plus multi-line metadata:
+            line_name, test_variable, n_lines, lines_used.
+
+        Raises:
+            ValueError: If any line not found, embedding missing, or too few cells.
+        """
+        all_test_values = []
+        all_cell_indices = []
+        lines_used = []
+
+        for entry in lines:
+            line_name = entry['name']
+            entry_cell_indices = entry['cell_indices']
+            is_reversed = entry.get('reversed', False)
+
+            # Look up line geometry
+            line = None
+            for l in self._drawn_lines:
+                if l.get('name') == line_name:
+                    line = l
+                    break
+            if line is None:
+                raise ValueError(f"Line '{line_name}' not found")
+
+            embedding_name = line.get('embeddingName', '')
+            if embedding_name not in self.adata.obsm:
+                raise ValueError(f"Embedding '{embedding_name}' not found")
+
+            line_points = line.get('smoothedPoints') or line.get('points', [])
+            if len(line_points) < 2:
+                raise ValueError(f"Line '{line_name}' must have at least 2 points")
+
+            coords = self.adata.obsm[embedding_name][:, :2]
+
+            # Project all cells onto the line
+            positions, distances = self._project_cells_onto_line(line_points, coords)
+
+            # Select this entry's cells
+            idx_array = np.array(entry_cell_indices, dtype=int)
+            if test_variable == 'distance':
+                selected = distances[idx_array]
+                d_min = selected.min()
+                d_max = selected.max()
+                if d_max - d_min < 1e-10:
+                    raise ValueError(
+                        f"All cells for line '{line_name}' have the same distance. "
+                        "Cannot test distance association."
+                    )
+                vals = (selected - d_min) / (d_max - d_min)
+            else:
+                vals = positions[idx_array]
+
+            # Reverse direction if requested
+            if is_reversed:
+                vals = 1.0 - vals
+
+            all_test_values.append(vals)
+            all_cell_indices.append(idx_array)
+            lines_used.append(line_name)
+
+        # Pool across all lines
+        pooled_test_values = np.concatenate(all_test_values)
+        pooled_cell_indices = np.concatenate(all_cell_indices)
+
+        if len(pooled_cell_indices) < min_cells:
+            raise ValueError(
+                f"Too few pooled cells ({len(pooled_cell_indices)}). "
+                f"Need at least {min_cells}."
+            )
+
+        # Resolve gene subset
+        if gene_subset is not None:
+            gene_mask, _, _ = self._resolve_gene_mask(gene_subset)
+        else:
+            gene_mask = np.ones(self.n_genes, dtype=bool)
+
+        # Run spline association on pooled data
+        result = self._run_spline_association(
+            test_values=pooled_test_values,
+            cell_indices=pooled_cell_indices,
+            gene_mask=gene_mask,
+            n_spline_knots=n_spline_knots,
+            fdr_threshold=fdr_threshold,
+            top_n=top_n,
+        )
+
+        # Add multi-line metadata
+        result['line_name'] = ' + '.join(lines_used)
+        result['test_variable'] = test_variable
+        result['n_lines'] = len(lines_used)
+        result['lines_used'] = lines_used
+
+        return result
+
     @staticmethod
     def _classify_profile_pattern(
         profile: np.ndarray,

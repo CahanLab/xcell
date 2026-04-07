@@ -4,12 +4,14 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from xcell.adaptor import DataAdaptor
+from xcell.task_manager import task_manager
 
 router = APIRouter(prefix="/api")
 
@@ -1998,3 +2000,32 @@ def export_h5ad(dataset: str | None = Query(None)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Background task management ---
+
+@router.get("/tasks/{task_id}")
+def get_task_status(task_id: str):
+    """Poll the status of a background task."""
+    entry = task_manager.get_status(task_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    response: dict[str, Any] = {
+        "task_id": entry.id,
+        "status": entry.status,
+    }
+    if entry.result is not None:
+        response["result"] = entry.result
+    if entry.error is not None:
+        response["error"] = entry.error
+    return response
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: str):
+    """Cancel a running background task."""
+    entry = task_manager.get_status(task_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task_manager.cancel(task_id)
+    return {"task_id": task_id, "status": "cancelling"}

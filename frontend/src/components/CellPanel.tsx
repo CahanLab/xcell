@@ -438,9 +438,10 @@ interface CategoryColumnProps {
   onToggleCategory: (category: string) => void
   onHide: () => void
   onRename: (newName: string) => void
+  selectedCategorySource: { column: string; value: string } | null
 }
 
-function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, checkedCategories, onToggleCategory, onHide, onRename }: CategoryColumnProps) {
+function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, checkedCategories, onToggleCategory, onHide, onRename, selectedCategorySource }: CategoryColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -545,7 +546,12 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCel
       {expanded && (
         <div style={styles.categoryList}>
           {categories.map((cat: CategoryValue) => (
-              <div key={cat.value} style={styles.categoryItem}>
+              <div key={cat.value} style={{
+                ...styles.categoryItem,
+                ...(selectedCategorySource?.column === summary.name && selectedCategorySource?.value === cat.value
+                  ? { borderLeft: '3px solid #4ecdc4', paddingLeft: '5px' }
+                  : {}),
+              }}>
                 <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
                   <input
                     type="checkbox"
@@ -746,10 +752,17 @@ export default function CellPanel() {
   const [categoricalExpanded, setCategoricalExpanded] = useState(true)
   const [continuousExpanded, setContinuousExpanded] = useState(true)
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
+  const [selectedCategorySource, setSelectedCategorySource] = useState<{ column: string; value: string } | null>(null)
 
   // Reset delete confirmation when selection changes
   useEffect(() => {
     setShowDeleteConfirm(false)
+  }, [selectedCellIndices])
+
+  useEffect(() => {
+    if (selectedCellIndices.length === 0) {
+      setSelectedCategorySource(null)
+    }
   }, [selectedCellIndices])
 
   // Get display name for a column
@@ -820,6 +833,7 @@ export default function CellPanel() {
           }
 
           setSelectedCellIndices(indices)
+          setSelectedCategorySource({ column: columnName, value: categoryValue })
         })
         .catch((err) => {
           console.error('Failed to fetch category data:', err)
@@ -997,6 +1011,7 @@ export default function CellPanel() {
                   }
                   onHide={() => hideColumn(summary.name)}
                   onRename={(newName) => setColumnDisplayName(summary.name, newName)}
+                  selectedCategorySource={selectedCategorySource}
                 />
               ))}
           </div>

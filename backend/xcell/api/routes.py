@@ -718,6 +718,13 @@ class DiffExpRequest(BaseModel):
     group1: list[int]
     group2: list[int]
     top_n: int = 10
+    method: str = "wilcoxon"
+    corr_method: str = "benjamini-hochberg"
+    min_fold_change: float | None = None
+    min_in_group_fraction: float | None = None
+    max_out_group_fraction: float | None = None
+    max_pval_adj: float | None = None
+    gene_subset: str | None = None
 
 
 class DiffExpGene(BaseModel):
@@ -760,6 +767,13 @@ def run_diffexp(request: DiffExpRequest, dataset: str | None = Query(None)):
             group1_indices=request.group1,
             group2_indices=request.group2,
             top_n=request.top_n,
+            method=request.method,
+            corr_method=request.corr_method,
+            min_fold_change=request.min_fold_change,
+            min_in_group_fraction=request.min_in_group_fraction,
+            max_out_group_fraction=request.max_out_group_fraction,
+            max_pval_adj=request.max_pval_adj,
+            gene_subset=request.gene_subset,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -778,6 +792,7 @@ class MarkerGenesRequest(BaseModel):
     min_in_group_fraction: float | None = None
     max_out_group_fraction: float | None = None
     min_fold_change: float | None = None
+    gene_subset: str | None = None
 
 
 class MarkerGeneEntry(BaseModel):
@@ -827,6 +842,7 @@ def run_marker_genes(request: MarkerGenesRequest, dataset: str | None = Query(No
             min_in_group_fraction=request.min_in_group_fraction,
             max_out_group_fraction=request.max_out_group_fraction,
             min_fold_change=request.min_fold_change,
+            gene_subset=request.gene_subset,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1020,6 +1036,8 @@ class LineAssociationResponse(BaseModel):
     line_name: str
     test_variable: str = 'position'
     fdr_threshold: float
+    n_lines: int = 1
+    lines_used: list[str] = []
     diagnostics: LineAssociationDiagnostics | None = None
 
 
@@ -1049,6 +1067,50 @@ def test_line_association(request: LineAssociationRequest, dataset: str | None =
         return adaptor.test_line_association(
             line_name=request.line_name,
             cell_indices=request.cell_indices,
+            gene_subset=request.gene_subset,
+            test_variable=request.test_variable,
+            n_spline_knots=request.n_spline_knots,
+            min_cells=request.min_cells,
+            fdr_threshold=request.fdr_threshold,
+            top_n=request.top_n,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class MultiLineEntry(BaseModel):
+    """A single line entry for multi-line association testing."""
+    name: str
+    cell_indices: list[int]
+    reversed: bool = False
+
+
+class MultiLineAssociationRequest(BaseModel):
+    """Request model for multi-line association testing."""
+    lines: list[MultiLineEntry]
+    gene_subset: str | list[str] | None = None
+    test_variable: str = 'position'
+    n_spline_knots: int = 5
+    min_cells: int = 20
+    fdr_threshold: float = 0.05
+    top_n: int = 50
+
+
+@router.post("/lines/multi-association", response_model=LineAssociationResponse)
+def test_multi_line_association(request: MultiLineAssociationRequest, dataset: str | None = Query(None)):
+    """Test genes for association across multiple lines (pooled analysis).
+
+    Projects cells from each line onto their respective geometry, pools them,
+    and runs cubic B-spline regression to find genes associated with position
+    along or distance from the combined trajectory.
+
+    Returns:
+        Genes with expression associated with pooled line position.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.test_multi_line_association(
+            lines=[{'name': e.name, 'cell_indices': e.cell_indices, 'reversed': e.reversed} for e in request.lines],
             gene_subset=request.gene_subset,
             test_variable=request.test_variable,
             n_spline_knots=request.n_spline_knots,
@@ -1522,6 +1584,7 @@ class BuildGeneGraphRequest(BaseModel):
     n_neighbors: int = 15
     metric: str = 'euclidean'
     active_cell_indices: list[int] | None = None
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
 
 
 @router.get("/var/boolean_columns")
@@ -1730,6 +1793,9 @@ def run_build_gene_graph(request: BuildGeneGraphRequest, dataset: str | None = Q
     """
     adaptor = get_adaptor(dataset)
     try:
+        gene_subset = request.gene_subset
+        if isinstance(gene_subset, GeneSubsetSpec):
+            gene_subset = {'columns': gene_subset.columns, 'operation': gene_subset.operation}
         return adaptor.run_build_gene_graph(
             n_pcs=request.n_pcs,
             scale=request.scale,
@@ -1737,6 +1803,7 @@ def run_build_gene_graph(request: BuildGeneGraphRequest, dataset: str | None = Q
             n_neighbors=request.n_neighbors,
             metric=request.metric,
             active_cell_indices=request.active_cell_indices,
+            gene_subset=gene_subset,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1762,6 +1829,7 @@ class SpatialAutocorrRequest(BaseModel):
     n_jobs: int = 1
     corr_method: str = 'fdr_bh'
     pval_threshold: float = 0.05
+    gene_subset: str | None = None
 
 
 class GetSpatiallyVariableGenesRequest(BaseModel):
@@ -1837,6 +1905,7 @@ def run_spatial_autocorr(request: SpatialAutocorrRequest, dataset: str | None = 
             n_jobs=request.n_jobs,
             corr_method=request.corr_method,
             pval_threshold=request.pval_threshold,
+            gene_subset=request.gene_subset,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

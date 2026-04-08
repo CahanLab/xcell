@@ -2,7 +2,7 @@ import { useMemo, useState, useRef, useCallback, useEffect } from 'react'
 import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
-import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, ColorScale, DatasetSlot } from '../store'
+import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, ColorScale, DatasetSlot, DrawTool } from '../store'
 
 interface ScatterPlotProps {
   slot?: DatasetSlot
@@ -46,6 +46,39 @@ const SELECTED_COLOR: [number, number, number, number] = [255, 255, 0, 255]
 // Linear interpolation helper
 function lerp(a: number, b: number, t: number): number {
   return Math.round(a + (b - a) * t)
+}
+
+// Generate Catmull-Rom spline points through control points
+function catmullRomSpline(controlPoints: [number, number][], segments: number = 20): [number, number][] {
+  if (controlPoints.length < 2) return controlPoints
+  if (controlPoints.length === 2) return controlPoints
+  const result: [number, number][] = []
+  for (let i = 0; i < controlPoints.length - 1; i++) {
+    const p0 = controlPoints[Math.max(0, i - 1)]
+    const p1 = controlPoints[i]
+    const p2 = controlPoints[Math.min(controlPoints.length - 1, i + 1)]
+    const p3 = controlPoints[Math.min(controlPoints.length - 1, i + 2)]
+    for (let t = 0; t < segments; t++) {
+      const tt = t / segments
+      const tt2 = tt * tt
+      const tt3 = tt2 * tt
+      const x = 0.5 * (
+        (2 * p1[0]) +
+        (-p0[0] + p2[0]) * tt +
+        (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * tt2 +
+        (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * tt3
+      )
+      const y = 0.5 * (
+        (2 * p1[1]) +
+        (-p0[1] + p2[1]) * tt +
+        (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * tt2 +
+        (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * tt3
+      )
+      result.push([x, y])
+    }
+  }
+  result.push(controlPoints[controlPoints.length - 1])
+  return result
 }
 
 // Interpolate between color stops
@@ -216,6 +249,7 @@ export default function ScatterPlot({
   const containerRef = useRef<HTMLDivElement>(null)
   const [lassoPoints, setLassoPoints] = useState<[number, number][]>([])
   const [linePoints, setLinePoints] = useState<[number, number][]>([])
+  const [cursorPoint, setCursorPoint] = useState<[number, number] | null>(null) // for click-based draw preview
   const [isDrawing, setIsDrawing] = useState(false)
   const [viewState, setViewState] = useState<OrthographicViewState | null>(null)
 
@@ -257,6 +291,7 @@ export default function ScatterPlot({
     slot ? state.datasets[slot].drawnLines : state.drawnLines
   )
   const activeLineId = useStore((state) => state.activeLineId) // stays global
+  const drawTool = useStore((state) => state.drawTool) as DrawTool
 
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
@@ -463,10 +498,12 @@ export default function ScatterPlot({
       }
     } else if (interactionMode === 'draw') {
       const point = screenToData(e.clientX, e.clientY)
-      if (point) {
+      if (!point) return
+      if (drawTool === 'pencil') {
         setIsDrawing(true)
         setLinePoints([point])
       }
+      // Click-based tools handled via onClick/onDoubleClick below
     } else if (interactionMode === 'adjust' && e.shiftKey && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect()
       const centerX = rect.left + rect.width / 2
@@ -516,6 +553,12 @@ export default function ScatterPlot({
   }, [interactionMode, screenToData, embedding.coordinates, quiltPhase, viewState])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    // Track cursor for click-based draw tool preview
+    if (interactionMode === 'draw' && drawTool !== 'pencil' && linePoints.length > 0) {
+      const point = screenToData(e.clientX, e.clientY)
+      setCursorPoint(point)
+    }
+
     // Handle adjust rotation independently of isDrawing
     if (isRotating.current && interactionMode === 'adjust' && containerRef.current && preRotationCoords.current) {
       const rect = containerRef.current.getBoundingClientRect()
@@ -607,7 +650,7 @@ export default function ScatterPlot({
 
     if (interactionMode === 'lasso') {
       setLassoPoints((prev) => [...prev, point])
-    } else if (interactionMode === 'draw') {
+    } else if (interactionMode === 'draw' && drawTool === 'pencil') {
       setLinePoints((prev) => [...prev, point])
     } else if (interactionMode === 'quilt' && quiltPhase === 'lasso') {
       setLassoPoints((prev) => [...prev, point])
@@ -690,7 +733,7 @@ export default function ScatterPlot({
       onSelectionComplete(selectedIndices, e.shiftKey)
       setIsDrawing(false)
       setLassoPoints([])
-    } else if (interactionMode === 'draw') {
+    } else if (interactionMode === 'draw' && drawTool === 'pencil') {
       if (linePoints.length >= 2) {
         onLineDrawn(linePoints)
       }
@@ -720,6 +763,59 @@ export default function ScatterPlot({
       }
     }
   }, [isDrawing, interactionMode, lassoPoints, linePoints, embedding.coordinates, onSelectionComplete, onLineDrawn, onTransformEmbedding, onTransformEmbeddingSubset, quiltPhase, setQuiltPhase, screenToData])
+
+  // Handle click for click-based draw tools (polygon, segmented, smooth_curve)
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    if (interactionMode !== 'draw') return
+    if (drawTool === 'pencil') return // pencil uses drag
+    // Delay single-click to distinguish from double-click
+    if (clickTimerRef.current) return // already waiting
+    clickTimerRef.current = setTimeout(() => {
+      clickTimerRef.current = null
+      const point = screenToData(e.clientX, e.clientY)
+      if (!point) return
+      setLinePoints((prev) => [...prev, point])
+      setIsDrawing(true)
+    }, 200)
+  }, [interactionMode, drawTool, screenToData])
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (interactionMode !== 'draw') return
+    if (drawTool === 'pencil') return
+    // Cancel pending single-click
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current)
+      clickTimerRef.current = null
+    }
+    e.preventDefault()
+    if (linePoints.length < 2) {
+      setIsDrawing(false)
+      setLinePoints([])
+      setCursorPoint(null)
+      return
+    }
+    let finalPoints = linePoints
+    if (drawTool === 'smooth_curve') {
+      finalPoints = catmullRomSpline(linePoints)
+    }
+    onLineDrawn(finalPoints)
+    setIsDrawing(false)
+    setLinePoints([])
+    setCursorPoint(null)
+  }, [interactionMode, drawTool, linePoints, onLineDrawn])
+
+  // Clear draw state on escape or mode change
+  useEffect(() => {
+    if (interactionMode !== 'draw') {
+      if (linePoints.length > 0 && drawTool !== 'pencil') {
+        setLinePoints([])
+        setCursorPoint(null)
+        setIsDrawing(false)
+      }
+    }
+  }, [interactionMode])
 
   // Convert data points to screen coordinates
   const dataToScreen = useCallback((points: [number, number][]): string[] => {
@@ -762,16 +858,21 @@ export default function ScatterPlot({
       .filter((line) => line.embeddingName === embedding.name && line.visible)
       .map((line) => {
         const points = line.smoothedPoints || line.points
-        if (points.length < 2) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId }
+        if (points.length < 2) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId, strokeColor: line.strokeColor || '#4ecdc4', strokeWidth: line.strokeWidth || 2, fillColor: line.fillColor || null, closed: line.closed || false }
         const screenPoints = dataToScreen(points)
-        if (screenPoints.length === 0) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId }
+        if (screenPoints.length === 0) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId, strokeColor: line.strokeColor || '#4ecdc4', strokeWidth: line.strokeWidth || 2, fillColor: line.fillColor || null, closed: line.closed || false }
+        const pathD = `M ${screenPoints.join(' L ')}${line.closed ? ' Z' : ''}`
         return {
           id: line.id,
           name: line.name,
-          path: `M ${screenPoints.join(' L ')}`,
+          path: pathD,
           isActive: line.id === activeLineId,
           startPoint: screenPoints[0],
           endPoint: screenPoints[screenPoints.length - 1],
+          strokeColor: line.strokeColor || '#4ecdc4',
+          strokeWidth: line.strokeWidth || 2,
+          fillColor: line.fillColor || null,
+          closed: line.closed || false,
         }
       })
   }, [drawnLines, activeLineId, dataToScreen, embedding.name])
@@ -826,6 +927,8 @@ export default function ScatterPlot({
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
+      onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
     >
       <DeckGL
         views={view}
@@ -862,30 +965,31 @@ export default function ScatterPlot({
           <g key={line.id}>
             <path
               d={line.path}
-              fill="none"
-              stroke={line.isActive ? '#4ecdc4' : '#888'}
-              strokeWidth={line.isActive ? 3 : 2}
+              fill={line.fillColor || 'none'}
+              fillOpacity={line.fillColor ? 0.25 : 0}
+              stroke={line.isActive ? line.strokeColor : '#888'}
+              strokeWidth={line.isActive ? line.strokeWidth + 1 : line.strokeWidth}
               strokeLinecap="round"
               strokeLinejoin="round"
               opacity={line.isActive ? 1 : 0.5}
             />
-            {/* Direction arrow at end */}
-            {line.endPoint && line.isActive && (
+            {/* Direction arrow at end (open lines only) */}
+            {line.endPoint && line.isActive && !line.closed && (
               <circle
                 cx={line.endPoint.split(',')[0]}
                 cy={line.endPoint.split(',')[1]}
                 r={6}
-                fill="#4ecdc4"
+                fill={line.strokeColor}
               />
             )}
-            {/* Start indicator */}
-            {line.startPoint && line.isActive && (
+            {/* Start indicator (open lines only) */}
+            {line.startPoint && line.isActive && !line.closed && (
               <circle
                 cx={line.startPoint.split(',')[0]}
                 cy={line.startPoint.split(',')[1]}
                 r={4}
                 fill="none"
-                stroke="#4ecdc4"
+                stroke={line.strokeColor}
                 strokeWidth={2}
               />
             )}
@@ -914,8 +1018,8 @@ export default function ScatterPlot({
           />
         )}
 
-        {/* Currently drawing line */}
-        {isDrawing && interactionMode === 'draw' && linePoints.length > 1 && (
+        {/* Currently drawing line (pencil drag) */}
+        {isDrawing && interactionMode === 'draw' && drawTool === 'pencil' && linePoints.length > 1 && (
           <path
             d={linePath}
             fill="none"
@@ -925,6 +1029,38 @@ export default function ScatterPlot({
             strokeLinejoin="round"
           />
         )}
+
+        {/* Click-based draw tool preview */}
+        {interactionMode === 'draw' && drawTool !== 'pencil' && linePoints.length >= 1 && (() => {
+          const previewPoints = cursorPoint ? [...linePoints, cursorPoint] : linePoints
+          if (previewPoints.length < 2) return null
+          const screenPts = dataToScreen(previewPoints)
+          if (screenPts.length < 2) return null
+          const pathD = `M ${screenPts.join(' L ')}${drawTool === 'polygon' ? ' Z' : ''}`
+          return (
+            <g>
+              <path
+                d={pathD}
+                fill={drawTool === 'polygon' ? 'rgba(78, 205, 196, 0.1)' : 'none'}
+                stroke="#4ecdc4"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={cursorPoint ? '6,4' : 'none'}
+              />
+              {/* Show dots at placed control points */}
+              {dataToScreen(linePoints).map((pt, i) => (
+                <circle
+                  key={i}
+                  cx={pt.split(',')[0]}
+                  cy={pt.split(',')[1]}
+                  r={4}
+                  fill="#4ecdc4"
+                />
+              ))}
+            </g>
+          )
+        })()}
       </svg>
 
       {/* Lasso mode indicator */}
@@ -963,7 +1099,10 @@ export default function ScatterPlot({
             fontWeight: 500,
           }}
         >
-          Draw Mode: Click and drag to draw a line
+          {drawTool === 'pencil' && 'Pencil: Click and drag to draw'}
+          {drawTool === 'polygon' && 'Polygon: Click to add vertices, double-click to close'}
+          {drawTool === 'segmented' && 'Segmented Line: Click to add points, double-click to finish'}
+          {drawTool === 'smooth_curve' && 'Smooth Curve: Click to add control points, double-click to finish'}
         </div>
       )}
 

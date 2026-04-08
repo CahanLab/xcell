@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { useObsSummaries, runMarkerGenes, MarkerGenesGroupResult } from '../hooks/useData'
+import { useObsSummaries, runMarkerGenes, MarkerGenesGroupResult, appendDataset } from '../hooks/useData'
 
 const styles = {
   backdrop: {
@@ -235,6 +235,23 @@ export default function MarkerGenesModal() {
   const [maxOutGroupFraction, setMaxOutGroupFraction] = useState('')
   const [minFoldChange, setMinFoldChange] = useState('')
 
+  // Gene subset state
+  const [booleanColumns, setBooleanColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])
+  const [geneSubset, setGeneSubset] = useState<string>('')
+
+  // Fetch boolean columns when modal opens
+  useEffect(() => {
+    if (!isMarkerGenesModalOpen) return
+    fetch(appendDataset('/api/var/boolean_columns'))
+      .then((res) => res.json())
+      .then((cols: { name: string; n_true: number; n_total: number }[]) => {
+        setBooleanColumns(cols)
+        const hvg = cols.find((c) => c.name === 'highly_variable')
+        setGeneSubset(hvg ? 'highly_variable' : '')
+      })
+      .catch(() => setBooleanColumns([]))
+  }, [isMarkerGenesModalOpen])
+
   // Results state
   const [results, setResults] = useState<MarkerGenesGroupResult[] | null>(null)
   const [isRunning, setIsRunning] = useState(false)
@@ -309,10 +326,13 @@ export default function MarkerGenesModal() {
         min_in_group_fraction?: number
         max_out_group_fraction?: number
         min_fold_change?: number
+        gene_subset?: string | null
       } = {
         obs_column: markerGenesColumn,
         top_n: topN,
       }
+
+      if (geneSubset) params.gene_subset = geneSubset
 
       // Only send groups if not all selected
       if (selectedGroups.size < categories.length) {
@@ -423,6 +443,23 @@ export default function MarkerGenesModal() {
                 </span>
               </div>
             ))}
+          </div>
+
+          {/* Gene subset */}
+          <div style={styles.inputRow}>
+            <span style={{ ...styles.label, marginBottom: 0, flex: 1 }}>Genes:</span>
+            <select
+              value={geneSubset}
+              onChange={(e) => setGeneSubset(e.target.value)}
+              style={{ ...styles.input, width: 'auto' }}
+            >
+              <option value="">All genes</option>
+              {booleanColumns.map((col) => (
+                <option key={col.name} value={col.name}>
+                  {col.name} ({col.n_true.toLocaleString()})
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Top N */}

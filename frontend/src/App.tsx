@@ -453,6 +453,7 @@ export default function App() {
     expressionData,
     bivariateData,
     selectedGenes,
+    selectedGeneSetName,
     interactionMode,
     selectedCellIndices,
     setInteractionMode,
@@ -466,6 +467,8 @@ export default function App() {
     toggleBivariateSortOrder,
     drawnLines,
     addLine,
+    drawTool,
+    setDrawTool,
     setScanpyModalOpen,
     centerPanelView,
     setCenterPanelView,
@@ -479,6 +482,7 @@ export default function App() {
     setDiffExpLoading,
     setMarkerGenesModalOpen,
     setMarkerGenesColumn,
+    clearComparisonCategories,
     activeSlot,
     setActiveSlot,
     loadDatasetIntoSlot,
@@ -510,7 +514,9 @@ export default function App() {
 
   // State for line naming dialog
   const [pendingLinePoints, setPendingLinePoints] = useState<[number, number][] | null>(null)
+  const [pendingDrawType, setPendingDrawType] = useState<'pencil' | 'polygon' | 'segmented' | 'smooth_curve'>('pencil')
   const [newLineName, setNewLineName] = useState('')
+  const [showDrawMenu, setShowDrawMenu] = useState(false)
 
   // State for export modal
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
@@ -597,7 +603,16 @@ export default function App() {
 
   const toggleDrawMode = useCallback(() => {
     setInteractionMode(interactionMode === 'draw' ? 'pan' : 'draw')
+    setShowDrawMenu(false)
   }, [interactionMode, setInteractionMode])
+
+  // Close draw menu on outside click
+  useEffect(() => {
+    if (!showDrawMenu) return
+    const close = () => setShowDrawMenu(false)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [showDrawMenu])
 
   const toggleAdjustMode = useCallback(() => {
     setInteractionMode(interactionMode === 'adjust' ? 'pan' : 'adjust')
@@ -659,17 +674,19 @@ export default function App() {
 
   const handleLineDrawn = useCallback((points: [number, number][]) => {
     setPendingLinePoints(points)
+    setPendingDrawType(drawTool)
     setNewLineName(`Line ${drawnLines.length + 1}`)
     setInteractionMode('pan')
-  }, [drawnLines.length, setInteractionMode])
+  }, [drawnLines.length, setInteractionMode, drawTool])
 
   const handleSaveLine = useCallback(() => {
     if (pendingLinePoints && newLineName.trim() && selectedEmbedding) {
-      addLine(newLineName.trim(), pendingLinePoints, selectedEmbedding)
+      const closed = pendingDrawType === 'polygon'
+      addLine(newLineName.trim(), pendingLinePoints, selectedEmbedding, pendingDrawType, closed)
       setPendingLinePoints(null)
       setNewLineName('')
     }
-  }, [pendingLinePoints, newLineName, selectedEmbedding, addLine])
+  }, [pendingLinePoints, newLineName, selectedEmbedding, addLine, pendingDrawType])
 
   const handleCancelLine = useCallback(() => {
     setPendingLinePoints(null)
@@ -731,12 +748,13 @@ export default function App() {
         setMarkerGenesColumn(column)
         setMarkerGenesModalOpen(true)
       }
+      clearComparisonCategories()
     } catch (err) {
       alert(`Comparison failed: ${(err as Error).message}`)
     } finally {
       setIsCompareLoading(false)
     }
-  }, [comparisonCheckedColumn, comparisonCheckedCategories, setComparisonGroup1, setComparisonGroup2, setDiffExpLoading, setDiffExpModalOpen, setDiffExpResult, setMarkerGenesColumn, setMarkerGenesModalOpen])
+  }, [comparisonCheckedColumn, comparisonCheckedCategories, setComparisonGroup1, setComparisonGroup2, setDiffExpLoading, setDiffExpModalOpen, setDiffExpResult, setMarkerGenesColumn, setMarkerGenesModalOpen, clearComparisonCategories])
 
   const geneSetCategories = useStore((state) => state.geneSetCategories)
 
@@ -967,16 +985,82 @@ export default function App() {
                 <span>&#10022;</span> Lasso
               </button>
 
-              <button
-                style={{
-                  ...styles.toolButton,
-                  ...(interactionMode === 'draw' ? { ...styles.toolButtonActive, backgroundColor: '#4ecdc4' } : {}),
-                }}
-                onClick={toggleDrawMode}
-                title="Draw a line for trajectory analysis (Escape to exit)"
-              >
-                <span>&#9998;</span> Draw
-              </button>
+              <div style={{ position: 'relative', display: 'inline-block' }}>
+                <button
+                  style={{
+                    ...styles.toolButton,
+                    ...(interactionMode === 'draw' ? { ...styles.toolButtonActive, backgroundColor: '#4ecdc4' } : {}),
+                  }}
+                  onClick={toggleDrawMode}
+                  title="Draw shapes for trajectory analysis (Escape to exit)"
+                >
+                  <span>&#9998;</span> Draw
+                </button>
+                <button
+                  style={{
+                    padding: '4px 2px',
+                    fontSize: '8px',
+                    backgroundColor: interactionMode === 'draw' ? '#4ecdc4' : '#0f3460',
+                    color: interactionMode === 'draw' ? '#000' : '#aaa',
+                    border: 'none',
+                    borderLeft: '1px solid #1a1a2e',
+                    cursor: 'pointer',
+                    borderRadius: '0 4px 4px 0',
+                    marginLeft: '-5px',
+                  }}
+                  onClick={(e) => { e.stopPropagation(); setShowDrawMenu(!showDrawMenu) }}
+                  title="Select draw tool"
+                >
+                  {'\u25BC'}
+                </button>
+                {showDrawMenu && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      backgroundColor: '#16213e',
+                      border: '1px solid #0f3460',
+                      borderRadius: '4px',
+                      zIndex: 100,
+                      minWidth: '160px',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                    }}
+                  >
+                    {([
+                      ['pencil', '\u270F', 'Pencil', 'Freehand drawing'],
+                      ['polygon', '\u2B21', 'Polygon', 'Click vertices, dbl-click to close'],
+                      ['segmented', '\u2571', 'Segmented Line', 'Click points, dbl-click to finish'],
+                      ['smooth_curve', '\u223F', 'Smooth Curve', 'Click control pts, dbl-click to finish'],
+                    ] as const).map(([tool, icon, label, desc]) => (
+                      <div
+                        key={tool}
+                        onClick={() => {
+                          setDrawTool(tool)
+                          setShowDrawMenu(false)
+                          if (interactionMode !== 'draw') setInteractionMode('draw')
+                        }}
+                        style={{
+                          padding: '8px 12px',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          color: drawTool === tool ? '#4ecdc4' : '#ccc',
+                          backgroundColor: drawTool === tool ? '#0f3460' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                        }}
+                      >
+                        <span style={{ fontSize: '16px', width: '20px', textAlign: 'center' }}>{icon}</span>
+                        <div>
+                          <div>{label}</div>
+                          <div style={{ fontSize: '10px', color: '#888' }}>{desc}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <button
                 style={{
@@ -1005,7 +1089,7 @@ export default function App() {
                 onClick={() => setScanpyModalOpen(true)}
                 title="Run scanpy analysis functions"
               >
-                Scanpy
+                Analyze
               </button>
 
               <button
@@ -1243,7 +1327,7 @@ export default function App() {
                           {datasets.primary.colorMode === 'expression' && datasets.primary.expressionData && (
                             <div style={styles.expressionLegend}>
                               <div style={styles.legendTitle}>
-                                {datasets.primary.selectedGenes.length === 1 ? datasets.primary.selectedGenes[0] : `${datasets.primary.selectedGenes.length} genes`}
+                                {datasets.primary.selectedGenes.length === 1 ? datasets.primary.selectedGenes[0] : datasets.primary.selectedGeneSetName ? `${datasets.primary.selectedGeneSetName} (${datasets.primary.selectedGenes.length})` : `${datasets.primary.selectedGenes.length} genes`}
                                 {datasets.primary.expressionData.transform === 'log1p' && (
                                   <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>(log1p)</span>
                                 )}
@@ -1331,7 +1415,7 @@ export default function App() {
                           {datasets.secondary.colorMode === 'expression' && datasets.secondary.expressionData && (
                             <div style={styles.expressionLegend}>
                               <div style={styles.legendTitle}>
-                                {datasets.secondary.selectedGenes.length === 1 ? datasets.secondary.selectedGenes[0] : `${datasets.secondary.selectedGenes.length} genes`}
+                                {datasets.secondary.selectedGenes.length === 1 ? datasets.secondary.selectedGenes[0] : datasets.secondary.selectedGeneSetName ? `${datasets.secondary.selectedGeneSetName} (${datasets.secondary.selectedGenes.length})` : `${datasets.secondary.selectedGenes.length} genes`}
                                 {datasets.secondary.expressionData.transform === 'log1p' && (
                                   <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>(log1p)</span>
                                 )}
@@ -1463,7 +1547,7 @@ export default function App() {
                         {colorMode === 'expression' && expressionData && (
                           <div style={styles.expressionLegend}>
                             <div style={styles.legendTitle}>
-                              {selectedGenes.length === 1 ? selectedGenes[0] : `${selectedGenes.length} genes (mean)`}
+                              {selectedGenes.length === 1 ? selectedGenes[0] : selectedGeneSetName ? `${selectedGeneSetName} (${selectedGenes.length})` : `${selectedGenes.length} genes`}
                               {expressionData.transform === 'log1p' && (
                                 <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
                                   (log1p)

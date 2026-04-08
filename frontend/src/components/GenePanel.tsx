@@ -555,7 +555,7 @@ function CategoryGeneSetComponent({
   categoryType: GeneSetCategoryType
   folderId?: string
   onColorByGene: (gene: string) => void
-  onColorBySet: (genes: string[]) => void
+  onColorBySet: (genes: string[], geneSetName?: string) => void
   activeGenes: string[]
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -681,7 +681,7 @@ function CategoryGeneSetComponent({
         <div style={styles.geneSetActions}>
           <button
             style={styles.iconButton}
-            onClick={(e) => { e.stopPropagation(); onColorBySet(geneSet.genes) }}
+            onClick={(e) => { e.stopPropagation(); onColorBySet(geneSet.genes, geneSet.name) }}
             title="Color by mean expression"
           >
             🎨
@@ -747,7 +747,7 @@ function GeneSetFolderComponent({
   folder: GeneSetFolder
   categoryType: GeneSetCategoryType
   onColorByGene: (gene: string) => void
-  onColorBySet: (genes: string[]) => void
+  onColorBySet: (genes: string[], geneSetName?: string) => void
   activeGenes: string[]
 }) {
   const { toggleFolderExpanded, removeFolder } = useStore()
@@ -808,7 +808,7 @@ function GeneSetCategoryComponent({
 }: {
   category: GeneSetCategory
   onColorByGene: (gene: string) => void
-  onColorBySet: (genes: string[]) => void
+  onColorBySet: (genes: string[], geneSetName?: string) => void
   activeGenes: string[]
   onAddNewSet?: () => void
 }) {
@@ -899,6 +899,10 @@ function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetCategory
 export default function GenePanel() {
   const { geneSetCategories, selectedGenes, bivariateData, colorMode, addGeneSet, addGeneSetToCategory, setImportModalOpen } = useStore()
   const { colorByGene, colorByGenes, clearExpressionColor, colorByBivariate, clearBivariateColor } = useDataActions()
+
+  const handleColorBySet = useCallback((genes: string[], geneSetName?: string) => {
+    colorByGenes(genes, undefined, geneSetName)
+  }, [colorByGenes])
 
   // Flatten gene sets for bivariate selection
   const allGeneSets = flattenGeneSets(geneSetCategories)
@@ -1136,7 +1140,7 @@ export default function GenePanel() {
               key={catType}
               category={cat}
               onColorByGene={colorByGene}
-              onColorBySet={colorByGenes}
+              onColorBySet={handleColorBySet}
               activeGenes={selectedGenes}
               onAddNewSet={catType === 'manual' ? () => setShowNewSetInput(true) : undefined}
             />

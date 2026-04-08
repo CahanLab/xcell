@@ -17,6 +17,11 @@ def compute_diffexp(
     group2_indices: list[int],
     top_n: int = 10,
     method: str = "wilcoxon",
+    corr_method: str = "benjamini-hochberg",
+    min_fold_change: float | None = None,
+    min_in_group_fraction: float | None = None,
+    max_out_group_fraction: float | None = None,
+    max_pval_adj: float | None = None,
 ) -> dict[str, Any]:
     """Compute differential expression between two cell groups using scanpy.
 
@@ -26,6 +31,11 @@ def compute_diffexp(
         group2_indices: Cell indices for group 2
         top_n: Number of top genes to return for each direction
         method: Statistical method ('wilcoxon', 't-test', 't-test_overestim_var', 'logreg')
+        corr_method: P-value correction method ('benjamini-hochberg', 'bonferroni')
+        min_fold_change: Minimum fold change for filtering (sc.tl.filter_rank_genes_groups)
+        min_in_group_fraction: Minimum fraction of cells in group expressing gene
+        max_out_group_fraction: Maximum fraction of cells outside group expressing gene
+        max_pval_adj: Maximum adjusted p-value for filtering
 
     Returns:
         Dictionary containing:
@@ -55,12 +65,33 @@ def compute_diffexp(
             groups=["group1"],
             reference="group2",
             method=method,
+            corr_method=corr_method,
             use_raw=False,
             key_added="_diffexp_result_",
         )
 
+        # Apply filter_rank_genes_groups if any filter params are set
+        use_filter = any(v is not None for v in [min_fold_change, min_in_group_fraction, max_out_group_fraction, max_pval_adj])
+        if use_filter:
+            filter_kwargs: dict[str, Any] = {
+                "key": "_diffexp_result_",
+                "key_added": "_diffexp_filtered_",
+            }
+            if min_fold_change is not None:
+                filter_kwargs["min_fold_change"] = min_fold_change
+            if min_in_group_fraction is not None:
+                filter_kwargs["min_in_group_fraction"] = min_in_group_fraction
+            if max_out_group_fraction is not None:
+                filter_kwargs["max_out_group_fraction"] = max_out_group_fraction
+            # Note: scanpy filter_rank_genes_groups doesn't have a max_pval_adj param directly,
+            # so we apply it ourselves after extraction
+            sc.tl.filter_rank_genes_groups(adata, **filter_kwargs)
+            result_key = "_diffexp_filtered_"
+        else:
+            result_key = "_diffexp_result_"
+
         # Extract results for group1 (upregulated in group1)
-        result = adata.uns["_diffexp_result_"]
+        result = adata.uns[result_key]
 
         # Get gene names, scores, pvals, logfoldchanges
         genes = result["names"]["group1"]
@@ -73,12 +104,18 @@ def compute_diffexp(
         for i in range(len(genes)):
             if len(positive) >= top_n:
                 break
+            gene_name = str(genes[i]) if not isinstance(genes[i], float) else ""
+            if use_filter and (not gene_name or gene_name == "nan"):
+                continue
             if logfoldchanges[i] > 0:
+                adj_p = float(pvals_adj[i])
+                if max_pval_adj is not None and adj_p > max_pval_adj:
+                    continue
                 positive.append({
-                    "gene": str(genes[i]),
+                    "gene": gene_name,
                     "log2fc": float(logfoldchanges[i]),
                     "pval": float(pvals[i]),
-                    "pval_adj": float(pvals_adj[i]),
+                    "pval_adj": adj_p,
                 })
 
         # Build negative list (top N upregulated in group2, negative logfc)
@@ -87,12 +124,18 @@ def compute_diffexp(
         for i in range(len(genes) - 1, -1, -1):
             if len(negative) >= top_n:
                 break
+            gene_name = str(genes[i]) if not isinstance(genes[i], float) else ""
+            if use_filter and (not gene_name or gene_name == "nan"):
+                continue
             if logfoldchanges[i] < 0:
+                adj_p = float(pvals_adj[i])
+                if max_pval_adj is not None and adj_p > max_pval_adj:
+                    continue
                 negative.append({
-                    "gene": str(genes[i]),
+                    "gene": gene_name,
                     "log2fc": float(logfoldchanges[i]),
                     "pval": float(pvals[i]),
-                    "pval_adj": float(pvals_adj[i]),
+                    "pval_adj": adj_p,
                 })
 
     finally:
@@ -101,6 +144,8 @@ def compute_diffexp(
             del adata.obs[temp_col]
         if "_diffexp_result_" in adata.uns:
             del adata.uns["_diffexp_result_"]
+        if "_diffexp_filtered_" in adata.uns:
+            del adata.uns["_diffexp_filtered_"]
 
     return {
         "positive": positive,

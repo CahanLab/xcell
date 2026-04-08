@@ -1925,18 +1925,18 @@ def get_spatially_variable_genes(request: GetSpatiallyVariableGenesRequest, data
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/scanpy/contourize")
+@router.post("/scanpy/contourize", status_code=202)
 def run_contourize(request: ContourizeRequest, dataset: str | None = Query(None)):
-    """Compute spatial expression contours from a gene set.
+    """Compute spatial expression contours from a gene set (cancellable background task).
 
     Requires: spatial coordinates in .obsm
 
     Returns:
-        Operation status, annotation key, contour info
+        Task ID and status for polling
     """
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.run_contourize(
+        compute_fn, apply_fn = adaptor.prepare_contourize(
             genes=request.genes,
             contour_levels=request.contour_levels,
             log_transform=request.log_transform,
@@ -1944,6 +1944,8 @@ def run_contourize(request: ContourizeRequest, dataset: str | None = Query(None)
             grid_res=request.grid_res,
             annotation_key=request.annotation_key,
         )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -4120,6 +4120,154 @@ class DataAdaptor:
         }, result)
         return result
 
+    def prepare_contourize(
+        self,
+        genes: list[str],
+        contour_levels: int = 6,
+        log_transform: bool = True,
+        smooth_sigma: float = 2.0,
+        grid_res: int = 200,
+        clip_percentiles: tuple = (1, 99),
+        annotation_key: str | None = None,
+    ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
+        """Prepare spatial expression contouring (cancellable).
+
+        Validates inputs and snapshots data upfront, then returns a pair of
+        functions: ``compute_fn`` (pure, no side-effects) and ``apply_fn``
+        (writes results into ``self.adata``).
+
+        Args:
+            genes: List of gene names defining the module
+            contour_levels: Number of contour thresholds
+            log_transform: Apply log1p before contouring
+            smooth_sigma: Gaussian smoothing strength
+            grid_res: Interpolation grid size per axis
+            clip_percentiles: Percentile clipping range
+            annotation_key: Name for the result .obs column (auto-generated if None)
+
+        Returns:
+            Tuple of (compute_fn, apply_fn)
+        """
+        # Validate spatial key (fail fast)
+        spatial_key = self._get_spatial_key()
+        if spatial_key is None:
+            raise ValueError("No spatial coordinates found")
+
+        # Validate genes (fail fast)
+        missing = [g for g in genes if g not in self.adata.var_names]
+        if missing:
+            raise ValueError(f"Genes not found: {missing}")
+
+        # Auto-generate annotation_key if None
+        if annotation_key is None:
+            annotation_key = f"contour_{genes[0]}_{len(genes)}"
+
+        # Snapshot spatial coordinates and gene expression data
+        coords_snap = self.adata.obsm[spatial_key].copy()
+        gene_expression_snap = {}
+        for g in genes:
+            xmat = self.adata[:, g].X
+            if hasattr(xmat, 'toarray'):
+                gene_expression_snap[g] = xmat.toarray().flatten().copy()
+            else:
+                gene_expression_snap[g] = np.asarray(xmat).flatten().copy()
+
+        # Snapshot parameters
+        snap_genes = list(genes)
+        snap_contour_levels = contour_levels
+        snap_log_transform = log_transform
+        snap_smooth_sigma = smooth_sigma
+        snap_grid_res = grid_res
+        snap_clip_percentiles = clip_percentiles
+        snap_annotation_key = annotation_key
+        snap_n_cells = self.adata.n_obs
+
+        def compute_fn() -> dict[str, Any]:
+            from scipy.interpolate import griddata
+            from scipy.ndimage import gaussian_filter
+
+            x, y = coords_snap[:, 0], coords_snap[:, 1]
+
+            # 1) Preprocess and normalize each gene
+            normed = []
+            for g in snap_genes:
+                vals = gene_expression_snap[g].copy()
+                if snap_log_transform:
+                    vals = np.log1p(vals)
+                lo, hi = np.percentile(vals, snap_clip_percentiles)
+                clipped = np.clip(vals, lo, hi)
+                normalized = (clipped - lo) / (hi - lo) if hi > lo else np.zeros_like(clipped)
+                normed.append(normalized)
+
+            # 2) Average across genes per cell
+            M = np.column_stack(normed)
+            summary = np.mean(M, axis=1)
+
+            # 3) Interpolate onto grid
+            xi = np.linspace(x.min(), x.max(), snap_grid_res)
+            yi = np.linspace(y.min(), y.max(), snap_grid_res)
+            Xi, Yi = np.meshgrid(xi, yi)
+            Zi = griddata((x, y), summary, (Xi, Yi), method='cubic', fill_value=0.0)
+
+            # 4) Gaussian smooth
+            Zi_s = gaussian_filter(Zi, sigma=snap_smooth_sigma, mode='nearest')
+            vmax = np.nanmax(Zi_s)
+
+            # 5) Compute thresholds
+            N = snap_contour_levels
+            thresholds = np.linspace(0, vmax, N + 2)[1:-1]
+
+            # 6) Sample smoothed grid at cell positions (nearest)
+            pts = np.vstack((Xi.ravel(), Yi.ravel())).T
+            val_grid = Zi_s.ravel()
+            cell_vals = griddata(pts, val_grid, (x, y), method='nearest')
+
+            # 7) Assign each cell the highest threshold it meets
+            annotation = np.zeros(snap_n_cells, dtype=float)
+            for t in sorted(thresholds):
+                mask = cell_vals >= t
+                annotation[mask] = t
+
+            # 8) Build ordered categorical data
+            cats = np.unique(np.concatenate(([0.0], thresholds)))
+
+            return {
+                'annotation': annotation,
+                'categories': cats,
+                'annotation_key': snap_annotation_key,
+                'n_genes': len(snap_genes),
+                'genes': snap_genes,
+                'contour_levels': snap_contour_levels,
+                'n_cells': snap_n_cells,
+            }
+
+        def apply_fn(result: dict[str, Any]) -> None:
+            annotation_cat = pd.Categorical(
+                result['annotation'],
+                categories=result['categories'],
+                ordered=True,
+            )
+            self.adata.obs[result['annotation_key']] = annotation_cat
+
+            status_result = {
+                'status': 'completed',
+                'annotation_key': result['annotation_key'],
+                'n_genes': result['n_genes'],
+                'genes': result['genes'],
+                'contour_levels': result['contour_levels'],
+                'n_cells': result['n_cells'],
+            }
+            self._log_action('contourize', {
+                'genes': result['genes'],
+                'contour_levels': result['contour_levels'],
+                'log_transform': snap_log_transform,
+                'smooth_sigma': snap_smooth_sigma,
+                'grid_res': snap_grid_res,
+                'annotation_key': result['annotation_key'],
+            }, status_result)
+
+        return compute_fn, apply_fn
+
     def run_contourize(
         self,
         genes: list[str],

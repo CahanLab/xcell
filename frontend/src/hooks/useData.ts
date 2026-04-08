@@ -862,7 +862,7 @@ async function syncLinesToBackend(lines: { name: string; embeddingName: string; 
 }
 
 export async function runLineAssociation(params: LineAssociationParams, slot?: DatasetSlot): Promise<LineAssociationResult> {
-  return fetchJson<LineAssociationResult>(appendDataset(`${API_BASE}/lines/association`, slot), {
+  const response = await fetch(appendDataset(`${API_BASE}/lines/association`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -876,6 +876,30 @@ export async function runLineAssociation(params: LineAssociationParams, slot?: D
       top_n: params.topN ?? 50,
     }),
   })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+  const data = await response.json()
+
+  if (data.task_id && data.status === 'running') {
+    const { setActiveTaskId } = useStore.getState()
+    setActiveTaskId(data.task_id)
+    try {
+      const taskResult = await pollTask(data.task_id, slot)
+      if (taskResult.status === 'cancelled') {
+        throw new Error('cancelled')
+      }
+      if (taskResult.status === 'error') {
+        throw new Error(taskResult.error || 'Task failed')
+      }
+      return taskResult.result as unknown as LineAssociationResult
+    } finally {
+      setActiveTaskId(null)
+    }
+  }
+
+  return data as LineAssociationResult
 }
 
 // Multi-line association types and API function
@@ -896,7 +920,7 @@ export interface MultiLineAssociationParams {
 }
 
 export async function runMultiLineAssociation(params: MultiLineAssociationParams, slot?: DatasetSlot): Promise<LineAssociationResult> {
-  return fetchJson<LineAssociationResult>(appendDataset(`${API_BASE}/lines/multi-association`, slot), {
+  const response = await fetch(appendDataset(`${API_BASE}/lines/multi-association`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -913,6 +937,30 @@ export async function runMultiLineAssociation(params: MultiLineAssociationParams
       top_n: params.topN ?? 50,
     }),
   })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+  const data = await response.json()
+
+  if (data.task_id && data.status === 'running') {
+    const { setActiveTaskId } = useStore.getState()
+    setActiveTaskId(data.task_id)
+    try {
+      const taskResult = await pollTask(data.task_id, slot)
+      if (taskResult.status === 'cancelled') {
+        throw new Error('cancelled')
+      }
+      if (taskResult.status === 'error') {
+        throw new Error(taskResult.error || 'Task failed')
+      }
+      return taskResult.result as unknown as LineAssociationResult
+    } finally {
+      setActiveTaskId(null)
+    }
+  }
+
+  return data as LineAssociationResult
 }
 
 // Hook for line association testing
@@ -941,6 +989,10 @@ export function useLineAssociation() {
       setLineAssociationModalOpen(true)
       return result
     } catch (err) {
+      const message = (err as Error).message
+      if (message === 'cancelled') {
+        return null
+      }
       setLineAssociationResult(null)
       throw err
     } finally {
@@ -957,6 +1009,10 @@ export function useLineAssociation() {
       setLineAssociationModalOpen(true)
       return result
     } catch (err) {
+      const message = (err as Error).message
+      if (message === 'cancelled') {
+        return null
+      }
       setLineAssociationResult(null)
       throw err
     } finally {

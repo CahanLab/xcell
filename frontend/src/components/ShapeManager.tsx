@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useStore } from '../store'
-import { useLineAssociation, createLineEmbedding, appendDataset } from '../hooks/useData'
+import { useLineAssociation, createLineEmbedding, appendDataset, cancelTask } from '../hooks/useData'
 
 const API_BASE = '/api'
 
@@ -249,6 +249,7 @@ function LineToolsModal({
   const [topN, setTopN] = useState(50)
 
   const { runAssociation, isLineAssociationLoading } = useLineAssociation()
+  const activeTaskId = useStore((state) => state.activeTaskId)
 
   const scanpyActionHistory = useStore((state) => state.scanpyActionHistory)
   useEffect(() => {
@@ -278,9 +279,18 @@ function LineToolsModal({
       await runAssociation(line.name, { cellIndices, geneSubset, testVariable, nSplineKnots, fdrThreshold, topN })
       onClose()
     } catch (err) {
-      setAssociationError((err as Error).message)
+      const message = (err as Error).message
+      if (message !== 'cancelled') {
+        setAssociationError(message)
+      }
     }
   }, [runAssociation, getCellIndices, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, line.name, onClose])
+
+  const handleCancelAssociation = useCallback(async () => {
+    if (activeTaskId) {
+      try { await cancelTask(activeTaskId) } catch { /* may have completed */ }
+    }
+  }, [activeTaskId])
 
   const handleCreateProjectionEmbedding = useCallback(async () => {
     setEmbeddingMessage(null)
@@ -561,15 +571,20 @@ function LineToolsModal({
             <button
               style={{
                 ...styles.primaryActionButton,
-                opacity: isLineAssociationLoading ? 0.6 : 1,
+                opacity: isLineAssociationLoading && !activeTaskId ? 0.6 : 1,
+                ...(isLineAssociationLoading && activeTaskId ? { backgroundColor: '#e94560', color: '#fff' } : {}),
               }}
-              onClick={handleFindAssociatedGenes}
-              disabled={isLineAssociationLoading}
-              title={testVariable === 'position'
-                ? 'Find genes whose expression is associated with position along this line'
-                : 'Find genes whose expression is associated with distance from this line'}
+              onClick={isLineAssociationLoading && activeTaskId ? handleCancelAssociation : handleFindAssociatedGenes}
+              disabled={isLineAssociationLoading && !activeTaskId}
+              title={isLineAssociationLoading
+                ? 'Click to cancel'
+                : testVariable === 'position'
+                  ? 'Find genes whose expression is associated with position along this line'
+                  : 'Find genes whose expression is associated with distance from this line'}
             >
-              {isLineAssociationLoading ? 'Analyzing...' : 'Find Associated Genes'}
+              {isLineAssociationLoading
+                ? (activeTaskId ? 'Cancel' : 'Analyzing...')
+                : 'Find Associated Genes'}
             </button>
             {associationError && (
               <div style={{ marginTop: '6px', fontSize: '11px', color: '#e94560' }}>
@@ -619,6 +634,7 @@ function MultiLineToolsModal({
 }) {
   const { scanpyActionHistory } = useStore()
   const { runMultiAssociation, isLineAssociationLoading } = useLineAssociation()
+  const activeTaskId = useStore((state) => state.activeTaskId)
 
   const [reversals, setReversals] = useState<Record<string, boolean>>({})
   const [associationError, setAssociationError] = useState<string | null>(null)
@@ -668,9 +684,18 @@ function MultiLineToolsModal({
       })
       onClose()
     } catch (err) {
-      setAssociationError((err as Error).message)
+      const message = (err as Error).message
+      if (message !== 'cancelled') {
+        setAssociationError(message)
+      }
     }
   }, [runMultiAssociation, lines, reversals, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, onClose])
+
+  const handleCancelAssociation = useCallback(async () => {
+    if (activeTaskId) {
+      try { await cancelTask(activeTaskId) } catch { /* may have completed */ }
+    }
+  }, [activeTaskId])
 
   return (
     <div style={styles.overlay} onClick={onClose}>
@@ -839,12 +864,15 @@ function MultiLineToolsModal({
           <button
             style={{
               ...styles.primaryActionButton,
-              opacity: isLineAssociationLoading ? 0.6 : 1,
+              opacity: isLineAssociationLoading && !activeTaskId ? 0.6 : 1,
+              ...(isLineAssociationLoading && activeTaskId ? { backgroundColor: '#e94560', color: '#fff' } : {}),
             }}
-            onClick={handleRun}
-            disabled={isLineAssociationLoading}
+            onClick={isLineAssociationLoading && activeTaskId ? handleCancelAssociation : handleRun}
+            disabled={isLineAssociationLoading && !activeTaskId}
           >
-            {isLineAssociationLoading ? 'Analyzing...' : 'Find Associated Genes'}
+            {isLineAssociationLoading
+              ? (activeTaskId ? 'Cancel' : 'Analyzing...')
+              : 'Find Associated Genes'}
           </button>
           {associationError && (
             <div style={{ marginTop: '6px', fontSize: '11px', color: '#e94560' }}>

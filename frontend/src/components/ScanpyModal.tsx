@@ -1,8 +1,16 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useStore, ScanpyActionRecord } from '../store'
-import { appendDataset } from '../hooks/useData'
+import { appendDataset, pollTask, cancelTask } from '../hooks/useData'
+import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
+
+export const CANCELLABLE_OPERATIONS = new Set([
+  'gene_neighbors',
+  'spatial_neighbors',
+  'spatial_autocorr',
+  'contourize',
+])
 
 // Variance data for visualization
 interface VarianceData {
@@ -163,24 +171,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
   preprocessing: {
     label: 'Preprocessing',
     functions: {
-      filter_genes: {
-        label: 'Filter Genes',
-        description: 'Remove genes based on counts or number of cells expressing',
-        prerequisites: [],
-        params: [
-          { name: 'min_counts', label: 'Min counts', type: 'number', default: null, description: 'Minimum total counts' },
-          { name: 'max_counts', label: 'Max counts', type: 'number', default: null, description: 'Maximum total counts' },
-          { name: 'min_cells', label: 'Min cells', type: 'number', default: 25, description: 'Minimum cells expressing' },
-          { name: 'max_cells', label: 'Max cells', type: 'number', default: null, description: 'Maximum cells expressing' },
-        ],
-      },
       exclude_genes: {
         label: 'Exclude Genes',
         description: 'Remove genes by name or regex pattern (e.g. ^mt- for mitochondrial, ^Gm\\d+ for predicted)',
         prerequisites: [],
         params: [
           { name: 'gene_names', label: 'Gene names', type: 'textarea', default: null, description: 'One gene name per line (exact match)' },
-          { name: 'patterns', label: 'Regex patterns', type: 'text', default: null, description: 'Comma-separated regex patterns (e.g. ^mt-,^Gm\\d+)' },
+          { name: 'patterns', label: 'Regex patterns', type: 'text', default: '^mt-, ^Gm\\d+, ^Rps, ^Rpl', description: 'Comma-separated regex patterns (e.g. ^mt-,^Gm\\d+)' },
         ],
       },
       filter_cells: {
@@ -192,6 +189,17 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'max_counts', label: 'Max counts', type: 'number', default: null, description: 'Maximum total counts' },
           { name: 'min_genes', label: 'Min genes', type: 'number', default: 25, description: 'Minimum genes expressed' },
           { name: 'max_genes', label: 'Max genes', type: 'number', default: null, description: 'Maximum genes expressed' },
+        ],
+      },
+      filter_genes: {
+        label: 'Filter Genes',
+        description: 'Remove genes based on counts or number of cells expressing',
+        prerequisites: [],
+        params: [
+          { name: 'min_counts', label: 'Min counts', type: 'number', default: null, description: 'Minimum total counts' },
+          { name: 'max_counts', label: 'Max counts', type: 'number', default: null, description: 'Maximum total counts' },
+          { name: 'min_cells', label: 'Min cells', type: 'number', default: 25, description: 'Minimum cells expressing' },
+          { name: 'max_cells', label: 'Max cells', type: 'number', default: null, description: 'Maximum cells expressing' },
         ],
       },
       normalize_total: {
@@ -215,7 +223,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         params: [
           { name: 'n_top_genes', label: 'Top N genes', type: 'number', default: 2000, description: 'Number of top genes (overrides thresholds if set)' },
           { name: 'min_mean', label: 'Min mean', type: 'number', default: 0.0125, description: 'Minimum mean expression' },
-          { name: 'max_mean', label: 'Max mean', type: 'number', default: 3.0, description: 'Maximum mean expression' },
+          { name: 'max_mean', label: 'Max mean', type: 'number', default: 6, description: 'Maximum mean expression' },
           { name: 'min_disp', label: 'Min dispersion', type: 'number', default: 0.5, description: 'Minimum normalized dispersion' },
           { name: 'flavor', label: 'Method', type: 'select', default: 'cell_ranger', options: ['seurat', 'cell_ranger', 'seurat_v3'], description: 'HVG selection method' },
         ],
@@ -278,6 +286,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'scale', label: 'Scale', type: 'select', default: 'true', options: ['true', 'false'], description: 'Z-score scale genes before PCA' },
           { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 15, description: 'Number of gene neighbors' },
           { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine'], description: 'Distance metric' },
+          { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: 'highly_variable', description: 'Filter to specific genes using boolean columns from .var' },
         ],
       },
       gene_pca: {
@@ -289,7 +298,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'scale', label: 'Scale', type: 'select', default: 'true', options: ['true', 'false'], description: 'Z-score scale genes' },
           { name: 'use_kneedle', label: 'Auto-detect PCs', type: 'select', default: 'true', options: ['true', 'false'], description: 'Use Kneedle algorithm' },
           { name: 'max_comps', label: 'Max components', type: 'number', default: 100, description: 'Max PCs to compute for Kneedle' },
-          { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: null, description: 'Filter to specific genes using boolean columns from .var' },
+          { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: 'highly_variable', description: 'Filter to specific genes using boolean columns from .var' },
         ],
       },
       gene_neighbors: {
@@ -297,10 +306,10 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         description: 'Compute gene-gene kNN graph',
         prerequisites: [],
         params: [
-          { name: 'basis', label: 'Basis', type: 'select', default: 'gene_pca', options: ['gene_pca', 'expression'], description: 'Use gene PCA embedding or raw expression' },
-          { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 15, description: 'Number of neighbors per gene' },
-          { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine'], description: 'Distance metric' },
-          { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: null, description: 'Filter to specific genes using boolean columns from .var', visibleWhen: { param: 'basis', value: 'expression' } },
+          { name: 'basis', label: 'Basis', type: 'select', default: 'expression', options: ['gene_pca', 'expression'], description: 'Use gene PCA embedding or raw expression' },
+          { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 10, description: 'Number of neighbors per gene' },
+          { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine', 'pearson'], description: 'Distance metric' },
+          { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: 'highly_variable', description: 'Filter to specific genes using boolean columns from .var', visibleWhen: { param: 'basis', value: 'expression' } },
           { name: 'scale', label: 'Scale', type: 'select', default: 'true', options: ['true', 'false'], description: 'Z-score scale genes before computing neighbors', visibleWhen: { param: 'basis', value: 'expression' } },
         ],
       },
@@ -319,8 +328,8 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         description: 'Cluster genes into co-expression modules (Leiden)',
         prerequisites: ['gene_neighbors'],
         params: [
-          { name: 'resolution', label: 'Resolution', type: 'number', default: 0.5, description: 'Higher = more clusters' },
-          { name: 'key_added', label: 'Column name', type: 'text', default: 'gene_cluster', description: 'Name for cluster labels in .var' },
+          { name: 'resolution', label: 'Resolution', type: 'number', default: 2.0, description: 'Higher = more clusters' },
+          { name: 'key_added', label: 'Column name', type: 'text', default: 'gmod', description: 'Name for cluster labels in .var' },
         ],
       },
     },
@@ -347,6 +356,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'n_perms', label: 'Permutations', type: 'number', default: 100, description: 'Permutations for p-value (0 for analytical only)' },
           { name: 'pval_threshold', label: 'P-value Threshold', type: 'number', default: 0.05, description: 'Threshold for spatially variable' },
           { name: 'n_jobs', label: 'Parallel Jobs', type: 'number', default: 1, description: 'Number of parallel jobs' },
+          { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: 'highly_variable', description: 'Filter to specific genes using boolean columns from .var' },
         ],
       },
       contourize: {
@@ -515,6 +525,11 @@ const styles = {
     color: '#666',
     cursor: 'not-allowed',
   },
+  runButtonCancel: {
+    backgroundColor: '#e94560',
+    color: '#fff',
+    cursor: 'pointer',
+  },
   cancelButton: {
     padding: '10px 16px',
     fontSize: '14px',
@@ -570,6 +585,8 @@ interface BooleanColumn {
 
 export default function ScanpyModal() {
   const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes } = useStore()
+  const activeTaskId = useStore((state) => state.activeTaskId)
+  const setActiveTaskId = useStore((state) => state.setActiveTaskId)
 
   const [selectedCategory, setSelectedCategory] = useState<CategoryKey>('preprocessing')
   const [selectedFunction, setSelectedFunction] = useState<FunctionKey>('filter_genes')
@@ -637,11 +654,20 @@ export default function ScanpyModal() {
       .catch(() => setBooleanColumns([]))
   }, [isScanpyModalOpen, scanpyActionHistory])
 
-  // Reset gene subset selection when function changes
+  // Reset gene subset selection when function changes, auto-select default if specified
   useEffect(() => {
-    setSelectedGeneColumns([])
+    if (functionDef) {
+      const geneSubsetParam = functionDef.params.find(p => p.type === 'gene_subset')
+      if (geneSubsetParam && typeof geneSubsetParam.default === 'string' && booleanColumns.some(c => c.name === geneSubsetParam.default)) {
+        setSelectedGeneColumns([geneSubsetParam.default as string])
+      } else {
+        setSelectedGeneColumns([])
+      }
+    } else {
+      setSelectedGeneColumns([])
+    }
     setGeneSubsetOperation('intersection')
-  }, [selectedFunction])
+  }, [selectedFunction, functionDef, booleanColumns])
 
   // Handle category change
   const handleCategoryChange = useCallback((category: CategoryKey) => {
@@ -782,10 +808,26 @@ export default function ScanpyModal() {
         body: JSON.stringify(requestParams),
       })
 
-      const data = await response.json()
+      let data = await response.json()
 
       if (!response.ok) {
         throw new Error(data.detail || `HTTP ${response.status}`)
+      }
+
+      // If this is a cancellable operation, poll for completion
+      if (data.task_id && data.status === 'running') {
+        setActiveTaskId(data.task_id)
+        const taskResult = await pollTask(data.task_id)
+        setActiveTaskId(null)
+
+        if (taskResult.status === 'cancelled') {
+          setResult({ success: true, message: MESSAGES.analysisCancelled })
+          return
+        }
+        if (taskResult.status === 'error') {
+          throw new Error(taskResult.error || 'Task failed')
+        }
+        data = (taskResult.result || {}) as Record<string, unknown>
       }
 
       // Build result message
@@ -929,8 +971,19 @@ export default function ScanpyModal() {
       setResult({ success: false, message: (err as Error).message })
     } finally {
       setIsRunning(false)
+      setActiveTaskId(null)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setActiveTaskId])
+
+  const handleCancel = useCallback(async () => {
+    if (activeTaskId) {
+      try {
+        await cancelTask(activeTaskId)
+      } catch {
+        // Task may have already completed
+      }
+    }
+  }, [activeTaskId])
 
   if (!isScanpyModalOpen) return null
 
@@ -1208,12 +1261,18 @@ export default function ScanpyModal() {
           <button
             style={{
               ...styles.runButton,
-              ...((isRunning || (prereqStatus && !prereqStatus.satisfied)) ? styles.runButtonDisabled : {}),
+              ...(isRunning && activeTaskId
+                ? styles.runButtonCancel
+                : (isRunning || (prereqStatus && !prereqStatus.satisfied))
+                  ? styles.runButtonDisabled
+                  : {}),
             }}
-            onClick={handleRun}
-            disabled={isRunning || (prereqStatus !== null && !prereqStatus.satisfied)}
+            onClick={isRunning && activeTaskId ? handleCancel : handleRun}
+            disabled={isRunning && !activeTaskId ? true : (!isRunning && prereqStatus !== null && !prereqStatus.satisfied)}
           >
-            {isRunning ? 'Running...' : 'Run'}
+            {isRunning
+              ? (activeTaskId ? 'Cancel' : 'Running...')
+              : 'Run'}
           </button>
         </div>
 

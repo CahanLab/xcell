@@ -1857,18 +1857,12 @@ def check_has_spatial(dataset: str | None = Query(None)):
     }
 
 
-@router.post("/scanpy/spatial_neighbors")
+@router.post("/scanpy/spatial_neighbors", status_code=202)
 def run_spatial_neighbors(request: SpatialNeighborsRequest, dataset: str | None = Query(None)):
-    """Compute spatial neighborhood graph using Squidpy.
-
-    Requires: spatial coordinates in .obsm
-
-    Returns:
-        Operation status and graph info
-    """
+    """Compute spatial neighborhood graph (cancellable background task)."""
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.run_spatial_neighbors(
+        compute_fn, apply_fn = adaptor.prepare_spatial_neighbors(
             n_neighs=request.n_neighs,
             coord_type=request.coord_type,
             spatial_key=request.spatial_key,
@@ -1876,6 +1870,8 @@ def run_spatial_neighbors(request: SpatialNeighborsRequest, dataset: str | None 
             n_rings=request.n_rings,
             radius=request.radius,
         )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

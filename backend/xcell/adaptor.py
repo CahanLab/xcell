@@ -3682,6 +3682,100 @@ class DataAdaptor:
     # Spatial Analysis Methods
     # =========================================================================
 
+    def prepare_spatial_neighbors(
+        self,
+        n_neighs: int = 6,
+        coord_type: str | None = None,
+        spatial_key: str | None = None,
+        delaunay: bool = False,
+        n_rings: int = 1,
+        radius: float | None = None,
+    ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
+        """Prepare spatial neighborhood graph computation (cancellable).
+
+        Validates inputs and copies adata upfront, then returns a pair of
+        functions: ``compute_fn`` (pure, no side-effects) and ``apply_fn``
+        (writes results into ``self.adata``).
+
+        Args:
+            n_neighs: Number of spatial neighbors (default 6 for hexagonal grids)
+            coord_type: 'grid' for Visium, 'generic' for other, None for auto-detect
+            spatial_key: Key in .obsm for spatial coordinates (auto-detected if None)
+            delaunay: Use Delaunay triangulation instead of kNN
+            n_rings: Number of rings of neighbors for grid coordinates
+            radius: Radius for generic coordinates (optional)
+
+        Returns:
+            Tuple of (compute_fn, apply_fn)
+        """
+        # Check prerequisites (fail fast)
+        prereq = self.check_prerequisites('spatial_neighbors')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        # Auto-detect spatial key if not provided
+        if spatial_key is None:
+            spatial_key = self._get_spatial_key()
+            if spatial_key is None:
+                raise ValueError("No spatial coordinates found in .obsm")
+
+        # Copy adata for background computation (squidpy needs full adata)
+        adata_copy = self.adata.copy()
+
+        # Snapshot parameters
+        snap_n_neighs = n_neighs
+        snap_coord_type = coord_type
+        snap_spatial_key = spatial_key
+        snap_delaunay = delaunay
+        snap_n_rings = n_rings
+        snap_radius = radius
+
+        def compute_fn() -> dict[str, Any]:
+            import squidpy as sq
+
+            sq.gr.spatial_neighbors(
+                adata_copy,
+                n_neighs=snap_n_neighs,
+                coord_type=snap_coord_type,
+                spatial_key=snap_spatial_key,
+                delaunay=snap_delaunay,
+                n_rings=snap_n_rings,
+                radius=snap_radius,
+            )
+
+            return {
+                'spatial_connectivities': adata_copy.obsp['spatial_connectivities'],
+                'spatial_distances': adata_copy.obsp['spatial_distances'],
+                'uns_spatial_neighbors': adata_copy.uns.get('spatial_neighbors', {}),
+                'n_edges': adata_copy.obsp['spatial_connectivities'].nnz,
+                'spatial_key': snap_spatial_key,
+                'n_neighs': snap_n_neighs,
+            }
+
+        def apply_fn(result: dict[str, Any]) -> None:
+            self.adata.obsp['spatial_connectivities'] = result['spatial_connectivities']
+            self.adata.obsp['spatial_distances'] = result['spatial_distances']
+
+            # Copy any uns keys squidpy set
+            if result['uns_spatial_neighbors']:
+                self.adata.uns['spatial_neighbors'] = result['uns_spatial_neighbors']
+
+            status_result = {
+                'status': 'completed',
+                'n_cells': self.n_cells,
+                'n_edges': result['n_edges'],
+                'spatial_key': result['spatial_key'],
+                'n_neighs': result['n_neighs'],
+            }
+            self._log_action('spatial_neighbors', {
+                'n_neighs': result['n_neighs'],
+                'coord_type': snap_coord_type,
+                'spatial_key': result['spatial_key'],
+                'delaunay': snap_delaunay,
+            }, status_result)
+
+        return compute_fn, apply_fn
+
     def run_spatial_neighbors(
         self,
         n_neighs: int = 6,

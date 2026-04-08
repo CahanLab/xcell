@@ -1878,18 +1878,18 @@ def run_spatial_neighbors(request: SpatialNeighborsRequest, dataset: str | None 
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/scanpy/spatial_autocorr")
+@router.post("/scanpy/spatial_autocorr", status_code=202)
 def run_spatial_autocorr(request: SpatialAutocorrRequest, dataset: str | None = Query(None)):
-    """Compute spatial autocorrelation to identify spatially variable genes.
+    """Compute spatial autocorrelation (cancellable background task).
 
     Requires: spatial_neighbors must be computed first.
 
     Returns:
-        Operation status, number of spatially variable genes, top genes
+        Task ID and status for polling
     """
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.run_spatial_autocorr(
+        compute_fn, apply_fn = adaptor.prepare_spatial_autocorr(
             mode=request.mode,
             genes=request.genes,
             n_perms=request.n_perms,
@@ -1898,6 +1898,8 @@ def run_spatial_autocorr(request: SpatialAutocorrRequest, dataset: str | None = 
             pval_threshold=request.pval_threshold,
             gene_subset=request.gene_subset,
         )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -3843,6 +3843,156 @@ class DataAdaptor:
         }, result)
         return result
 
+    def prepare_spatial_autocorr(
+        self,
+        mode: str = 'moran',
+        genes: list[str] | None = None,
+        n_perms: int | None = 100,
+        n_jobs: int = 1,
+        corr_method: str = 'fdr_bh',
+        pval_threshold: float = 0.05,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+    ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
+        """Prepare spatial autocorrelation computation (cancellable).
+
+        Validates inputs and copies adata upfront, then returns a pair of
+        functions: ``compute_fn`` (pure, no side-effects) and ``apply_fn``
+        (writes results into ``self.adata``).
+
+        Args:
+            mode: 'moran' for Moran's I, 'geary' for Geary's C
+            genes: Explicit subset of gene names to test (takes priority over gene_subset)
+            n_perms: Number of permutations for p-value (None for analytical only)
+            n_jobs: Number of parallel jobs
+            corr_method: Multiple testing correction method
+            pval_threshold: Threshold for marking genes as spatially variable
+            gene_subset: Gene filtering via boolean column (e.g. 'highly_variable'). Ignored if genes is set.
+
+        Returns:
+            Tuple of (compute_fn, apply_fn)
+        """
+        # Check prerequisites (fail fast)
+        prereq = self.check_prerequisites('spatial_autocorr')
+        if not prereq['satisfied']:
+            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        if mode not in ('moran', 'geary'):
+            raise ValueError("mode must be 'moran' or 'geary'")
+
+        # Resolve gene_subset to gene list if no explicit genes provided
+        subset_type = 'all'
+        if genes is None and gene_subset is not None:
+            gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+            genes = self.adata.var_names[gene_mask].tolist()
+
+        # Copy adata for background computation
+        adata_copy = self.adata.copy()
+
+        # Snapshot parameters
+        snap_mode = mode
+        snap_genes = genes
+        snap_n_perms = n_perms
+        snap_n_jobs = n_jobs
+        snap_corr_method = corr_method
+        snap_pval_threshold = pval_threshold
+        snap_subset_type = subset_type
+        snap_gene_subset = gene_subset
+
+        def compute_fn() -> dict[str, Any]:
+            import squidpy as sq
+
+            sq.gr.spatial_autocorr(
+                adata_copy,
+                mode=snap_mode,
+                genes=snap_genes,
+                n_perms=snap_n_perms,
+                n_jobs=snap_n_jobs,
+                corr_method=snap_corr_method,
+            )
+
+            # Extract results from .uns
+            uns_key = 'moranI' if snap_mode == 'moran' else 'gearyC'
+            stat_col = 'I' if snap_mode == 'moran' else 'C'
+            results_df = adata_copy.uns[uns_key]
+
+            # Determine p-value column
+            if f'pval_{snap_corr_method}' in results_df.columns:
+                pval_col = f'pval_{snap_corr_method}'
+            elif 'pval_norm_fdr_bh' in results_df.columns:
+                pval_col = 'pval_norm_fdr_bh'
+            elif 'pval_norm' in results_df.columns:
+                pval_col = 'pval_norm'
+            else:
+                pval_cols = [c for c in results_df.columns if 'pval' in c]
+                pval_col = pval_cols[0] if pval_cols else None
+
+            return {
+                'uns_key': uns_key,
+                'stat_col': stat_col,
+                'results_df': results_df,
+                'pval_col': pval_col,
+            }
+
+        def apply_fn(result: dict[str, Any]) -> None:
+            uns_key = result['uns_key']
+            stat_col = result['stat_col']
+            results_df = result['results_df']
+            pval_col = result['pval_col']
+
+            # Store full results DataFrame in .uns
+            self.adata.uns[uns_key] = results_df
+
+            # Initialize .var columns with defaults for genes not tested
+            self.adata.var[uns_key] = np.nan
+            self.adata.var['spatial_pval_adj'] = np.nan
+            self.adata.var['spatially_variable'] = False
+
+            # Fill in values for tested genes
+            for gene in results_df.index:
+                if gene in self.adata.var_names:
+                    self.adata.var.loc[gene, uns_key] = results_df.loc[gene, stat_col]
+                    if pval_col:
+                        self.adata.var.loc[gene, 'spatial_pval_adj'] = results_df.loc[gene, pval_col]
+
+            # Mark spatially variable genes
+            if pval_col:
+                sv_mask = self.adata.var['spatial_pval_adj'] < snap_pval_threshold
+                if snap_mode == 'moran':
+                    sv_mask = sv_mask & (self.adata.var[uns_key] > 0)
+                else:
+                    sv_mask = sv_mask & (self.adata.var[uns_key] < 1)
+                self.adata.var['spatially_variable'] = sv_mask
+
+            n_sv_genes = self.adata.var['spatially_variable'].sum()
+            n_tested = len(results_df)
+
+            # Get top spatially variable genes
+            sv_genes = self.adata.var[self.adata.var['spatially_variable']].copy()
+            if snap_mode == 'moran':
+                sv_genes = sv_genes.sort_values(uns_key, ascending=False)
+            else:
+                sv_genes = sv_genes.sort_values(uns_key, ascending=True)
+            top_sv_genes = sv_genes.head(20).index.tolist()
+
+            status_result = {
+                'status': 'completed',
+                'mode': snap_mode,
+                'n_tested': n_tested,
+                'n_spatially_variable': int(n_sv_genes),
+                'pval_threshold': snap_pval_threshold,
+                'top_sv_genes': top_sv_genes,
+                'gene_subset_type': snap_subset_type,
+            }
+            self._log_action('spatial_autocorr', {
+                'mode': snap_mode,
+                'n_perms': snap_n_perms,
+                'corr_method': snap_corr_method,
+                'pval_threshold': snap_pval_threshold,
+                'gene_subset': snap_gene_subset,
+            }, status_result)
+
+        return compute_fn, apply_fn
+
     def run_spatial_autocorr(
         self,
         mode: str = 'moran',

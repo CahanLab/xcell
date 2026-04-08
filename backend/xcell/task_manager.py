@@ -37,7 +37,7 @@ class TaskManager:
     def submit(
         self,
         compute_fn: Callable[[], dict[str, Any]],
-        apply_fn: Callable[[dict[str, Any]], None],
+        apply_fn: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> str:
         """Submit a cancellable task.
 
@@ -47,7 +47,8 @@ class TaskManager:
                 the real adata.
             apply_fn: Called with compute_fn's result if not cancelled.
                 Writes results into the real adata. Runs in the
-                background thread -- must be fast.
+                background thread -- must be fast. Returns a
+                JSON-serializable dict for the status API.
 
         Returns:
             task_id (UUID string)
@@ -65,8 +66,8 @@ class TaskManager:
                 if entry.cancelled.is_set():
                     entry.status = 'cancelled'
                 else:
-                    apply_fn(result)
-                    entry.result = result
+                    api_result = apply_fn(result)
+                    entry.result = api_result
                     entry.status = 'completed'
             except Exception as e:
                 if entry.cancelled.is_set():

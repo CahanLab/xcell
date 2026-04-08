@@ -1586,8 +1586,8 @@ class DataAdaptor:
                 top_n=snap_top_n,
             )
 
-        def apply_fn(result: dict[str, Any]) -> None:
-            pass  # Read-only operation, nothing to apply
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            return result  # Read-only operation, result is already serializable
 
         return compute_fn, apply_fn
 
@@ -1768,8 +1768,8 @@ class DataAdaptor:
                 top_n=snap_top_n,
             )
 
-        def apply_fn(result: dict[str, Any]) -> None:
-            pass  # Read-only operation, nothing to apply
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            return result  # Read-only operation, result is already serializable
 
         return compute_fn, apply_fn
 
@@ -3386,7 +3386,7 @@ class DataAdaptor:
                 'subset_type': snap_subset_type,
             }
 
-        def apply_fn(result: dict[str, Any]) -> None:
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
             self.adata.varp['gene_distances'] = result['dist_matrix']
             self.adata.varp['gene_connectivities'] = result['conn_matrix']
 
@@ -3412,6 +3412,7 @@ class DataAdaptor:
                 'metric': result['metric'],
                 'basis': result['basis'],
             }, status_result)
+            return status_result
 
         return compute_fn, apply_fn
 
@@ -3870,7 +3871,7 @@ class DataAdaptor:
                 'n_neighs': snap_n_neighs,
             }
 
-        def apply_fn(result: dict[str, Any]) -> None:
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
             self.adata.obsp['spatial_connectivities'] = result['spatial_connectivities']
             self.adata.obsp['spatial_distances'] = result['spatial_distances']
 
@@ -3891,6 +3892,7 @@ class DataAdaptor:
                 'spatial_key': result['spatial_key'],
                 'delaunay': snap_delaunay,
             }, status_result)
+            return status_result
 
         return compute_fn, apply_fn
 
@@ -4051,7 +4053,7 @@ class DataAdaptor:
                 'pval_col': pval_col,
             }
 
-        def apply_fn(result: dict[str, Any]) -> None:
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
             uns_key = result['uns_key']
             stat_col = result['stat_col']
             results_df = result['results_df']
@@ -4108,6 +4110,7 @@ class DataAdaptor:
                 'pval_threshold': snap_pval_threshold,
                 'gene_subset': snap_gene_subset,
             }, status_result)
+            return status_result
 
         return compute_fn, apply_fn
 
@@ -4359,7 +4362,7 @@ class DataAdaptor:
                 'n_cells': snap_n_cells,
             }
 
-        def apply_fn(result: dict[str, Any]) -> None:
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
             annotation_cat = pd.Categorical(
                 result['annotation'],
                 categories=result['categories'],
@@ -4383,6 +4386,7 @@ class DataAdaptor:
                 'grid_res': snap_grid_res,
                 'annotation_key': result['annotation_key'],
             }, status_result)
+            return status_result
 
         return compute_fn, apply_fn
 

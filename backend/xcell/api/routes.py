@@ -71,6 +71,21 @@ def browse_filesystem(path: str | None = None):
 
     entries = []
     try:
+        import re
+        # Collect all filenames for trio detection
+        all_names = {item.name for item in directory.iterdir() if item.is_file()}
+        # Track prefixes that form complete trios so we don't also list them as raw files
+        trio_matrix_names: set[str] = set()
+        for name in all_names:
+            m = re.match(r'^(.+)_matrix\.mtx(\.gz)?$', name)
+            if not m:
+                continue
+            prefix = m.group(1)
+            has_bar = any(f'{prefix}_barcodes{ext}' in all_names for ext in ('.tsv.gz', '.tsv'))
+            has_feat = any(f'{prefix}_{f}{ext}' in all_names for f in ('features', 'genes') for ext in ('.tsv.gz', '.tsv'))
+            if has_bar and has_feat:
+                trio_matrix_names.add(name)
+
         for item in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
             if item.name.startswith('.'):
                 continue
@@ -84,6 +99,10 @@ def browse_filesystem(path: str | None = None):
                     entries.append({"name": item.name, "type": "10x_mtx", "path": str(item)})
                 else:
                     entries.append({"name": item.name, "type": "directory", "path": str(item)})
+            elif item.name in trio_matrix_names:
+                # Prefixed 10x file trio (e.g. GSM1234_matrix.mtx.gz with companions)
+                prefix = re.match(r'^(.+)_matrix\.mtx', item.name).group(1)
+                entries.append({"name": prefix, "type": "10x_mtx_trio", "path": str(item)})
             elif item.suffix in ('.h5ad', '.h5', '.rds'):
                 try:
                     size = item.stat().st_size
@@ -174,11 +193,13 @@ class LoadRequest(BaseModel):
 def load_dataset(request: LoadRequest, dataset: str | None = Query(None)):
     """Load a new dataset from a server-side file path.
 
-    Supports .h5ad, .h5, and .rds (Seurat) files. RDS files are converted
-    to h5ad via Rscript before loading.
+    Supports .h5ad, .h5, .rds (Seurat), 10x CellRanger matrix directories,
+    and prefixed 10x file trios (e.g. GSM1234_matrix.mtx.gz with companion
+    barcodes and features files, common in GEO accessions).
 
     Args:
-        file_path: Absolute path to an .h5ad, .h5, or .rds file on the server filesystem
+        file_path: Absolute path to a data file, 10x matrix directory, or
+                   prefixed *_matrix.mtx(.gz) file
         slot: Named slot to load into (default: 'primary')
 
     Returns:
@@ -186,6 +207,8 @@ def load_dataset(request: LoadRequest, dataset: str | None = Query(None)):
     """
     target_slot = request.slot
     path = Path(request.file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
     if path.is_dir():
         # Check for 10x CellRanger matrix folder
         children = {c.name for c in path.iterdir()}
@@ -194,10 +217,10 @@ def load_dataset(request: LoadRequest, dataset: str | None = Query(None)):
         has_features = bool(children & {'features.tsv', 'features.tsv.gz', 'genes.tsv', 'genes.tsv.gz'})
         if not (has_matrix and has_barcodes and has_features):
             raise HTTPException(status_code=400, detail="Directory is not a valid 10x CellRanger matrix folder")
+    elif DataAdaptor._find_10x_trio_files(path) is not None:
+        pass  # Valid prefixed 10x file trio — DataAdaptor handles loading
     elif path.suffix not in ('.h5ad', '.h5', '.rds'):
         raise HTTPException(status_code=400, detail="File must have .h5ad, .h5, or .rds extension")
-    elif not path.exists():
-        raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
     try:
         load_path = path
         if path.suffix == '.rds':

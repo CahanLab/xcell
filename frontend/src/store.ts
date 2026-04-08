@@ -6,6 +6,7 @@ export interface Schema {
   embeddings: string[]
   obs_columns: string[]
   obs_dtypes: Record<string, string>
+  filename?: string
 }
 
 export interface EmbeddingData {
@@ -138,9 +139,12 @@ export interface ComparisonState {
 // Color mode: what determines cell colors
 export type ColorMode = 'none' | 'metadata' | 'expression' | 'bivariate'
 
+// Selection tool types
+export type SelectionTool = 'lasso' | 'polygon'
+
 // Drawn line/shape for trajectory/gradient analysis
 // Draw tool types
-export type DrawTool = 'pencil' | 'polygon' | 'segmented' | 'smooth_curve'
+export type DrawTool = 'pencil' | 'lasso' | 'polygon' | 'segmented' | 'smooth_curve'
 
 export interface DrawnLine {
   id: string
@@ -407,6 +411,7 @@ interface AppState {
   activeLineId: string | null  // Currently selected line for editing/smoothing
   lineSmoothingParams: LineSmoothingParams
   drawTool: DrawTool  // Currently selected draw tool
+  selectionTool: SelectionTool  // Currently selected selection tool
 
   // Import modal state
   isImportModalOpen: boolean
@@ -528,6 +533,7 @@ interface AppState {
 
   // Line/shape drawing actions
   setDrawTool: (tool: DrawTool) => void
+  setSelectionTool: (tool: SelectionTool) => void
   updateLineAppearance: (id: string, updates: { strokeColor?: string; strokeWidth?: number; fillColor?: string | null; closed?: boolean }) => void
   addLine: (name: string, points: [number, number][], embeddingName: string, drawType?: DrawTool, closed?: boolean) => void
   removeLine: (id: string) => void
@@ -689,6 +695,7 @@ export const useStore = create<AppState>((set, get) => {
       iterations: 2,
     },
     drawTool: 'pencil' as DrawTool,
+    selectionTool: 'lasso' as SelectionTool,
     isImportModalOpen: false,
     isScanpyModalOpen: false,
     scanpyActionHistory: [],
@@ -1232,6 +1239,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Line/shape drawing actions — mixed (drawnLines is per-dataset, activeLineId is global)
     setDrawTool: (tool) => set({ drawTool: tool }),
+    setSelectionTool: (tool) => set({ selectionTool: tool }),
 
     updateLineAppearance: (id, updates) => {
       const state = get()

@@ -34,12 +34,16 @@ class DataAdaptor:
         """Load an h5ad, 10x h5, or 10x mtx directory and initialize the adaptor.
 
         Args:
-            filepath: Path to the .h5ad/.h5 file or 10x CellRanger matrix directory
+            filepath: Path to the .h5ad/.h5 file, 10x CellRanger matrix directory,
+                      or a *_matrix.mtx(.gz) file from a prefixed file trio
         """
         self.filepath = Path(filepath)
+        trio = self._find_10x_trio_files(self.filepath)
         if self.filepath.is_dir():
             self.adata = sc.read_10x_mtx(self.filepath)
             self.adata.var_names_make_unique()
+        elif trio is not None:
+            self._load_10x_mtx_trio(*trio)
         elif self.filepath.suffix == '.h5':
             self.adata = sc.read_10x_h5(self.filepath)
             self.adata.var_names_make_unique()
@@ -49,6 +53,68 @@ class DataAdaptor:
         self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
         self._action_history: list[dict[str, Any]] = []  # Track scanpy operations
         self._embedding_undo_stacks: dict[str, list[np.ndarray]] = {}  # Undo stacks for quilt transforms
+
+    @staticmethod
+    def _find_10x_trio_files(filepath: Path) -> tuple[Path, Path, Path] | None:
+        """Check if filepath is a prefixed 10x matrix file with companion files.
+
+        Detects GEO-style file trios like prefix_barcodes.tsv.gz,
+        prefix_features.tsv.gz, prefix_matrix.mtx.gz.
+
+        Returns:
+            (matrix, barcodes, features) paths if valid trio, else None.
+        """
+        import re
+        m = re.match(r'^(.+)_matrix\.mtx(\.gz)?$', filepath.name)
+        if not m:
+            return None
+        prefix = m.group(1)
+        parent = filepath.parent
+
+        barcodes = None
+        for ext in ('.tsv.gz', '.tsv'):
+            candidate = parent / f'{prefix}_barcodes{ext}'
+            if candidate.exists():
+                barcodes = candidate
+                break
+
+        features = None
+        for feat in ('features', 'genes'):
+            for ext in ('.tsv.gz', '.tsv'):
+                candidate = parent / f'{prefix}_{feat}{ext}'
+                if candidate.exists():
+                    features = candidate
+                    break
+            if features:
+                break
+
+        if barcodes and features:
+            return (filepath, barcodes, features)
+        return None
+
+    def _load_10x_mtx_trio(self, matrix: Path, barcodes: Path, features: Path) -> None:
+        """Load a prefixed 10x file trio via a temp directory with symlinks."""
+        import os
+        import shutil
+        import tempfile
+
+        # Build standard filenames preserving .gz extension
+        mtx_name = 'matrix.mtx.gz' if matrix.name.endswith('.gz') else 'matrix.mtx'
+        bar_name = 'barcodes.tsv.gz' if barcodes.name.endswith('.gz') else 'barcodes.tsv'
+        if '_genes.' in features.name:
+            feat_name = 'genes.tsv.gz' if features.name.endswith('.gz') else 'genes.tsv'
+        else:
+            feat_name = 'features.tsv.gz' if features.name.endswith('.gz') else 'features.tsv'
+
+        tmpdir = tempfile.mkdtemp(prefix='xcell_10x_')
+        try:
+            os.symlink(matrix, os.path.join(tmpdir, mtx_name))
+            os.symlink(barcodes, os.path.join(tmpdir, bar_name))
+            os.symlink(features, os.path.join(tmpdir, feat_name))
+            self.adata = sc.read_10x_mtx(tmpdir)
+            self.adata.var_names_make_unique()
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     @property
     def n_cells(self) -> int:
@@ -116,6 +182,7 @@ class DataAdaptor:
             "embeddings": embeddings,
             "obs_columns": obs_columns,
             "obs_dtypes": obs_dtypes,
+            "filename": self.filepath.name,
         }
 
     def get_embedding(self, name: str) -> dict[str, Any]:
@@ -1294,16 +1361,18 @@ class DataAdaptor:
             spline = BSpline(knots, c, degree)
             B[:, i] = spline(pos)
 
-        # Design matrix with intercept
-        design = np.column_stack([np.ones(n_cells_used), B])
-        k = n_basis  # Number of spline coefficients (excluding intercept)
+        # Design matrix: B-spline basis only (no separate intercept).
+        # B-spline basis functions satisfy the partition of unity (sum to 1),
+        # so the constant function is already in their span.
+        design = B
+        k = n_basis - 1  # Extra df beyond intercept (one basis function spans the constant)
 
         # Solve OLS for all genes at once: beta = (X'X)^{-1} X' Y
         # where Y is expression matrix (n_cells x n_genes)
         try:
             XtX = design.T @ design
             XtX_inv = np.linalg.inv(XtX)
-            beta = XtX_inv @ design.T @ X  # (k+1) x n_genes
+            beta = XtX_inv @ design.T @ X  # n_basis x n_genes
         except np.linalg.LinAlgError:
             raise ValueError("Singular design matrix. Try fewer spline knots.")
 
@@ -1399,7 +1468,7 @@ class DataAdaptor:
             c[i] = 1.0
             spline = BSpline(knots, c, degree)
             profile_design[:, i] = spline(profile_positions)
-        profile_design_full = np.column_stack([np.ones(n_profile_points), profile_design])
+        profile_design_full = profile_design
 
         sig_indices = np.where(sig_mask.values)[0]
         modules = []

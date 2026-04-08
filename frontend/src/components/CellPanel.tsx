@@ -559,7 +559,7 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCel
                     onChange={() => onToggleCategory(cat.value)}
                     onClick={(e) => e.stopPropagation()}
                     style={{ marginRight: '6px', cursor: 'pointer', flexShrink: 0 }}
-                    title="Check to include in comparison"
+                    title="Check to select these cells"
                   />
                   <span
                     style={{ ...styles.categoryName, cursor: 'pointer' }}
@@ -703,6 +703,7 @@ export default function CellPanel() {
     selectedColorColumn,
     selectedCellIndices,
     setSelectedCellIndices,
+    addToSelection,
     clearSelection,
     comparison,
     setComparisonGroup1,
@@ -841,6 +842,53 @@ export default function CellPanel() {
         })
     },
     [setSelectedCellIndices]
+  )
+
+  // Handle checkbox toggle — selecting/deselecting cells by category
+  const handleCheckboxToggle = useCallback(
+    (columnName: string, categoryValue: string) => {
+      // Toggle the visual state via the existing comparison mechanism
+      toggleComparisonCategory(columnName, categoryValue)
+
+      // Now select/deselect cells
+      fetch(appendDataset(`/api/obs/${encodeURIComponent(columnName)}`))
+        .then((res) => res.json())
+        .then((data) => {
+          const indices: number[] = []
+          const categories = data.categories || []
+          const categoryIndex = categories.indexOf(categoryValue)
+
+          if (data.dtype === 'category' && categoryIndex >= 0) {
+            data.values.forEach((val: number, idx: number) => {
+              if (val === categoryIndex) indices.push(idx)
+            })
+          } else {
+            data.values.forEach((val: string, idx: number) => {
+              if (val === categoryValue) indices.push(idx)
+            })
+          }
+
+          // Check if this category is now checked or unchecked
+          const isNowChecked = !(
+            comparisonCheckedColumn === columnName &&
+            comparisonCheckedCategories.has(categoryValue)
+          )
+
+          if (isNowChecked) {
+            // Add these cells to selection
+            addToSelection(indices)
+          } else {
+            // Remove these cells from selection
+            const toRemove = new Set(indices)
+            const remaining = selectedCellIndices.filter((i) => !toRemove.has(i))
+            setSelectedCellIndices(remaining)
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to fetch category data:', err)
+        })
+    },
+    [toggleComparisonCategory, addToSelection, setSelectedCellIndices, selectedCellIndices, comparisonCheckedColumn, comparisonCheckedCategories]
   )
 
   // Handle running comparison
@@ -1007,7 +1055,7 @@ export default function CellPanel() {
                       : new Set<string>()
                   }
                   onToggleCategory={(category) =>
-                    toggleComparisonCategory(summary.name, category)
+                    handleCheckboxToggle(summary.name, category)
                   }
                   onHide={() => hideColumn(summary.name)}
                   onRename={(newName) => setColumnDisplayName(summary.name, newName)}

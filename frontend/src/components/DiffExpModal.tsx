@@ -1,6 +1,6 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, useEffect } from 'react'
 import { useStore, DiffExpGene } from '../store'
-import { useDiffExp } from '../hooks/useData'
+import { useDiffExp, DiffExpParams, appendDataset } from '../hooks/useData'
 
 const styles = {
   backdrop: {
@@ -185,6 +185,57 @@ const styles = {
     borderRadius: '4px',
     textAlign: 'center' as const,
   },
+  paramsSection: {
+    marginBottom: '16px',
+  },
+  paramsSectionHeader: {
+    fontSize: '13px',
+    fontWeight: 600,
+    color: '#aaa',
+    marginBottom: '8px',
+    cursor: 'pointer',
+    userSelect: 'none' as const,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+  paramsGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: '8px',
+  },
+  paramField: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '3px',
+    padding: '8px 12px',
+    backgroundColor: '#0f3460',
+    borderRadius: '6px',
+  },
+  paramLabel: {
+    fontSize: '11px',
+    color: '#888',
+  },
+  paramInput: {
+    width: '100%',
+    padding: '4px 8px',
+    fontSize: '13px',
+    backgroundColor: '#0a0f1a',
+    color: '#eee',
+    border: '1px solid #1a1a2e',
+    borderRadius: '4px',
+    boxSizing: 'border-box' as const,
+  },
+  selectInput: {
+    width: '100%',
+    padding: '4px 8px',
+    fontSize: '13px',
+    backgroundColor: '#0a0f1a',
+    color: '#eee',
+    border: '1px solid #1a1a2e',
+    borderRadius: '4px',
+    boxSizing: 'border-box' as const,
+  },
 }
 
 function formatPValue(pval: number): string {
@@ -244,6 +295,35 @@ export default function DiffExpModal() {
   } = useStore()
   const { runComparison } = useDiffExp()
   const [topN, setTopN] = useState(100)
+  const [showParams, setShowParams] = useState(false)
+
+  // Gene subset state
+  const [booleanColumns, setBooleanColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])
+  const [geneSubset, setGeneSubset] = useState<string>('')  // '' = all genes, 'column_name' = that column
+
+  // Fetch boolean columns when modal opens
+  useEffect(() => {
+    if (!isDiffExpModalOpen) return
+    fetch(appendDataset('/api/var/boolean_columns'))
+      .then((res) => res.json())
+      .then((cols: { name: string; n_true: number; n_total: number }[]) => {
+        setBooleanColumns(cols)
+        // Default to highly_variable if available
+        const hvg = cols.find((c) => c.name === 'highly_variable')
+        setGeneSubset(hvg ? 'highly_variable' : '')
+      })
+      .catch(() => setBooleanColumns([]))
+  }, [isDiffExpModalOpen])
+
+  // rank_genes_groups params
+  const [method, setMethod] = useState('wilcoxon')
+  const [corrMethod, setCorrMethod] = useState('benjamini-hochberg')
+
+  // filter_rank_genes_groups params
+  const [minFoldChange, setMinFoldChange] = useState('')
+  const [minInGroupFraction, setMinInGroupFraction] = useState('')
+  const [maxOutGroupFraction, setMaxOutGroupFraction] = useState('')
+  const [maxPvalAdj, setMaxPvalAdj] = useState('')
 
   const handleClose = useCallback(() => {
     setDiffExpModalOpen(false)
@@ -277,12 +357,23 @@ export default function DiffExpModal() {
   }, [clearComparison, handleClose])
 
   const handleRunComparison = useCallback(async () => {
+    const params: DiffExpParams = { method, corrMethod }
+    const mfc = parseFloat(minFoldChange)
+    if (!isNaN(mfc)) params.minFoldChange = mfc
+    const migf = parseFloat(minInGroupFraction)
+    if (!isNaN(migf)) params.minInGroupFraction = migf
+    const mogf = parseFloat(maxOutGroupFraction)
+    if (!isNaN(mogf)) params.maxOutGroupFraction = mogf
+    const mpa = parseFloat(maxPvalAdj)
+    if (!isNaN(mpa)) params.maxPvalAdj = mpa
+    if (geneSubset) params.geneSubset = geneSubset
+
     try {
-      await runComparison(topN)
+      await runComparison(topN, params)
     } catch (err) {
       alert(`Differential expression failed: ${(err as Error).message}`)
     }
-  }, [runComparison, topN])
+  }, [runComparison, topN, method, corrMethod, minFoldChange, minInGroupFraction, maxOutGroupFraction, maxPvalAdj, geneSubset])
 
   if (!isDiffExpModalOpen) return null
 
@@ -322,19 +413,140 @@ export default function DiffExpModal() {
             </div>
           </div>
 
-          {/* Top N setting */}
+          {/* Settings (shown before results) */}
           {!hasResults && (
-            <div style={styles.settingRow}>
-              <span style={styles.settingLabel}>Top genes per group:</span>
-              <input
-                type="number"
-                min="1"
-                max="500"
-                value={topN}
-                onChange={(e) => setTopN(Math.max(1, Math.min(500, parseInt(e.target.value) || 50)))}
-                style={styles.settingInput}
-              />
-            </div>
+            <>
+              {/* Gene subset + Top N row */}
+              <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+                <div style={{ ...styles.settingRow, flex: 1, marginBottom: 0 }}>
+                  <span style={styles.settingLabel}>Genes:</span>
+                  <select
+                    value={geneSubset}
+                    onChange={(e) => setGeneSubset(e.target.value)}
+                    style={{ ...styles.settingInput, width: 'auto', textAlign: 'left' }}
+                  >
+                    <option value="">All genes</option>
+                    {booleanColumns.map((col) => (
+                      <option key={col.name} value={col.name}>
+                        {col.name} ({col.n_true.toLocaleString()})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ ...styles.settingRow, marginBottom: 0 }}>
+                  <span style={styles.settingLabel}>Top N:</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="500"
+                    value={topN}
+                    onChange={(e) => setTopN(Math.max(1, Math.min(500, parseInt(e.target.value) || 50)))}
+                    style={styles.settingInput}
+                  />
+                </div>
+              </div>
+
+              {/* Expandable parameters section */}
+              <div style={styles.paramsSection}>
+                <div
+                  style={styles.paramsSectionHeader}
+                  onClick={() => setShowParams(!showParams)}
+                >
+                  <span>{showParams ? '\u25BC' : '\u25B6'}</span>
+                  <span>Parameters</span>
+                </div>
+
+                {showParams && (
+                  <>
+                    {/* rank_genes_groups params */}
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '6px', paddingLeft: '4px' }}>
+                      rank_genes_groups
+                    </div>
+                    <div style={styles.paramsGrid}>
+                      <div style={styles.paramField}>
+                        <label style={styles.paramLabel}>Test method</label>
+                        <select
+                          value={method}
+                          onChange={(e) => setMethod(e.target.value)}
+                          style={styles.selectInput}
+                        >
+                          <option value="wilcoxon">Wilcoxon rank-sum</option>
+                          <option value="t-test">t-test</option>
+                          <option value="t-test_overestim_var">t-test (overestim. var)</option>
+                          <option value="logreg">Logistic regression</option>
+                        </select>
+                      </div>
+                      <div style={styles.paramField}>
+                        <label style={styles.paramLabel}>P-value correction</label>
+                        <select
+                          value={corrMethod}
+                          onChange={(e) => setCorrMethod(e.target.value)}
+                          style={styles.selectInput}
+                        >
+                          <option value="benjamini-hochberg">Benjamini-Hochberg</option>
+                          <option value="bonferroni">Bonferroni</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* filter_rank_genes_groups params */}
+                    <div style={{ fontSize: '11px', color: '#666', margin: '12px 0 6px 4px' }}>
+                      filter_rank_genes_groups
+                    </div>
+                    <div style={styles.paramsGrid}>
+                      <div style={styles.paramField}>
+                        <label style={styles.paramLabel}>Min fold change</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          placeholder="none"
+                          value={minFoldChange}
+                          onChange={(e) => setMinFoldChange(e.target.value)}
+                          style={styles.paramInput}
+                        />
+                      </div>
+                      <div style={styles.paramField}>
+                        <label style={styles.paramLabel}>Max adjusted p-value</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="none"
+                          value={maxPvalAdj}
+                          onChange={(e) => setMaxPvalAdj(e.target.value)}
+                          style={styles.paramInput}
+                        />
+                      </div>
+                      <div style={styles.paramField}>
+                        <label style={styles.paramLabel}>Min in-group fraction</label>
+                        <input
+                          type="number"
+                          step="0.05"
+                          min="0"
+                          max="1"
+                          placeholder="none"
+                          value={minInGroupFraction}
+                          onChange={(e) => setMinInGroupFraction(e.target.value)}
+                          style={styles.paramInput}
+                        />
+                      </div>
+                      <div style={styles.paramField}>
+                        <label style={styles.paramLabel}>Max out-group fraction</label>
+                        <input
+                          type="number"
+                          step="0.05"
+                          min="0"
+                          max="1"
+                          placeholder="none"
+                          value={maxOutGroupFraction}
+                          onChange={(e) => setMaxOutGroupFraction(e.target.value)}
+                          style={styles.paramInput}
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
           )}
 
           {/* Loading state */}
@@ -392,12 +604,20 @@ export default function DiffExpModal() {
             </button>
           )}
           {hasResults && (
-            <button
-              style={{ ...styles.button, ...styles.primaryButton }}
-              onClick={handleAddToGeneSets}
-            >
-              Add to Gene Sets
-            </button>
+            <>
+              <button
+                style={{ ...styles.button, ...styles.secondaryButton }}
+                onClick={() => { useStore.getState().setDiffExpResult(null); setShowParams(true) }}
+              >
+                Re-run
+              </button>
+              <button
+                style={{ ...styles.button, ...styles.primaryButton }}
+                onClick={handleAddToGeneSets}
+              >
+                Add to Gene Sets
+              </button>
+            </>
           )}
         </div>
       </div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, DatasetSlot } from './store'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, runDiffExp, appendDataset } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, appendDataset } from './hooks/useData'
 import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor } from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
@@ -30,11 +30,8 @@ const styles = {
   },
   titleGroup: {
     display: 'flex',
-    alignItems: 'baseline',
+    alignItems: 'center',
     gap: '12px',
-    flex: '0 0 auto',
-  },
-  logoGroup: {
     flex: '0 0 auto',
   },
   title: {
@@ -469,20 +466,12 @@ export default function App() {
     addLine,
     drawTool,
     setDrawTool,
+    selectionTool,
+    setSelectionTool,
     setScanpyModalOpen,
     centerPanelView,
     setCenterPanelView,
     setEmbedding,
-    comparisonCheckedColumn,
-    comparisonCheckedCategories,
-    setComparisonGroup1,
-    setComparisonGroup2,
-    setDiffExpModalOpen,
-    setDiffExpResult,
-    setDiffExpLoading,
-    setMarkerGenesModalOpen,
-    setMarkerGenesColumn,
-    clearComparisonCategories,
     activeSlot,
     setActiveSlot,
     loadDatasetIntoSlot,
@@ -514,16 +503,16 @@ export default function App() {
 
   // State for line naming dialog
   const [pendingLinePoints, setPendingLinePoints] = useState<[number, number][] | null>(null)
-  const [pendingDrawType, setPendingDrawType] = useState<'pencil' | 'polygon' | 'segmented' | 'smooth_curve'>('pencil')
+  const [pendingDrawType, setPendingDrawType] = useState<'pencil' | 'lasso' | 'polygon' | 'segmented' | 'smooth_curve'>('pencil')
   const [newLineName, setNewLineName] = useState('')
   const [showDrawMenu, setShowDrawMenu] = useState(false)
+  const [showSelectMenu, setShowSelectMenu] = useState(false)
+  const [showAdjustMenu, setShowAdjustMenu] = useState(false)
+  const [adjustSubMode, setAdjustSubMode] = useState<'adjust' | 'quilt'>('adjust')
 
   // State for export modal
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
   const [exportLoading, setExportLoading] = useState<string | null>(null)
-
-  // State for compare button
-  const [isCompareLoading, setIsCompareLoading] = useState(false)
 
   // State for load data modal
   const [loadSlot, setLoadSlot] = useState<DatasetSlot>('primary')
@@ -606,21 +595,14 @@ export default function App() {
     setShowDrawMenu(false)
   }, [interactionMode, setInteractionMode])
 
-  // Close draw menu on outside click
+  // Close dropdown menus on outside click
   useEffect(() => {
-    if (!showDrawMenu) return
-    const close = () => setShowDrawMenu(false)
+    if (!showDrawMenu && !showSelectMenu && !showAdjustMenu) return
+    const close = () => { setShowDrawMenu(false); setShowSelectMenu(false); setShowAdjustMenu(false) }
     document.addEventListener('click', close)
     return () => document.removeEventListener('click', close)
-  }, [showDrawMenu])
+  }, [showDrawMenu, showSelectMenu, showAdjustMenu])
 
-  const toggleAdjustMode = useCallback(() => {
-    setInteractionMode(interactionMode === 'adjust' ? 'pan' : 'adjust')
-  }, [interactionMode, setInteractionMode])
-
-  const toggleQuiltMode = useCallback(() => {
-    setInteractionMode(interactionMode === 'quilt' ? 'pan' : 'quilt')
-  }, [interactionMode, setInteractionMode])
 
   const handleTransformEmbedding = useCallback(async (opts: { rotation_degrees?: number; reflect_x?: boolean; reflect_y?: boolean }) => {
     if (!selectedEmbedding) return
@@ -681,7 +663,7 @@ export default function App() {
 
   const handleSaveLine = useCallback(() => {
     if (pendingLinePoints && newLineName.trim() && selectedEmbedding) {
-      const closed = pendingDrawType === 'polygon'
+      const closed = pendingDrawType === 'polygon' || pendingDrawType === 'lasso'
       addLine(newLineName.trim(), pendingLinePoints, selectedEmbedding, pendingDrawType, closed)
       setPendingLinePoints(null)
       setNewLineName('')
@@ -693,68 +675,6 @@ export default function App() {
     setNewLineName('')
   }, [])
 
-  // Handle Compare button click (checkbox-based comparison)
-  const handleCompare = useCallback(async () => {
-    if (!comparisonCheckedColumn || comparisonCheckedCategories.size < 2) return
-
-    const column = comparisonCheckedColumn
-    const checkedGroups = [...comparisonCheckedCategories]
-
-    setIsCompareLoading(true)
-    try {
-      // Fetch the column data to resolve cell indices
-      const response = await fetch(appendDataset(`/api/obs/${encodeURIComponent(column)}`))
-      if (!response.ok) throw new Error('Failed to fetch column data')
-      const data = await response.json()
-
-      // Build category → indices map for checked categories
-      const categoryIndices: Record<string, number[]> = {}
-      for (const cat of checkedGroups) {
-        categoryIndices[cat] = []
-      }
-
-      const categories = data.categories || []
-      if (data.dtype === 'category' && categories.length > 0) {
-        data.values.forEach((val: number, idx: number) => {
-          const catName = categories[val]
-          if (catName !== undefined && categoryIndices[catName]) {
-            categoryIndices[catName].push(idx)
-          }
-        })
-      } else {
-        data.values.forEach((val: string, idx: number) => {
-          if (categoryIndices[val]) {
-            categoryIndices[val].push(idx)
-          }
-        })
-      }
-
-      if (checkedGroups.length === 2) {
-        // Pairwise diff exp
-        const group1 = categoryIndices[checkedGroups[0]]
-        const group2 = categoryIndices[checkedGroups[1]]
-        setComparisonGroup1(group1, checkedGroups[0])
-        setComparisonGroup2(group2, checkedGroups[1])
-        setDiffExpLoading(true)
-        setDiffExpModalOpen(true)
-        try {
-          const result = await runDiffExp(group1, group2, 25)
-          setDiffExpResult(result)
-        } finally {
-          setDiffExpLoading(false)
-        }
-      } else {
-        // 3+ groups → marker gene analysis
-        setMarkerGenesColumn(column)
-        setMarkerGenesModalOpen(true)
-      }
-      clearComparisonCategories()
-    } catch (err) {
-      alert(`Comparison failed: ${(err as Error).message}`)
-    } finally {
-      setIsCompareLoading(false)
-    }
-  }, [comparisonCheckedColumn, comparisonCheckedCategories, setComparisonGroup1, setComparisonGroup2, setDiffExpLoading, setDiffExpModalOpen, setDiffExpResult, setMarkerGenesColumn, setMarkerGenesModalOpen, clearComparisonCategories])
 
   const geneSetCategories = useStore((state) => state.geneSetCategories)
 
@@ -938,9 +858,13 @@ export default function App() {
         <div style={styles.titleGroup}>
           <h1 style={styles.title}>xcell</h1>
           {schema && (
-            <span style={styles.statsInline}>
-              {schema.n_cells.toLocaleString()} cells · {schema.n_genes.toLocaleString()} genes
-            </span>
+            <div style={{ display: 'flex', flexDirection: 'column', lineHeight: '1.3' }}>
+              {schema.filename && (
+                <span style={{ fontSize: '12px', color: '#ccc', fontWeight: 500 }}>{schema.filename}</span>
+              )}
+              <span style={styles.statsInline}>{schema.n_cells.toLocaleString()} cells</span>
+              <span style={styles.statsInline}>{schema.n_genes.toLocaleString()} genes</span>
+            </div>
           )}
         </div>
 
@@ -974,22 +898,91 @@ export default function App() {
           )}
           {schema && (
             <>
-              <button
-                style={{
-                  ...styles.toolButton,
-                  ...(interactionMode === 'lasso' ? styles.toolButtonActive : {}),
-                }}
-                onClick={toggleLassoMode}
-                title="Toggle lasso selection (Escape to exit)"
-              >
-                <span>&#10022;</span> Lasso
-              </button>
+              <div style={{ position: 'relative', display: 'inline-flex' }}>
+                <button
+                  style={{
+                    ...styles.toolButton,
+                    ...(interactionMode === 'lasso' ? styles.toolButtonActive : {}),
+                    borderRadius: '4px 0 0 4px',
+                    borderRight: 'none',
+                  }}
+                  onClick={toggleLassoMode}
+                  title="Select cells (Escape to exit)"
+                >
+                  <span>&#10022;</span> Select
+                </button>
+                <button
+                  style={{
+                    padding: '6px 4px',
+                    fontSize: '8px',
+                    backgroundColor: interactionMode === 'lasso' ? '#e94560' : '#0f3460',
+                    color: interactionMode === 'lasso' ? '#fff' : '#aaa',
+                    border: '1px solid #1a1a2e',
+                    borderLeft: '1px solid rgba(255,255,255,0.1)',
+                    cursor: 'pointer',
+                    borderRadius: '0 4px 4px 0',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                  onClick={(e) => { e.stopPropagation(); setShowSelectMenu(!showSelectMenu) }}
+                  title="Select tool type"
+                >
+                  {'\u25BC'}
+                </button>
+                {showSelectMenu && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      backgroundColor: '#16213e',
+                      border: '1px solid #0f3460',
+                      borderRadius: '4px',
+                      zIndex: 100,
+                      minWidth: '180px',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                    }}
+                  >
+                    {([
+                      ['lasso', '\u2729', 'Lasso', 'Click and drag to select freehand'],
+                      ['polygon', '\u2B21', 'Polygon', 'Click to add vertices, double-click to close'],
+                    ] as [import('./store').SelectionTool, string, string, string][]).map(([tool, icon, label, desc]) => (
+                      <div
+                        key={tool}
+                        onClick={() => {
+                          setSelectionTool(tool)
+                          setShowSelectMenu(false)
+                          if (interactionMode !== 'lasso') setInteractionMode('lasso')
+                        }}
+                        style={{
+                          padding: '8px 12px',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          color: selectionTool === tool ? '#e94560' : '#ccc',
+                          backgroundColor: selectionTool === tool ? '#0f3460' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                        }}
+                      >
+                        <span style={{ fontSize: '16px', width: '20px', textAlign: 'center' }}>{icon}</span>
+                        <div>
+                          <div>{label}</div>
+                          <div style={{ fontSize: '10px', color: '#888' }}>{desc}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
-              <div style={{ position: 'relative', display: 'inline-block' }}>
+              <div style={{ position: 'relative', display: 'inline-flex' }}>
                 <button
                   style={{
                     ...styles.toolButton,
                     ...(interactionMode === 'draw' ? { ...styles.toolButtonActive, backgroundColor: '#4ecdc4' } : {}),
+                    borderRadius: '4px 0 0 4px',
+                    borderRight: 'none',
                   }}
                   onClick={toggleDrawMode}
                   title="Draw shapes for trajectory analysis (Escape to exit)"
@@ -998,15 +991,16 @@ export default function App() {
                 </button>
                 <button
                   style={{
-                    padding: '4px 2px',
+                    padding: '6px 4px',
                     fontSize: '8px',
                     backgroundColor: interactionMode === 'draw' ? '#4ecdc4' : '#0f3460',
                     color: interactionMode === 'draw' ? '#000' : '#aaa',
-                    border: 'none',
-                    borderLeft: '1px solid #1a1a2e',
+                    border: '1px solid #1a1a2e',
+                    borderLeft: '1px solid rgba(255,255,255,0.1)',
                     cursor: 'pointer',
                     borderRadius: '0 4px 4px 0',
-                    marginLeft: '-5px',
+                    display: 'flex',
+                    alignItems: 'center',
                   }}
                   onClick={(e) => { e.stopPropagation(); setShowDrawMenu(!showDrawMenu) }}
                   title="Select draw tool"
@@ -1028,10 +1022,11 @@ export default function App() {
                     }}
                   >
                     {([
-                      ['pencil', '\u270F', 'Pencil', 'Freehand drawing'],
-                      ['polygon', '\u2B21', 'Polygon', 'Click vertices, dbl-click to close'],
-                      ['segmented', '\u2571', 'Segmented Line', 'Click points, dbl-click to finish'],
-                      ['smooth_curve', '\u223F', 'Smooth Curve', 'Click control pts, dbl-click to finish'],
+                      ['pencil', '\u270F', 'Pencil', 'Click and drag to draw freehand'],
+                      ['lasso', '\u2B2F', 'Lasso', 'Click and drag to draw closed shape'],
+                      ['polygon', '\u2B21', 'Polygon', 'Click to add vertices, double-click to close'],
+                      ['segmented', '\u2571', 'Segmented Line', 'Click to add points, double-click to finish'],
+                      ['smooth_curve', '\u223F', 'Smooth Curve', 'Click to add control points, double-click to finish'],
                     ] as const).map(([tool, icon, label, desc]) => (
                       <div
                         key={tool}
@@ -1062,27 +1057,112 @@ export default function App() {
                 )}
               </div>
 
-              <button
-                style={{
-                  ...styles.toolButton,
-                  ...(interactionMode === 'adjust' ? { ...styles.toolButtonActive, backgroundColor: '#ffa500' } : {}),
-                }}
-                onClick={toggleAdjustMode}
-                title="Adjust embedding orientation: flip or shift+drag to rotate (Escape to exit)"
-              >
-                <span>&#8634;</span> Adjust
-              </button>
-
-              <button
-                style={{
-                  ...styles.toolButton,
-                  ...(interactionMode === 'quilt' ? { ...styles.toolButtonActive, backgroundColor: '#9b59b6' } : {}),
-                }}
-                onClick={toggleQuiltMode}
-                title="Quilt mode: lasso cells then drag/rotate/flip to reposition (Escape to exit)"
-              >
-                <span>&#9638;</span> Quilt
-              </button>
+              <div style={{ position: 'relative', display: 'inline-flex' }}>
+                <button
+                  style={{
+                    ...styles.toolButton,
+                    ...(interactionMode === 'adjust'
+                      ? { ...styles.toolButtonActive, backgroundColor: '#ffa500' }
+                      : interactionMode === 'quilt'
+                        ? { ...styles.toolButtonActive, backgroundColor: '#9b59b6' }
+                        : {}),
+                    borderRadius: '4px 0 0 4px',
+                    borderRight: 'none',
+                  }}
+                  onClick={() => {
+                    // Toggle between current adjust sub-mode and pan
+                    if (interactionMode === 'adjust' || interactionMode === 'quilt') {
+                      setInteractionMode('pan')
+                    } else {
+                      setInteractionMode(adjustSubMode)
+                    }
+                  }}
+                  title={adjustSubMode === 'adjust' ? 'Rotate/flip embedding (Escape to exit)' : 'Quilt: lasso cells then reposition (Escape to exit)'}
+                >
+                  <span>{adjustSubMode === 'adjust' ? '\u21BA' : '\u2638'}</span>
+                  Adjust
+                </button>
+                <button
+                  style={{
+                    padding: '6px 4px',
+                    fontSize: '8px',
+                    backgroundColor: interactionMode === 'adjust' ? '#ffa500' : interactionMode === 'quilt' ? '#9b59b6' : '#0f3460',
+                    color: interactionMode === 'adjust' || interactionMode === 'quilt' ? '#fff' : '#aaa',
+                    border: '1px solid #1a1a2e',
+                    borderLeft: '1px solid rgba(255,255,255,0.1)',
+                    cursor: 'pointer',
+                    borderRadius: '0 4px 4px 0',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                  onClick={(e) => { e.stopPropagation(); setShowAdjustMenu(!showAdjustMenu) }}
+                  title="Select adjust tool"
+                >
+                  {'\u25BC'}
+                </button>
+                {showAdjustMenu && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      backgroundColor: '#16213e',
+                      border: '1px solid #0f3460',
+                      borderRadius: '4px',
+                      zIndex: 100,
+                      minWidth: '200px',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                    }}
+                  >
+                    <div
+                      onClick={() => {
+                        setAdjustSubMode('adjust')
+                        setShowAdjustMenu(false)
+                        setInteractionMode('adjust')
+                      }}
+                      style={{
+                        padding: '8px 12px',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        color: adjustSubMode === 'adjust' ? '#ffa500' : '#ccc',
+                        backgroundColor: adjustSubMode === 'adjust' ? '#0f3460' : 'transparent',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <span style={{ fontSize: '16px', width: '20px', textAlign: 'center' }}>{'\u21BA'}</span>
+                      <div>
+                        <div>Rotate</div>
+                        <div style={{ fontSize: '10px', color: '#888' }}>Flip or shift+drag to rotate embedding</div>
+                      </div>
+                    </div>
+                    <div
+                      onClick={() => {
+                        setAdjustSubMode('quilt')
+                        setShowAdjustMenu(false)
+                        setInteractionMode('quilt')
+                      }}
+                      style={{
+                        padding: '8px 12px',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        color: adjustSubMode === 'quilt' ? '#9b59b6' : '#ccc',
+                        backgroundColor: adjustSubMode === 'quilt' ? '#0f3460' : 'transparent',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <span style={{ fontSize: '16px', width: '20px', textAlign: 'center' }}>{'\u2638'}</span>
+                      <div>
+                        <div>Quilt</div>
+                        <div style={{ fontSize: '10px', color: '#888' }}>Lasso cells then drag/rotate/flip</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <button
                 style={styles.toolButton}
@@ -1090,49 +1170,6 @@ export default function App() {
                 title="Run scanpy analysis functions"
               >
                 Analyze
-              </button>
-
-              <button
-                style={{
-                  ...styles.toolButton,
-                  ...(comparisonCheckedCategories.size >= 2
-                    ? { backgroundColor: '#e94560', color: '#fff', borderColor: '#e94560' }
-                    : {}),
-                  opacity: comparisonCheckedCategories.size < 2 ? 0.5 : 1,
-                  position: 'relative' as const,
-                }}
-                onClick={handleCompare}
-                disabled={comparisonCheckedCategories.size < 2 || isCompareLoading}
-                title={
-                  comparisonCheckedCategories.size < 2
-                    ? 'Check 2+ categories in the cell panel to compare'
-                    : comparisonCheckedCategories.size === 2
-                      ? 'Run pairwise differential expression'
-                      : `Run marker gene analysis (${comparisonCheckedCategories.size} groups)`
-                }
-              >
-                {isCompareLoading ? 'Running...' : 'Compare'}
-                {comparisonCheckedCategories.size >= 2 && (
-                  <span
-                    style={{
-                      position: 'absolute',
-                      top: '-6px',
-                      right: '-6px',
-                      backgroundColor: '#ffd700',
-                      color: '#000',
-                      fontSize: '10px',
-                      fontWeight: 700,
-                      borderRadius: '50%',
-                      width: '16px',
-                      height: '16px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    {comparisonCheckedCategories.size}
-                  </span>
-                )}
               </button>
 
               <DisplaySettings />
@@ -1167,9 +1204,14 @@ export default function App() {
             </>
           )}
         </div>
-        <div style={styles.logoGroup}>
-          <a href="https://cahanlab.org/" target="_blank" rel="noopener noreferrer">
-            <img src="/logoGlow.png" alt="CahanLab" style={{ height: '32px' }} />
+        <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <a href="https://github.com/CahanLab/xcell" target="_blank" rel="noopener noreferrer" title="xcell on GitHub" style={{ display: 'flex', alignItems: 'center' }}>
+            <svg width="20" height="20" viewBox="0 0 16 16" fill="#888">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+            </svg>
+          </a>
+          <a href="https://cahanlab.org/" target="_blank" rel="noopener noreferrer" title="CahanLab" style={{ display: 'flex', alignItems: 'center' }}>
+            <img src="/logoGlow.png" alt="CahanLab" style={{ height: '20px' }} />
           </a>
         </div>
       </header>
@@ -1624,14 +1666,17 @@ export default function App() {
               style={{
                 position: 'absolute',
                 top: '10px',
-                left: '8px',
+                left: '-14px',
                 zIndex: 10,
-                background: 'none',
-                border: 'none',
+                background: '#16213e',
+                border: '1px solid #0f3460',
+                borderRight: 'none',
+                borderRadius: '4px 0 0 4px',
                 color: '#888',
                 fontSize: '10px',
                 cursor: 'pointer',
-                padding: '2px 4px',
+                padding: '2px 3px',
+                lineHeight: 1,
               }}
             >
               {'\u25B6'}
@@ -1978,7 +2023,7 @@ export default function App() {
                           if (entry.type === 'directory') {
                             browseDirectory(entry.path)
                           } else {
-                            // 'file' and '10x_mtx' are both loadable
+                            // 'file', '10x_mtx', and '10x_mtx_trio' are all loadable
                             setLoadFilePath(entry.path)
                             setLoadError(null)
                           }
@@ -2002,7 +2047,7 @@ export default function App() {
                         }}
                       >
                         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
-                          <span style={{ flexShrink: 0 }}>{entry.type === 'directory' ? '\uD83D\uDCC1' : entry.type === '10x_mtx' ? '\uD83D\uDDC2\uFE0F' : '\uD83D\uDCC4'}</span>
+                          <span style={{ flexShrink: 0 }}>{entry.type === 'directory' ? '\uD83D\uDCC1' : (entry.type === '10x_mtx' || entry.type === '10x_mtx_trio') ? '\uD83D\uDDC2\uFE0F' : '\uD83D\uDCC4'}</span>
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</span>
                         </span>
                         {entry.type === 'file' && entry.size != null && (

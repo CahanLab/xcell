@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useStore, ScanpyActionRecord } from '../store'
-import { appendDataset, pollTask, cancelTask } from '../hooks/useData'
+import { appendDataset, pollTask, cancelTask, runDiffExp } from '../hooks/useData'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -159,6 +159,7 @@ interface FunctionDef {
   description: string
   prerequisites: string[]
   params: ParamDef[]
+  custom?: boolean
 }
 
 interface CategoryDef {
@@ -271,6 +272,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'resolution', label: 'Resolution', type: 'number', default: 0.5, description: 'Higher = more clusters' },
           { name: 'key_added', label: 'Column name', type: 'text', default: 'leiden', description: 'Name for cluster labels' },
         ],
+      },
+      compare_cells: {
+        label: 'Compare Cells',
+        description: 'Compare cell groups: differential expression (2 groups) or marker genes (3+ groups)',
+        prerequisites: [],
+        params: [],
+        custom: true,
       },
     },
   },
@@ -587,6 +595,13 @@ export default function ScanpyModal() {
   const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
+  const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
+  const setComparisonGroup2 = useStore((state) => state.setComparisonGroup2)
+  const setDiffExpModalOpen = useStore((state) => state.setDiffExpModalOpen)
+  const setDiffExpResult = useStore((state) => state.setDiffExpResult)
+  const setDiffExpLoading = useStore((state) => state.setDiffExpLoading)
+  const setMarkerGenesModalOpen = useStore((state) => state.setMarkerGenesModalOpen)
+  const setMarkerGenesColumn = useStore((state) => state.setMarkerGenesColumn)
 
   const [selectedCategory, setSelectedCategory] = useState<CategoryKey>('preprocessing')
   const [selectedFunction, setSelectedFunction] = useState<FunctionKey>('filter_genes')
@@ -601,6 +616,13 @@ export default function ScanpyModal() {
   const [booleanColumns, setBooleanColumns] = useState<BooleanColumn[]>([])
   const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
   const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
+
+  // Compare cells state
+  const [compareColumn, setCompareColumn] = useState<string | null>(null)
+  const [compareCategories, setCompareCategories] = useState<{ value: string; count: number }[]>([])
+  const [compareChecked, setCompareChecked] = useState<Set<string>>(new Set())
+  const [compareTopN, setCompareTopN] = useState(25)
+  const [compareLoading, setCompareLoading] = useState(false)
 
   // Get current function definition
   const categoryDef = SCANPY_FUNCTIONS[selectedCategory]
@@ -714,6 +736,71 @@ export default function ScanpyModal() {
       setResult({ success: false, message: 'Failed to load variance data' })
     }
   }, [])
+
+  // Fetch categories when compareColumn changes
+  useEffect(() => {
+    if (!compareColumn) { setCompareCategories([]); setCompareChecked(new Set()); return }
+    fetch(appendDataset(`/api/obs/summary/${encodeURIComponent(compareColumn)}`))
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.categories) {
+          setCompareCategories(data.categories)
+          setCompareChecked(new Set())
+        }
+      })
+      .catch(() => setCompareCategories([]))
+  }, [compareColumn])
+
+  // Handle compare cells run
+  const handleCompareRun = useCallback(async () => {
+    if (!compareColumn || compareChecked.size < 2) return
+    setCompareLoading(true)
+    try {
+      const response = await fetch(appendDataset(`/api/obs/${encodeURIComponent(compareColumn)}`))
+      if (!response.ok) throw new Error('Failed to fetch column data')
+      const data = await response.json()
+
+      const checkedGroups = [...compareChecked]
+      const categoryIndices: Record<string, number[]> = {}
+      for (const cat of checkedGroups) categoryIndices[cat] = []
+
+      const categories = data.categories || []
+      if (data.dtype === 'category' && categories.length > 0) {
+        data.values.forEach((val: number, idx: number) => {
+          const catName = categories[val]
+          if (catName !== undefined && categoryIndices[catName]) categoryIndices[catName].push(idx)
+        })
+      } else {
+        data.values.forEach((val: string, idx: number) => {
+          if (categoryIndices[val]) categoryIndices[val].push(idx)
+        })
+      }
+
+      if (checkedGroups.length === 2) {
+        const group1 = categoryIndices[checkedGroups[0]]
+        const group2 = categoryIndices[checkedGroups[1]]
+        setComparisonGroup1(group1, checkedGroups[0])
+        setComparisonGroup2(group2, checkedGroups[1])
+        setDiffExpLoading(true)
+        setDiffExpModalOpen(true)
+        setScanpyModalOpen(false)
+        try {
+          const result = await runDiffExp(group1, group2, compareTopN)
+          setDiffExpResult(result)
+        } finally {
+          setDiffExpLoading(false)
+        }
+      } else {
+        setMarkerGenesColumn(compareColumn)
+        setMarkerGenesModalOpen(true)
+        setScanpyModalOpen(false)
+      }
+    } catch (err) {
+      setResult({ success: false, message: `Comparison failed: ${(err as Error).message}` })
+    } finally {
+      setCompareLoading(false)
+    }
+  }, [compareColumn, compareChecked, compareTopN, setComparisonGroup1, setComparisonGroup2, setDiffExpLoading, setDiffExpModalOpen, setDiffExpResult, setMarkerGenesColumn, setMarkerGenesModalOpen, setScanpyModalOpen])
 
   // Run the selected function
   const handleRun = useCallback(async () => {
@@ -1095,8 +1182,78 @@ export default function ScanpyModal() {
           </div>
         )}
 
+        {/* Compare Cells custom UI */}
+        {selectedFunction === 'compare_cells' && (
+          <div style={{ marginBottom: '16px' }}>
+            <label style={{ fontSize: '12px', color: '#aaa', display: 'block', marginBottom: '6px' }}>
+              Select .obs column
+            </label>
+            <select
+              value={compareColumn || ''}
+              onChange={(e) => setCompareColumn(e.target.value || null)}
+              style={{ width: '100%', padding: '6px 8px', fontSize: '13px', backgroundColor: '#0f3460', color: '#eee', border: '1px solid #1a1a2e', borderRadius: '4px', marginBottom: '12px' }}
+            >
+              <option value="">Choose a column...</option>
+              {schema && Object.entries(schema.obs_dtypes)
+                .filter(([, dtype]) => dtype === 'category')
+                .map(([col]) => (
+                  <option key={col} value={col}>{col}</option>
+                ))}
+            </select>
+
+            {compareCategories.length > 0 && (
+              <>
+                <label style={{ fontSize: '12px', color: '#aaa', display: 'block', marginBottom: '6px' }}>
+                  Select 2+ groups to compare ({compareChecked.size} selected)
+                </label>
+                <div style={{ maxHeight: '180px', overflowY: 'auto', border: '1px solid #1a1a2e', borderRadius: '4px', marginBottom: '12px' }}>
+                  {compareCategories.map((cat) => (
+                    <label
+                      key={cat.value}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 10px', fontSize: '12px', color: '#ccc', cursor: 'pointer', borderBottom: '1px solid #0a0f1a' }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={compareChecked.has(cat.value)}
+                        onChange={() => {
+                          setCompareChecked((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(cat.value)) next.delete(cat.value)
+                            else next.add(cat.value)
+                            return next
+                          })
+                        }}
+                      />
+                      <span style={{ flex: 1 }}>{cat.value}</span>
+                      <span style={{ fontSize: '11px', color: '#666' }}>{cat.count.toLocaleString()}</span>
+                    </label>
+                  ))}
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                  <label style={{ fontSize: '12px', color: '#aaa' }}>Top N genes</label>
+                  <input
+                    type="number"
+                    value={compareTopN}
+                    onChange={(e) => setCompareTopN(Math.max(1, parseInt(e.target.value) || 25))}
+                    style={{ width: '60px', padding: '4px 6px', fontSize: '12px', backgroundColor: '#0f3460', color: '#eee', border: '1px solid #1a1a2e', borderRadius: '4px' }}
+                  />
+                </div>
+
+                <div style={{ fontSize: '11px', color: '#888', marginBottom: '8px' }}>
+                  {compareChecked.size === 2
+                    ? 'Will run pairwise differential expression'
+                    : compareChecked.size > 2
+                      ? `Will run marker gene analysis (${compareChecked.size} groups)`
+                      : 'Select at least 2 groups'}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Parameters */}
-        {functionDef && functionDef.params.length > 0 && (
+        {functionDef && functionDef.params.length > 0 && !functionDef.custom && (
           <div style={styles.paramsSection}>
             {functionDef.params.map((param) => {
               // Skip params whose visibleWhen condition is not met
@@ -1258,22 +1415,35 @@ export default function ScanpyModal() {
           <button style={styles.cancelButton} onClick={() => setScanpyModalOpen(false)}>
             Close
           </button>
-          <button
-            style={{
-              ...styles.runButton,
-              ...(isRunning && activeTaskId
-                ? styles.runButtonCancel
-                : (isRunning || (prereqStatus && !prereqStatus.satisfied))
-                  ? styles.runButtonDisabled
-                  : {}),
-            }}
-            onClick={isRunning && activeTaskId ? handleCancel : handleRun}
-            disabled={isRunning && !activeTaskId ? true : (!isRunning && prereqStatus !== null && !prereqStatus.satisfied)}
-          >
-            {isRunning
-              ? (activeTaskId ? 'Cancel' : 'Running...')
-              : 'Run'}
-          </button>
+          {selectedFunction === 'compare_cells' ? (
+            <button
+              style={{
+                ...styles.runButton,
+                ...(compareChecked.size < 2 || compareLoading ? styles.runButtonDisabled : {}),
+              }}
+              onClick={handleCompareRun}
+              disabled={compareChecked.size < 2 || compareLoading}
+            >
+              {compareLoading ? 'Running...' : compareChecked.size === 2 ? 'Run Diff Exp' : `Run Marker Genes (${compareChecked.size})`}
+            </button>
+          ) : (
+            <button
+              style={{
+                ...styles.runButton,
+                ...(isRunning && activeTaskId
+                  ? styles.runButtonCancel
+                  : (isRunning || (prereqStatus && !prereqStatus.satisfied))
+                    ? styles.runButtonDisabled
+                    : {}),
+              }}
+              onClick={isRunning && activeTaskId ? handleCancel : handleRun}
+              disabled={isRunning && !activeTaskId ? true : (!isRunning && prereqStatus !== null && !prereqStatus.satisfied)}
+            >
+              {isRunning
+                ? (activeTaskId ? 'Cancel' : 'Running...')
+                : 'Run'}
+            </button>
+          )}
         </div>
 
         {/* History section */}

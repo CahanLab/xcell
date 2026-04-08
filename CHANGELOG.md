@@ -5,7 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- Single-line gene association (gear icon in Shapes) now uses the line's projected/linked cells instead of the global cell mask, so only cells actually linked to the line are tested
+- Fixed B-spline regression in line gene association: removed redundant intercept column that caused multicollinearity with the B-spline partition of unity, producing unreliable F-statistics and missing significant genes
+
 ### Added
+- Support for loading prefixed 10x file trios (e.g. GSM1234_barcodes.tsv.gz, GSM1234_features.tsv.gz, GSM1234_matrix.mtx.gz) common in GEO accessions — detected automatically in the file browser and loadable like standard 10x matrix folders
+- Header now shows the loaded data filename above cell/gene counts, with stacked stats layout
+- GitHub icon link and Docs link in the header for quick access to the xcell repository
+- Compare Cells feature in Analyze > Cell Analysis: select an .obs column, check 2+ groups, and run pairwise differential expression or marker gene analysis directly from the Analyze modal
+- Lasso draw tool: draw closed freehand shapes in Draw mode (like pencil but always creates a closed shape)
+- Polygon selection tool for Select mode: click vertices to define a polygon selection area, double-click to close and select cells inside
+- Select button dropdown (replaces Lasso button): choose between Lasso (freehand) and Polygon (click-based) selection tools
+- Adjust button dropdown: combines Rotate (formerly Adjust) and Quilt into a single toolbar dropdown
+
+### Changed
+- Renamed "Lasso" toolbar button to "Select" with tool dropdown for lasso and polygon selection
+- Renamed "Lines" panel to "Shapes" with updated empty-state messages
+- Renamed Adjust mode to "Rotate" within the new Adjust dropdown
+- Merged Adjust and Quilt buttons into a single "Adjust" dropdown
+- Cell Panel checkboxes now select cells (like lasso) instead of marking for comparison
+- Removed standalone "Compare" toolbar button; comparison feature is now accessed via Analyze > Cell Analysis > Compare Cells
+- Fixed Draw button dropdown arrow alignment (was appearing below the button)
+- Standardized draw tool instructions across all tools to consistent "Click and drag to..." / "Click to add..., double-click to..." format
+- Backend schema now includes `filename` field
+
+### Previously Added
 - Cancel button for long-running analysis operations (gene neighbors, spatial neighbors, spatial autocorrelation, contourize, line gene association). Operations run in the background and can be stopped without corrupting session data.
 - Line Association: analysis parameters (spline knots, FDR threshold, max genes per module) are now configurable in the Line Tools modal before running "Find Associated Genes"
 - Line Association results modal: interactive filter controls for minimum R², minimum amplitude, maximum FDR, and pattern type toggles to refine results after analysis

@@ -1,6 +1,6 @@
 # XCell
 
-Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad, 10x Genomics h5, Seurat .rds file, or 10x CellRanger matrix folder, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
+Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad, 10x Genomics h5, Seurat .rds file, 10x CellRanger matrix folder, or prefixed 10x file trio from GEO, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
 
  ![Screenshot](docs/images/xcell_screenshot.jpg)   
 
@@ -67,7 +67,11 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 
 ### 3. Select Cells
 
-- Use the **lasso tool** to draw a selection around cells
+- Click the **Select** button in the toolbar (use the dropdown arrow to choose between Lasso and Polygon tools)
+  - **Lasso**: click and drag to draw a freehand selection
+  - **Polygon**: click to add vertices, double-click to close and select cells inside
+- Hold **Shift** while selecting to add to the existing selection
+- Checkboxes in the Cell Manager also select/deselect cells by category
 - Selected cells can be masked or deleted
 
 ### 4. Run Preprocessing
@@ -105,17 +109,18 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 
 ### 9. Compare Cell Groups
 
-- Expand a categorical column in the **Cell Manager** (left panel)
-- Check the boxes next to the categories you want to compare
-- Click the **Compare** button in the toolbar:
+- Open the **Analyze** modal (top toolbar) → **Cell Analysis** → **Compare Cells**
+- Select an .obs column (e.g., `leiden`) from the dropdown
+- Check 2 or more groups to compare:
   - **2 checked** → pairwise differential expression
   - **3+ checked** → one-vs-rest marker gene analysis
+- Set **Top N genes** and click **Run**
 - You can also use lasso selection: select cells → **Set as Group 1** / **Set as Group 2** → click **Compare** in the comparison bar
 
 ### 10. Trajectory Analysis
 
 - Draw lines on the scatter plot
-- Click the gear icon on a line in the **Lines** panel to open **Line Tools**
+- Click the gear icon on a shape in the **Shapes** panel to open **Line Tools**
 - Under **Gene Association**, configure:
   - **Test against**: position along line or distance from line
   - **Gene subset**: filter to highly variable genes or other boolean columns
@@ -152,7 +157,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 
 - Click **Load** in the toolbar — the modal shows a sidebar with quick-access locations (Home, Desktop, Documents, Downloads) and recently loaded files, plus breadcrumb path navigation for clicking any ancestor directory
 - Choose **Secondary** from the "Load into" dropdown
-- Browse or enter the path to a second h5ad, h5, rds file, or 10x matrix folder and click **Load**
+- Browse or enter the path to a second h5ad, h5, rds file, 10x matrix folder, or prefixed 10x file trio and click **Load**
 - A dataset switcher dropdown appears in the header — switch between Primary and Secondary to compare datasets
 - Click the **Split** button to view both datasets side by side
 - Click on either plot to make it the active dataset — the Cell and Gene panels update accordingly
@@ -171,7 +176,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - **Trajectory analysis** — draw lines and associate genes with spatial trajectories
 - **Quilt mode** — lasso and rearrange tissue pieces: drag to translate, shift+drag to rotate, flip to reflect selected cell subsets
 - **Display settings** — adjust point size, opacity, colormaps, bivariate coloring
-- **Multi-dataset support** — load two datasets (h5ad, h5, rds, or 10x matrix folders), switch between them, or view side by side in split mode
+- **Multi-dataset support** — load two datasets (h5ad, h5, rds, 10x matrix folders, or prefixed 10x file trios from GEO), switch between them, or view side by side in split mode
 - **Export** — download annotations and analysis results
 
 ## Project Structure

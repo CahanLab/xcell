@@ -260,11 +260,16 @@ function LineToolsModal({
   }, [scanpyActionHistory])
 
   const getCellIndices = useCallback(() => {
+    // If this line has projected cells, use those
+    if (line.projections && line.projections.length > 0) {
+      return line.projections.map((p) => p.cellIndex)
+    }
+    // Otherwise fall back to active cell mask
     if (!activeCellMask) return undefined
     return activeCellMask
       .map((visible, idx) => (visible ? idx : -1))
       .filter((idx) => idx >= 0)
-  }, [activeCellMask])
+  }, [line.projections, activeCellMask])
 
   const handleFindAssociatedGenes = useCallback(async () => {
     setAssociationError(null)
@@ -961,9 +966,9 @@ export default function ShapeManager() {
         <div
           style={styles.header}
           onClick={() => setCollapsed(!collapsed)}
-          title={collapsed ? 'Expand Lines panel' : 'Collapse Lines panel'}
+          title={collapsed ? 'Expand Shapes panel' : 'Collapse Shapes panel'}
         >
-          <span style={styles.title}>Lines</span>
+          <span style={styles.title}>Shapes</span>
           <span style={styles.collapseIcon}>{collapsed ? '\u25B6' : '\u25BC'}</span>
         </div>
 
@@ -972,8 +977,8 @@ export default function ShapeManager() {
             {currentEmbeddingLines.length === 0 && (
               <div style={styles.emptyState}>
                 {hasAnyLines
-                  ? `No lines on "${selectedEmbedding}". Draw a line using the Draw tool.`
-                  : 'No lines yet. Use the Draw tool to create a line.'}
+                  ? `No shapes on "${selectedEmbedding}". Use the Draw tool to create one.`
+                  : 'No shapes yet. Use the Draw tool to create a line or shape.'}
               </div>
             )}
             {currentEmbeddingLines.map((line) => (

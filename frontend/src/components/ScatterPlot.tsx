@@ -2,7 +2,7 @@ import { useMemo, useState, useRef, useCallback, useEffect } from 'react'
 import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
-import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, ColorScale, DatasetSlot, DrawTool } from '../store'
+import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, ColorScale, DatasetSlot, DrawTool, SelectionTool } from '../store'
 
 interface ScatterPlotProps {
   slot?: DatasetSlot
@@ -249,7 +249,8 @@ export default function ScatterPlot({
   const containerRef = useRef<HTMLDivElement>(null)
   const [lassoPoints, setLassoPoints] = useState<[number, number][]>([])
   const [linePoints, setLinePoints] = useState<[number, number][]>([])
-  const [cursorPoint, setCursorPoint] = useState<[number, number] | null>(null) // for click-based draw preview
+  const [cursorPoint, setCursorPoint] = useState<[number, number] | null>(null) // for click-based draw/select preview
+  const [selectPolygonPoints, setSelectPolygonPoints] = useState<[number, number][]>([]) // for polygon selection tool
   const [isDrawing, setIsDrawing] = useState(false)
   const [viewState, setViewState] = useState<OrthographicViewState | null>(null)
 
@@ -292,6 +293,7 @@ export default function ScatterPlot({
   )
   const activeLineId = useStore((state) => state.activeLineId) // stays global
   const drawTool = useStore((state) => state.drawTool) as DrawTool
+  const selectionTool = useStore((state) => state.selectionTool) as SelectionTool
 
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
@@ -491,6 +493,10 @@ export default function ScatterPlot({
   // Handle lasso, line drawing, adjust rotation, and quilt mode
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (interactionMode === 'lasso') {
+      if (selectionTool === 'polygon') {
+        // Polygon selection: clicks handled in handleClick/handleDoubleClick
+        return
+      }
       const point = screenToData(e.clientX, e.clientY)
       if (point) {
         setIsDrawing(true)
@@ -499,7 +505,7 @@ export default function ScatterPlot({
     } else if (interactionMode === 'draw') {
       const point = screenToData(e.clientX, e.clientY)
       if (!point) return
-      if (drawTool === 'pencil') {
+      if (drawTool === 'pencil' || drawTool === 'lasso') {
         setIsDrawing(true)
         setLinePoints([point])
       }
@@ -554,7 +560,12 @@ export default function ScatterPlot({
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     // Track cursor for click-based draw tool preview
-    if (interactionMode === 'draw' && drawTool !== 'pencil' && linePoints.length > 0) {
+    if (interactionMode === 'draw' && drawTool !== 'pencil' && drawTool !== 'lasso' && linePoints.length > 0) {
+      const point = screenToData(e.clientX, e.clientY)
+      setCursorPoint(point)
+    }
+    // Track cursor for polygon selection preview
+    if (interactionMode === 'lasso' && selectionTool === 'polygon' && selectPolygonPoints.length > 0) {
       const point = screenToData(e.clientX, e.clientY)
       setCursorPoint(point)
     }
@@ -733,7 +744,7 @@ export default function ScatterPlot({
       onSelectionComplete(selectedIndices, e.shiftKey)
       setIsDrawing(false)
       setLassoPoints([])
-    } else if (interactionMode === 'draw' && drawTool === 'pencil') {
+    } else if (interactionMode === 'draw' && (drawTool === 'pencil' || drawTool === 'lasso')) {
       if (linePoints.length >= 2) {
         onLineDrawn(linePoints)
       }
@@ -768,8 +779,22 @@ export default function ScatterPlot({
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleClick = useCallback((e: React.MouseEvent) => {
+    // Polygon selection tool: add vertex
+    if (interactionMode === 'lasso' && selectionTool === 'polygon') {
+      if (clickTimerRef.current) return
+      // Show the point immediately as cursor preview
+      const immediatePoint = screenToData(e.clientX, e.clientY)
+      if (immediatePoint) setCursorPoint(immediatePoint)
+      clickTimerRef.current = setTimeout(() => {
+        clickTimerRef.current = null
+        const point = screenToData(e.clientX, e.clientY)
+        if (!point) return
+        setSelectPolygonPoints((prev) => [...prev, point])
+      }, 200)
+      return
+    }
     if (interactionMode !== 'draw') return
-    if (drawTool === 'pencil') return // pencil uses drag
+    if (drawTool === 'pencil' || drawTool === 'lasso') return // pencil/lasso use drag
     // Delay single-click to distinguish from double-click
     if (clickTimerRef.current) return // already waiting
     clickTimerRef.current = setTimeout(() => {
@@ -779,11 +804,35 @@ export default function ScatterPlot({
       setLinePoints((prev) => [...prev, point])
       setIsDrawing(true)
     }, 200)
-  }, [interactionMode, drawTool, screenToData])
+  }, [interactionMode, drawTool, selectionTool, screenToData])
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    // Polygon selection tool: close polygon and select cells
+    if (interactionMode === 'lasso' && selectionTool === 'polygon') {
+      if (clickTimerRef.current) {
+        clearTimeout(clickTimerRef.current)
+        clickTimerRef.current = null
+      }
+      e.preventDefault()
+      if (selectPolygonPoints.length < 3) {
+        setSelectPolygonPoints([])
+        setCursorPoint(null)
+        return
+      }
+      const selectedIndices: number[] = []
+      for (let i = 0; i < embedding.coordinates.length; i++) {
+        const [x, y] = embedding.coordinates[i]
+        if (pointInPolygon(x, y, selectPolygonPoints)) {
+          selectedIndices.push(i)
+        }
+      }
+      onSelectionComplete(selectedIndices, e.shiftKey)
+      setSelectPolygonPoints([])
+      setCursorPoint(null)
+      return
+    }
     if (interactionMode !== 'draw') return
-    if (drawTool === 'pencil') return
+    if (drawTool === 'pencil' || drawTool === 'lasso') return
     // Cancel pending single-click
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current)
@@ -804,16 +853,20 @@ export default function ScatterPlot({
     setIsDrawing(false)
     setLinePoints([])
     setCursorPoint(null)
-  }, [interactionMode, drawTool, linePoints, onLineDrawn])
+  }, [interactionMode, drawTool, selectionTool, linePoints, selectPolygonPoints, embedding.coordinates, onLineDrawn, onSelectionComplete])
 
-  // Clear draw state on escape or mode change
+  // Clear draw/polygon select state on mode change
   useEffect(() => {
     if (interactionMode !== 'draw') {
-      if (linePoints.length > 0 && drawTool !== 'pencil') {
+      if (linePoints.length > 0 && drawTool !== 'pencil' && drawTool !== 'lasso') {
         setLinePoints([])
         setCursorPoint(null)
         setIsDrawing(false)
       }
+    }
+    if (interactionMode !== 'lasso') {
+      setSelectPolygonPoints([])
+      setCursorPoint(null)
     }
   }, [interactionMode])
 
@@ -1018,8 +1071,8 @@ export default function ScatterPlot({
           />
         )}
 
-        {/* Currently drawing line (pencil drag) */}
-        {isDrawing && interactionMode === 'draw' && drawTool === 'pencil' && linePoints.length > 1 && (
+        {/* Currently drawing line (pencil/lasso drag) */}
+        {isDrawing && interactionMode === 'draw' && (drawTool === 'pencil' || drawTool === 'lasso') && linePoints.length > 1 && (
           <path
             d={linePath}
             fill="none"
@@ -1031,7 +1084,7 @@ export default function ScatterPlot({
         )}
 
         {/* Click-based draw tool preview */}
-        {interactionMode === 'draw' && drawTool !== 'pencil' && linePoints.length >= 1 && (() => {
+        {interactionMode === 'draw' && drawTool !== 'pencil' && drawTool !== 'lasso' && linePoints.length >= 1 && (() => {
           const previewPoints = cursorPoint ? [...linePoints, cursorPoint] : linePoints
           if (previewPoints.length < 2) return null
           const screenPts = dataToScreen(previewPoints)
@@ -1063,7 +1116,37 @@ export default function ScatterPlot({
         })()}
       </svg>
 
-      {/* Lasso mode indicator */}
+      {/* Polygon selection tool preview */}
+      {interactionMode === 'lasso' && selectionTool === 'polygon' && (selectPolygonPoints.length >= 1 || cursorPoint) && (() => {
+        const allPts = cursorPoint ? [...selectPolygonPoints, cursorPoint] : selectPolygonPoints
+        const dotPts = dataToScreen(selectPolygonPoints)
+        // Also show the cursor point as a preview dot
+        const cursorScreenPt = cursorPoint ? dataToScreen([cursorPoint]) : []
+        const hasLine = allPts.length >= 2
+        const screenPts = hasLine ? dataToScreen(allPts) : []
+        const pathD = hasLine && screenPts.length >= 2 ? `M ${screenPts.join(' L ')} Z` : ''
+        return (
+          <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 10 }}>
+            {pathD && (
+              <path
+                d={pathD}
+                fill="rgba(233, 69, 96, 0.1)"
+                stroke="#e94560"
+                strokeWidth={2}
+                strokeDasharray={cursorPoint ? '6,4' : 'none'}
+              />
+            )}
+            {dotPts.map((pt, i) => (
+              <circle key={i} cx={pt.split(',')[0]} cy={pt.split(',')[1]} r={4} fill="#e94560" />
+            ))}
+            {cursorScreenPt.length > 0 && (
+              <circle cx={cursorScreenPt[0].split(',')[0]} cy={cursorScreenPt[0].split(',')[1]} r={3} fill="#e94560" opacity={0.5} />
+            )}
+          </svg>
+        )
+      })()}
+
+      {/* Select mode indicator */}
       {interactionMode === 'lasso' && (
         <div
           style={{
@@ -1079,7 +1162,9 @@ export default function ScatterPlot({
             fontWeight: 500,
           }}
         >
-          Lasso Mode: Click and drag to select cells (hold Shift to add to selection)
+          {selectionTool === 'lasso'
+            ? 'Lasso: Click and drag to select cells (hold Shift to add)'
+            : 'Polygon: Click to add vertices, double-click to close (hold Shift to add)'}
         </div>
       )}
 
@@ -1099,7 +1184,8 @@ export default function ScatterPlot({
             fontWeight: 500,
           }}
         >
-          {drawTool === 'pencil' && 'Pencil: Click and drag to draw'}
+          {drawTool === 'pencil' && 'Pencil: Click and drag to draw freehand'}
+          {drawTool === 'lasso' && 'Lasso: Click and drag to draw closed shape'}
           {drawTool === 'polygon' && 'Polygon: Click to add vertices, double-click to close'}
           {drawTool === 'segmented' && 'Segmented Line: Click to add points, double-click to finish'}
           {drawTool === 'smooth_curve' && 'Smooth Curve: Click to add control points, double-click to finish'}
@@ -1122,7 +1208,7 @@ export default function ScatterPlot({
             fontWeight: 500,
           }}
         >
-          Adjust Mode: Shift+drag to rotate
+          Rotate: Shift+drag to rotate
         </div>
       )}
 

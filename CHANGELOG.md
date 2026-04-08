@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Cancel button for long-running analysis operations (gene neighbors, spatial neighbors, spatial autocorrelation, contourize, line gene association). Operations run in the background and can be stopped without corrupting session data.
 - Line Association: analysis parameters (spline knots, FDR threshold, max genes per module) are now configurable in the Line Tools modal before running "Find Associated Genes"
 - Line Association results modal: interactive filter controls for minimum R², minimum amplitude, maximum FDR, and pattern type toggles to refine results after analysis
 - Multi-line combined association analysis: check multiple lines with projected cells in the Lines panel, then run a pooled "Find Associated Genes" across tissue sections or replicates. Per-line direction reversal ensures consistent biological axis alignment.

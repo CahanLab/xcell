@@ -386,6 +386,9 @@ interface AppState {
   isLineAssociationLoading: boolean
   isLineAssociationModalOpen: boolean
 
+  // Background task tracking for cancellable operations
+  activeTaskId: string | null
+
   // Cell panel column management
   hiddenColumns: Set<string>  // Column names to hide from cell panel
   columnDisplayNames: Record<string, string>  // Map of original name → display name
@@ -502,6 +505,7 @@ interface AppState {
   setLineAssociationResult: (result: LineAssociationResult | null) => void
   setLineAssociationLoading: (loading: boolean) => void
   setLineAssociationModalOpen: (open: boolean) => void
+  setActiveTaskId: (taskId: string | null) => void
 
   // Column management actions
   hideColumn: (name: string) => void
@@ -670,6 +674,7 @@ export const useStore = create<AppState>((set, get) => {
     lineAssociationResult: null,
     isLineAssociationLoading: false,
     isLineAssociationModalOpen: false,
+    activeTaskId: null,
     hiddenColumns: new Set<string>(),
     columnDisplayNames: {},
     activeCellMask: null,
@@ -1107,6 +1112,7 @@ export const useStore = create<AppState>((set, get) => {
     setLineAssociationResult: (result) => set({ lineAssociationResult: result }),
     setLineAssociationLoading: (loading) => set({ isLineAssociationLoading: loading }),
     setLineAssociationModalOpen: (open) => set({ isLineAssociationModalOpen: open }),
+    setActiveTaskId: (taskId) => set({ activeTaskId: taskId }),
 
     // Column management actions (per-dataset)
     hideColumn: (name) =>

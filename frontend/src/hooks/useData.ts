@@ -20,6 +20,53 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   return response.json()
 }
 
+// --- Background task polling for cancellable operations ---
+
+export interface TaskStatus {
+  task_id: string
+  status: 'running' | 'completed' | 'cancelled' | 'error'
+  result?: Record<string, unknown>
+  error?: string
+}
+
+/** Poll a background task until it reaches a terminal state. */
+export async function pollTask(taskId: string, slot?: DatasetSlot): Promise<TaskStatus> {
+  const POLL_INTERVAL = 1000
+  const MAX_RETRIES = 3
+
+  let retries = 0
+  while (true) {
+    try {
+      const status = await fetchJson<TaskStatus>(
+        appendDataset(`${API_BASE}/tasks/${taskId}`, slot)
+      )
+      retries = 0
+
+      if (status.status !== 'running') {
+        return status
+      }
+    } catch (err) {
+      retries++
+      if (retries >= MAX_RETRIES) {
+        return {
+          task_id: taskId,
+          status: 'error',
+          error: `Lost connection to task: ${(err as Error).message}`,
+        }
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL))
+  }
+}
+
+/** Cancel a running background task. */
+export async function cancelTask(taskId: string, slot?: DatasetSlot): Promise<void> {
+  await fetchJson(appendDataset(`${API_BASE}/tasks/${taskId}/cancel`, slot), {
+    method: 'POST',
+  })
+}
+
 export function useSchema() {
   const { schema, setSchema, setLoading, setError, setSelectedEmbedding } = useStore()
 

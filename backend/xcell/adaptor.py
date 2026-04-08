@@ -1529,6 +1529,68 @@ class DataAdaptor:
             },
         }
 
+    def prepare_line_association(
+        self,
+        line_name: str,
+        cell_indices: list[int] | None = None,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        test_variable: str = 'position',
+        n_spline_knots: int = 5,
+        min_cells: int = 20,
+        fdr_threshold: float = 0.05,
+        top_n: int = 50,
+    ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
+        """Prepare line association computation (cancellable).
+
+        Validates that the named line exists (fail fast), then returns a pair of
+        functions: ``compute_fn`` (calls test_line_association, read-only) and
+        ``apply_fn`` (no-op since this operation doesn't write to adata).
+
+        Args:
+            Same as test_line_association.
+
+        Returns:
+            Tuple of (compute_fn, apply_fn)
+
+        Raises:
+            ValueError: If line not found
+        """
+        # Fail fast: validate line exists
+        line_found = False
+        for l in self._drawn_lines:
+            if l.get('name') == line_name:
+                line_found = True
+                break
+        if not line_found:
+            raise ValueError(f"Line '{line_name}' not found")
+
+        # Snapshot parameters
+        snap_line_name = line_name
+        snap_cell_indices = cell_indices
+        snap_gene_subset = gene_subset
+        snap_test_variable = test_variable
+        snap_n_spline_knots = n_spline_knots
+        snap_min_cells = min_cells
+        snap_fdr_threshold = fdr_threshold
+        snap_top_n = top_n
+
+        def compute_fn() -> dict[str, Any]:
+            return self.test_line_association(
+                line_name=snap_line_name,
+                cell_indices=snap_cell_indices,
+                gene_subset=snap_gene_subset,
+                test_variable=snap_test_variable,
+                n_spline_knots=snap_n_spline_knots,
+                min_cells=snap_min_cells,
+                fdr_threshold=snap_fdr_threshold,
+                top_n=snap_top_n,
+            )
+
+        def apply_fn(result: dict[str, Any]) -> None:
+            pass  # Read-only operation, nothing to apply
+
+        return compute_fn, apply_fn
+
     def test_line_association(
         self,
         line_name: str,
@@ -1654,6 +1716,62 @@ class DataAdaptor:
         result['test_variable'] = test_variable
 
         return result
+
+    def prepare_multi_line_association(
+        self,
+        lines: list[dict[str, Any]],
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        test_variable: str = 'position',
+        n_spline_knots: int = 5,
+        min_cells: int = 20,
+        fdr_threshold: float = 0.05,
+        top_n: int = 50,
+    ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
+        """Prepare multi-line association computation (cancellable).
+
+        Validates that all named lines exist (fail fast), then returns a pair of
+        functions: ``compute_fn`` (calls test_multi_line_association, read-only)
+        and ``apply_fn`` (no-op since this operation doesn't write to adata).
+
+        Args:
+            Same as test_multi_line_association.
+
+        Returns:
+            Tuple of (compute_fn, apply_fn)
+
+        Raises:
+            ValueError: If any line not found
+        """
+        # Fail fast: validate all lines exist
+        line_names_set = {l.get('name') for l in self._drawn_lines}
+        for entry in lines:
+            if entry['name'] not in line_names_set:
+                raise ValueError(f"Line '{entry['name']}' not found")
+
+        # Snapshot parameters
+        snap_lines = lines
+        snap_gene_subset = gene_subset
+        snap_test_variable = test_variable
+        snap_n_spline_knots = n_spline_knots
+        snap_min_cells = min_cells
+        snap_fdr_threshold = fdr_threshold
+        snap_top_n = top_n
+
+        def compute_fn() -> dict[str, Any]:
+            return self.test_multi_line_association(
+                lines=snap_lines,
+                gene_subset=snap_gene_subset,
+                test_variable=snap_test_variable,
+                n_spline_knots=snap_n_spline_knots,
+                min_cells=snap_min_cells,
+                fdr_threshold=snap_fdr_threshold,
+                top_n=snap_top_n,
+            )
+
+        def apply_fn(result: dict[str, Any]) -> None:
+            pass  # Read-only operation, nothing to apply
+
+        return compute_fn, apply_fn
 
     def test_multi_line_association(
         self,

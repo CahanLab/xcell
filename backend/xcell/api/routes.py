@@ -1043,30 +1043,12 @@ class LineAssociationResponse(BaseModel):
     diagnostics: LineAssociationDiagnostics | None = None
 
 
-@router.post("/lines/association", response_model=LineAssociationResponse)
+@router.post("/lines/association", status_code=202)
 def test_line_association(request: LineAssociationRequest, dataset: str | None = Query(None)):
-    """Test genes for association with position along a line.
-
-    Uses cubic B-spline regression to model gene expression as a function
-    of position along the line, then tests significance via F-test.
-
-    Args:
-        line_name: Name of the line to test against
-        cell_indices: Optional list of cell indices to use
-        n_spline_knots: Number of interior knots for spline (default: 5)
-        min_cells: Minimum cells required (default: 20)
-        fdr_threshold: FDR significance threshold (default: 0.05)
-        top_n: Number of top genes per direction (default: 50)
-        use_log1p: Apply log1p transform (default: True)
-
-    Returns:
-        Genes with expression associated with line position:
-        - positive: genes increasing along line
-        - negative: genes decreasing along line
-    """
+    """Test genes for association with a line (cancellable background task)."""
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.test_line_association(
+        compute_fn, apply_fn = adaptor.prepare_line_association(
             line_name=request.line_name,
             cell_indices=request.cell_indices,
             gene_subset=request.gene_subset,
@@ -1076,6 +1058,8 @@ def test_line_association(request: LineAssociationRequest, dataset: str | None =
             fdr_threshold=request.fdr_threshold,
             top_n=request.top_n,
         )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1098,20 +1082,12 @@ class MultiLineAssociationRequest(BaseModel):
     top_n: int = 50
 
 
-@router.post("/lines/multi-association", response_model=LineAssociationResponse)
+@router.post("/lines/multi-association", status_code=202)
 def test_multi_line_association(request: MultiLineAssociationRequest, dataset: str | None = Query(None)):
-    """Test genes for association across multiple lines (pooled analysis).
-
-    Projects cells from each line onto their respective geometry, pools them,
-    and runs cubic B-spline regression to find genes associated with position
-    along or distance from the combined trajectory.
-
-    Returns:
-        Genes with expression associated with pooled line position.
-    """
+    """Test genes for association across multiple lines (cancellable background task)."""
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.test_multi_line_association(
+        compute_fn, apply_fn = adaptor.prepare_multi_line_association(
             lines=[{'name': e.name, 'cell_indices': e.cell_indices, 'reversed': e.reversed} for e in request.lines],
             gene_subset=request.gene_subset,
             test_variable=request.test_variable,
@@ -1120,6 +1096,8 @@ def test_multi_line_association(request: MultiLineAssociationRequest, dataset: s
             fdr_threshold=request.fdr_threshold,
             top_n=request.top_n,
         )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -1698,25 +1698,16 @@ def get_gene_pca_variance(dataset: str | None = Query(None)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/scanpy/gene_neighbors")
+@router.post("/scanpy/gene_neighbors", status_code=202)
 def run_gene_neighbors(request: GeneNeighborsRequest, dataset: str | None = Query(None)):
-    """Compute gene-gene kNN graph from gene PCA or raw expression.
-
-    When basis='gene_pca', requires gene_pca to be computed first.
-    When basis='expression', computes directly from the expression matrix.
-    Results stored in .varp['gene_connectivities'] and .varp['gene_distances'].
-
-    Returns:
-        Operation status
-    """
+    """Compute gene-gene kNN graph (cancellable background task)."""
     adaptor = get_adaptor(dataset)
     try:
-        # Convert Pydantic model to dict if needed
         gene_subset = request.gene_subset
         if isinstance(gene_subset, GeneSubsetSpec):
             gene_subset = {'columns': gene_subset.columns, 'operation': gene_subset.operation}
 
-        return adaptor.run_gene_neighbors(
+        compute_fn, apply_fn = adaptor.prepare_gene_neighbors(
             n_neighbors=request.n_neighbors,
             metric=request.metric,
             basis=request.basis,
@@ -1724,6 +1715,8 @@ def run_gene_neighbors(request: GeneNeighborsRequest, dataset: str | None = Quer
             scale=request.scale,
             active_cell_indices=request.active_cell_indices,
         )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

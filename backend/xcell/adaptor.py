@@ -7,7 +7,7 @@ analysis functions.
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import anndata
 import numpy as np
@@ -3125,6 +3125,177 @@ class DataAdaptor:
             'n_comps_computed': info['n_comps_computed'],
             'elbow_index': info.get('elbow_index'),
         }
+
+    def prepare_gene_neighbors(
+        self,
+        n_neighbors: int = 15,
+        metric: str = 'euclidean',
+        basis: str = 'gene_pca',
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        scale: bool = True,
+        active_cell_indices: list[int] | None = None,
+    ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
+        """Prepare gene-gene kNN graph computation (cancellable).
+
+        Validates inputs and snapshots data upfront, then returns a pair of
+        functions: ``compute_fn`` (pure, no side-effects) and ``apply_fn``
+        (writes results into ``self.adata``).
+
+        Args:
+            n_neighbors: Number of neighbors per gene
+            metric: Distance metric ('euclidean', 'cosine', 'pearson')
+            basis: 'gene_pca' to use PCA embedding, 'expression' to use raw expression
+            gene_subset: Gene filtering (only used when basis='expression').
+                Can be str (boolean column), list[str] (gene names), or dict (multi-column spec).
+            scale: Z-score scale genes before computing neighbors (only used when basis='expression')
+            active_cell_indices: Optional cell subset (only used when basis='expression')
+
+        Returns:
+            Tuple of (compute_fn, apply_fn)
+        """
+        from sklearn.neighbors import NearestNeighbors
+        from scipy import sparse
+
+        n_genes_total = self.adata.n_vars
+        subset_type = 'all'
+
+        if basis == 'gene_pca':
+            if 'X_gene_pca' not in self.adata.varm:
+                raise ValueError("Gene PCA has not been computed. Run gene_pca first.")
+
+            gene_pcs = self.adata.varm['X_gene_pca'].copy()
+            valid_mask = ~np.isnan(gene_pcs[:, 0])
+            valid_indices = np.where(valid_mask)[0]
+            representation = gene_pcs[valid_mask, :]
+
+            pca_info = self.adata.uns.get('gene_pca', {})
+            subset_type = pca_info.get('gene_subset_type', 'all')
+
+        elif basis == 'expression':
+            from sklearn.preprocessing import StandardScaler
+
+            if gene_subset is not None:
+                gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+            else:
+                gene_mask = np.ones(self.adata.n_vars, dtype=bool)
+
+            valid_mask = gene_mask
+            valid_indices = np.where(valid_mask)[0]
+
+            cell_indices = self._validate_cell_indices(active_cell_indices)
+            if cell_indices is not None:
+                X = self.adata.X[cell_indices][:, gene_mask].T
+            else:
+                X = self.adata.X[:, gene_mask].T
+
+            if sparse.issparse(X):
+                X = X.toarray()
+            X = np.asarray(X, dtype=np.float64)
+            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+            if scale:
+                scaler = StandardScaler()
+                X = scaler.fit_transform(X)
+
+            representation = X
+        else:
+            raise ValueError(f"Unknown basis: {basis}. Must be 'gene_pca' or 'expression'.")
+
+        n_genes_valid = len(valid_indices)
+        if n_genes_valid == 0:
+            raise ValueError("No genes with valid embeddings/expression")
+
+        n_neighbors = min(n_neighbors, n_genes_valid - 1)
+
+        # Snapshot all data needed by compute_fn
+        snap_representation = representation.copy()
+        snap_valid_indices = valid_indices.copy()
+        snap_n_genes_total = n_genes_total
+        snap_n_genes_valid = n_genes_valid
+        snap_n_neighbors = n_neighbors
+        snap_metric = metric
+        snap_basis = basis
+        snap_subset_type = subset_type
+
+        def compute_fn() -> dict[str, Any]:
+            from sklearn.neighbors import NearestNeighbors
+            from scipy import sparse
+
+            if snap_metric == 'pearson':
+                corr_matrix = np.corrcoef(snap_representation)
+                corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
+                dist_full = 1.0 - corr_matrix
+                np.fill_diagonal(dist_full, 0.0)
+                nn = NearestNeighbors(n_neighbors=snap_n_neighbors + 1, metric='precomputed')
+                nn.fit(dist_full)
+                distances, indices = nn.kneighbors(dist_full)
+            else:
+                nn = NearestNeighbors(n_neighbors=snap_n_neighbors + 1, metric=snap_metric)
+                nn.fit(snap_representation)
+                distances, indices = nn.kneighbors(snap_representation)
+
+            rows = []
+            cols = []
+            dists = []
+            for i_valid in range(snap_n_genes_valid):
+                i_original = snap_valid_indices[i_valid]
+                for j_idx in range(1, snap_n_neighbors + 1):
+                    j_valid = indices[i_valid, j_idx]
+                    j_original = snap_valid_indices[j_valid]
+                    rows.append(i_original)
+                    cols.append(j_original)
+                    dists.append(distances[i_valid, j_idx])
+
+            dist_matrix = sparse.csr_matrix(
+                (dists, (rows, cols)),
+                shape=(snap_n_genes_total, snap_n_genes_total)
+            )
+
+            conn_weights = [1.0 / (1.0 + d) for d in dists]
+            conn_matrix = sparse.csr_matrix(
+                (conn_weights, (rows, cols)),
+                shape=(snap_n_genes_total, snap_n_genes_total)
+            )
+
+            return {
+                'dist_matrix': dist_matrix,
+                'conn_matrix': conn_matrix,
+                'n_neighbors': snap_n_neighbors,
+                'metric': snap_metric,
+                'basis': snap_basis,
+                'n_genes_valid': snap_n_genes_valid,
+                'n_genes_total': snap_n_genes_total,
+                'subset_type': snap_subset_type,
+            }
+
+        def apply_fn(result: dict[str, Any]) -> None:
+            self.adata.varp['gene_distances'] = result['dist_matrix']
+            self.adata.varp['gene_connectivities'] = result['conn_matrix']
+
+            self.adata.uns['gene_neighbors'] = {
+                'n_neighbors': result['n_neighbors'],
+                'metric': result['metric'],
+                'basis': result['basis'],
+                'n_genes_in_graph': result['n_genes_valid'],
+                'gene_subset_type': result['subset_type'],
+            }
+
+            status_result = {
+                'status': 'completed',
+                'n_neighbors': result['n_neighbors'],
+                'metric': result['metric'],
+                'basis': result['basis'],
+                'n_genes': result['n_genes_valid'],
+                'n_genes_total': result['n_genes_total'],
+                'gene_subset_type': result['subset_type'],
+            }
+            self._log_action('gene_neighbors', {
+                'n_neighbors': result['n_neighbors'],
+                'metric': result['metric'],
+                'basis': result['basis'],
+            }, status_result)
+
+        return compute_fn, apply_fn
 
     def run_gene_neighbors(
         self,

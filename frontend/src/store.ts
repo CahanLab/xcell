@@ -42,6 +42,7 @@ export interface GeneSet {
   id: string
   name: string
   genes: string[]
+  pinned?: boolean
 }
 
 // Category types for organizing gene sets
@@ -53,6 +54,7 @@ export interface GeneSetFolder {
   expanded: boolean
   geneSets: GeneSet[]
   createdAt: string
+  pinned?: boolean
 }
 
 export interface GeneSetCategory {
@@ -61,6 +63,7 @@ export interface GeneSetCategory {
   expanded: boolean
   folders: GeneSetFolder[]  // Subfolders (for gene_clusters, diff_exp)
   geneSets: GeneSet[]  // Direct gene sets (for similar_genes, manual)
+  visible?: boolean
 }
 
 // Default category configuration
@@ -384,6 +387,12 @@ interface AppState {
   diffExpResult: DiffExpResult | null
   isDiffExpLoading: boolean
   isDiffExpModalOpen: boolean
+  clusterModalSourceSet: {
+    name: string
+    genes: string[]
+    categoryType: GeneSetCategoryType
+    folderId: string | null
+  } | null
 
   // Line association state
   lineAssociationResult: LineAssociationResult | null
@@ -485,6 +494,23 @@ interface AppState {
   addGenesToCategorySet: (categoryType: GeneSetCategoryType, geneSetId: string, genes: string[]) => void
   removeGenesFromCategorySet: (categoryType: GeneSetCategoryType, geneSetId: string, genes: string[]) => void
   renameCategoryGeneSet: (categoryType: GeneSetCategoryType, geneSetId: string, newName: string) => void
+  toggleSetPinned: (categoryType: GeneSetCategoryType, folderId: string | null, geneSetId: string) => void
+  toggleFolderPinned: (categoryType: GeneSetCategoryType, folderId: string) => void
+  toggleCategoryVisible: (categoryType: GeneSetCategoryType) => void
+  renameFolder: (categoryType: GeneSetCategoryType, folderId: string, newName: string) => void
+  moveGeneSetToFolder: (
+    categoryType: GeneSetCategoryType,
+    geneSetId: string,
+    destFolderId: string | null,
+    sourceFolderId: string | null,
+  ) => void
+  reorderGeneSet: (
+    categoryType: GeneSetCategoryType,
+    folderId: string | null,
+    geneSetId: string,
+    targetIndex: number,
+  ) => void
+  reorderFolder: (categoryType: GeneSetCategoryType, folderId: string, targetIndex: number) => void
 
   // Cell selection actions
   setSelectedCellIndices: (indices: number[]) => void
@@ -505,6 +531,12 @@ interface AppState {
   setDiffExpResult: (result: DiffExpResult | null) => void
   setDiffExpLoading: (loading: boolean) => void
   setDiffExpModalOpen: (open: boolean) => void
+  setClusterModalSourceSet: (src: {
+    name: string
+    genes: string[]
+    categoryType: GeneSetCategoryType
+    folderId: string | null
+  } | null) => void
 
   // Line association actions
   setLineAssociationResult: (result: LineAssociationResult | null) => void
@@ -677,6 +709,7 @@ export const useStore = create<AppState>((set, get) => {
     diffExpResult: null,
     isDiffExpLoading: false,
     isDiffExpModalOpen: false,
+    clusterModalSourceSet: null,
     lineAssociationResult: null,
     isLineAssociationLoading: false,
     isLineAssociationModalOpen: false,
@@ -1068,6 +1101,208 @@ export const useStore = create<AppState>((set, get) => {
         }
       }),
 
+    toggleSetPinned: (categoryType, folderId, geneSetId) =>
+      set((state) => {
+        const category = state.geneSetCategories[categoryType]
+        if (folderId === null) {
+          return {
+            geneSetCategories: {
+              ...state.geneSetCategories,
+              [categoryType]: {
+                ...category,
+                geneSets: category.geneSets.map((gs) =>
+                  gs.id === geneSetId ? { ...gs, pinned: !gs.pinned } : gs
+                ),
+              },
+            },
+          }
+        }
+        return {
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            [categoryType]: {
+              ...category,
+              folders: category.folders.map((f) =>
+                f.id === folderId
+                  ? {
+                      ...f,
+                      geneSets: f.geneSets.map((gs) =>
+                        gs.id === geneSetId ? { ...gs, pinned: !gs.pinned } : gs
+                      ),
+                    }
+                  : f
+              ),
+            },
+          },
+        }
+      }),
+
+    toggleFolderPinned: (categoryType, folderId) =>
+      set((state) => ({
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            folders: state.geneSetCategories[categoryType].folders.map((f) =>
+              f.id === folderId ? { ...f, pinned: !f.pinned } : f
+            ),
+          },
+        },
+      })),
+
+    toggleCategoryVisible: (categoryType) =>
+      set((state) => ({
+        geneSetCategories: {
+          ...state.geneSetCategories,
+          [categoryType]: {
+            ...state.geneSetCategories[categoryType],
+            visible: state.geneSetCategories[categoryType].visible === false,
+          },
+        },
+      })),
+
+    renameFolder: (categoryType, folderId, newName) =>
+      set((state) => {
+        const trimmed = newName.trim()
+        if (!trimmed) return {}
+        return {
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            [categoryType]: {
+              ...state.geneSetCategories[categoryType],
+              folders: state.geneSetCategories[categoryType].folders.map((f) =>
+                f.id === folderId ? { ...f, name: trimmed } : f
+              ),
+            },
+          },
+        }
+      }),
+
+    moveGeneSetToFolder: (categoryType, geneSetId, destFolderId, sourceFolderId) =>
+      set((state) => {
+        // Same-container "move" is not a move — use reorderGeneSet for that.
+        // Bail out to avoid accidentally appending the set to the end of its
+        // own container.
+        if (sourceFolderId === destFolderId) return {}
+
+        const category = state.geneSetCategories[categoryType]
+
+        let movedSet: GeneSet | null = null
+        let newTopLevel = category.geneSets
+        let newFolders = category.folders
+
+        if (sourceFolderId === null) {
+          const idx = category.geneSets.findIndex((gs) => gs.id === geneSetId)
+          if (idx === -1) return {}
+          movedSet = category.geneSets[idx]
+          newTopLevel = [
+            ...category.geneSets.slice(0, idx),
+            ...category.geneSets.slice(idx + 1),
+          ]
+        } else {
+          const sourceFolder = category.folders.find((f) => f.id === sourceFolderId)
+          if (!sourceFolder) return {}
+          const idx = sourceFolder.geneSets.findIndex((gs) => gs.id === geneSetId)
+          if (idx === -1) return {}
+          movedSet = sourceFolder.geneSets[idx]
+          newFolders = category.folders.map((f) =>
+            f.id === sourceFolderId
+              ? {
+                  ...f,
+                  geneSets: [
+                    ...f.geneSets.slice(0, idx),
+                    ...f.geneSets.slice(idx + 1),
+                  ],
+                }
+              : f
+          )
+        }
+
+        if (!movedSet) return {}
+
+        if (destFolderId === null) {
+          newTopLevel = [...newTopLevel, movedSet]
+        } else {
+          newFolders = newFolders.map((f) =>
+            f.id === destFolderId
+              ? { ...f, geneSets: [...f.geneSets, movedSet!] }
+              : f
+          )
+        }
+
+        return {
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            [categoryType]: {
+              ...category,
+              geneSets: newTopLevel,
+              folders: newFolders,
+            },
+          },
+        }
+      }),
+
+    reorderGeneSet: (categoryType, folderId, geneSetId, targetIndex) =>
+      set((state) => {
+        const category = state.geneSetCategories[categoryType]
+
+        const reorderList = (list: GeneSet[]): GeneSet[] => {
+          const idx = list.findIndex((gs) => gs.id === geneSetId)
+          if (idx === -1) return list
+          const next = [...list]
+          const [moved] = next.splice(idx, 1)
+          // targetIndex is expected to be a post-removal index — the caller
+          // in GenePanel.tsx adjusts for source-before-target so we can
+          // just splice directly. We still clamp defensively.
+          const clamped = Math.max(0, Math.min(targetIndex, next.length))
+          next.splice(clamped, 0, moved)
+          return next
+        }
+
+        if (folderId === null) {
+          return {
+            geneSetCategories: {
+              ...state.geneSetCategories,
+              [categoryType]: {
+                ...category,
+                geneSets: reorderList(category.geneSets),
+              },
+            },
+          }
+        }
+        return {
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            [categoryType]: {
+              ...category,
+              folders: category.folders.map((f) =>
+                f.id === folderId ? { ...f, geneSets: reorderList(f.geneSets) } : f
+              ),
+            },
+          },
+        }
+      }),
+
+    reorderFolder: (categoryType, folderId, targetIndex) =>
+      set((state) => {
+        const category = state.geneSetCategories[categoryType]
+        const idx = category.folders.findIndex((f) => f.id === folderId)
+        if (idx === -1) return {}
+        const next = [...category.folders]
+        const [moved] = next.splice(idx, 1)
+        const clamped = Math.max(0, Math.min(targetIndex, next.length))
+        next.splice(clamped, 0, moved)
+        return {
+          geneSetCategories: {
+            ...state.geneSetCategories,
+            [categoryType]: {
+              ...category,
+              folders: next,
+            },
+          },
+        }
+      }),
+
     // Cell selection actions (per-dataset)
     setSelectedCellIndices: (indices) => set(dsUpdate({ selectedCellIndices: indices })),
     addToSelection: (indices) =>
@@ -1114,6 +1349,7 @@ export const useStore = create<AppState>((set, get) => {
     setDiffExpResult: (result) => set({ diffExpResult: result }),
     setDiffExpLoading: (loading) => set({ isDiffExpLoading: loading }),
     setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
+    setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
 
     // Line association actions (global)
     setLineAssociationResult: (result) => set({ lineAssociationResult: result }),

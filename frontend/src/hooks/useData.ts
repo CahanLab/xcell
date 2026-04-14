@@ -1104,3 +1104,35 @@ export async function createLineEmbedding(
     }),
   })
 }
+
+export async function runClusterGeneSet(
+  params: {
+    geneNames: string[]
+    method: 'hierarchical' | 'kmeans'
+    k: number
+    cellContext: 'all' | 'selection' | 'annotation'
+    cellIndices?: number[]
+    annotationColumn?: string
+    annotationValues?: string[]
+  },
+  slot?: DatasetSlot,
+): Promise<{ clusters: string[][] }> {
+  const response = await fetch(appendDataset(`${API_BASE}/cluster_gene_set`, slot), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      gene_names: params.geneNames,
+      method: params.method,
+      k: params.k,
+      cell_context: params.cellContext,
+      cell_indices: params.cellIndices,
+      annotation_column: params.annotationColumn,
+      annotation_values: params.annotationValues,
+    }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: 'Unknown error' }))
+    throw new Error(err.detail || 'Cluster gene set failed')
+  }
+  return response.json()
+}

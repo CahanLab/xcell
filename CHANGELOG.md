@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Fixed B-spline regression in line gene association: removed redundant intercept column that caused multicollinearity with the B-spline partition of unity, producing unreliable F-statistics and missing significant genes
 
 ### Added
+- Overflow menu (`⋯`) on gene set and folder rows, consolidating Pin/Unpin and other secondary actions. On manual folder rows, the per-folder export moves into this menu as an `Export ▸` submenu.
+- "Cluster genes…" action in the gene set overflow menu: sub-cluster a chosen gene set into K groups by expression pattern using hierarchical (Ward / correlation distance) or K-means. Supports running over all cells, the current lasso selection, or an annotation category. Results appear as a new folder under Gene Clusters.
+- Manual gene set folders in the Gene Panel: create via a `+ 📁` button, rename via double-click, delete with a confirm dialog for non-empty folders. Sets can be created directly inside a folder or dragged in from the top level.
+- Drag-reorder for gene sets (within the Manual category) and folders (in any category), with a teal insertion indicator above/below the drop target.
+- Pinning for gene sets and folders: float an item to the top of its container via the `⋯` overflow menu. Pin state survives moves but is not exported.
+- Hide/unhide for gene set categories: the 👁 button hides a whole category; a footer at the bottom of the Gene Panel lists hidden categories with per-category Unhide buttons.
+- Per-folder export for manual folders to JSON, GMT, or CSV via the `⋯` overflow menu `Export ▸` submenu on the folder row.
 - Support for loading prefixed 10x file trios (e.g. GSM1234_barcodes.tsv.gz, GSM1234_features.tsv.gz, GSM1234_matrix.mtx.gz) common in GEO accessions — detected automatically in the file browser and loadable like standard 10x matrix folders
 - Header now shows the loaded data filename above cell/gene counts, with stacked stats layout
 - GitHub icon link and Docs link in the header for quick access to the xcell repository
@@ -20,6 +27,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Adjust button dropdown: combines Rotate (formerly Adjust) and Quilt into a single toolbar dropdown
 
 ### Changed
+- Pin icons (`📌`) and the folder export icon (`⬇`) are no longer direct-click buttons on gene set / folder rows; they live inside the new overflow (`⋯`) menu. Functionality is unchanged.
 - Renamed "Lasso" toolbar button to "Select" with tool dropdown for lasso and polygon selection
 - Renamed "Lines" panel to "Shapes" with updated empty-state messages
 - Renamed Adjust mode to "Rotate" within the new Adjust dropdown

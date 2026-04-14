@@ -3820,6 +3820,90 @@ class DataAdaptor:
         }, result)
         return result
 
+    def cluster_gene_set(
+        self,
+        gene_names: list[str],
+        method: str,
+        k: int,
+        cell_indices: list[int] | None = None,
+    ) -> list[list[str]]:
+        """Cluster a set of genes by expression pattern across cells.
+
+        Uses the normalized (normalize_total + log1p) expression matrix so
+        results match the rest of the gene-analysis code path.
+
+        Args:
+            gene_names: Gene symbols to cluster. Unknown names are dropped.
+            method: 'hierarchical' (Ward linkage on correlation distance)
+                    or 'kmeans' (K-means on raw gene expression vectors).
+            k: Number of clusters to produce. Must be at least 2.
+            cell_indices: Optional subset of cells. None means all cells.
+
+        Returns:
+            A list of length up to k where each element is a list of gene
+            names belonging to that cluster. Deterministic ordering by
+            cluster id. K-means may return fewer than k groups if it
+            collapses an empty cluster; the UI handles this.
+        """
+        if method not in ('hierarchical', 'kmeans'):
+            raise ValueError(f"Unknown method: {method}")
+        if k < 2:
+            raise ValueError(f"k must be at least 2, got {k}")
+
+        var_names = self.adata.var_names
+        found_genes: list[str] = []
+        gene_idx: list[int] = []
+        for name in gene_names:
+            if name in var_names:
+                found_genes.append(name)
+                gene_idx.append(int(var_names.get_loc(name)))
+        if len(found_genes) < k:
+            raise ValueError(
+                f"cluster_gene_set: need at least {k} known genes, got {len(found_genes)}"
+            )
+
+        adata_norm = self.normalized_adata
+        if cell_indices is not None:
+            if len(cell_indices) == 0:
+                raise ValueError("Cell subset is empty")
+            cell_arr = np.asarray(cell_indices, dtype=np.int64)
+            X = adata_norm.X[cell_arr, :][:, gene_idx]
+        else:
+            X = adata_norm.X[:, gene_idx]
+
+        import scipy.sparse
+        if scipy.sparse.issparse(X):
+            X = X.toarray()
+        X = np.asarray(X)
+        # Shape here is (n_cells_subset, n_genes_found). Transpose so
+        # each row is one gene's profile across the selected cells.
+        X_genes = X.T
+
+        if method == 'hierarchical':
+            from scipy.spatial.distance import pdist
+            from scipy.cluster.hierarchy import linkage, fcluster
+            dist = pdist(X_genes, metric='correlation')
+            # Guard against numerical issues (correlation distance can
+            # produce tiny negatives or slight >2 values).
+            dist = np.clip(dist, 0, 2)
+            if not np.isfinite(dist).all():
+                raise ValueError(
+                    "Cannot cluster: one or more genes have zero variance "
+                    "across the selected cells"
+                )
+            Z = linkage(dist, method='ward')
+            labels = fcluster(Z, t=k, criterion='maxclust')  # 1-indexed
+        else:  # kmeans
+            from sklearn.cluster import KMeans
+            km = KMeans(n_clusters=k, n_init=10, random_state=0)
+            labels = km.fit_predict(X_genes)  # 0-indexed
+
+        # Partition found_genes by cluster label.
+        partition: dict[int, list[str]] = {}
+        for gene, label in zip(found_genes, labels):
+            partition.setdefault(int(label), []).append(gene)
+        return [partition[key] for key in sorted(partition.keys())]
+
     def run_build_gene_graph(
         self,
         n_pcs: int | None = None,

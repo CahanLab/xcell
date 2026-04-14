@@ -49,6 +49,43 @@ def list_adaptors() -> dict[str, dict]:
     }
 
 
+def _resolve_cell_context(
+    adaptor,
+    context: str,
+    indices: list[int] | None,
+    annotation_column: str | None,
+    annotation_values: list[str] | None,
+) -> list[int] | None:
+    """Translate a cluster_gene_set cell_context request into a concrete
+    list of cell indices (or None for "all cells")."""
+    if context == 'all':
+        return None
+    if context == 'selection':
+        if not indices:
+            raise HTTPException(
+                status_code=400,
+                detail="cell_context='selection' requires non-empty cell_indices",
+            )
+        return indices
+    if context == 'annotation':
+        if not annotation_column or not annotation_values:
+            raise HTTPException(
+                status_code=400,
+                detail="cell_context='annotation' requires annotation_column and annotation_values",
+            )
+        col = adaptor.adata.obs[annotation_column]
+        mask = col.isin(annotation_values)
+        import numpy as np
+        resolved = np.flatnonzero(mask.values).tolist()
+        if not resolved:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No cells matched {annotation_column}={annotation_values}",
+            )
+        return resolved
+    raise HTTPException(status_code=400, detail=f"Unknown cell_context: {context}")
+
+
 @router.get("/browse")
 def browse_filesystem(path: str | None = None):
     """List directories and .h5ad/.h5/.rds files at the given path.
@@ -818,6 +855,16 @@ class MarkerGenesRequest(BaseModel):
     max_out_group_fraction: float | None = None
     min_fold_change: float | None = None
     gene_subset: str | None = None
+
+
+class ClusterGeneSetRequest(BaseModel):
+    gene_names: list[str]
+    method: str  # 'hierarchical' | 'kmeans'
+    k: int
+    cell_context: str  # 'all' | 'selection' | 'annotation'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
 
 
 class MarkerGeneEntry(BaseModel):
@@ -2023,3 +2070,25 @@ def cancel_task(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     task_manager.cancel(task_id)
     return {"task_id": task_id, "status": "cancelling"}
+
+
+@router.post("/cluster_gene_set")
+def cluster_gene_set_route(req: ClusterGeneSetRequest, dataset: str | None = Query(None)):
+    adaptor = get_adaptor(dataset)
+    cell_indices = _resolve_cell_context(
+        adaptor,
+        context=req.cell_context,
+        indices=req.cell_indices,
+        annotation_column=req.annotation_column,
+        annotation_values=req.annotation_values,
+    )
+    try:
+        clusters = adaptor.cluster_gene_set(
+            gene_names=req.gene_names,
+            method=req.method,
+            k=req.k,
+            cell_indices=cell_indices,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"clusters": clusters}

@@ -107,6 +107,46 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - Create gene sets manually in Gene Manager
 - Import gene lists from files
 
+### Curating gene sets into folders
+
+The Manual category at the top of the Gene Panel is the home for gene sets
+you create by hand. Click `+ 📁` to create a named folder (e.g. "Fig 3 markers").
+Inside a folder, click `+` to add a new empty set, or drag an existing
+top-level set onto the folder row to move it in. Drag a set back onto the thin
+strip above the first folder to move it out. Drag sets within the same container
+to reorder them.
+
+Each gene set and folder row has a `⋯` button with secondary actions.
+On a gene set row, that's where you find Pin and Cluster genes.
+On a manual folder row, that's where you find Pin and Export (JSON/GMT/CSV).
+
+Use the `Pin/Unpin` option in the `⋯` menu on any set or folder to float it to
+the top of its container. Pinning works in every category — including
+auto-generated ones — and survives moving a set between folders.
+
+The `Export ▸` option in the `⋯` menu on any manual folder lets you export just
+that folder's gene sets to JSON, GMT, or CSV. Filename defaults to the sanitized
+folder name. JSON round-trips via the existing Import modal.
+
+Use the 👁 button on a category header to hide a whole category from view
+(useful when an analysis has filled `Gene Clusters` or `Differential Expression`
+with results you're done with). A `N hidden ▸` footer appears at the bottom of
+the Gene Panel — click it and then Unhide to bring a category back.
+
+Tip: double-click any gene set name or manual folder name to rename it inline.
+
+### Sub-clustering a gene set
+
+Any gene set with at least 4 genes can be sub-clustered by expression
+pattern. Click the `⋯` button on a gene set row and choose `Cluster genes…`.
+Pick a method (Hierarchical or K-means), a number of clusters K (default 3),
+and a cell context ("All cells", "Current selection" if you've lasso-picked
+some cells, or "Annotation category" to restrict to specific categorical
+values in a `.obs` column). Clicking Run creates a new folder in
+`Gene Clusters` named after the source set, containing one gene set per
+cluster. Re-running with different K or a different cell context appends
+another folder so you can compare runs side by side.
+
 ### 9. Compare Cell Groups
 
 - Open the **Analyze** modal (top toolbar) → **Cell Analysis** → **Compare Cells**

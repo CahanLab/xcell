@@ -11,6 +11,7 @@ import ScanpyModal from './components/ScanpyModal'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
 import MarkerGenesModal from './components/MarkerGenesModal'
+import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import { MESSAGES } from './messages'
 
 const styles = {
@@ -1690,6 +1691,7 @@ export default function App() {
       <LineAssociationModal />
       <ScanpyModal />
       <MarkerGenesModal />
+      <ClusterGeneSetModal />
 
       {/* Export modal */}
       {isExportModalOpen && (

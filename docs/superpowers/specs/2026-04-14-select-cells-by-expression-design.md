@@ -99,10 +99,11 @@ Modal title varies by source:
 6. On success, replace the modal footer with:
    `"Labeled 1,247 cells high, 3,218 cells low. [Open Diff Exp ▸]   [Close]"`
 7. Clicking `Open Diff Exp ▸`:
-   - Sets `store.pendingDiffExpGroups = { column: name, group1: highLabel, group2: lowLabel }`.
-   - Closes this modal.
-   - Opens `DiffExpModal` (via existing `setDiffExpModalOpen` store action).
-   - `DiffExpModal` reads `pendingDiffExpGroups` in a mount effect, pre-fills its column/group1/group2 selectors, and calls `setPendingDiffExpGroups(null)` to consume the handoff.
+   - Calls `setComparisonGroup1(matchingIndices, highLabel)` (existing store action).
+   - Calls `setComparisonGroup2(lowIndices, lowLabel)` (existing store action).
+   - Calls `setDiffExpModalOpen(true)` (existing store action).
+   - Closes the select-by-expression modal.
+   - `DiffExpModal` already reads `comparison.group1` / `comparison.group2` / `comparison.group1Label` / `comparison.group2Label`, so no changes to `DiffExpModal` itself are required.
 
 ### Edge cases
 
@@ -140,20 +141,19 @@ Pure frontend thresholding. No new backend endpoints. Reuses:
 ### Modified files
 
 **`frontend/src/components/GenePanel.tsx`**
-- Gene set row `OverflowMenu` (~line 937): append `{ label: 'Select cells…', onClick, disabled: geneSet.genes.length === 0 }`.
-- Gene rows in search/browse results (~line 614–636): add a new `<OverflowMenu>` with single item `Select cells…`.
+- Gene set row `OverflowMenu` (~line 937): append `{ label: 'Select cells…', onClick: () => setSelectByExpressionSource({ type: 'geneSet', name, genes }), disabled: geneSet.genes.length === 0 }`.
+- Gene rows in search/browse results (~line 614–636): add a new `<OverflowMenu>` with single item `Select cells…` that calls `setSelectByExpressionSource({ type: 'gene', gene })`.
 - Gene rows inside expanded gene sets (~line 962–989): same.
-- Local state `selectByExpressionSource: ModalSource | null` at the `GenePanel` component level. Renders `<SelectByExpressionModal>` when non-null.
-- New props threaded to sub-components where the gene rows live: `onOpenSelectByExpression(source)`.
+- Uses the store pattern (not local state): calls `useStore((s) => s.setSelectByExpressionSource)`. Following the existing `ClusterGeneSetModal` pattern.
 
 **`frontend/src/store.ts`**
-- New top-level (not per-dataset) field: `pendingDiffExpGroups: { column: string, group1: string, group2: string } | null`. Initial `null`.
-- New action `setPendingDiffExpGroups(p: typeof pendingDiffExpGroups)`.
-- Rationale: top-level because it's a transient UI handoff, not data-bound. Per-dataset is unnecessary since the modal workflow targets the active dataset anyway.
+- New top-level field: `selectByExpressionSource: { type: 'gene'; gene: string } | { type: 'geneSet'; name: string; genes: string[] } | null`. Initial `null`.
+- New action `setSelectByExpressionSource(src)`.
+- Modal is rendered once in `App.tsx`; it reads the source from the store and renders `null` when the source is `null` (mirrors `ClusterGeneSetModal`).
+- No new fields needed for the diff-exp handoff — it reuses existing `setComparisonGroup1` / `setComparisonGroup2` / `setDiffExpModalOpen` actions.
 
-**`frontend/src/components/DiffExpModal.tsx`**
-- `DiffExpModal` is always mounted and shows/hides based on `isDiffExpModalOpen`. Add a `useEffect` keyed on `isDiffExpModalOpen` that runs when the modal opens: if `pendingDiffExpGroups` is non-null, set the column selector to `column`, set group1/group2 selectors to the given labels, then call `setPendingDiffExpGroups(null)` to consume the handoff.
-- No change to existing behavior when `pendingDiffExpGroups` is null.
+**`frontend/src/App.tsx`**
+- Import and render `<SelectByExpressionModal />` next to `<ClusterGeneSetModal />` (~line 1694).
 
 **`frontend/src/messages.ts`**
 - Add strings for:
@@ -166,8 +166,8 @@ Pure frontend thresholding. No new backend endpoints. Reuses:
 
 ### Not modified
 
-- **`frontend/src/App.tsx`** — modal lives inside `GenePanel`.
 - **Backend** — no changes. All required endpoints exist.
+- **`frontend/src/components/DiffExpModal.tsx`** — reads existing `comparison` store state, already works with pre-populated groups.
 
 ### Data flow
 
@@ -206,7 +206,9 @@ Pure frontend thresholding. No new backend endpoints. Reuses:
                labelCells(name, highLabel, matching)
                labelCells(name, lowLabel, low)
                → show success footer
-               → optional: setPendingDiffExpGroups(...); setDiffExpModalOpen(true); onClose()
+               → optional: setComparisonGroup1(matching, highLabel)
+                           setComparisonGroup2(low, lowLabel)
+                           setDiffExpModalOpen(true); onClose()
 ```
 
 ### Histogram computation
@@ -276,7 +278,6 @@ Manual browser testing (no automated test infrastructure exists yet):
 - **`xcell/CLAUDE.md`**
   - Add `SelectByExpressionModal.tsx` to the Components table.
   - Add a Key Behaviors entry: "Select cells by expression" — summary of modal workflow, entry points, and diff-exp handoff.
-  - Add `pendingDiffExpGroups` to Store Types.
 - **`xcell/CHANGELOG.md`**
   - Under `[Unreleased] → Added`: "Select cells by expression threshold from gene and gene set overflow menus, with interactive histogram cutoff and optional labeling with direct handoff to differential expression."
 - **`xcell/README.md`**

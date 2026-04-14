@@ -12,6 +12,7 @@ import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
 import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
+import SelectByExpressionModal from './components/SelectByExpressionModal'
 import { MESSAGES } from './messages'
 
 const styles = {
@@ -1692,6 +1693,7 @@ export default function App() {
       <ScanpyModal />
       <MarkerGenesModal />
       <ClusterGeneSetModal />
+      <SelectByExpressionModal />
 
       {/* Export modal */}
       {isExportModalOpen && (

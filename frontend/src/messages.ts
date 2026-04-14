@@ -26,4 +26,49 @@ export const MESSAGES = {
   analysisCancelled: 'Analysis cancelled',
   analysisCancelledDetail: 'The operation was stopped. No changes were made.',
   taskNotFound: 'Task not found — it may have expired. Try running again.',
+
+  // SelectByExpressionModal
+  selectByExpression: {
+    titleGene: (gene: string) => `Select cells by ${gene}`,
+    titleGeneSet: (name: string) => `Select cells by ${name}`,
+    loading: 'Loading expression values…',
+    zeroVariance: (value: number) =>
+      `All cells have the same value (${value.toFixed(2)}) — nothing to threshold on.`,
+    matchCounter: (match: number, total: number) =>
+      `Matching: ${match.toLocaleString()} / ${total.toLocaleString()} cells`,
+    annotationCollision: (name: string) =>
+      `An annotation named "${name}" already exists — choose a different name.`,
+    emptyContextTooltip: 'Current selection is empty',
+    zeroVarianceTooltip: 'Cannot threshold: all cells have the same value',
+    collisionTooltip: 'Annotation name already exists',
+    emptyNameError: 'Please enter an annotation name.',
+    emptyContextError: 'Current selection is empty — choose All cells or make a selection.',
+    labelingButton: 'Labeling…',
+    applyButton: 'Apply',
+    cancelButton: 'Cancel',
+    closeButton: 'Close',
+    openDiffExpButton: 'Open Diff Exp ▸',
+    successFooter: (highCount: number, highLabel: string, lowCount: number, lowLabel: string) =>
+      `Labeled ${highCount.toLocaleString()} cells ${highLabel}, ${lowCount.toLocaleString()} cells ${lowLabel}.`,
+    thresholdModeLabel: 'Threshold mode:',
+    thresholdInputLabel: 'Threshold: ',
+    loInputLabel: 'Lo: ',
+    hiInputLabel: 'Hi: ',
+    actionLabel: 'Action:',
+    updateSelectionLabel: 'Update selection',
+    labelCellsLabel: 'Label cells',
+    annotationNameLabel: 'Annotation name:',
+    moreOptionsOpen: '▾ More options',
+    moreOptionsClosed: '▸ More options',
+    highLabelFieldLabel: 'High label:',
+    lowLabelFieldLabel: 'Low label:',
+    contextLabel: 'Context:',
+    contextAllCellsLabel: 'All cells',
+    contextCurrentSelectionLabel: (n: number) =>
+      `Current selection (${n.toLocaleString()} cells)`,
+    noExistingSelectionTooltip: 'No existing selection',
+    defaultHighLabel: 'high',
+    defaultLowLabel: 'low',
+    failedToLabelCells: 'Failed to label cells',
+  },
 } as const

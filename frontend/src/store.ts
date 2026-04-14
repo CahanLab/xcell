@@ -139,6 +139,12 @@ export interface ComparisonState {
   group2Label: string | null
 }
 
+// Source for the "Select cells by expression" modal.
+// `null` means the modal is closed. Mirrors the ClusterGeneSetModal pattern.
+export type SelectByExpressionSource =
+  | { type: 'gene'; gene: string }
+  | { type: 'geneSet'; name: string; genes: string[] }
+
 // Color mode: what determines cell colors
 export type ColorMode = 'none' | 'metadata' | 'expression' | 'bivariate'
 
@@ -393,6 +399,7 @@ interface AppState {
     categoryType: GeneSetCategoryType
     folderId: string | null
   } | null
+  selectByExpressionSource: SelectByExpressionSource | null
 
   // Line association state
   lineAssociationResult: LineAssociationResult | null
@@ -537,6 +544,7 @@ interface AppState {
     categoryType: GeneSetCategoryType
     folderId: string | null
   } | null) => void
+  setSelectByExpressionSource: (src: SelectByExpressionSource | null) => void
 
   // Line association actions
   setLineAssociationResult: (result: LineAssociationResult | null) => void
@@ -710,6 +718,7 @@ export const useStore = create<AppState>((set, get) => {
     isDiffExpLoading: false,
     isDiffExpModalOpen: false,
     clusterModalSourceSet: null,
+    selectByExpressionSource: null,
     lineAssociationResult: null,
     isLineAssociationLoading: false,
     isLineAssociationModalOpen: false,
@@ -1350,6 +1359,7 @@ export const useStore = create<AppState>((set, get) => {
     setDiffExpLoading: (loading) => set({ isDiffExpLoading: loading }),
     setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
+    setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
 
     // Line association actions (global)
     setLineAssociationResult: (result) => set({ lineAssociationResult: result }),

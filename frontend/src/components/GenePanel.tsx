@@ -375,7 +375,12 @@ interface OverflowMenuItem {
 export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
   const [open, setOpen] = useState(false)
   const [hoveredParent, setHoveredParent] = useState<string | null>(null)
+  // Viewport coordinates for the popup — populated when the menu opens.
+  // Using fixed positioning (instead of absolute) lets the popup escape
+  // ancestors with `overflow: hidden` (e.g. the gene set container).
+  const [popupPos, setPopupPos] = useState<{ top: number; right: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -387,11 +392,15 @@ export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false)
     }
+    // Close on scroll so the popup doesn't float away from its trigger.
+    const onScroll = () => setOpen(false)
     document.addEventListener('mousedown', onDocClick)
     document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', onScroll, true)
     return () => {
       document.removeEventListener('mousedown', onDocClick)
       document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', onScroll, true)
     }
   }, [open])
 
@@ -451,22 +460,34 @@ export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
   return (
     <div ref={menuRef} style={{ position: 'relative' }}>
       <button
+        ref={buttonRef}
         style={{ ...styles.iconButton, color: '#888' }}
         onClick={(e) => {
           e.stopPropagation()
-          setOpen((v) => !v)
+          setOpen((v) => {
+            const next = !v
+            if (next && buttonRef.current) {
+              const rect = buttonRef.current.getBoundingClientRect()
+              setPopupPos({
+                top: rect.bottom + 2,
+                right: window.innerWidth - rect.right,
+              })
+            } else {
+              setPopupPos(null)
+            }
+            return next
+          })
         }}
         title="More actions"
       >
         ⋯
       </button>
-      {open && (
+      {open && popupPos && (
         <div
           style={{
-            position: 'absolute',
-            top: '100%',
-            right: 0,
-            marginTop: '2px',
+            position: 'fixed',
+            top: popupPos.top,
+            right: popupPos.right,
             backgroundColor: '#1a1a2e',
             border: '1px solid #0f3460',
             borderRadius: '4px',
@@ -474,7 +495,7 @@ export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
             display: 'flex',
             flexDirection: 'column',
             gap: '2px',
-            zIndex: 10,
+            zIndex: 1000,
             minWidth: '120px',
           }}
           onClick={(e) => e.stopPropagation()}
@@ -500,6 +521,7 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
   const inputRef = useRef<HTMLInputElement>(null)
   const { results, searchGenes, clearResults } = useGeneSearch()
   const { page, isLoading: isBrowseLoading, fetchPage } = useGeneBrowse(50)
+  const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -633,6 +655,14 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
                 >
                   {gene}
                 </span>
+                <OverflowMenu
+                  items={[
+                    {
+                      label: 'Select cells…',
+                      onClick: () => setSelectByExpressionSource({ type: 'gene', gene }),
+                    },
+                  ]}
+                />
               </div>
             )
           })}
@@ -720,6 +750,7 @@ function CategoryGeneSetComponent({
     reorderGeneSet,
     setClusterModalSourceSet,
   } = useStore()
+  const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
 
   useEffect(() => {
     if (isEditing && editInputRef.current) {
@@ -952,6 +983,17 @@ function CategoryGeneSetComponent({
                 disabled: geneSet.genes.length < 4,
                 tooltip: geneSet.genes.length < 4 ? 'Need at least 4 genes to cluster' : undefined,
               },
+              {
+                label: 'Select cells…',
+                onClick: () =>
+                  setSelectByExpressionSource({
+                    type: 'geneSet',
+                    name: geneSet.name,
+                    genes: geneSet.genes,
+                  }),
+                disabled: geneSet.genes.length === 0,
+                tooltip: geneSet.genes.length === 0 ? 'Gene set is empty' : undefined,
+              },
             ]}
           />
           <span style={{ color: '#888', fontSize: '10px' }}>{expanded ? '▼' : '▶'}</span>
@@ -979,6 +1021,14 @@ function CategoryGeneSetComponent({
               <span style={styles.geneName} onClick={() => onColorByGene(gene)} title="Click to color by expression">
                 {gene}
               </span>
+              <OverflowMenu
+                items={[
+                  {
+                    label: 'Select cells…',
+                    onClick: () => setSelectByExpressionSource({ type: 'gene', gene }),
+                  },
+                ]}
+              />
               <button
                 style={{ ...styles.iconButton, fontSize: '10px' }}
                 onClick={() => handleRemoveGene(gene)}

@@ -592,7 +592,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -1037,9 +1037,14 @@ export default function ScanpyModal() {
         }
       }
 
-      // Reset cell mask after filter_cells removes cells (indices become stale)
+      // Reset per-cell state after filter_cells removes cells — any cached
+      // cell-indexed data references stale positions and can corrupt
+      // downstream features (diff exp, select-by-expression, etc.).
       if (selectedFunction === 'filter_cells' && data.n_cells_removed > 0) {
         resetActiveCells()
+        clearSelection()
+        setExpressionData(null)
+        setBivariateData(null)
       }
 
       // Fetch variance data for visualization after gene PCA functions
@@ -1060,7 +1065,7 @@ export default function ScanpyModal() {
       setIsRunning(false)
       setActiveTaskId(null)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setActiveTaskId])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, clearSelection, setExpressionData, setBivariateData, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setActiveTaskId])
 
   const handleCancel = useCallback(async () => {
     if (activeTaskId) {

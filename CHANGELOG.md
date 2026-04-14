@@ -6,10 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Fixed
+- Overflow (`⋯`) menu popup on gene rows inside an expanded gene set is no longer clipped by the gene set container's rounded-corner mask — the popup now escapes ancestors with `overflow: hidden` and closes on scroll
+- Stale cell state after `filter_cells` no longer corrupts downstream features: cell selection, expression coloring cache, and bivariate expression cache are all cleared when cells are removed, and the Select cells by expression modal defensively clamps any out-of-range indices before handing them to the backend
 - Single-line gene association (gear icon in Shapes) now uses the line's projected/linked cells instead of the global cell mask, so only cells actually linked to the line are tested
 - Fixed B-spline regression in line gene association: removed redundant intercept column that caused multicollinearity with the B-spline partition of unity, producing unreliable F-statistics and missing significant genes
 
 ### Added
+- Select cells by expression threshold from gene and gene set `⋯` overflow menus. Interactive histogram with Above / Below / Between threshold modes; Update-selection action supports Replace / Add / Intersect; Label-cells action creates an annotation column with customizable high/low labels and context, and hands off directly to differential expression for the newly labeled groups.
 - Overflow menu (`⋯`) on gene set and folder rows, consolidating Pin/Unpin and other secondary actions. On manual folder rows, the per-folder export moves into this menu as an `Export ▸` submenu.
 - "Cluster genes…" action in the gene set overflow menu: sub-cluster a chosen gene set into K groups by expression pattern using hierarchical (Ward / correlation distance) or K-means. Supports running over all cells, the current lasso selection, or an annotation category. Results appear as a new folder under Gene Clusters.
 - Manual gene set folders in the Gene Panel: create via a `+ 📁` button, rename via double-click, delete with a confirm dialog for non-empty folders. Sets can be created directly inside a folder or dragged in from the top level.

@@ -147,6 +147,19 @@ values in a `.obs` column). Clicking Run creates a new folder in
 cluster. Re-running with different K or a different cell context appends
 another folder so you can compare runs side by side.
 
+### Selecting cells by expression threshold
+
+You can select cells based on a gene's expression or a gene set score without needing to eyeball the scatter plot:
+
+1. In the Gene Panel, click the `⋯` menu on any gene row or gene set row and choose `Select cells…`.
+2. The modal opens and the scatter plot switches to expression coloring for that source. An interactive histogram of the values is shown.
+3. Pick a threshold mode (`Above`, `Below`, or `Between`) and drag the red cutoff line(s). The match counter updates live.
+4. Choose an action:
+   - **Update selection** replaces, adds to, or intersects with your current lasso selection.
+   - **Label cells** creates a new annotation column with `high`/`low` labels for the cells in the chosen context (current selection or all cells). On success, click `Open Diff Exp ▸` to immediately run differential expression between the two groups.
+
+Typical workflow for "find DEGs by expression state in a region": lasso a region → `⋯ → Select cells…` on a gene → drag the threshold → Label cells → Open Diff Exp.
+
 ### 9. Compare Cell Groups
 
 - Open the **Analyze** modal (top toolbar) → **Cell Analysis** → **Compare Cells**

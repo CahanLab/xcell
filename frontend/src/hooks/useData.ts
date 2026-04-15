@@ -652,6 +652,9 @@ export async function swapVarIndex(column: string, slot?: DatasetSlot): Promise<
   // Refresh identifier columns
   await fetchVarIdentifierColumns(targetSlot)
 
+  // Mask may have been regenerated or cleared by the backend swap hook.
+  await fetchGeneMask(targetSlot)
+
   // If coloring by expression, clear and let user re-select
   const currentState = useStore.getState()
   if (currentState.colorMode === 'expression' && currentState.selectedGenes.length > 0) {

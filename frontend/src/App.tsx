@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, DatasetSlot } from './store'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, appendDataset } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, appendDataset, fetchGeneMask } from './hooks/useData'
 import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor } from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
@@ -836,6 +836,8 @@ export default function App() {
       })
       // Update store
       loadDatasetIntoSlot(loadSlot, schemaData)
+      // Fetch the fresh gene mask state for the loaded slot
+      await fetchGeneMask(loadSlot)
       // Switch to the loaded slot
       if (loadSlot !== activeSlot) {
         setActiveSlot(loadSlot)

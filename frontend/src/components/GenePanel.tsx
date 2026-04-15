@@ -523,6 +523,7 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
   const { results, searchGenes, clearResults } = useGeneSearch()
   const { page, isLoading: isBrowseLoading, fetchPage } = useGeneBrowse(50)
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
+  const geneMaskConfig = useStore((s) => s.geneMaskConfig)
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -537,6 +538,15 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
       fetchPage(0)
     }
   }, [showBrowse, page, fetchPage])
+
+  // Re-fetch the first browse page whenever the gene mask changes,
+  // so paginated results reflect the visible subset.
+  useEffect(() => {
+    if (showBrowse && page) {
+      fetchPage(0)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [geneMaskConfig])
 
   // Hide browse when user starts typing a search query
   useEffect(() => {

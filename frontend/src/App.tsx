@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, DatasetSlot } from './store'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, appendDataset } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, appendDataset, fetchGeneMask } from './hooks/useData'
 import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor } from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
@@ -13,6 +13,7 @@ import HeatmapView from './components/HeatmapView'
 import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import SelectByExpressionModal from './components/SelectByExpressionModal'
+import GeneMaskModal from './components/GeneMaskModal'
 import { MESSAGES } from './messages'
 
 const styles = {
@@ -835,6 +836,8 @@ export default function App() {
       })
       // Update store
       loadDatasetIntoSlot(loadSlot, schemaData)
+      // Fetch the fresh gene mask state for the loaded slot
+      await fetchGeneMask(loadSlot)
       // Switch to the loaded slot
       if (loadSlot !== activeSlot) {
         setActiveSlot(loadSlot)
@@ -1698,6 +1701,7 @@ export default function App() {
       <MarkerGenesModal />
       <ClusterGeneSetModal />
       <SelectByExpressionModal />
+      <GeneMaskModal />
 
       {/* Export modal */}
       {isExportModalOpen && (

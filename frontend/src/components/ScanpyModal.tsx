@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useStore, ScanpyActionRecord } from '../store'
-import { appendDataset, pollTask, cancelTask, runDiffExp } from '../hooks/useData'
+import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask } from '../hooks/useData'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -1021,6 +1021,15 @@ export default function ScanpyModal() {
         await refreshSchema()
         // Also refresh obs summaries so Cell Manager shows new/updated columns (e.g. leiden clusters, contour levels)
         refreshObsSummaries()
+      }
+
+      // After filter_genes / exclude_genes, the backend may have regenerated
+      // or cleared the gene mask. Refresh the mirror and toast if cleared.
+      if (['filter_genes', 'exclude_genes'].includes(selectedFunction)) {
+        await fetchGeneMask()
+        if (data.gene_mask_cleared) {
+          useStore.getState().setError(MESSAGES.geneMask.maskClearedAfterFilter)
+        }
       }
 
       // Invalidate cached colorBy so it re-fetches (e.g. leiden labels changed)

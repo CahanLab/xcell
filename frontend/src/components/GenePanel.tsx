@@ -1,8 +1,9 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType } from '../store'
 import { useGeneSearch, useGeneBrowse, useDataActions, appendDataset, fetchVarIdentifierColumns, swapVarIndex } from '../hooks/useData'
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
 import ImportModal from './ImportModal'
+import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
 
@@ -522,6 +523,7 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
   const { results, searchGenes, clearResults } = useGeneSearch()
   const { page, isLoading: isBrowseLoading, fetchPage } = useGeneBrowse(50)
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
+  const geneMaskConfig = useStore((s) => s.geneMaskConfig)
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -536,6 +538,20 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
       fetchPage(0)
     }
   }, [showBrowse, page, fetchPage])
+
+  // Re-fetch the first browse page whenever the gene mask changes,
+  // so paginated results reflect the visible subset.
+  useEffect(() => {
+    if (showBrowse && page) {
+      fetchPage(0)
+    }
+    // Also re-run the current search so stale matches (genes now hidden by
+    // the mask) don't linger in the results list.
+    if (query.length > 0) {
+      searchGenes(query)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [geneMaskConfig])
 
   // Hide browse when user starts typing a search query
   useEffect(() => {
@@ -751,6 +767,11 @@ function CategoryGeneSetComponent({
     setClusterModalSourceSet,
   } = useStore()
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
+  const geneMaskConfig = useStore((s) => s.geneMaskConfig)
+  const visibleGeneNameSet = useMemo<Set<string> | null>(() => {
+    if (!geneMaskConfig?.active || !geneMaskConfig.visibleGeneNames) return null
+    return new Set(geneMaskConfig.visibleGeneNames)
+  }, [geneMaskConfig])
 
   useEffect(() => {
     if (isEditing && editInputRef.current) {
@@ -946,7 +967,23 @@ function CategoryGeneSetComponent({
               >
                 {geneSet.name}
               </span>
-              <span style={styles.geneSetCount}>({geneSet.genes.length})</span>
+              {(() => {
+                const total = geneSet.genes.length
+                const visible = visibleGeneNameSet
+                  ? geneSet.genes.filter((g) => visibleGeneNameSet.has(g)).length
+                  : total
+                const hidden = total - visible
+                return (
+                  <span style={styles.geneSetCount}>
+                    ({total})
+                    {hidden > 0 && (
+                      <span style={{ marginLeft: '4px', color: '#777', fontSize: '10px' }}>
+                        {MESSAGES.geneMask.hiddenSuffix(hidden)}
+                      </span>
+                    )}
+                  </span>
+                )
+              })()}
             </>
           )}
         </div>
@@ -1001,7 +1038,10 @@ function CategoryGeneSetComponent({
       </div>
       {expanded && geneSet.genes.length > 0 && (
         <div style={styles.geneList}>
-          {geneSet.genes.map((gene) => (
+          {(visibleGeneNameSet
+            ? geneSet.genes.filter((g) => visibleGeneNameSet.has(g))
+            : geneSet.genes
+          ).map((gene) => (
             <div
               key={gene}
               draggable
@@ -1647,6 +1687,8 @@ export default function GenePanel() {
   // Var identifier column switching
   const varIdentifierColumns = useStore((s) => s.varIdentifierColumns)
   const currentVarIndex = useStore((s) => s.currentVarIndex)
+  const geneMaskConfig = useStore((s) => s.geneMaskConfig)
+  const setGeneMaskModalOpen = useStore((s) => s.setGeneMaskModalOpen)
   const [isSwapping, setIsSwapping] = useState(false)
   const [showBrowse, setShowBrowse] = useState(false)
 
@@ -1747,6 +1789,14 @@ export default function GenePanel() {
       <div style={styles.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
           <div style={styles.title}>Genes</div>
+          <OverflowMenu
+            items={[
+              {
+                label: MESSAGES.geneMask.menuItem,
+                onClick: () => setGeneMaskModalOpen(true),
+              },
+            ]}
+          />
           <button
             onClick={() => setImportModalOpen(true)}
             style={{
@@ -1777,6 +1827,22 @@ export default function GenePanel() {
           >
             Browse
           </button>
+          {geneMaskConfig?.active && (
+            <span
+              style={{
+                marginLeft: '6px',
+                fontSize: '10px',
+                color: '#4ecdc4',
+                whiteSpace: 'nowrap',
+              }}
+              title="Gene mask is active — click ⋯ → Gene mask… to modify"
+            >
+              {MESSAGES.geneMask.visibleBadge(
+                geneMaskConfig.nVisible,
+                geneMaskConfig.nTotal
+              )}
+            </span>
+          )}
         </div>
         {varIdentifierColumns.length > 1 && (
           <div style={{ marginBottom: '6px' }}>

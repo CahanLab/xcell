@@ -102,6 +102,18 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 - Search or browse genes
 - Click a gene to color cells by its expression
 
+### Gene Mask
+
+To scope the Gene Panel to a relevant gene universe, click the `⋯` button in the Genes panel header and choose `Gene mask…`. The modal lists all boolean columns in your dataset's `.var` (for example, `highly_variable` after running Highly Variable Genes, or `spatially_variable` after spatial autocorrelation). For each column, choose:
+
+- **Off** — ignore this column
+- **Keep** — include genes where this column is True
+- **Hide** — exclude genes where this column is True
+
+When you have multiple Keep columns, choose whether to match **ANY** (union) or **ALL** (intersection). Hide columns always combine as a union.
+
+The mask applies to the gene browse list, gene search, expanded gene set rows, and gene set score aggregation used for display coloring. It does **not** apply to analysis operations (Diff Exp, Marker Genes, Gene PCA, etc.) — those have their own gene subset dropdowns. The mask is per-dataset and session-only; reloading the page clears it.
+
 ### 8. Gene Sets
 
 - Create gene sets manually in Gene Manager

@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 from typing import Any
 
+import numpy as np
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -481,7 +483,7 @@ def browse_genes(offset: int = 0, limit: int = 50, dataset: str | None = Query(N
         - total: Total number of genes
     """
     adaptor = get_adaptor(dataset)
-    all_genes = sorted(adaptor.get_gene_names(), key=str.lower)
+    all_genes = sorted(adaptor.get_visible_gene_names(), key=str.lower)
     total = len(all_genes)
     page = all_genes[offset:offset + limit]
     return {
@@ -1646,6 +1648,73 @@ def get_var_boolean_columns(dataset: str | None = Query(None)):
     """
     adaptor = get_adaptor(dataset)
     return adaptor.get_var_boolean_columns()
+
+
+@router.get("/var/boolean_column_values")
+def get_var_boolean_column_values(dataset: str | None = Query(None)):
+    """Return per-column True-index lists for boolean .var columns.
+
+    Used by the frontend Gene Mask modal for client-side preview count
+    computation (fetched once on modal open; no per-toggle round-trips).
+
+    Returns:
+        {
+            "n_genes": int,
+            "columns": {
+                "<column_name>": [positional_index, positional_index, ...],
+                ...
+            }
+        }
+    """
+    adaptor = get_adaptor(dataset)
+    bool_cols = adaptor.get_var_boolean_columns()
+    result: dict[str, Any] = {}
+    for col_info in bool_cols:
+        name = col_info['name']
+        arr = adaptor._column_to_bool_array(name)
+        result[name] = [int(i) for i in np.nonzero(arr)[0]]
+    return {
+        'n_genes': adaptor.n_genes,
+        'columns': result,
+    }
+
+
+class GeneMaskRequest(BaseModel):
+    keep_columns: list[str] = []
+    hide_columns: list[str] = []
+    keep_combine_mode: str = 'or'
+
+
+@router.get("/gene_mask")
+def get_gene_mask(dataset: str | None = Query(None)):
+    """Get the current gene mask config for a dataset."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.get_gene_mask()
+
+
+@router.post("/gene_mask")
+def set_gene_mask(request: GeneMaskRequest, dataset: str | None = Query(None)):
+    """Apply a gene mask.
+
+    Raises 400 if the config references missing/non-bool columns or would
+    leave zero visible genes.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.set_gene_mask(
+            keep_columns=request.keep_columns,
+            hide_columns=request.hide_columns,
+            keep_combine_mode=request.keep_combine_mode,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/gene_mask")
+def clear_gene_mask(dataset: str | None = Query(None)):
+    """Clear the gene mask."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.clear_gene_mask()
 
 
 class SwapVarIndexRequest(BaseModel):

@@ -483,7 +483,7 @@ def browse_genes(offset: int = 0, limit: int = 50, dataset: str | None = Query(N
         - total: Total number of genes
     """
     adaptor = get_adaptor(dataset)
-    all_genes = sorted(adaptor.get_gene_names(), key=str.lower)
+    all_genes = sorted(adaptor.get_visible_gene_names(), key=str.lower)
     total = len(all_genes)
     page = all_genes[offset:offset + limit]
     return {

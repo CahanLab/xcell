@@ -483,10 +483,11 @@ class DataAdaptor:
             limit: Maximum number of results to return
 
         Returns:
-            List of matching gene names
+            List of matching gene names (restricted to visible genes when
+            a gene mask is active)
         """
         query_lower = query.lower()
-        gene_names = self.adata.var.index.tolist()
+        gene_names = self.get_visible_gene_names()
 
         # Find genes that start with the query (case-insensitive)
         matches = [g for g in gene_names if g.lower().startswith(query_lower)]

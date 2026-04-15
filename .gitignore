@@ -27,6 +27,9 @@ frontend/dist/
 *.swp
 *.swo
 
+# Git worktrees
+.worktrees/
+
 # Environment / secrets
 .env
 .env.*

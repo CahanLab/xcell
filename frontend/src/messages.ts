@@ -71,4 +71,33 @@ export const MESSAGES = {
     defaultLowLabel: 'low',
     failedToLabelCells: 'Failed to label cells',
   },
+
+  // GeneMaskModal
+  geneMask: {
+    title: 'Gene Mask',
+    description: 'Filter genes by .var boolean columns.',
+    noBoolColumns: 'No boolean .var columns found. Run Highly Variable Genes or Spatial Autocorrelation first.',
+    columnLabel: (n_true: number, n_total: number) =>
+      `${n_true.toLocaleString()} / ${n_total.toLocaleString()} True`,
+    stateOff: 'Off',
+    stateKeep: 'Keep',
+    stateHide: 'Hide',
+    combineLabel: 'Combine Keep columns:',
+    combineAny: 'Match ANY',
+    combineAll: 'Match ALL',
+    previewLabel: (visible: number, total: number) =>
+      `Preview: ${visible.toLocaleString()} of ${total.toLocaleString()} visible`,
+    clearButton: 'Clear',
+    cancelButton: 'Cancel',
+    applyButton: 'Apply',
+    noneVisibleError: 'Mask would leave zero visible genes. Adjust your selection.',
+    coloringClearedToast: (gene: string) =>
+      `${gene} is masked; coloring cleared.`,
+    allMaskedInSetToast: 'All genes in this set are masked — score is zero.',
+    maskClearedAfterFilter: 'Gene mask was cleared because referenced columns were removed.',
+    hiddenSuffix: (n: number) => `(${n.toLocaleString()} hidden)`,
+    visibleBadge: (visible: number, total: number) =>
+      `${visible.toLocaleString()} / ${total.toLocaleString()}`,
+    menuItem: 'Gene mask…',
+  },
 } as const

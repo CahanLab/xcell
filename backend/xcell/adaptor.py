@@ -53,6 +53,10 @@ class DataAdaptor:
         self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
         self._action_history: list[dict[str, Any]] = []  # Track scanpy operations
         self._embedding_undo_stacks: dict[str, list[np.ndarray]] = {}  # Undo stacks for quilt transforms
+        # Gene mask state — None means no mask is active.
+        # See get_gene_mask / set_gene_mask / clear_gene_mask.
+        self._gene_mask_config: dict[str, Any] | None = None
+        self._visible_gene_mask: np.ndarray | None = None  # bool array, shape (n_genes,)
 
     @staticmethod
     def _find_10x_trio_files(filepath: Path) -> tuple[Path, Path, Path] | None:
@@ -2256,6 +2260,158 @@ class DataAdaptor:
                 if isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.shape[1] >= 2:
                     return key
         return None
+
+    def _column_to_bool_array(self, col_name: str) -> np.ndarray:
+        """Convert a .var column to a boolean numpy array.
+
+        Accepts bool columns and numeric 0/1 columns (matching the same
+        rules as get_var_boolean_columns). Raises ValueError if the
+        column is not bool-like.
+        """
+        if col_name not in self.adata.var.columns:
+            raise ValueError(f"Column '{col_name}' not found in .var")
+        series = self.adata.var[col_name]
+        dtype = series.dtype
+        if dtype == bool:
+            return np.asarray(series.values, dtype=bool)
+        if pd.api.types.is_numeric_dtype(dtype):
+            unique_vals = set(series.dropna().unique())
+            if unique_vals.issubset({0, 1, 0.0, 1.0, True, False}):
+                return np.asarray((series == 1) | (series == True), dtype=bool)
+        raise ValueError(f"Column '{col_name}' is not a boolean-like column")
+
+    def _compute_visible_mask(
+        self,
+        keep_columns: list[str],
+        hide_columns: list[str],
+        keep_combine_mode: str,
+    ) -> np.ndarray:
+        """Compute the final visible mask from a config.
+
+        Formula:
+            visible = keep_mask AND NOT hide_mask
+            keep_mask = all-True if no keep columns
+                      = OR(columns) if keep_combine_mode == 'or'
+                      = AND(columns) if keep_combine_mode == 'and'
+            hide_mask = all-False if no hide columns
+                      = OR(columns) otherwise
+        """
+        n = self.n_genes
+        if keep_columns:
+            arrays = [self._column_to_bool_array(c) for c in keep_columns]
+            if keep_combine_mode == 'and':
+                keep_mask = arrays[0].copy()
+                for a in arrays[1:]:
+                    keep_mask &= a
+            else:  # 'or' (default)
+                keep_mask = arrays[0].copy()
+                for a in arrays[1:]:
+                    keep_mask |= a
+        else:
+            keep_mask = np.ones(n, dtype=bool)
+
+        if hide_columns:
+            arrays = [self._column_to_bool_array(c) for c in hide_columns]
+            hide_mask = arrays[0].copy()
+            for a in arrays[1:]:
+                hide_mask |= a
+        else:
+            hide_mask = np.zeros(n, dtype=bool)
+
+        return keep_mask & ~hide_mask
+
+    def get_gene_mask(self) -> dict[str, Any]:
+        """Return the current mask config + counts.
+
+        Always returns a dict, even when no mask is active.
+        """
+        n_total = self.n_genes
+        if self._gene_mask_config is None or self._visible_gene_mask is None:
+            return {
+                'active': False,
+                'keep_columns': [],
+                'hide_columns': [],
+                'keep_combine_mode': 'or',
+                'n_visible': n_total,
+                'n_total': n_total,
+                'visible_gene_names': None,
+            }
+        n_visible = int(self._visible_gene_mask.sum())
+        visible_gene_names = self.adata.var.index[self._visible_gene_mask].tolist()
+        return {
+            'active': True,
+            'keep_columns': list(self._gene_mask_config.get('keep_columns', [])),
+            'hide_columns': list(self._gene_mask_config.get('hide_columns', [])),
+            'keep_combine_mode': self._gene_mask_config.get('keep_combine_mode', 'or'),
+            'n_visible': n_visible,
+            'n_total': n_total,
+            'visible_gene_names': visible_gene_names,
+        }
+
+    def set_gene_mask(
+        self,
+        keep_columns: list[str],
+        hide_columns: list[str],
+        keep_combine_mode: str = 'or',
+    ) -> dict[str, Any]:
+        """Apply a gene mask.
+
+        - Validates all referenced columns exist and are bool-like.
+        - Empty keep_columns + empty hide_columns clears the mask.
+        - Raises ValueError if the resulting mask leaves 0 visible genes.
+
+        Returns the same shape as get_gene_mask().
+        """
+        if keep_combine_mode not in ('or', 'and'):
+            raise ValueError(f"keep_combine_mode must be 'or' or 'and', got {keep_combine_mode!r}")
+
+        # Empty config = clear
+        if not keep_columns and not hide_columns:
+            return self.clear_gene_mask()
+
+        # Validate columns (raises ValueError if any are missing/non-bool)
+        for c in keep_columns:
+            self._column_to_bool_array(c)
+        for c in hide_columns:
+            self._column_to_bool_array(c)
+
+        mask = self._compute_visible_mask(keep_columns, hide_columns, keep_combine_mode)
+        if mask.sum() == 0:
+            raise ValueError("Gene mask would leave 0 visible genes")
+
+        self._gene_mask_config = {
+            'keep_columns': list(keep_columns),
+            'hide_columns': list(hide_columns),
+            'keep_combine_mode': keep_combine_mode,
+        }
+        self._visible_gene_mask = mask
+        return self.get_gene_mask()
+
+    def clear_gene_mask(self) -> dict[str, Any]:
+        """Clear the gene mask state."""
+        self._gene_mask_config = None
+        self._visible_gene_mask = None
+        return self.get_gene_mask()
+
+    def get_visible_gene_names(self) -> list[str]:
+        """Return gene names where _visible_gene_mask is True.
+
+        Returns all gene names when no mask is active.
+        """
+        if self._visible_gene_mask is None:
+            return self.adata.var.index.tolist()
+        return self.adata.var.index[self._visible_gene_mask].tolist()
+
+    def _filter_to_visible(self, genes: list[str]) -> tuple[list[str], int]:
+        """Split a gene list into (visible_genes, n_excluded).
+
+        When no mask is active, returns (genes, 0) unchanged.
+        """
+        if self._visible_gene_mask is None:
+            return list(genes), 0
+        visible_set = set(self.adata.var.index[self._visible_gene_mask].tolist())
+        kept = [g for g in genes if g in visible_set]
+        return kept, len(genes) - len(kept)
 
     def get_var_boolean_columns(self) -> list[dict[str, Any]]:
         """Get list of boolean columns in .var that can be used for gene filtering.

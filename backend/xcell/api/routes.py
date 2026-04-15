@@ -1648,6 +1648,44 @@ def get_var_boolean_columns(dataset: str | None = Query(None)):
     return adaptor.get_var_boolean_columns()
 
 
+class GeneMaskRequest(BaseModel):
+    keep_columns: list[str] = []
+    hide_columns: list[str] = []
+    keep_combine_mode: str = 'or'
+
+
+@router.get("/gene_mask")
+def get_gene_mask(dataset: str | None = Query(None)):
+    """Get the current gene mask config for a dataset."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.get_gene_mask()
+
+
+@router.post("/gene_mask")
+def set_gene_mask(request: GeneMaskRequest, dataset: str | None = Query(None)):
+    """Apply a gene mask.
+
+    Raises 400 if the config references missing/non-bool columns or would
+    leave zero visible genes.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.set_gene_mask(
+            keep_columns=request.keep_columns,
+            hide_columns=request.hide_columns,
+            keep_combine_mode=request.keep_combine_mode,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/gene_mask")
+def clear_gene_mask(dataset: str | None = Query(None)):
+    """Clear the gene mask."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.clear_gene_mask()
+
+
 class SwapVarIndexRequest(BaseModel):
     column: str
 

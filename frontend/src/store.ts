@@ -28,6 +28,7 @@ export interface ExpressionData {
   min: number
   max: number
   transform?: string  // 'log1p' if transformation was applied
+  n_masked_excluded?: number  // multi-gene only: count of genes dropped by gene mask
 }
 
 export interface BivariateExpressionData {

@@ -545,6 +545,11 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
     if (showBrowse && page) {
       fetchPage(0)
     }
+    // Also re-run the current search so stale matches (genes now hidden by
+    // the mask) don't linger in the results list.
+    if (query.length > 0) {
+      searchGenes(query)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [geneMaskConfig])
 
@@ -970,7 +975,7 @@ function CategoryGeneSetComponent({
                 const hidden = total - visible
                 return (
                   <span style={styles.geneSetCount}>
-                    ({visible})
+                    ({total})
                     {hidden > 0 && (
                       <span style={{ marginLeft: '4px', color: '#777', fontSize: '10px' }}>
                         {MESSAGES.geneMask.hiddenSuffix(hidden)}

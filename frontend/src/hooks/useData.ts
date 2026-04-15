@@ -178,6 +178,9 @@ export function useExpressionTransformEffect() {
             }),
           })
           setExpressionData(data)
+          if ((data.genes?.length ?? 0) === 0 && (data.n_masked_excluded ?? 0) > 0) {
+            setError(MESSAGES.geneMask.allMaskedInSetToast)
+          }
         }
 
         // Mirror to other slot in dual mode
@@ -440,6 +443,10 @@ export function useDataActions() {
         setSelectedGeneSetName(geneSetName ?? null)
         setColorMode('expression')
         setSelectedColorColumn(null)
+
+        if ((data.genes?.length ?? 0) === 0 && (data.n_masked_excluded ?? 0) > 0) {
+          setError(MESSAGES.geneMask.allMaskedInSetToast)
+        }
 
         // Mirror to other slot in dual mode (fire-and-forget)
         if (layoutMode === 'dual') {

@@ -3,6 +3,7 @@ import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType 
 import { useGeneSearch, useGeneBrowse, useDataActions, appendDataset, fetchVarIdentifierColumns, swapVarIndex } from '../hooks/useData'
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
 import ImportModal from './ImportModal'
+import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
 
@@ -1647,6 +1648,8 @@ export default function GenePanel() {
   // Var identifier column switching
   const varIdentifierColumns = useStore((s) => s.varIdentifierColumns)
   const currentVarIndex = useStore((s) => s.currentVarIndex)
+  const geneMaskConfig = useStore((s) => s.geneMaskConfig)
+  const setGeneMaskModalOpen = useStore((s) => s.setGeneMaskModalOpen)
   const [isSwapping, setIsSwapping] = useState(false)
   const [showBrowse, setShowBrowse] = useState(false)
 
@@ -1747,6 +1750,14 @@ export default function GenePanel() {
       <div style={styles.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
           <div style={styles.title}>Genes</div>
+          <OverflowMenu
+            items={[
+              {
+                label: MESSAGES.geneMask.menuItem,
+                onClick: () => setGeneMaskModalOpen(true),
+              },
+            ]}
+          />
           <button
             onClick={() => setImportModalOpen(true)}
             style={{
@@ -1777,6 +1788,22 @@ export default function GenePanel() {
           >
             Browse
           </button>
+          {geneMaskConfig?.active && (
+            <span
+              style={{
+                marginLeft: '6px',
+                fontSize: '10px',
+                color: '#4ecdc4',
+                whiteSpace: 'nowrap',
+              }}
+              title="Gene mask is active — click ⋯ → Gene mask… to modify"
+            >
+              {MESSAGES.geneMask.visibleBadge(
+                geneMaskConfig.nVisible,
+                geneMaskConfig.nTotal
+              )}
+            </span>
+          )}
         </div>
         {varIdentifierColumns.length > 1 && (
           <div style={{ marginBottom: '6px' }}>

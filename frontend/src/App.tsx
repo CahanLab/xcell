@@ -1175,15 +1175,19 @@ export default function App() {
               </button>
 
               <DisplaySettings />
+            </>
+          )}
 
-              <button
-                style={styles.exportButton}
-                onClick={() => { setIsLoadModalOpen(true); setLoadError(null); setLoadFilePath(''); browseDirectory() }}
-                title="Load a different dataset file"
-              >
-                Load
-              </button>
+          <button
+            style={styles.exportButton}
+            onClick={() => { setIsLoadModalOpen(true); setLoadError(null); setLoadFilePath(''); browseDirectory() }}
+            title="Load a dataset file"
+          >
+            Load
+          </button>
 
+          {schema && (
+            <>
               <button
                 style={styles.exportButton}
                 onClick={() => setIsExportModalOpen(true)}

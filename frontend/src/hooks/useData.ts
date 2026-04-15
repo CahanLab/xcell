@@ -1,5 +1,6 @@
 import { useEffect, useCallback, useState } from 'react'
-import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult } from '../store'
+import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig } from '../store'
+import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
 
@@ -656,6 +657,141 @@ export async function swapVarIndex(column: string, slot?: DatasetSlot): Promise<
   if (currentState.colorMode === 'expression' && currentState.selectedGenes.length > 0) {
     store.clearSelectedGenes()
   }
+}
+
+// -------- Gene Mask API helpers --------
+
+interface GeneMaskResponse {
+  active: boolean
+  keep_columns: string[]
+  hide_columns: string[]
+  keep_combine_mode: 'or' | 'and'
+  n_visible: number
+  n_total: number
+  visible_gene_names: string[] | null
+}
+
+function responseToConfig(data: GeneMaskResponse): GeneMaskConfig {
+  return {
+    active: data.active,
+    keepColumns: data.keep_columns,
+    hideColumns: data.hide_columns,
+    keepCombineMode: data.keep_combine_mode,
+    nVisible: data.n_visible,
+    nTotal: data.n_total,
+    visibleGeneNames: data.visible_gene_names,
+  }
+}
+
+export async function fetchGeneMask(slot?: DatasetSlot): Promise<GeneMaskConfig> {
+  const data = await fetchJson<GeneMaskResponse>(
+    appendDataset(`${API_BASE}/gene_mask`, slot)
+  )
+  const config = responseToConfig(data)
+  const store = useStore.getState()
+  const targetSlot = slot ?? store.activeSlot
+  store.patchSlotState(targetSlot, { geneMaskConfig: config })
+  if (targetSlot === store.activeSlot) {
+    store.setGeneMaskConfig(config)
+  }
+  return config
+}
+
+export interface GeneMaskApplyInput {
+  keepColumns: string[]
+  hideColumns: string[]
+  keepCombineMode: 'or' | 'and'
+}
+
+function reactToMaskChange(targetSlot: DatasetSlot, config: GeneMaskConfig) {
+  // If the currently-colored gene(s) became masked, clear coloring and
+  // surface an error toast via setError (the existing dismissable toast).
+  const store = useStore.getState()
+  if (targetSlot !== store.activeSlot) return
+  if (!config.active || !config.visibleGeneNames) return
+  const visible = new Set(config.visibleGeneNames)
+
+  // Single-gene / multi-gene expression coloring
+  if (store.colorMode === 'expression' && store.selectedGenes.length > 0) {
+    const masked = store.selectedGenes.filter((g) => !visible.has(g))
+    if (masked.length === store.selectedGenes.length) {
+      store.clearSelectedGenes()
+      store.setError(MESSAGES.geneMask.coloringClearedToast(masked[0]))
+      return
+    }
+  }
+
+  // Bivariate coloring
+  if (store.colorMode === 'bivariate' && store.bivariateData) {
+    const g1Masked = store.bivariateData.genes1.some((g) => !visible.has(g))
+    const g2Masked = store.bivariateData.genes2.some((g) => !visible.has(g))
+    if (g1Masked || g2Masked) {
+      store.clearBivariateMode()
+      store.setError(
+        MESSAGES.geneMask.coloringClearedToast(
+          [...store.bivariateData.genes1, ...store.bivariateData.genes2].find(
+            (g) => !visible.has(g)
+          ) ?? 'gene'
+        )
+      )
+    }
+  }
+}
+
+export async function applyGeneMask(
+  input: GeneMaskApplyInput,
+  slot?: DatasetSlot
+): Promise<GeneMaskConfig> {
+  const store = useStore.getState()
+  const targetSlot = slot ?? store.activeSlot
+
+  const data = await fetchJson<GeneMaskResponse>(
+    appendDataset(`${API_BASE}/gene_mask`, slot),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keep_columns: input.keepColumns,
+        hide_columns: input.hideColumns,
+        keep_combine_mode: input.keepCombineMode,
+      }),
+    }
+  )
+  const config = responseToConfig(data)
+  store.patchSlotState(targetSlot, { geneMaskConfig: config })
+  if (targetSlot === store.activeSlot) {
+    store.setGeneMaskConfig(config)
+  }
+  reactToMaskChange(targetSlot, config)
+  return config
+}
+
+export async function clearGeneMask(slot?: DatasetSlot): Promise<GeneMaskConfig> {
+  const data = await fetchJson<GeneMaskResponse>(
+    appendDataset(`${API_BASE}/gene_mask`, slot),
+    { method: 'DELETE' }
+  )
+  const config = responseToConfig(data)
+  const store = useStore.getState()
+  const targetSlot = slot ?? store.activeSlot
+  store.patchSlotState(targetSlot, { geneMaskConfig: config })
+  if (targetSlot === store.activeSlot) {
+    store.setGeneMaskConfig(config)
+  }
+  return config
+}
+
+export interface BooleanColumnValuesResponse {
+  n_genes: number
+  columns: Record<string, number[]>
+}
+
+export async function fetchBooleanColumnValues(
+  slot?: DatasetSlot
+): Promise<BooleanColumnValuesResponse> {
+  return fetchJson<BooleanColumnValuesResponse>(
+    appendDataset(`${API_BASE}/var/boolean_column_values`, slot)
+  )
 }
 
 // Types for obs summaries

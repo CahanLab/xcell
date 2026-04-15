@@ -13,6 +13,7 @@ import HeatmapView from './components/HeatmapView'
 import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import SelectByExpressionModal from './components/SelectByExpressionModal'
+import GeneMaskModal from './components/GeneMaskModal'
 import { MESSAGES } from './messages'
 
 const styles = {
@@ -1698,6 +1699,7 @@ export default function App() {
       <MarkerGenesModal />
       <ClusterGeneSetModal />
       <SelectByExpressionModal />
+      <GeneMaskModal />
 
       {/* Export modal */}
       {isExportModalOpen && (

@@ -183,6 +183,11 @@ class DataAdaptor:
         return {
             "n_cells": self.n_cells,
             "n_genes": self.n_genes,
+            "n_genes_visible": (
+                int(self._visible_gene_mask.sum())
+                if self._visible_gene_mask is not None
+                else self.n_genes
+            ),
             "embeddings": embeddings,
             "obs_columns": obs_columns,
             "obs_dtypes": obs_dtypes,
@@ -590,8 +595,10 @@ class DataAdaptor:
             - scoring_method: The scoring method used
 
         """
-        # Filter to only genes present in the dataset (silently skip missing)
+        # Filter to only genes present in the dataset (silently skip missing),
+        # then drop any genes currently masked by the gene mask.
         valid_genes = [g for g in genes if g in self.adata.var.index]
+        valid_genes, n_masked_excluded = self._filter_to_visible(valid_genes)
 
         if len(valid_genes) == 0:
             return {
@@ -599,6 +606,7 @@ class DataAdaptor:
                 "values": [0.0] * self.n_cells,
                 "min": 0.0,
                 "max": 0.0,
+                "n_masked_excluded": n_masked_excluded,
             }
 
         genes = valid_genes
@@ -682,6 +690,7 @@ class DataAdaptor:
             "min": min_val,
             "max": max_val,
             "scoring_method": scoring_method,
+            "n_masked_excluded": n_masked_excluded,
         }
         if transform:
             result["transform"] = transform

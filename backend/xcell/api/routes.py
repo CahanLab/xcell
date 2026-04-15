@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 from typing import Any
 
+import numpy as np
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -1646,6 +1648,35 @@ def get_var_boolean_columns(dataset: str | None = Query(None)):
     """
     adaptor = get_adaptor(dataset)
     return adaptor.get_var_boolean_columns()
+
+
+@router.get("/var/boolean_column_values")
+def get_var_boolean_column_values(dataset: str | None = Query(None)):
+    """Return per-column True-index lists for boolean .var columns.
+
+    Used by the frontend Gene Mask modal for client-side preview count
+    computation (fetched once on modal open; no per-toggle round-trips).
+
+    Returns:
+        {
+            "n_genes": int,
+            "columns": {
+                "<column_name>": [positional_index, positional_index, ...],
+                ...
+            }
+        }
+    """
+    adaptor = get_adaptor(dataset)
+    bool_cols = adaptor.get_var_boolean_columns()
+    result: dict[str, Any] = {}
+    for col_info in bool_cols:
+        name = col_info['name']
+        arr = adaptor._column_to_bool_array(name)
+        result[name] = [int(i) for i in np.nonzero(arr)[0]]
+    return {
+        'n_genes': adaptor.n_genes,
+        'columns': result,
+    }
 
 
 class GeneMaskRequest(BaseModel):

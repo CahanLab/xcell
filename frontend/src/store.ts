@@ -254,6 +254,17 @@ export interface HeatmapConfig {
   nBins: number
 }
 
+// Gene mask — mirrors backend /api/gene_mask response
+export interface GeneMaskConfig {
+  active: boolean
+  keepColumns: string[]
+  hideColumns: string[]
+  keepCombineMode: 'or' | 'and'
+  nVisible: number
+  nTotal: number
+  visibleGeneNames: string[] | null  // null when inactive
+}
+
 // Interaction mode for the scatter plot
 export type InteractionMode = 'pan' | 'lasso' | 'draw' | 'adjust' | 'quilt'
 
@@ -317,6 +328,7 @@ export interface DatasetState {
   scanpyActionHistory: ScanpyActionRecord[]
   varIdentifierColumns: string[]
   currentVarIndex: string
+  geneMaskConfig: GeneMaskConfig | null
 }
 
 export function createDefaultDatasetState(): DatasetState {
@@ -353,6 +365,7 @@ export function createDefaultDatasetState(): DatasetState {
     scanpyActionHistory: [],
     varIdentifierColumns: [],
     currentVarIndex: '_index',
+    geneMaskConfig: null,
   }
 }
 
@@ -432,6 +445,9 @@ interface AppState {
   // Import modal state
   isImportModalOpen: boolean
 
+  // Gene mask modal state (global)
+  geneMaskModalOpen: boolean
+
   // Scanpy modal state
   isScanpyModalOpen: boolean
   scanpyActionHistory: ScanpyActionRecord[]
@@ -442,6 +458,9 @@ interface AppState {
   // Var identifier column switching (per-dataset, flat mirror)
   varIdentifierColumns: string[]
   currentVarIndex: string
+
+  // Gene mask config (per-dataset, flat mirror)
+  geneMaskConfig: GeneMaskConfig | null
 
   // Marker genes modal state
   isMarkerGenesModalOpen: boolean
@@ -588,6 +607,10 @@ interface AppState {
   // Import modal actions
   setImportModalOpen: (open: boolean) => void
 
+  // Gene mask actions
+  setGeneMaskModalOpen: (open: boolean) => void
+  setGeneMaskConfig: (config: GeneMaskConfig | null) => void
+
   // Scanpy modal actions
   setScanpyModalOpen: (open: boolean) => void
   setScanpyActionHistory: (history: ScanpyActionRecord[]) => void
@@ -678,6 +701,7 @@ export const useStore = create<AppState>((set, get) => {
       scanpyActionHistory: ds.scanpyActionHistory,
       varIdentifierColumns: ds.varIdentifierColumns,
       currentVarIndex: ds.currentVarIndex,
+      geneMaskConfig: ds.geneMaskConfig,
     }
   }
 
@@ -739,6 +763,8 @@ export const useStore = create<AppState>((set, get) => {
     drawTool: 'pencil' as DrawTool,
     selectionTool: 'lasso' as SelectionTool,
     isImportModalOpen: false,
+    geneMaskModalOpen: false,
+    geneMaskConfig: null,
     isScanpyModalOpen: false,
     scanpyActionHistory: [],
     obsSummariesVersion: 0,
@@ -1691,6 +1717,10 @@ export const useStore = create<AppState>((set, get) => {
 
     // Import modal actions (global)
     setImportModalOpen: (open) => set({ isImportModalOpen: open }),
+
+    // Gene mask actions
+    setGeneMaskModalOpen: (open) => set({ geneMaskModalOpen: open }),
+    setGeneMaskConfig: (config) => set(dsUpdate({ geneMaskConfig: config })),
 
     // Scanpy modal actions
     setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),  // global

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType } from '../store'
 import { useGeneSearch, useGeneBrowse, useDataActions, appendDataset, fetchVarIdentifierColumns, swapVarIndex } from '../hooks/useData'
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
@@ -752,6 +752,11 @@ function CategoryGeneSetComponent({
     setClusterModalSourceSet,
   } = useStore()
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
+  const geneMaskConfig = useStore((s) => s.geneMaskConfig)
+  const visibleGeneNameSet = useMemo<Set<string> | null>(() => {
+    if (!geneMaskConfig?.active || !geneMaskConfig.visibleGeneNames) return null
+    return new Set(geneMaskConfig.visibleGeneNames)
+  }, [geneMaskConfig])
 
   useEffect(() => {
     if (isEditing && editInputRef.current) {
@@ -947,7 +952,23 @@ function CategoryGeneSetComponent({
               >
                 {geneSet.name}
               </span>
-              <span style={styles.geneSetCount}>({geneSet.genes.length})</span>
+              {(() => {
+                const total = geneSet.genes.length
+                const visible = visibleGeneNameSet
+                  ? geneSet.genes.filter((g) => visibleGeneNameSet.has(g)).length
+                  : total
+                const hidden = total - visible
+                return (
+                  <span style={styles.geneSetCount}>
+                    ({visible})
+                    {hidden > 0 && (
+                      <span style={{ marginLeft: '4px', color: '#777', fontSize: '10px' }}>
+                        {MESSAGES.geneMask.hiddenSuffix(hidden)}
+                      </span>
+                    )}
+                  </span>
+                )
+              })()}
             </>
           )}
         </div>
@@ -1002,7 +1023,10 @@ function CategoryGeneSetComponent({
       </div>
       {expanded && geneSet.genes.length > 0 && (
         <div style={styles.geneList}>
-          {geneSet.genes.map((gene) => (
+          {(visibleGeneNameSet
+            ? geneSet.genes.filter((g) => visibleGeneNameSet.has(g))
+            : geneSet.genes
+          ).map((gene) => (
             <div
               key={gene}
               draggable

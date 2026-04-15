@@ -473,6 +473,10 @@ class DataAdaptor:
         # Clear caches
         self._normalized_adata = None
 
+        # Regenerate the visible-gene mask since .var axis may have changed.
+        # If referenced columns no longer exist, the mask is cleared.
+        self._regenerate_gene_mask_after_var_change()
+
         return self.get_schema()
 
     def search_genes(self, query: str, limit: int = 20) -> list[str]:
@@ -2403,6 +2407,36 @@ class DataAdaptor:
         self._visible_gene_mask = None
         return self.get_gene_mask()
 
+    def _regenerate_gene_mask_after_var_change(self) -> bool:
+        """Rebuild _visible_gene_mask against the current .var axis.
+
+        Called after operations that drop genes from .var or change the
+        gene index. Behaviour:
+          - No active mask → returns False, no-op.
+          - All referenced columns still exist → recomputes the mask
+            in place; returns False.
+          - One or more referenced columns are gone → clears the mask;
+            returns True.
+        """
+        if self._gene_mask_config is None:
+            return False
+        cfg = self._gene_mask_config
+        try:
+            self._visible_gene_mask = self._compute_visible_mask(
+                keep_columns=cfg['keep_columns'],
+                hide_columns=cfg['hide_columns'],
+                keep_combine_mode=cfg['keep_combine_mode'],
+            )
+            # If everything got filtered out, clear rather than crash.
+            if self._visible_gene_mask.sum() == 0:
+                self.clear_gene_mask()
+                return True
+            return False
+        except ValueError:
+            # A referenced column no longer exists — clear the mask.
+            self.clear_gene_mask()
+            return True
+
     def get_visible_gene_names(self) -> list[str]:
         """Return gene names where _visible_gene_mask is True.
 
@@ -2627,10 +2661,13 @@ class DataAdaptor:
         # Invalidate normalized cache since data changed
         self._normalized_adata = None
 
+        mask_cleared = self._regenerate_gene_mask_after_var_change()
+
         result = {
             'n_genes_before': n_genes_before,
             'n_genes_after': n_genes_after,
             'n_genes_removed': n_genes_before - n_genes_after,
+            'gene_mask_cleared': mask_cleared,
         }
         self._log_action('filter_genes', kwargs, result)
         return result
@@ -2677,12 +2714,15 @@ class DataAdaptor:
             self.adata = self.adata[:, ~mask].copy()
             self._normalized_adata = None
 
+        mask_cleared = self._regenerate_gene_mask_after_var_change()
+
         result = {
             'n_genes_before': n_genes_before,
             'n_genes_after': self.n_genes,
             'n_genes_removed': n_removed,
             'removed_genes': removed_genes[:100],  # Cap list for large removals
             'removed_genes_total': n_removed,
+            'gene_mask_cleared': mask_cleared,
         }
         self._log_action('exclude_genes', {
             'gene_names': gene_names,

@@ -3082,8 +3082,18 @@ class DataAdaptor:
         else:
             self.adata.obsm['X_pca'] = adata_pca.obsm['X_pca']
         self.adata.uns['pca'] = adata_pca.uns['pca']
+
+        # Copy gene loadings back as a full-size (n_genes, n_comps) matrix
+        # with NaN rows for genes not included in the subset. Downstream
+        # code (get_pca_loadings, create_pca_subset) expects varm['PCs']
+        # to be present and correctly shaped for self.adata.n_vars.
         if 'PCs' in adata_pca.varm:
-            # Store loadings for the subset genes
+            full_pcs = np.full((self.n_genes, n_comps), np.nan)
+            if gene_subset is not None:
+                full_pcs[gene_mask, :] = adata_pca.varm['PCs']
+            else:
+                full_pcs[:, :] = adata_pca.varm['PCs']
+            self.adata.varm['PCs'] = full_pcs
             self.adata.uns['pca']['gene_subset'] = {
                 'type': subset_type,
                 'n_genes': n_genes_used,

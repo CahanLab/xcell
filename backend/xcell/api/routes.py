@@ -1343,6 +1343,11 @@ class NeighborsRequest(BaseModel):
     active_cell_indices: list[int] | None = None
 
 
+class CreatePcaSubsetRequest(BaseModel):
+    drop_pc_indices: list[int]
+    suffix: str | None = None
+
+
 class UmapRequest(BaseModel):
     min_dist: float = 0.5
     spread: float = 1.0
@@ -1600,6 +1605,51 @@ def get_pca_loadings(
     try:
         return adaptor.get_pca_loadings(top_n=top_n)
     except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/scanpy/pca_subsets")
+def list_pca_subsets(dataset: str | None = Query(None)):
+    """List derived PC subsets (X_pca_no* obsm slots)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return {'subsets': adaptor.list_pca_subsets()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scanpy/pca_subsets")
+def create_pca_subset(
+    request: CreatePcaSubsetRequest,
+    dataset: str | None = Query(None),
+):
+    """Create a derived PC subset that excludes the given (1-indexed) PCs."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.create_pca_subset(
+            drop_pc_indices=request.drop_pc_indices,
+            suffix=request.suffix,
+        )
+    except ValueError as e:
+        # Use 409 for suffix collision so the UI can show a specific toast.
+        if 'already exists' in str(e):
+            raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/scanpy/pca_subsets/{obsm_key}")
+def delete_pca_subset(
+    obsm_key: str,
+    dataset: str | None = Query(None),
+):
+    """Delete a derived PC subset by its obsm key (e.g., X_pca_noPC2_5)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        adaptor.delete_pca_subset(obsm_key)
+        return {'status': 'deleted', 'obsm_key': obsm_key}
+    except ValueError as e:
+        if 'not found' in str(e):
+            raise HTTPException(status_code=404, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
 
 

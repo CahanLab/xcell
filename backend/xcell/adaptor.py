@@ -3195,6 +3195,141 @@ class DataAdaptor:
             'pcs': pcs_out,
         }
 
+    def create_pca_subset(
+        self,
+        drop_pc_indices: list[int],
+        suffix: str | None = None,
+    ) -> dict[str, Any]:
+        """Create derived PCA slots that exclude specific 1-indexed PCs.
+
+        Writes:
+          - obsm[f'X_pca_{suffix}'] — base embedding with dropped columns removed.
+          - varm[f'PCs_{suffix}'] — matching loadings with dropped columns removed.
+          - uns['pca'][f'variance_ratio_{suffix}'] — matching variance ratios.
+          - uns['pca']['subsets'][suffix] = {'dropped_pcs': [i, j, ...]}
+            (round-trips exact indices regardless of suffix).
+
+        Raises:
+            ValueError: missing PCA, empty indices, out-of-range, all-dropped.
+            ValueError: suffix collision with existing obsm key.
+        """
+        if 'X_pca' not in self.adata.obsm:
+            raise ValueError("PCA has not been run. Run pca first.")
+        if not drop_pc_indices:
+            raise ValueError("drop_pc_indices must contain at least one PC.")
+
+        base_embed = np.asarray(self.adata.obsm['X_pca'])
+        n_cells, n_pcs = base_embed.shape
+
+        # Convert from 1-indexed user-facing to 0-indexed column positions.
+        idx = np.asarray(drop_pc_indices, dtype=int) - 1
+        if (idx < 0).any():
+            raise ValueError("drop_pc_indices must be >= 1 (PC numbers are 1-indexed).")
+        if (idx >= n_pcs).any():
+            raise ValueError(
+                f"drop_pc_indices contains entries > {n_pcs} (total PCs available)."
+            )
+        idx = np.unique(idx)
+        keep = np.setdiff1d(np.arange(n_pcs), idx, assume_unique=False)
+        if keep.size == 0:
+            raise ValueError("Cannot drop all PCs.")
+
+        dropped_1indexed = sorted(int(i + 1) for i in idx)
+
+        if suffix is None or suffix == '':
+            suffix = f"noPC{'_'.join(str(i) for i in dropped_1indexed)}"
+
+        new_obsm_key = f"X_pca_{suffix}"
+        if new_obsm_key in self.adata.obsm:
+            raise ValueError(f"A PC subset named '{suffix}' already exists.")
+
+        # Write the three companion slots.
+        self.adata.obsm[new_obsm_key] = base_embed[:, keep]
+
+        varm_key = None
+        if 'PCs' in self.adata.varm:
+            varm_key = f"PCs_{suffix}"
+            self.adata.varm[varm_key] = np.asarray(self.adata.varm['PCs'])[:, keep]
+
+        var_ratio_key = None
+        if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
+            if 'variance_ratio' in self.adata.uns['pca']:
+                var_ratio_key = f"variance_ratio_{suffix}"
+                self.adata.uns['pca'][var_ratio_key] = np.asarray(
+                    self.adata.uns['pca']['variance_ratio']
+                )[keep]
+            # Record the dropped indices for round-tripping in list_pca_subsets.
+            subsets_meta = self.adata.uns['pca'].setdefault('subsets', {})
+            subsets_meta[suffix] = {'dropped_pcs': dropped_1indexed}
+
+        result = {
+            'obsm_key': new_obsm_key,
+            'varm_key': varm_key,
+            'variance_ratio_key': var_ratio_key,
+            'suffix': suffix,
+            'n_pcs_kept': int(keep.size),
+            'dropped_pcs': dropped_1indexed,
+        }
+        self._log_action('create_pca_subset', {
+            'drop_pc_indices': dropped_1indexed,
+            'suffix': suffix,
+        }, result)
+        return result
+
+    def list_pca_subsets(self) -> list[dict[str, Any]]:
+        """List every derived PC subset in adata.obsm.
+
+        Iterates obsm keys with prefix 'X_pca_' (excluding the exact key
+        'X_pca'). For each, reports obsm_key, suffix, n_pcs_kept, and
+        dropped_pcs (from uns['pca']['subsets'][suffix] when present,
+        otherwise []).
+        """
+        out: list[dict[str, Any]] = []
+        subsets_meta = {}
+        if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
+            subsets_meta = self.adata.uns['pca'].get('subsets', {}) or {}
+
+        for key in sorted(self.adata.obsm.keys()):
+            if not key.startswith('X_pca_') or key == 'X_pca':
+                continue
+            suffix = key[len('X_pca_'):]
+            arr = np.asarray(self.adata.obsm[key])
+            n_pcs_kept = int(arr.shape[1]) if arr.ndim == 2 else 0
+            meta = subsets_meta.get(suffix, {})
+            dropped = list(meta.get('dropped_pcs', []))
+            out.append({
+                'obsm_key': key,
+                'suffix': suffix,
+                'n_pcs_kept': n_pcs_kept,
+                'dropped_pcs': dropped,
+            })
+        return out
+
+    def delete_pca_subset(self, obsm_key: str) -> None:
+        """Delete a derived PC subset's obsm, varm, variance_ratio, and
+        uns['pca']['subsets'] entries.
+
+        Raises:
+            ValueError: if obsm_key == 'X_pca', is missing, or doesn't start
+                with 'X_pca_'.
+        """
+        if obsm_key == 'X_pca':
+            raise ValueError("Cannot delete the base X_pca embedding.")
+        if not obsm_key.startswith('X_pca_'):
+            raise ValueError(f"'{obsm_key}' is not a derived PC subset.")
+        if obsm_key not in self.adata.obsm:
+            raise ValueError(f"'{obsm_key}' not found in obsm.")
+
+        suffix = obsm_key[len('X_pca_'):]
+        self.adata.obsm.pop(obsm_key, None)
+        self.adata.varm.pop(f"PCs_{suffix}", None)
+        if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
+            self.adata.uns['pca'].pop(f"variance_ratio_{suffix}", None)
+            subsets_meta = self.adata.uns['pca'].get('subsets', {})
+            if isinstance(subsets_meta, dict):
+                subsets_meta.pop(suffix, None)
+        self._log_action('delete_pca_subset', {'obsm_key': obsm_key}, None)
+
     def run_neighbors(
         self,
         n_neighbors: int = 15,

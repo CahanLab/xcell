@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState } from 'react'
-import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig } from '../store'
+import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary } from '../store'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -789,6 +789,141 @@ export async function clearGeneMask(slot?: DatasetSlot): Promise<GeneMaskConfig>
     store.setGeneMaskConfig(config)
   }
   return config
+}
+
+export interface PCALoadingGene {
+  gene: string
+  loading: number
+}
+
+export interface PCALoadingEntry {
+  index: number                     // zero-based
+  variance_ratio: number | null
+  positive: PCALoadingGene[]
+  negative: PCALoadingGene[]
+}
+
+export interface PCALoadingsResponse {
+  n_pcs: number
+  top_n: number
+  pcs: PCALoadingEntry[]
+}
+
+export async function fetchPcaLoadings(
+  topN: number,
+  slot?: DatasetSlot,
+): Promise<PCALoadingsResponse> {
+  const url = appendDataset(`/api/scanpy/pca_loadings?top_n=${topN}`, slot)
+  const res = await fetch(url)
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(detail.detail || 'Failed to fetch PCA loadings')
+  }
+  return res.json()
+}
+
+export function usePcaLoadings(topN: number, enabled: boolean): {
+  loadings: PCALoadingsResponse | null
+  loading: boolean
+  error: string | null
+  reload: () => void
+} {
+  const activeSlot = useStore((s) => s.activeSlot)
+  const [loadings, setLoadings] = useState<PCALoadingsResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [reloadToken, setReloadToken] = useState(0)
+
+  useEffect(() => {
+    if (!enabled) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    fetchPcaLoadings(topN)
+      .then((data) => { if (!cancelled) setLoadings(data) })
+      .catch((e) => { if (!cancelled) setError(e.message || 'Failed to fetch loadings') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [topN, enabled, activeSlot, reloadToken])
+
+  const reload = useCallback(() => setReloadToken((n) => n + 1), [])
+  return { loadings, loading, error, reload }
+}
+
+export async function fetchPcaSubsets(slot?: DatasetSlot): Promise<PCASubsetSummary[]> {
+  const url = appendDataset('/api/scanpy/pca_subsets', slot)
+  const res = await fetch(url)
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(detail.detail || 'Failed to fetch PCA subsets')
+  }
+  const data = await res.json()
+  const subsets: PCASubsetSummary[] = (data.subsets || []).map((s: any) => ({
+    obsmKey: s.obsm_key,
+    suffix: s.suffix,
+    droppedPcs: s.dropped_pcs || [],
+    nPcsKept: s.n_pcs_kept,
+  }))
+  // Write directly into the active dataset's store so the Neighbors dropdown
+  // and PCA Loadings subsets list stay in sync.
+  const targetSlot = slot ?? useStore.getState().activeSlot
+  useStore.getState().patchSlotState(targetSlot, { pcaSubsets: subsets })
+  return subsets
+}
+
+export async function createPcaSubset(
+  dropPcIndices: number[],
+  suffix: string | null,
+  slot?: DatasetSlot,
+): Promise<PCASubsetSummary> {
+  const url = appendDataset('/api/scanpy/pca_subsets', slot)
+  const body: { drop_pc_indices: number[]; suffix?: string } = {
+    drop_pc_indices: dropPcIndices,
+  }
+  if (suffix && suffix.trim() !== '') body.suffix = suffix.trim()
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }))
+    const err = new Error(detail.detail || 'Failed to create PC subset') as Error & { status?: number }
+    err.status = res.status
+    throw err
+  }
+  const data = await res.json()
+  const summary: PCASubsetSummary = {
+    obsmKey: data.obsm_key,
+    suffix: data.suffix,
+    droppedPcs: data.dropped_pcs || [],
+    nPcsKept: data.n_pcs_kept,
+  }
+  // Optimistically append to the store.
+  const targetSlot = slot ?? useStore.getState().activeSlot
+  const current = useStore.getState().datasets[targetSlot]?.pcaSubsets || []
+  useStore.getState().patchSlotState(targetSlot, {
+    pcaSubsets: [...current, summary],
+  })
+  return summary
+}
+
+export async function deletePcaSubset(
+  obsmKey: string,
+  slot?: DatasetSlot,
+): Promise<void> {
+  const url = appendDataset(`/api/scanpy/pca_subsets/${encodeURIComponent(obsmKey)}`, slot)
+  const res = await fetch(url, { method: 'DELETE' })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(detail.detail || 'Failed to delete PC subset')
+  }
+  const targetSlot = slot ?? useStore.getState().activeSlot
+  const current = useStore.getState().datasets[targetSlot]?.pcaSubsets || []
+  useStore.getState().patchSlotState(targetSlot, {
+    pcaSubsets: current.filter((s) => s.obsmKey !== obsmKey),
+  })
 }
 
 export interface BooleanColumnValuesResponse {

@@ -1444,6 +1444,10 @@ export default function ScanpyModal() {
                           try {
                             await deletePcaSubset(s.obsmKey)
                           } catch (e: any) {
+                            // Silently swallow 404 — happens on rapid
+                            // double-click after the first DELETE has
+                            // already removed the slot.
+                            if (e?.status === 404) return
                             setResult({
                               success: false,
                               message: e?.message || 'Failed to delete PC subset',

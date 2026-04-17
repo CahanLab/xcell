@@ -917,7 +917,9 @@ export async function deletePcaSubset(
   const res = await fetch(url, { method: 'DELETE' })
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(detail.detail || 'Failed to delete PC subset')
+    const err = new Error(detail.detail || 'Failed to delete PC subset') as Error & { status?: number }
+    err.status = res.status
+    throw err
   }
   const targetSlot = slot ?? useStore.getState().activeSlot
   const current = useStore.getState().datasets[targetSlot]?.pcaSubsets || []

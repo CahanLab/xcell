@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
-import { useStore, ScanpyActionRecord } from '../store'
-import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset as _createPcaSubset, deletePcaSubset as _deletePcaSubset, PCALoadingsResponse as _PCALoadingsResponse } from '../hooks/useData'
+import { useStore, ScanpyActionRecord, PCASubsetSummary } from '../store'
+import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset } from '../hooks/useData'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -634,11 +634,11 @@ export default function ScanpyModal() {
   // PCA Loadings state
   const [pcaTopN, setPcaTopN] = useState<number>(10)
   const [pcaCheckedPCs, setPcaCheckedPCs] = useState<Set<number>>(new Set())
-  const [_pcaSuffix, _setPcaSuffix] = useState<string>('')
-  const [_pcaCreateBusy, _setPcaCreateBusy] = useState<boolean>(false)
+  const [pcaSuffix, setPcaSuffix] = useState<string>('')
+  const [pcaCreateBusy, setPcaCreateBusy] = useState<boolean>(false)
   const activeSlot = useStore((s) => s.activeSlot)
-  // Task 10 will consume pcaSubsetsFromStore; declare here so the hook runs.
-  void useStore((s) => s.datasets[s.activeSlot]?.pcaSubsets || [])
+  const pcaSubsetsFromStore: PCASubsetSummary[] =
+    useStore((s) => s.datasets[s.activeSlot]?.pcaSubsets || [])
 
   const { loadings: pcaLoadings, loading: pcaLoadingsLoading, error: pcaLoadingsError } =
     usePcaLoadings(pcaTopN, selectedFunction === 'pca_loadings')
@@ -653,7 +653,7 @@ export default function ScanpyModal() {
   // Reset checked set when loadings payload changes (e.g., PCA was re-run).
   useEffect(() => {
     setPcaCheckedPCs(new Set())
-    _setPcaSuffix('')
+    setPcaSuffix('')
   }, [pcaLoadings?.n_pcs, activeSlot])
 
   // Get current function definition
@@ -1295,8 +1295,14 @@ export default function ScanpyModal() {
                             <input
                               type="checkbox"
                               checked={checked}
-                              disabled
-                              style={{ opacity: 0.4 }}
+                              onChange={() => {
+                                setPcaCheckedPCs((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(pcNum)) next.delete(pcNum)
+                                  else next.add(pcNum)
+                                  return next
+                                })
+                              }}
                             />
                           </td>
                           <td style={{ padding: '4px 8px', textAlign: 'right', color: '#ccc' }}>{pcNum}</td>
@@ -1328,6 +1334,139 @@ export default function ScanpyModal() {
                 </table>
               </div>
             )}
+
+            {pcaLoadings && pcaLoadings.pcs.length > 0 && (() => {
+              const droppedSorted = Array.from(pcaCheckedPCs).sort((a, b) => a - b)
+              const autoSuffix = droppedSorted.length > 0 ? `noPC${droppedSorted.join('_')}` : ''
+              const nKept = pcaLoadings.n_pcs - droppedSorted.length
+              const disableReason =
+                droppedSorted.length === 0 ? MESSAGES.pcaLoadings.noneChecked
+                : nKept === 0 ? MESSAGES.pcaLoadings.allDropped
+                : null
+              return (
+                <div style={{ marginTop: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                    <label style={{ fontSize: '12px', color: '#aaa' }}>
+                      {MESSAGES.pcaLoadings.suffixLabel}
+                    </label>
+                    <input
+                      type="text"
+                      value={pcaSuffix}
+                      onChange={(e) => setPcaSuffix(e.target.value)}
+                      placeholder={autoSuffix ? `${MESSAGES.pcaLoadings.suffixAutoPrefix}${autoSuffix}` : ''}
+                      style={{ flex: 1, padding: '4px 6px', fontSize: '12px', backgroundColor: '#0f3460', color: '#eee', border: '1px solid #1a1a2e', borderRadius: '4px' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <button
+                      disabled={!!disableReason || pcaCreateBusy}
+                      onClick={async () => {
+                        if (disableReason) return
+                        setPcaCreateBusy(true)
+                        try {
+                          const summary = await createPcaSubset(
+                            droppedSorted,
+                            pcaSuffix.trim() || null,
+                          )
+                          setPcaCheckedPCs(new Set())
+                          setPcaSuffix('')
+                          setResult({
+                            success: true,
+                            message: MESSAGES.pcaLoadings.createdToast(summary.suffix, summary.nPcsKept),
+                          })
+                        } catch (e: any) {
+                          if (e?.status === 409) {
+                            setResult({
+                              success: false,
+                              message: MESSAGES.pcaLoadings.collisionToast(pcaSuffix.trim() || autoSuffix),
+                            })
+                          } else {
+                            setResult({
+                              success: false,
+                              message: e?.message || 'Failed to create PC subset',
+                            })
+                          }
+                        } finally {
+                          setPcaCreateBusy(false)
+                        }
+                      }}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        backgroundColor: disableReason ? '#2a2a3e' : '#4ecdc4',
+                        color: disableReason ? '#666' : '#000',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: disableReason ? 'not-allowed' : 'pointer',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {pcaCreateBusy ? MESSAGES.pcaLoadings.createBusyButton : MESSAGES.pcaLoadings.createButton}
+                    </button>
+                    <span style={{ fontSize: '11px', color: disableReason ? '#ff9966' : '#888' }}>
+                      {disableReason || MESSAGES.pcaLoadings.checkedSummary(droppedSorted.length, nKept)}
+                    </span>
+                  </div>
+                </div>
+              )
+            })()}
+
+            <div style={{ marginTop: '20px' }}>
+              <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                {MESSAGES.pcaLoadings.existingSubsetsHeader}
+              </div>
+              {pcaSubsetsFromStore.length === 0 ? (
+                <div style={{ fontSize: '11px', color: '#666', padding: '6px 8px' }}>
+                  {MESSAGES.pcaLoadings.noSubsets}
+                </div>
+              ) : (
+                <div style={{ border: '1px solid #1a1a2e', borderRadius: '4px' }}>
+                  {pcaSubsetsFromStore.map((s) => (
+                    <div
+                      key={s.obsmKey}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '8px',
+                        padding: '6px 10px',
+                        fontSize: '11px',
+                        color: '#ccc',
+                        borderBottom: '1px solid #0a0f1a',
+                      }}
+                    >
+                      <span>
+                        {MESSAGES.pcaLoadings.subsetSummary(s.suffix, s.nPcsKept, s.droppedPcs)}
+                      </span>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await deletePcaSubset(s.obsmKey)
+                          } catch (e: any) {
+                            setResult({
+                              success: false,
+                              message: e?.message || 'Failed to delete PC subset',
+                            })
+                          }
+                        }}
+                        title="Delete"
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#888',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          padding: '2px 6px',
+                        }}
+                      >
+                        {MESSAGES.pcaLoadings.deleteButton}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

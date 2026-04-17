@@ -2205,6 +2205,7 @@ class DataAdaptor:
             'neighbors': ['pca'],
             'umap': ['neighbors'],
             'leiden': ['neighbors'],
+            'pca_loadings': ['pca_with_loadings'],
             # Gene analysis
             'gene_pca': [],
             'gene_neighbors': [],
@@ -2233,6 +2234,9 @@ class DataAdaptor:
             elif prereq == 'gene_neighbors':
                 if 'gene_connectivities' not in self.adata.varp:
                     missing.append('gene_neighbors')
+            elif prereq == 'pca_with_loadings':
+                if 'pca' not in self.adata.uns or 'PCs' not in self.adata.varm:
+                    missing.append('pca_with_loadings')
             elif prereq == 'has_spatial':
                 if not self._has_spatial_coordinates():
                     missing.append('has_spatial')
@@ -3116,6 +3120,80 @@ class DataAdaptor:
             'gene_subset': gene_subset,
         }, result)
         return result
+
+    def get_pca_loadings(self, top_n: int = 10) -> dict[str, Any]:
+        """Return top +/- loading genes per computed PC.
+
+        Reads self.adata.varm['PCs'] and self.adata.uns['pca']['variance_ratio'].
+        Gene rows containing NaN loadings (from subset-PCA runs) are excluded
+        from per-PC rankings; up to top_n valid genes are returned per side.
+
+        Raises:
+            ValueError: if PCA has not been run or loadings are missing.
+
+        Returns:
+            {
+              'n_pcs': int,
+              'top_n': int,
+              'pcs': [
+                {
+                  'index': 0,                 # zero-based
+                  'variance_ratio': 0.127,
+                  'positive': [{'gene': 'MALAT1', 'loading': 0.18}, ...],
+                  'negative': [{'gene': 'MT-CO1', 'loading': -0.15}, ...],
+                }, ...
+              ]
+            }
+        """
+        if 'pca' not in self.adata.uns:
+            raise ValueError("PCA has not been run. Run pca first.")
+        if 'PCs' not in self.adata.varm:
+            raise ValueError("PC loadings are unavailable (varm['PCs'] missing). Re-run PCA.")
+
+        pcs_matrix = np.asarray(self.adata.varm['PCs'])
+        if pcs_matrix.ndim != 2:
+            raise ValueError(f"Unexpected varm['PCs'] shape: {pcs_matrix.shape}")
+
+        n_genes, n_comps = pcs_matrix.shape
+        var_ratio = np.asarray(self.adata.uns['pca'].get('variance_ratio', []))
+        gene_names = list(self.adata.var_names)
+        top_n = max(1, int(top_n))
+
+        pcs_out = []
+        for i in range(n_comps):
+            col = pcs_matrix[:, i]
+            valid = ~np.isnan(col)
+            valid_indices = np.where(valid)[0]
+            valid_loadings = col[valid_indices]
+
+            # Positive side: sort descending, take top_n
+            pos_order = valid_indices[np.argsort(-valid_loadings)][:top_n]
+            positive = [
+                {'gene': gene_names[int(j)], 'loading': float(col[int(j)])}
+                for j in pos_order
+                if col[int(j)] > 0
+            ]
+
+            # Negative side: sort ascending, take top_n
+            neg_order = valid_indices[np.argsort(valid_loadings)][:top_n]
+            negative = [
+                {'gene': gene_names[int(j)], 'loading': float(col[int(j)])}
+                for j in neg_order
+                if col[int(j)] < 0
+            ]
+
+            pcs_out.append({
+                'index': i,
+                'variance_ratio': float(var_ratio[i]) if i < len(var_ratio) else None,
+                'positive': positive,
+                'negative': negative,
+            })
+
+        return {
+            'n_pcs': n_comps,
+            'top_n': top_n,
+            'pcs': pcs_out,
+        }
 
     def run_neighbors(
         self,

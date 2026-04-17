@@ -1590,6 +1590,19 @@ def run_leiden(request: LeidenRequest, dataset: str | None = Query(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/scanpy/pca_loadings")
+def get_pca_loadings(
+    top_n: int = Query(10, ge=1, le=500),
+    dataset: str | None = Query(None),
+):
+    """Return top +/- loading genes per computed PC."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.get_pca_loadings(top_n=top_n)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # =========================================================================
 # Gene analysis endpoints
 # =========================================================================

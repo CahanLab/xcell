@@ -1340,6 +1340,7 @@ class NeighborsRequest(BaseModel):
     n_neighbors: int = 15
     n_pcs: int | None = None
     metric: str = 'euclidean'
+    use_rep: str | None = None
     active_cell_indices: list[int] | None = None
 
 
@@ -1542,6 +1543,7 @@ def run_neighbors(request: NeighborsRequest, dataset: str | None = Query(None)):
             n_neighbors=request.n_neighbors,
             n_pcs=request.n_pcs,
             metric=request.metric,
+            use_rep=request.use_rep,
             active_cell_indices=request.active_cell_indices,
         )
     except ValueError as e:

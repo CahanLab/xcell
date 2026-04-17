@@ -3357,6 +3357,7 @@ class DataAdaptor:
         n_neighbors: int = 15,
         n_pcs: int | None = None,
         metric: str = 'euclidean',
+        use_rep: str | None = None,
         active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Compute neighborhood graph.
@@ -3365,6 +3366,9 @@ class DataAdaptor:
             n_neighbors: Number of neighbors to use
             n_pcs: Number of PCs to use (None = use all)
             metric: Distance metric
+            use_rep: obsm key to use as the representation (e.g. 'X_pca_noPC2_5').
+                None or 'X_pca' preserves the default scanpy path (uses X_pca).
+                Any other value must exist in adata.obsm.
             active_cell_indices: If provided, compute neighbors on these cells only;
                 results are remapped into full-size sparse matrices.
 
@@ -3385,14 +3389,26 @@ class DataAdaptor:
         if n_pcs is not None:
             kwargs['n_pcs'] = n_pcs
 
+        # Resolve and validate use_rep. None / 'X_pca' preserve the existing
+        # default path. Any other value must exist in adata.obsm.
+        rep_key = use_rep if use_rep and use_rep != 'X_pca' else None
+        if rep_key is not None:
+            if rep_key not in self.adata.obsm:
+                raise ValueError(
+                    f"use_rep '{rep_key}' not found in obsm. "
+                    f"Create it via /api/scanpy/pca_subsets first."
+                )
+            kwargs['use_rep'] = rep_key
+
         cell_indices = self._validate_cell_indices(active_cell_indices)
         if cell_indices is not None:
             # Build a subset AnnData with PCA from the active cells
             import anndata as ad
-            pca_full = self.adata.obsm['X_pca']
+            source_key = rep_key if rep_key is not None else 'X_pca'
+            pca_full = self.adata.obsm[source_key]
             pca_sub = pca_full[cell_indices]
             adata_sub = ad.AnnData(obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
-            adata_sub.obsm['X_pca'] = pca_sub
+            adata_sub.obsm[source_key] = pca_sub
 
             sc.pp.neighbors(adata_sub, **kwargs)
 

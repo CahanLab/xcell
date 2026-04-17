@@ -100,4 +100,44 @@ export const MESSAGES = {
       `${visible.toLocaleString()} / ${total.toLocaleString()}`,
     menuItem: 'Gene mask…',
   },
+
+  // PCA Loadings Explorer
+  pcaLoadings: {
+    description:
+      'Inspect top-loading genes per PC, then create a derived subset that excludes selected PCs for downstream analysis.',
+    topNLabel: 'Top-N genes per side:',
+    colPC: 'PC',
+    colVariance: 'Var %',
+    colPositive: 'Top + loading genes',
+    colNegative: 'Top − loading genes',
+    suffixLabel: 'Suffix (optional):',
+    suffixAutoPrefix: 'auto: ',
+    createButton: 'Create PC subset →',
+    createBusyButton: 'Creating…',
+    deleteButton: '✕',
+    checkedSummary: (nChecked: number, nKept: number) =>
+      `${nChecked} PC${nChecked === 1 ? '' : 's'} checked, ${nKept} would remain`,
+    noneChecked: 'Check at least one PC to drop',
+    allDropped: 'Cannot drop all PCs',
+    prereqMissing: 'Run PCA first to explore loadings.',
+    empty: 'No PC loadings available — re-run PCA to populate loadings.',
+    loading: 'Loading loadings…',
+    fetchError: 'Failed to load PC loadings.',
+    existingSubsetsHeader: 'Existing PC subsets',
+    noSubsets: 'No derived PC subsets yet.',
+    subsetSummary: (suffix: string, nKept: number, dropped: number[]) =>
+      dropped.length > 0
+        ? `${suffix} · ${nKept} kept · dropped ${dropped.join(', ')}`
+        : `${suffix} · ${nKept} kept`,
+    createdToast: (suffix: string, nKept: number) =>
+      `Created PC subset "${suffix}" (${nKept} PCs kept)`,
+    collisionToast: (suffix: string) =>
+      `A PC subset named "${suffix}" already exists.`,
+    clearedToast: (n: number) =>
+      `PCA recomputed — cleared ${n.toLocaleString()} derived PC subset${n === 1 ? '' : 's'}.`,
+    neighborsSourceLabel: 'PC source',
+    neighborsSourceDescription:
+      'Which PC embedding to use. Create derived subsets via PCA Loadings.',
+    neighborsSourceBaseLabel: 'X_pca (all PCs)',
+  },
 } as const

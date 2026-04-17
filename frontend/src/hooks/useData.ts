@@ -839,7 +839,7 @@ export function usePcaLoadings(topN: number, enabled: boolean): {
     let cancelled = false
     setLoading(true)
     setError(null)
-    fetchPcaLoadings(topN)
+    fetchPcaLoadings(topN, activeSlot)
       .then((data) => { if (!cancelled) setLoadings(data) })
       .catch((e) => { if (!cancelled) setError(e.message || 'Failed to fetch loadings') })
       .finally(() => { if (!cancelled) setLoading(false) })

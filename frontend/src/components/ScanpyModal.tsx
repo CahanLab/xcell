@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useStore, ScanpyActionRecord } from '../store'
-import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask } from '../hooks/useData'
+import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset as _createPcaSubset, deletePcaSubset as _deletePcaSubset, PCALoadingsResponse as _PCALoadingsResponse } from '../hooks/useData'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -147,7 +147,7 @@ function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData
 interface ParamDef {
   name: string
   label: string
-  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea'
+  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select'
   default: string | number | null
   description: string
   options?: string[]
@@ -243,6 +243,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'svd_solver', label: 'SVD solver', type: 'select', default: 'arpack', options: ['arpack', 'randomized', 'auto'], description: 'SVD algorithm' },
           { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: null, description: 'Filter genes using boolean columns from .var (default: use highly_variable if available)' },
         ],
+      },
+      pca_loadings: {
+        label: 'PCA Loadings',
+        description: 'Explore PC gene loadings and create PC subsets to exclude technical PCs',
+        prerequisites: ['pca_loadings'],
+        params: [],
+        custom: true,
       },
       neighbors: {
         label: 'Neighbors',
@@ -623,6 +630,31 @@ export default function ScanpyModal() {
   const [compareChecked, setCompareChecked] = useState<Set<string>>(new Set())
   const [compareTopN, setCompareTopN] = useState(25)
   const [compareLoading, setCompareLoading] = useState(false)
+
+  // PCA Loadings state
+  const [pcaTopN, setPcaTopN] = useState<number>(10)
+  const [pcaCheckedPCs, setPcaCheckedPCs] = useState<Set<number>>(new Set())
+  const [_pcaSuffix, _setPcaSuffix] = useState<string>('')
+  const [_pcaCreateBusy, _setPcaCreateBusy] = useState<boolean>(false)
+  const activeSlot = useStore((s) => s.activeSlot)
+  // Task 10 will consume pcaSubsetsFromStore; declare here so the hook runs.
+  void useStore((s) => s.datasets[s.activeSlot]?.pcaSubsets || [])
+
+  const { loadings: pcaLoadings, loading: pcaLoadingsLoading, error: pcaLoadingsError } =
+    usePcaLoadings(pcaTopN, selectedFunction === 'pca_loadings')
+
+  // Load existing subsets whenever we open the PCA Loadings tab.
+  useEffect(() => {
+    if (selectedFunction === 'pca_loadings') {
+      fetchPcaSubsets().catch(() => { /* toast shown by global error handler */ })
+    }
+  }, [selectedFunction, activeSlot])
+
+  // Reset checked set when loadings payload changes (e.g., PCA was re-run).
+  useEffect(() => {
+    setPcaCheckedPCs(new Set())
+    _setPcaSuffix('')
+  }, [pcaLoadings?.n_pcs, activeSlot])
 
   // Get current function definition
   const categoryDef = SCANPY_FUNCTIONS[selectedCategory]
@@ -1196,6 +1228,109 @@ export default function ScanpyModal() {
           </div>
         )}
 
+        {/* PCA Loadings custom UI (read-only scaffold — Task 9) */}
+        {selectedFunction === 'pca_loadings' && (
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '10px', lineHeight: 1.4 }}>
+              {MESSAGES.pcaLoadings.description}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+              <label style={{ fontSize: '12px', color: '#aaa' }}>
+                {MESSAGES.pcaLoadings.topNLabel}
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={pcaTopN}
+                onChange={(e) => setPcaTopN(Math.max(1, parseInt(e.target.value) || 1))}
+                style={{ width: '70px', padding: '4px 6px', fontSize: '12px', backgroundColor: '#0f3460', color: '#eee', border: '1px solid #1a1a2e', borderRadius: '4px' }}
+              />
+            </div>
+
+            {pcaLoadingsLoading && (
+              <div style={{ fontSize: '12px', color: '#888', padding: '8px' }}>
+                {MESSAGES.pcaLoadings.loading}
+              </div>
+            )}
+            {pcaLoadingsError && (
+              <div style={{ fontSize: '12px', color: '#ff7f7f', padding: '8px' }}>
+                {pcaLoadingsError}
+              </div>
+            )}
+
+            {pcaLoadings && pcaLoadings.pcs.length === 0 && (
+              <div style={{ fontSize: '12px', color: '#888', padding: '8px' }}>
+                {MESSAGES.pcaLoadings.empty}
+              </div>
+            )}
+
+            {pcaLoadings && pcaLoadings.pcs.length > 0 && (
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid #1a1a2e', borderRadius: '4px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                  <thead style={{ position: 'sticky', top: 0, backgroundColor: '#0f3460', zIndex: 1 }}>
+                    <tr>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'left', width: '36px' }}></th>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'right', width: '48px' }}>{MESSAGES.pcaLoadings.colPC}</th>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'right', width: '64px' }}>{MESSAGES.pcaLoadings.colVariance}</th>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'left' }}>{MESSAGES.pcaLoadings.colPositive}</th>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'left' }}>{MESSAGES.pcaLoadings.colNegative}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pcaLoadings.pcs.map((pc) => {
+                      const pcNum = pc.index + 1
+                      const checked = pcaCheckedPCs.has(pcNum)
+                      const varPct = pc.variance_ratio != null ? `${(pc.variance_ratio * 100).toFixed(1)}%` : '—'
+                      return (
+                        <tr
+                          key={pc.index}
+                          style={{
+                            borderBottom: '1px solid #0a0f1a',
+                            backgroundColor: checked ? 'rgba(78, 205, 196, 0.12)' : 'transparent',
+                          }}
+                        >
+                          <td style={{ padding: '4px 8px', textAlign: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled
+                              style={{ opacity: 0.4 }}
+                            />
+                          </td>
+                          <td style={{ padding: '4px 8px', textAlign: 'right', color: '#ccc' }}>{pcNum}</td>
+                          <td style={{ padding: '4px 8px', textAlign: 'right', color: '#ccc' }}>{varPct}</td>
+                          <td style={{ padding: '4px 8px', color: '#ccc' }}>
+                            {pc.positive.length === 0
+                              ? <span style={{ color: '#555' }}>—</span>
+                              : pc.positive.map((g, i) => (
+                                  <span key={g.gene} title={`loading=${g.loading.toFixed(4)}`}>
+                                    {g.gene}{i < pc.positive.length - 1 ? ', ' : ''}
+                                  </span>
+                                ))
+                            }
+                          </td>
+                          <td style={{ padding: '4px 8px', color: '#ccc' }}>
+                            {pc.negative.length === 0
+                              ? <span style={{ color: '#555' }}>—</span>
+                              : pc.negative.map((g, i) => (
+                                  <span key={g.gene} title={`loading=${g.loading.toFixed(4)}`}>
+                                    {g.gene}{i < pc.negative.length - 1 ? ', ' : ''}
+                                  </span>
+                                ))
+                            }
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Compare Cells custom UI */}
         {selectedFunction === 'compare_cells' && (
           <div style={{ marginBottom: '16px' }}>
@@ -1440,6 +1575,8 @@ export default function ScanpyModal() {
             >
               {compareLoading ? 'Running...' : compareChecked.size === 2 ? 'Run Diff Exp' : `Run Marker Genes (${compareChecked.size})`}
             </button>
+          ) : selectedFunction === 'pca_loadings' ? (
+            null /* Create button rendered inline in the PCA Loadings custom block */
           ) : (
             <button
               style={{

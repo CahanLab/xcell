@@ -806,6 +806,8 @@ export interface PCALoadingEntry {
 export interface PCALoadingsResponse {
   n_pcs: number
   top_n: number
+  n_genes_loaded: number
+  n_genes_total: number
   pcs: PCALoadingEntry[]
 }
 

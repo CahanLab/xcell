@@ -121,6 +121,8 @@ export const MESSAGES = {
     allDropped: 'Cannot drop all PCs',
     prereqMissing: 'Run PCA first to explore loadings.',
     empty: 'No PC loadings available — re-run PCA to populate loadings.',
+    subsetCaption: (loaded: number, total: number) =>
+      `Showing ${loaded.toLocaleString()} of ${total.toLocaleString()} genes (subset PCA)`,
     loading: 'Loading loadings…',
     fetchError: 'Failed to load PC loadings.',
     existingSubsetsHeader: 'Existing PC subsets',

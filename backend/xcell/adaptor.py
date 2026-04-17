@@ -3180,6 +3180,10 @@ class DataAdaptor:
         var_ratio = np.asarray(self.adata.uns['pca'].get('variance_ratio', []))
         gene_names = list(self.adata.var_names)
         top_n = max(1, int(top_n))
+        # Count genes with finite loadings on PC1 — mirrors the row-count a
+        # subset PCA (e.g. HVG) actually contributed. Equal to n_genes on a
+        # default PCA run; lower when gene_subset was active.
+        n_genes_loaded = int(np.sum(~np.isnan(pcs_matrix[:, 0]))) if n_comps > 0 else 0
 
         pcs_out = []
         for i in range(n_comps):
@@ -3214,6 +3218,8 @@ class DataAdaptor:
         return {
             'n_pcs': n_comps,
             'top_n': top_n,
+            'n_genes_loaded': n_genes_loaded,
+            'n_genes_total': n_genes,
             'pcs': pcs_out,
         }
 

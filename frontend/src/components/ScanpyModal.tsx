@@ -1256,7 +1256,7 @@ export default function ScanpyModal() {
           </div>
         )}
 
-        {/* PCA Loadings custom UI (read-only scaffold — Task 9) */}
+        {/* PCA Loadings custom UI — loadings table, PC-drop selection, and derived-subset management */}
         {selectedFunction === 'pca_loadings' && (
           <div style={{ marginBottom: '16px' }}>
             <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '10px', lineHeight: 1.4 }}>
@@ -1276,6 +1276,12 @@ export default function ScanpyModal() {
                 style={{ width: '70px', padding: '4px 6px', fontSize: '12px', backgroundColor: '#0f3460', color: '#eee', border: '1px solid #1a1a2e', borderRadius: '4px' }}
               />
             </div>
+
+            {pcaLoadings && pcaLoadings.n_genes_loaded < pcaLoadings.n_genes_total && (
+              <div style={{ fontSize: '11px', color: '#888', marginBottom: '8px', fontStyle: 'italic' }}>
+                {MESSAGES.pcaLoadings.subsetCaption(pcaLoadings.n_genes_loaded, pcaLoadings.n_genes_total)}
+              </div>
+            )}
 
             {pcaLoadingsLoading && (
               <div style={{ fontSize: '12px', color: '#888', padding: '8px' }}>

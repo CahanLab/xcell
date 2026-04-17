@@ -256,6 +256,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         description: 'Compute neighborhood graph',
         prerequisites: ['pca'],
         params: [
+          { name: 'use_rep', label: 'PC source', type: 'pc_source_select', default: 'X_pca', description: 'Which PC embedding to use. Create derived subsets via PCA Loadings.' },
           { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 15, description: 'Number of neighbors' },
           { name: 'n_pcs', label: 'PCs to use', type: 'number', default: null, description: 'Number of PCs (null = all)' },
           { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine', 'manhattan'], description: 'Distance metric' },
@@ -685,6 +686,14 @@ export default function ScanpyModal() {
       .catch(() => setCellVarianceData(null))
   }, [selectedFunction, scanpyActionHistory])
 
+  // Load derived PC subsets when the Neighbors tab is selected so the
+  // PC source dropdown has up-to-date options.
+  useEffect(() => {
+    if (selectedFunction === 'neighbors') {
+      fetchPcaSubsets().catch(() => { /* ignore; dropdown falls back to X_pca */ })
+    }
+  }, [selectedFunction, activeSlot])
+
   // Check prerequisites when function changes
   useEffect(() => {
     if (!functionDef || functionDef.prerequisites.length === 0) {
@@ -921,6 +930,13 @@ export default function ScanpyModal() {
         requestParams['active_cell_indices'] = activeIndices
       }
 
+      // Neighbors: the PC source dropdown uses 'X_pca' as a sentinel for the
+      // default path. Strip it from the body so the backend preserves its
+      // existing behavior (n_pcs unchanged, use_rep defaults to None).
+      if (selectedFunction === 'neighbors' && requestParams['use_rep'] === 'X_pca') {
+        delete requestParams['use_rep']
+      }
+
       const response = await fetch(appendDataset(`${API_BASE}/scanpy/${selectedFunction}`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1035,6 +1051,18 @@ export default function ScanpyModal() {
       } else if (data.n_highly_variable !== undefined) {
         // highly_variable_genes result
         message = `Identified ${data.n_highly_variable.toLocaleString()} highly variable genes (${data.flavor} method)`
+      }
+
+      // PCA re-runs clear any derived PC subsets server-side. If the response
+      // reports any, wipe the frontend mirror and append to the success toast
+      // so the user sees what happened.
+      if (
+        selectedFunction === 'pca' &&
+        Array.isArray(data.cleared_subsets) &&
+        data.cleared_subsets.length > 0
+      ) {
+        useStore.getState().setPcaSubsets([])
+        message = `${message} — ${MESSAGES.pcaLoadings.clearedToast(data.cleared_subsets.length)}`
       }
 
       setResult({ success: true, message })
@@ -1636,7 +1664,20 @@ export default function ScanpyModal() {
                   <>
                     <div style={styles.paramRow}>
                       <label style={styles.paramLabel}>{param.label}</label>
-                      {param.type === 'select' ? (
+                      {param.type === 'pc_source_select' ? (
+                        <select
+                          style={styles.paramInput}
+                          value={paramValues[param.name] ?? 'X_pca'}
+                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                        >
+                          <option value="X_pca">{MESSAGES.pcaLoadings.neighborsSourceBaseLabel}</option>
+                          {pcaSubsetsFromStore.map((s) => (
+                            <option key={s.obsmKey} value={s.obsmKey}>
+                              {s.obsmKey} ({s.nPcsKept} kept)
+                            </option>
+                          ))}
+                        </select>
+                      ) : param.type === 'select' ? (
                         <select
                           style={styles.paramInput}
                           value={paramValues[param.name] ?? ''}

@@ -86,9 +86,12 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 
 - In the **Scanpy** modal, go to **Cell Analysis** and run in order:
   1. **PCA** — reduce dimensionality
-  2. **Neighbors** — build cell neighborhood graph (requires PCA)
-  3. **UMAP** — compute 2D embedding (requires Neighbors)
-  4. **Leiden** — cluster cells (requires Neighbors)
+  2. **PCA Loadings** (optional) — scan the top-loading genes on each side of every PC (hover a gene to see its exact loading). If you spot PCs dominated by technical signal (cell cycle, mitochondrial genes, etc.), check them and click **Create PC subset** to persist a derived embedding (e.g. `X_pca_noPC2_5`).
+  3. **Neighbors** — build cell neighborhood graph (requires PCA). If you created derived subsets in step 2, pick one from the **PC source** dropdown — UMAP and Leiden inherit the choice automatically through the neighbors graph.
+  4. **UMAP** — compute 2D embedding (requires Neighbors)
+  5. **Leiden** — cluster cells (requires Neighbors)
+
+  Re-running PCA clears all derived PC subsets (with a toast) since their column indices refer to the previous eigenvectors.
 
 ### 6. View Clustering Results
 

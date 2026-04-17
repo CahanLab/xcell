@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
-import { useStore, ScanpyActionRecord } from '../store'
-import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask } from '../hooks/useData'
+import { useStore, ScanpyActionRecord, PCASubsetSummary } from '../store'
+import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset } from '../hooks/useData'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -147,7 +147,7 @@ function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData
 interface ParamDef {
   name: string
   label: string
-  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea'
+  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select'
   default: string | number | null
   description: string
   options?: string[]
@@ -244,11 +244,19 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: null, description: 'Filter genes using boolean columns from .var (default: use highly_variable if available)' },
         ],
       },
+      pca_loadings: {
+        label: 'PCA Loadings',
+        description: 'Explore PC gene loadings and create PC subsets to exclude technical PCs',
+        prerequisites: ['pca_loadings'],
+        params: [],
+        custom: true,
+      },
       neighbors: {
         label: 'Neighbors',
         description: 'Compute neighborhood graph',
         prerequisites: ['pca'],
         params: [
+          { name: 'use_rep', label: 'PC source', type: 'pc_source_select', default: 'X_pca', description: 'Which PC embedding to use. Create derived subsets via PCA Loadings.' },
           { name: 'n_neighbors', label: 'Neighbors', type: 'number', default: 15, description: 'Number of neighbors' },
           { name: 'n_pcs', label: 'PCs to use', type: 'number', default: null, description: 'Number of PCs (null = all)' },
           { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine', 'manhattan'], description: 'Distance metric' },
@@ -624,6 +632,31 @@ export default function ScanpyModal() {
   const [compareTopN, setCompareTopN] = useState(25)
   const [compareLoading, setCompareLoading] = useState(false)
 
+  // PCA Loadings state
+  const [pcaTopN, setPcaTopN] = useState<number>(10)
+  const [pcaCheckedPCs, setPcaCheckedPCs] = useState<Set<number>>(new Set())
+  const [pcaSuffix, setPcaSuffix] = useState<string>('')
+  const [pcaCreateBusy, setPcaCreateBusy] = useState<boolean>(false)
+  const activeSlot = useStore((s) => s.activeSlot)
+  const pcaSubsetsFromStore: PCASubsetSummary[] =
+    useStore((s) => s.datasets[s.activeSlot]?.pcaSubsets || [])
+
+  const { loadings: pcaLoadings, loading: pcaLoadingsLoading, error: pcaLoadingsError } =
+    usePcaLoadings(pcaTopN, selectedFunction === 'pca_loadings')
+
+  // Load existing subsets whenever we open the PCA Loadings tab.
+  useEffect(() => {
+    if (selectedFunction === 'pca_loadings') {
+      fetchPcaSubsets().catch(() => { /* toast shown by global error handler */ })
+    }
+  }, [selectedFunction, activeSlot])
+
+  // Reset checked set when loadings payload changes (e.g., PCA was re-run).
+  useEffect(() => {
+    setPcaCheckedPCs(new Set())
+    setPcaSuffix('')
+  }, [pcaLoadings?.n_pcs, activeSlot])
+
   // Get current function definition
   const categoryDef = SCANPY_FUNCTIONS[selectedCategory]
   const functionDef: FunctionDef | undefined = categoryDef?.functions[selectedFunction]
@@ -652,6 +685,14 @@ export default function ScanpyModal() {
       .then(setCellVarianceData)
       .catch(() => setCellVarianceData(null))
   }, [selectedFunction, scanpyActionHistory])
+
+  // Load derived PC subsets when the Neighbors tab is selected so the
+  // PC source dropdown has up-to-date options.
+  useEffect(() => {
+    if (selectedFunction === 'neighbors') {
+      fetchPcaSubsets().catch(() => { /* ignore; dropdown falls back to X_pca */ })
+    }
+  }, [selectedFunction, activeSlot])
 
   // Check prerequisites when function changes
   useEffect(() => {
@@ -889,6 +930,13 @@ export default function ScanpyModal() {
         requestParams['active_cell_indices'] = activeIndices
       }
 
+      // Neighbors: the PC source dropdown uses 'X_pca' as a sentinel for the
+      // default path. Strip it from the body so the backend preserves its
+      // existing behavior (n_pcs unchanged, use_rep defaults to None).
+      if (selectedFunction === 'neighbors' && requestParams['use_rep'] === 'X_pca') {
+        delete requestParams['use_rep']
+      }
+
       const response = await fetch(appendDataset(`${API_BASE}/scanpy/${selectedFunction}`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1003,6 +1051,18 @@ export default function ScanpyModal() {
       } else if (data.n_highly_variable !== undefined) {
         // highly_variable_genes result
         message = `Identified ${data.n_highly_variable.toLocaleString()} highly variable genes (${data.flavor} method)`
+      }
+
+      // PCA re-runs clear any derived PC subsets server-side. If the response
+      // reports any, wipe the frontend mirror and append to the success toast
+      // so the user sees what happened.
+      if (
+        selectedFunction === 'pca' &&
+        Array.isArray(data.cleared_subsets) &&
+        data.cleared_subsets.length > 0
+      ) {
+        useStore.getState().setPcaSubsets([])
+        message = `${message} — ${MESSAGES.pcaLoadings.clearedToast(data.cleared_subsets.length)}`
       }
 
       setResult({ success: true, message })
@@ -1196,6 +1256,258 @@ export default function ScanpyModal() {
           </div>
         )}
 
+        {/* PCA Loadings custom UI — loadings table, PC-drop selection, and derived-subset management */}
+        {selectedFunction === 'pca_loadings' && (
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '10px', lineHeight: 1.4 }}>
+              {MESSAGES.pcaLoadings.description}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+              <label style={{ fontSize: '12px', color: '#aaa' }}>
+                {MESSAGES.pcaLoadings.topNLabel}
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={pcaTopN}
+                onChange={(e) => setPcaTopN(Math.max(1, parseInt(e.target.value) || 1))}
+                style={{ width: '70px', padding: '4px 6px', fontSize: '12px', backgroundColor: '#0f3460', color: '#eee', border: '1px solid #1a1a2e', borderRadius: '4px' }}
+              />
+            </div>
+
+            {pcaLoadings && pcaLoadings.n_genes_loaded < pcaLoadings.n_genes_total && (
+              <div style={{ fontSize: '11px', color: '#888', marginBottom: '8px', fontStyle: 'italic' }}>
+                {MESSAGES.pcaLoadings.subsetCaption(pcaLoadings.n_genes_loaded, pcaLoadings.n_genes_total)}
+              </div>
+            )}
+
+            {pcaLoadingsLoading && (
+              <div style={{ fontSize: '12px', color: '#888', padding: '8px' }}>
+                {MESSAGES.pcaLoadings.loading}
+              </div>
+            )}
+            {pcaLoadingsError && (
+              <div style={{ fontSize: '12px', color: '#ff7f7f', padding: '8px' }}>
+                {pcaLoadingsError}
+              </div>
+            )}
+
+            {pcaLoadings && pcaLoadings.pcs.length === 0 && (
+              <div style={{ fontSize: '12px', color: '#888', padding: '8px' }}>
+                {MESSAGES.pcaLoadings.empty}
+              </div>
+            )}
+
+            {pcaLoadings && pcaLoadings.pcs.length > 0 && (
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid #1a1a2e', borderRadius: '4px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                  <thead style={{ position: 'sticky', top: 0, backgroundColor: '#0f3460', zIndex: 1 }}>
+                    <tr>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'left', width: '36px' }}></th>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'right', width: '48px' }}>{MESSAGES.pcaLoadings.colPC}</th>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'right', width: '64px' }}>{MESSAGES.pcaLoadings.colVariance}</th>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'left' }}>{MESSAGES.pcaLoadings.colPositive}</th>
+                      <th style={{ padding: '6px 8px', color: '#aaa', textAlign: 'left' }}>{MESSAGES.pcaLoadings.colNegative}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pcaLoadings.pcs.map((pc) => {
+                      const pcNum = pc.index + 1
+                      const checked = pcaCheckedPCs.has(pcNum)
+                      const varPct = pc.variance_ratio != null ? `${(pc.variance_ratio * 100).toFixed(1)}%` : '—'
+                      return (
+                        <tr
+                          key={pc.index}
+                          style={{
+                            borderBottom: '1px solid #0a0f1a',
+                            backgroundColor: checked ? 'rgba(78, 205, 196, 0.12)' : 'transparent',
+                          }}
+                        >
+                          <td style={{ padding: '4px 8px', textAlign: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                setPcaCheckedPCs((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(pcNum)) next.delete(pcNum)
+                                  else next.add(pcNum)
+                                  return next
+                                })
+                              }}
+                            />
+                          </td>
+                          <td style={{ padding: '4px 8px', textAlign: 'right', color: '#ccc' }}>{pcNum}</td>
+                          <td style={{ padding: '4px 8px', textAlign: 'right', color: '#ccc' }}>{varPct}</td>
+                          <td style={{ padding: '4px 8px', color: '#ccc' }}>
+                            {pc.positive.length === 0
+                              ? <span style={{ color: '#555' }}>—</span>
+                              : pc.positive.map((g, i) => (
+                                  <span key={g.gene} title={`loading=${g.loading.toFixed(4)}`}>
+                                    {g.gene}{i < pc.positive.length - 1 ? ', ' : ''}
+                                  </span>
+                                ))
+                            }
+                          </td>
+                          <td style={{ padding: '4px 8px', color: '#ccc' }}>
+                            {pc.negative.length === 0
+                              ? <span style={{ color: '#555' }}>—</span>
+                              : pc.negative.map((g, i) => (
+                                  <span key={g.gene} title={`loading=${g.loading.toFixed(4)}`}>
+                                    {g.gene}{i < pc.negative.length - 1 ? ', ' : ''}
+                                  </span>
+                                ))
+                            }
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {pcaLoadings && pcaLoadings.pcs.length > 0 && (() => {
+              const droppedSorted = Array.from(pcaCheckedPCs).sort((a, b) => a - b)
+              const autoSuffix = droppedSorted.length > 0 ? `noPC${droppedSorted.join('_')}` : ''
+              const nKept = pcaLoadings.n_pcs - droppedSorted.length
+              const disableReason =
+                droppedSorted.length === 0 ? MESSAGES.pcaLoadings.noneChecked
+                : nKept === 0 ? MESSAGES.pcaLoadings.allDropped
+                : null
+              return (
+                <div style={{ marginTop: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                    <label style={{ fontSize: '12px', color: '#aaa' }}>
+                      {MESSAGES.pcaLoadings.suffixLabel}
+                    </label>
+                    <input
+                      type="text"
+                      value={pcaSuffix}
+                      onChange={(e) => setPcaSuffix(e.target.value)}
+                      placeholder={autoSuffix ? `${MESSAGES.pcaLoadings.suffixAutoPrefix}${autoSuffix}` : ''}
+                      style={{ flex: 1, padding: '4px 6px', fontSize: '12px', backgroundColor: '#0f3460', color: '#eee', border: '1px solid #1a1a2e', borderRadius: '4px' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <button
+                      disabled={!!disableReason || pcaCreateBusy}
+                      onClick={async () => {
+                        if (disableReason) return
+                        setPcaCreateBusy(true)
+                        try {
+                          const summary = await createPcaSubset(
+                            droppedSorted,
+                            pcaSuffix.trim() || null,
+                          )
+                          setPcaCheckedPCs(new Set())
+                          setPcaSuffix('')
+                          setResult({
+                            success: true,
+                            message: MESSAGES.pcaLoadings.createdToast(summary.suffix, summary.nPcsKept),
+                          })
+                        } catch (e: any) {
+                          if (e?.status === 409) {
+                            setResult({
+                              success: false,
+                              message: MESSAGES.pcaLoadings.collisionToast(pcaSuffix.trim() || autoSuffix),
+                            })
+                          } else {
+                            setResult({
+                              success: false,
+                              message: e?.message || 'Failed to create PC subset',
+                            })
+                          }
+                        } finally {
+                          setPcaCreateBusy(false)
+                        }
+                      }}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        backgroundColor: disableReason ? '#2a2a3e' : '#4ecdc4',
+                        color: disableReason ? '#666' : '#000',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: disableReason ? 'not-allowed' : 'pointer',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {pcaCreateBusy ? MESSAGES.pcaLoadings.createBusyButton : MESSAGES.pcaLoadings.createButton}
+                    </button>
+                    <span style={{ fontSize: '11px', color: disableReason ? '#ff9966' : '#888' }}>
+                      {disableReason || MESSAGES.pcaLoadings.checkedSummary(droppedSorted.length, nKept)}
+                    </span>
+                  </div>
+                </div>
+              )
+            })()}
+
+            <div style={{ marginTop: '20px' }}>
+              <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                {MESSAGES.pcaLoadings.existingSubsetsHeader}
+              </div>
+              {pcaSubsetsFromStore.length === 0 ? (
+                <div style={{ fontSize: '11px', color: '#666', padding: '6px 8px' }}>
+                  {MESSAGES.pcaLoadings.noSubsets}
+                </div>
+              ) : (
+                <div style={{ border: '1px solid #1a1a2e', borderRadius: '4px' }}>
+                  {pcaSubsetsFromStore.map((s) => (
+                    <div
+                      key={s.obsmKey}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '8px',
+                        padding: '6px 10px',
+                        fontSize: '11px',
+                        color: '#ccc',
+                        borderBottom: '1px solid #0a0f1a',
+                      }}
+                    >
+                      <span>
+                        {MESSAGES.pcaLoadings.subsetSummary(s.suffix, s.nPcsKept, s.droppedPcs)}
+                      </span>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await deletePcaSubset(s.obsmKey)
+                          } catch (e: any) {
+                            // Silently swallow 404 — happens on rapid
+                            // double-click after the first DELETE has
+                            // already removed the slot.
+                            if (e?.status === 404) return
+                            setResult({
+                              success: false,
+                              message: e?.message || 'Failed to delete PC subset',
+                            })
+                          }
+                        }}
+                        title="Delete"
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#888',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          padding: '2px 6px',
+                        }}
+                      >
+                        {MESSAGES.pcaLoadings.deleteButton}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Compare Cells custom UI */}
         {selectedFunction === 'compare_cells' && (
           <div style={{ marginBottom: '16px' }}>
@@ -1358,7 +1670,20 @@ export default function ScanpyModal() {
                   <>
                     <div style={styles.paramRow}>
                       <label style={styles.paramLabel}>{param.label}</label>
-                      {param.type === 'select' ? (
+                      {param.type === 'pc_source_select' ? (
+                        <select
+                          style={styles.paramInput}
+                          value={paramValues[param.name] ?? 'X_pca'}
+                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                        >
+                          <option value="X_pca">{MESSAGES.pcaLoadings.neighborsSourceBaseLabel}</option>
+                          {pcaSubsetsFromStore.map((s) => (
+                            <option key={s.obsmKey} value={s.obsmKey}>
+                              {s.obsmKey} ({s.nPcsKept} kept)
+                            </option>
+                          ))}
+                        </select>
+                      ) : param.type === 'select' ? (
                         <select
                           style={styles.paramInput}
                           value={paramValues[param.name] ?? ''}
@@ -1440,6 +1765,8 @@ export default function ScanpyModal() {
             >
               {compareLoading ? 'Running...' : compareChecked.size === 2 ? 'Run Diff Exp' : `Run Marker Genes (${compareChecked.size})`}
             </button>
+          ) : selectedFunction === 'pca_loadings' ? (
+            null /* Create button rendered inline in the PCA Loadings custom block */
           ) : (
             <button
               style={{

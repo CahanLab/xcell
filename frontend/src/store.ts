@@ -266,6 +266,13 @@ export interface GeneMaskConfig {
   visibleGeneNames: string[] | null  // null when inactive
 }
 
+export interface PCASubsetSummary {
+  obsmKey: string       // e.g. 'X_pca_noPC2_5'
+  suffix: string        // e.g. 'noPC2_5'
+  droppedPcs: number[]  // 1-indexed
+  nPcsKept: number
+}
+
 // Interaction mode for the scatter plot
 export type InteractionMode = 'pan' | 'lasso' | 'draw' | 'adjust' | 'quilt'
 
@@ -330,6 +337,7 @@ export interface DatasetState {
   varIdentifierColumns: string[]
   currentVarIndex: string
   geneMaskConfig: GeneMaskConfig | null
+  pcaSubsets: PCASubsetSummary[]
 }
 
 export function createDefaultDatasetState(): DatasetState {
@@ -367,6 +375,7 @@ export function createDefaultDatasetState(): DatasetState {
     varIdentifierColumns: [],
     currentVarIndex: '_index',
     geneMaskConfig: null,
+    pcaSubsets: [],
   }
 }
 
@@ -462,6 +471,9 @@ interface AppState {
 
   // Gene mask config (per-dataset, flat mirror)
   geneMaskConfig: GeneMaskConfig | null
+
+  // PCA subsets (per-dataset, flat mirror)
+  pcaSubsets: PCASubsetSummary[]
 
   // Marker genes modal state
   isMarkerGenesModalOpen: boolean
@@ -611,6 +623,7 @@ interface AppState {
   // Gene mask actions
   setGeneMaskModalOpen: (open: boolean) => void
   setGeneMaskConfig: (config: GeneMaskConfig | null) => void
+  setPcaSubsets: (subsets: PCASubsetSummary[]) => void
 
   // Scanpy modal actions
   setScanpyModalOpen: (open: boolean) => void
@@ -703,6 +716,7 @@ export const useStore = create<AppState>((set, get) => {
       varIdentifierColumns: ds.varIdentifierColumns,
       currentVarIndex: ds.currentVarIndex,
       geneMaskConfig: ds.geneMaskConfig,
+      pcaSubsets: ds.pcaSubsets,
     }
   }
 
@@ -766,6 +780,7 @@ export const useStore = create<AppState>((set, get) => {
     isImportModalOpen: false,
     geneMaskModalOpen: false,
     geneMaskConfig: null,
+    pcaSubsets: [],
     isScanpyModalOpen: false,
     scanpyActionHistory: [],
     obsSummariesVersion: 0,
@@ -1722,6 +1737,7 @@ export const useStore = create<AppState>((set, get) => {
     // Gene mask actions
     setGeneMaskModalOpen: (open) => set({ geneMaskModalOpen: open }),
     setGeneMaskConfig: (config) => set(dsUpdate({ geneMaskConfig: config })),
+    setPcaSubsets: (subsets) => set(dsUpdate({ pcaSubsets: subsets })),
 
     // Scanpy modal actions
     setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),  // global

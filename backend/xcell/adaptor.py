@@ -3114,6 +3114,24 @@ class DataAdaptor:
             'gene_subset_type': subset_type,
             'n_genes_used': n_genes_used,
         }
+        # Clear derived PC subsets — they reference columns of the previous
+        # X_pca and become stale on re-run. This scans obsm/varm/uns in case
+        # the user ran PCA without going through create_pca_subset (e.g.,
+        # import-time slots). Note: sc.tl.pca above already replaced
+        # adata.uns['pca'] wholesale, so variance_ratio_* keys are already
+        # gone; the pop calls here are defensive.
+        cleared_subsets: list[str] = []
+        for key in list(self.adata.obsm.keys()):
+            if key.startswith('X_pca_') and key != 'X_pca':
+                suffix = key[len('X_pca_'):]
+                self.adata.obsm.pop(key, None)
+                self.adata.varm.pop(f"PCs_{suffix}", None)
+                if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
+                    self.adata.uns['pca'].pop(f"variance_ratio_{suffix}", None)
+                cleared_subsets.append(key)
+        if cleared_subsets:
+            result['cleared_subsets'] = cleared_subsets
+
         self._log_action('pca', {
             'n_comps': n_comps,
             'svd_solver': svd_solver,

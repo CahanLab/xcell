@@ -3296,7 +3296,7 @@ class DataAdaptor:
             arr = np.asarray(self.adata.obsm[key])
             n_pcs_kept = int(arr.shape[1]) if arr.ndim == 2 else 0
             meta = subsets_meta.get(suffix, {})
-            dropped = list(meta.get('dropped_pcs', []))
+            dropped = [int(x) for x in meta.get('dropped_pcs', [])]
             out.append({
                 'obsm_key': key,
                 'suffix': suffix,

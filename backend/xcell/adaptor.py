@@ -3115,11 +3115,12 @@ class DataAdaptor:
             'n_genes_used': n_genes_used,
         }
         # Clear derived PC subsets — they reference columns of the previous
-        # X_pca and become stale on re-run. This scans obsm/varm/uns in case
-        # the user ran PCA without going through create_pca_subset (e.g.,
-        # import-time slots). Note: sc.tl.pca above already replaced
-        # adata.uns['pca'] wholesale, so variance_ratio_* keys are already
-        # gone; the pop calls here are defensive.
+        # X_pca and become stale on re-run. obsm and varm are NOT touched by
+        # sc.tl.pca (only 'X_pca' and 'PCs' are overwritten), so we scan here.
+        # sc.tl.pca does replace adata.uns['pca'] wholesale, so variance_ratio_*
+        # and the 'subsets' metadata dict are already gone — the uns pops below
+        # are defensive against stale obsm keys from externally loaded h5ad
+        # files and to keep the invariant explicit.
         cleared_subsets: list[str] = []
         for key in list(self.adata.obsm.keys()):
             if key.startswith('X_pca_') and key != 'X_pca':
@@ -3128,6 +3129,9 @@ class DataAdaptor:
                 self.adata.varm.pop(f"PCs_{suffix}", None)
                 if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
                     self.adata.uns['pca'].pop(f"variance_ratio_{suffix}", None)
+                    subsets_meta = self.adata.uns['pca'].get('subsets', {})
+                    if isinstance(subsets_meta, dict):
+                        subsets_meta.pop(suffix, None)
                 cleared_subsets.append(key)
         if cleared_subsets:
             result['cleared_subsets'] = cleared_subsets

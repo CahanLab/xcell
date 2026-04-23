@@ -281,6 +281,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'key_added', label: 'Column name', type: 'text', default: 'leiden', description: 'Name for cluster labels' },
         ],
       },
+      combine_neighbors: {
+        label: 'Combine Neighbors',
+        description: 'Combine multiple cell kNN graphs (e.g. expression + spatial) with weights. Result becomes the default neighbor graph used by Leiden/UMAP.',
+        prerequisites: [],
+        params: [],
+        custom: true,
+      },
       compare_cells: {
         label: 'Compare Cells',
         description: 'Compare cell groups: differential expression (2 groups) or marker genes (3+ groups)',
@@ -637,6 +644,14 @@ export default function ScanpyModal() {
   const [pcaCheckedPCs, setPcaCheckedPCs] = useState<Set<number>>(new Set())
   const [pcaSuffix, setPcaSuffix] = useState<string>('')
   const [pcaCreateBusy, setPcaCreateBusy] = useState<boolean>(false)
+
+  // Combine neighbor graphs state
+  type NeighborGraphInfo = { key: string; label: string; n_edges: number }
+  const [combineGraphs, setCombineGraphs] = useState<NeighborGraphInfo[]>([])
+  const [combineSelected, setCombineSelected] = useState<Set<string>>(new Set())
+  const [combineWeights, setCombineWeights] = useState<Record<string, number>>({})
+  const [combineLoading, setCombineLoading] = useState<boolean>(false)
+  const [combineError, setCombineError] = useState<string | null>(null)
   const activeSlot = useStore((s) => s.activeSlot)
   const pcaSubsetsFromStore: PCASubsetSummary[] =
     useStore((s) => s.datasets[s.activeSlot]?.pcaSubsets || [])
@@ -693,6 +708,28 @@ export default function ScanpyModal() {
       fetchPcaSubsets().catch(() => { /* ignore; dropdown falls back to X_pca */ })
     }
   }, [selectedFunction, activeSlot])
+
+  // Load available neighbor graphs when combine_neighbors is selected.
+  useEffect(() => {
+    if (selectedFunction !== 'combine_neighbors') return
+    setCombineError(null)
+    fetch(appendDataset(`${API_BASE}/scanpy/neighbor_graphs`))
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+      .then((data) => {
+        const graphs: NeighborGraphInfo[] = data.graphs || []
+        setCombineGraphs(graphs)
+        // Default: all graphs selected, equal weights.
+        const initSelected = new Set(graphs.map((g) => g.key))
+        const initWeights: Record<string, number> = {}
+        graphs.forEach((g) => { initWeights[g.key] = 1 })
+        setCombineSelected(initSelected)
+        setCombineWeights(initWeights)
+      })
+      .catch((err) => {
+        setCombineGraphs([])
+        setCombineError(`Failed to load neighbor graphs: ${err.message}`)
+      })
+  }, [selectedFunction, activeSlot, scanpyActionHistory])
 
   // Check prerequisites when function changes
   useEffect(() => {
@@ -791,6 +828,50 @@ export default function ScanpyModal() {
       })
       .catch(() => setCompareCategories([]))
   }, [compareColumn])
+
+  // Handle combine_neighbors run
+  const handleCombineRun = useCallback(async () => {
+    const selectedList = combineGraphs.filter((g) => combineSelected.has(g.key))
+    if (selectedList.length < 2) {
+      setCombineError('Select at least 2 graphs to combine.')
+      return
+    }
+    setCombineLoading(true)
+    setCombineError(null)
+    setResult(null)
+    try {
+      const body = {
+        sources: selectedList.map((g) => ({
+          key: g.key,
+          weight: Number.isFinite(combineWeights[g.key]) ? Number(combineWeights[g.key]) : 1,
+        })),
+        target_key: 'connectivities',
+      }
+      const response = await fetch(appendDataset(`${API_BASE}/scanpy/combine_neighbors`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`)
+
+      const labels = selectedList.map((g) => g.label).join(' + ')
+      setResult({
+        success: true,
+        message: `Combined neighbor graph: ${labels} → ${Number(data.n_edges).toLocaleString()} edges. Leiden/UMAP will now use this graph.`,
+      })
+      addScanpyAction({
+        action: 'combine_neighbors',
+        timestamp: new Date().toISOString(),
+        params: body,
+        result: data,
+      } as ScanpyActionRecord)
+    } catch (err) {
+      setCombineError(`Combine failed: ${(err as Error).message}`)
+    } finally {
+      setCombineLoading(false)
+    }
+  }, [combineGraphs, combineSelected, combineWeights, addScanpyAction])
 
   // Handle compare cells run
   const handleCompareRun = useCallback(async () => {
@@ -1508,6 +1589,121 @@ export default function ScanpyModal() {
           </div>
         )}
 
+        {/* Combine Neighbors custom UI */}
+        {selectedFunction === 'combine_neighbors' && (
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '10px', lineHeight: 1.4 }}>
+              Combine multiple cell kNN graphs with user-defined weights. Each graph
+              is max-normalized before weighting, so graphs with different edge
+              scales contribute proportionally to their weight. The combined graph
+              replaces <code style={{ color: '#4ecdc4' }}>obsp['connectivities']</code>,
+              so Leiden and UMAP will operate on it automatically.
+            </div>
+
+            {combineGraphs.length === 0 ? (
+              <div style={{ fontSize: '12px', color: '#888', padding: '10px', backgroundColor: '#1a1a2e', borderRadius: '4px' }}>
+                No neighbor graphs found. Compute{' '}
+                <strong>Neighbors</strong> (Cell Analysis) and/or{' '}
+                <strong>Spatial Neighbors</strong> (Spatial Analysis) first.
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>
+                  Select 2+ graphs and set weights (default = equal weights across
+                  selected graphs). Weights are normalized to sum to 1.
+                </div>
+                <div style={{ border: '1px solid #1a1a2e', borderRadius: '4px', marginBottom: '10px' }}>
+                  {combineGraphs.map((g) => {
+                    const isSelected = combineSelected.has(g.key)
+                    return (
+                      <div
+                        key={g.key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          padding: '6px 10px',
+                          borderBottom: '1px solid #0a0f1a',
+                          opacity: isSelected ? 1 : 0.5,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {
+                            setCombineSelected((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(g.key)) next.delete(g.key)
+                              else next.add(g.key)
+                              return next
+                            })
+                          }}
+                        />
+                        <div style={{ flex: 1, fontSize: '12px', color: '#ccc' }}>
+                          <div>{g.label}</div>
+                          <div style={{ fontSize: '10px', color: '#666' }}>
+                            {g.key} · {g.n_edges.toLocaleString()} edges
+                          </div>
+                        </div>
+                        <label style={{ fontSize: '11px', color: '#888' }}>Weight</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.1"
+                          value={combineWeights[g.key] ?? 1}
+                          onChange={(e) => {
+                            const v = e.target.value === '' ? 0 : parseFloat(e.target.value)
+                            setCombineWeights((prev) => ({ ...prev, [g.key]: Number.isFinite(v) ? v : 0 }))
+                          }}
+                          disabled={!isSelected}
+                          style={{
+                            width: '70px',
+                            padding: '4px 6px',
+                            fontSize: '12px',
+                            backgroundColor: '#0f3460',
+                            color: '#eee',
+                            border: '1px solid #1a1a2e',
+                            borderRadius: '4px',
+                          }}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+                {combineSelected.size >= 2 && (() => {
+                  const totalWeight = combineGraphs
+                    .filter((g) => combineSelected.has(g.key))
+                    .reduce((sum, g) => sum + (Number(combineWeights[g.key]) || 0), 0)
+                  if (totalWeight <= 0) {
+                    return (
+                      <div style={{ fontSize: '11px', color: '#ffc107', marginBottom: '8px' }}>
+                        All weights are 0. Equal weights will be used automatically.
+                      </div>
+                    )
+                  }
+                  return (
+                    <div style={{ fontSize: '11px', color: '#4ecdc4', marginBottom: '8px' }}>
+                      Normalized weights:{' '}
+                      {combineGraphs
+                        .filter((g) => combineSelected.has(g.key))
+                        .map((g) => {
+                          const w = (Number(combineWeights[g.key]) || 0) / totalWeight
+                          return `${g.key}=${w.toFixed(2)}`
+                        })
+                        .join(', ')}
+                    </div>
+                  )
+                })()}
+                {combineError && (
+                  <div style={{ fontSize: '12px', color: '#ff7f7f', marginBottom: '8px' }}>
+                    {combineError}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Compare Cells custom UI */}
         {selectedFunction === 'compare_cells' && (
           <div style={{ marginBottom: '16px' }}>
@@ -1764,6 +1960,17 @@ export default function ScanpyModal() {
               disabled={compareChecked.size < 2 || compareLoading}
             >
               {compareLoading ? 'Running...' : compareChecked.size === 2 ? 'Run Diff Exp' : `Run Marker Genes (${compareChecked.size})`}
+            </button>
+          ) : selectedFunction === 'combine_neighbors' ? (
+            <button
+              style={{
+                ...styles.runButton,
+                ...(combineSelected.size < 2 || combineLoading ? styles.runButtonDisabled : {}),
+              }}
+              onClick={handleCombineRun}
+              disabled={combineSelected.size < 2 || combineLoading}
+            >
+              {combineLoading ? 'Combining...' : `Combine ${combineSelected.size} graph${combineSelected.size === 1 ? '' : 's'}`}
             </button>
           ) : selectedFunction === 'pca_loadings' ? (
             null /* Create button rendered inline in the PCA Loadings custom block */

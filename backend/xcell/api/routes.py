@@ -1059,6 +1059,7 @@ class LineAssociationRequest(BaseModel):
     min_cells: int = 20
     fdr_threshold: float = 0.05
     top_n: int = 50
+    cluster_genes: bool = False
 
 
 class LineAssociationGene(BaseModel):
@@ -1102,6 +1103,7 @@ class LineAssociationResponse(BaseModel):
     positive: list[LineAssociationGene]
     negative: list[LineAssociationGene]
     modules: list[LineAssociationModule] = []
+    all_genes: list[LineAssociationGene] = []
     n_cells: int
     n_significant: int
     n_positive: int
@@ -1129,6 +1131,7 @@ def test_line_association(request: LineAssociationRequest, dataset: str | None =
             min_cells=request.min_cells,
             fdr_threshold=request.fdr_threshold,
             top_n=request.top_n,
+            cluster_genes=request.cluster_genes,
         )
         task_id = task_manager.submit(compute_fn, apply_fn)
         return {"task_id": task_id, "status": "running"}
@@ -1152,6 +1155,7 @@ class MultiLineAssociationRequest(BaseModel):
     min_cells: int = 20
     fdr_threshold: float = 0.05
     top_n: int = 50
+    cluster_genes: bool = False
 
 
 @router.post("/lines/multi-association", status_code=202)
@@ -1167,6 +1171,7 @@ def test_multi_line_association(request: MultiLineAssociationRequest, dataset: s
             min_cells=request.min_cells,
             fdr_threshold=request.fdr_threshold,
             top_n=request.top_n,
+            cluster_genes=request.cluster_genes,
         )
         task_id = task_manager.submit(compute_fn, apply_fn)
         return {"task_id": task_id, "status": "running"}
@@ -1342,6 +1347,16 @@ class NeighborsRequest(BaseModel):
     metric: str = 'euclidean'
     use_rep: str | None = None
     active_cell_indices: list[int] | None = None
+
+
+class CombineNeighborsSource(BaseModel):
+    key: str
+    weight: float = 1.0
+
+
+class CombineNeighborsRequest(BaseModel):
+    sources: list[CombineNeighborsSource]
+    target_key: str = 'connectivities'
 
 
 class CreatePcaSubsetRequest(BaseModel):
@@ -1545,6 +1560,36 @@ def run_neighbors(request: NeighborsRequest, dataset: str | None = Query(None)):
             metric=request.metric,
             use_rep=request.use_rep,
             active_cell_indices=request.active_cell_indices,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scanpy/neighbor_graphs")
+def list_neighbor_graphs(dataset: str | None = Query(None)):
+    """List available cell connectivity graphs in obsp (combinable via combine_neighbors)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return {'graphs': adaptor.list_neighbor_graphs()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scanpy/combine_neighbors")
+def combine_neighbors(request: CombineNeighborsRequest, dataset: str | None = Query(None)):
+    """Combine multiple cell connectivity graphs with user-defined weights.
+
+    Writes the combined graph to ``obsp[target_key]`` (default 'connectivities'),
+    so downstream Leiden/UMAP operate on the combined graph automatically.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        sources = [s.dict() for s in request.sources]
+        return adaptor.combine_neighbor_graphs(
+            sources=sources,
+            target_key=request.target_key,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

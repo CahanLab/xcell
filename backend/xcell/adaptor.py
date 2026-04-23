@@ -1308,6 +1308,7 @@ class DataAdaptor:
         n_spline_knots: int = 5,
         fdr_threshold: float = 0.05,
         top_n: int = 50,
+        cluster_genes: bool = False,
     ) -> dict[str, Any]:
         """Core spline regression engine for line association analysis.
 
@@ -1326,6 +1327,9 @@ class DataAdaptor:
             n_spline_knots: Number of interior knots for the B-spline basis.
             fdr_threshold: FDR threshold for significance.
             top_n: Number of top genes to return for each direction.
+            cluster_genes: If True, cluster significant genes by expression
+                profile shape and return modules. If False, skip clustering
+                and return only positive/negative lists (modules will be empty).
 
         Returns:
             Dict with keys: positive, negative, modules, n_cells,
@@ -1491,7 +1495,7 @@ class DataAdaptor:
         sig_indices = np.where(sig_mask.values)[0]
         modules = []
 
-        if len(sig_indices) > 0:
+        if cluster_genes and len(sig_indices) > 0:
             # Predicted profiles for significant genes (n_profile_points x n_sig_genes)
             sig_profiles = profile_design_full @ beta[:, sig_indices]
 
@@ -1593,10 +1597,20 @@ class DataAdaptor:
         pos_max = float(pos.max())
         pos_std = float(pos.std())
 
+        # Full per-gene table (stats for EVERY gene tested) — exposed so the
+        # client can download a CSV for GSEA / external analysis. Kept in
+        # gene-order (matches adata.var_names[gene_mask]) so the user can
+        # re-sort however they like.
+        all_genes_records = (
+            results[['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']]
+            .to_dict('records')
+        )
+
         return {
             'positive': positive_genes,
             'negative': negative_genes,
             'modules': modules,
+            'all_genes': all_genes_records,
             'n_cells': n_cells_used,
             'n_significant': int(n_significant),
             'n_positive': int(pos_mask.sum()),
@@ -1626,6 +1640,7 @@ class DataAdaptor:
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
         top_n: int = 50,
+        cluster_genes: bool = False,
     ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
         """Prepare line association computation (cancellable).
 
@@ -1660,6 +1675,7 @@ class DataAdaptor:
         snap_min_cells = min_cells
         snap_fdr_threshold = fdr_threshold
         snap_top_n = top_n
+        snap_cluster_genes = cluster_genes
 
         def compute_fn() -> dict[str, Any]:
             return self.test_line_association(
@@ -1671,6 +1687,7 @@ class DataAdaptor:
                 min_cells=snap_min_cells,
                 fdr_threshold=snap_fdr_threshold,
                 top_n=snap_top_n,
+                cluster_genes=snap_cluster_genes,
             )
 
         def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
@@ -1688,6 +1705,7 @@ class DataAdaptor:
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
         top_n: int = 50,
+        cluster_genes: bool = False,
     ) -> dict[str, Any]:
         """Test genes for association with position along or distance from a line.
 
@@ -1796,6 +1814,7 @@ class DataAdaptor:
             n_spline_knots=n_spline_knots,
             fdr_threshold=fdr_threshold,
             top_n=top_n,
+            cluster_genes=cluster_genes,
         )
 
         # Add line-specific metadata
@@ -1813,6 +1832,7 @@ class DataAdaptor:
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
         top_n: int = 50,
+        cluster_genes: bool = False,
     ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
         """Prepare multi-line association computation (cancellable).
 
@@ -1843,6 +1863,7 @@ class DataAdaptor:
         snap_min_cells = min_cells
         snap_fdr_threshold = fdr_threshold
         snap_top_n = top_n
+        snap_cluster_genes = cluster_genes
 
         def compute_fn() -> dict[str, Any]:
             return self.test_multi_line_association(
@@ -1853,6 +1874,7 @@ class DataAdaptor:
                 min_cells=snap_min_cells,
                 fdr_threshold=snap_fdr_threshold,
                 top_n=snap_top_n,
+                cluster_genes=snap_cluster_genes,
             )
 
         def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
@@ -1869,6 +1891,7 @@ class DataAdaptor:
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
         top_n: int = 50,
+        cluster_genes: bool = False,
     ) -> dict[str, Any]:
         """Test genes for association across multiple lines (pooled analysis).
 
@@ -1973,6 +1996,7 @@ class DataAdaptor:
             n_spline_knots=n_spline_knots,
             fdr_threshold=fdr_threshold,
             top_n=top_n,
+            cluster_genes=cluster_genes,
         )
 
         # Add multi-line metadata
@@ -3440,6 +3464,152 @@ class DataAdaptor:
         self._log_action('neighbors', kwargs, result)
         return result
 
+    def list_neighbor_graphs(self) -> list[dict[str, Any]]:
+        """List available cell-cell connectivity graphs in obsp.
+
+        Returns entries for any obsp key that looks like a connectivity graph
+        ('connectivities' or '<prefix>_connectivities'), so they can be
+        combined via combine_neighbor_graphs.
+        """
+        from scipy.sparse import issparse
+
+        graphs: list[dict[str, Any]] = []
+        n = self.n_cells
+        for key in self.adata.obsp.keys():
+            if key == 'connectivities' or key.endswith('_connectivities'):
+                mat = self.adata.obsp[key]
+                shape = tuple(mat.shape)
+                if shape != (n, n):
+                    continue
+                nnz = int(mat.nnz) if issparse(mat) else int(np.count_nonzero(mat))
+                if key == 'connectivities':
+                    label = 'Expression neighbors'
+                elif key == 'spatial_connectivities':
+                    label = 'Spatial neighbors'
+                else:
+                    prefix = key[:-len('_connectivities')]
+                    label = f'{prefix} neighbors'
+                graphs.append({
+                    'key': key,
+                    'label': label,
+                    'n_edges': nnz,
+                })
+        graphs.sort(key=lambda g: (g['key'] != 'connectivities', g['key']))
+        return graphs
+
+    def combine_neighbor_graphs(
+        self,
+        sources: list[dict[str, Any]],
+        target_key: str = 'connectivities',
+    ) -> dict[str, Any]:
+        """Combine multiple cell connectivity graphs with user-defined weights.
+
+        Each source is ``{'key': str, 'weight': float}`` where key is an obsp
+        connectivity graph (e.g. 'connectivities', 'spatial_connectivities').
+        Each graph is max-normalized (so its largest edge weight becomes 1)
+        before weighting, so graphs with very different edge scales contribute
+        proportionally to their weight rather than their raw magnitude. The
+        combined graph is symmetrized and written to ``obsp[target_key]``.
+
+        If ``target_key`` is 'connectivities', ``uns['neighbors']`` is updated
+        so downstream tools (Leiden, UMAP) pick up the combined graph with no
+        further configuration.
+
+        Args:
+            sources: List of {key, weight} dicts. At least 2 entries required.
+                Missing/None weights default to 1.0. If all weights are 0,
+                equal weights are assumed.
+            target_key: obsp key to store the combined connectivities in.
+
+        Returns:
+            Dict with status, target_key, sources_used, n_edges, and the
+            normalized weights actually applied.
+        """
+        from scipy.sparse import issparse, csr_matrix
+
+        if not isinstance(sources, list) or len(sources) < 2:
+            raise ValueError("At least 2 source graphs are required to combine.")
+
+        n = self.n_cells
+        resolved: list[tuple[str, float]] = []
+        for src in sources:
+            if not isinstance(src, dict) or 'key' not in src:
+                raise ValueError("Each source must be a dict with a 'key' field.")
+            key = src['key']
+            if key not in self.adata.obsp:
+                raise ValueError(f"Connectivity graph '{key}' not found in obsp.")
+            mat = self.adata.obsp[key]
+            if tuple(mat.shape) != (n, n):
+                raise ValueError(
+                    f"Graph '{key}' has shape {mat.shape}, expected ({n}, {n})."
+                )
+            weight = src.get('weight', 1.0)
+            try:
+                weight = float(weight) if weight is not None else 1.0
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid weight for '{key}': {src.get('weight')!r}")
+            if weight < 0:
+                raise ValueError(f"Weight for '{key}' must be non-negative.")
+            resolved.append((key, weight))
+
+        # Normalize weights to sum to 1; if all zero, use equal weights.
+        total = sum(w for _, w in resolved)
+        if total <= 0:
+            norm_weights = [1.0 / len(resolved)] * len(resolved)
+        else:
+            norm_weights = [w / total for _, w in resolved]
+
+        combined = None
+        applied: list[dict[str, Any]] = []
+        for (key, _), w in zip(resolved, norm_weights):
+            mat = self.adata.obsp[key]
+            if issparse(mat):
+                mat = mat.tocsr().astype(np.float64)
+                max_val = float(mat.data.max()) if mat.nnz > 0 else 0.0
+            else:
+                mat = np.asarray(mat, dtype=np.float64)
+                max_val = float(mat.max()) if mat.size > 0 else 0.0
+            scale = (1.0 / max_val) if max_val > 0 else 0.0
+            contrib = mat * (w * scale)
+            combined = contrib if combined is None else combined + contrib
+            applied.append({'key': key, 'weight': w, 'max_value': max_val})
+
+        # Symmetrize: (C + C^T) / 2
+        if issparse(combined):
+            combined = (combined + combined.T) * 0.5
+            combined = csr_matrix(combined)
+            combined.eliminate_zeros()
+            n_edges = int(combined.nnz)
+        else:
+            combined = (combined + combined.T) * 0.5
+            n_edges = int(np.count_nonzero(combined))
+
+        self.adata.obsp[target_key] = combined
+
+        # Update uns['neighbors'] so leiden/umap find the combined graph when
+        # target_key is 'connectivities'. We write a minimal but valid entry.
+        if target_key == 'connectivities':
+            neighbors_meta = dict(self.adata.uns.get('neighbors', {}))
+            params = dict(neighbors_meta.get('params', {}))
+            params['method'] = 'combined'
+            params['sources'] = [a['key'] for a in applied]
+            neighbors_meta['params'] = params
+            neighbors_meta['connectivities_key'] = 'connectivities'
+            # Leave distances_key alone; leiden only needs connectivities.
+            self.adata.uns['neighbors'] = neighbors_meta
+
+        result = {
+            'status': 'completed',
+            'target_key': target_key,
+            'n_edges': n_edges,
+            'sources_used': applied,
+        }
+        self._log_action('combine_neighbors', {
+            'sources': [{'key': k, 'weight': w} for (k, _), w in zip(resolved, norm_weights)],
+            'target_key': target_key,
+        }, result)
+        return result
+
     def run_umap(
         self,
         min_dist: float = 0.5,
@@ -4625,6 +4795,10 @@ class DataAdaptor:
         if mode not in ('moran', 'geary'):
             raise ValueError("mode must be 'moran' or 'geary'")
 
+        # squidpy rejects n_perms=0. Treat 0 as "analytical only" (None).
+        if n_perms is not None and n_perms <= 0:
+            n_perms = None
+
         # Resolve gene_subset to gene list if no explicit genes provided
         subset_type = 'all'
         if genes is None and gene_subset is not None:
@@ -4780,6 +4954,10 @@ class DataAdaptor:
 
         if mode not in ('moran', 'geary'):
             raise ValueError("mode must be 'moran' or 'geary'")
+
+        # squidpy rejects n_perms=0. Treat 0 as "analytical only" (None).
+        if n_perms is not None and n_perms <= 0:
+            n_perms = None
 
         # Resolve gene_subset to gene list if no explicit genes provided
         subset_type = 'all'

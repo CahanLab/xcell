@@ -339,6 +339,69 @@ function ModuleCard({
   )
 }
 
+// Simple direction card for the non-clustered path (positive / negative lists).
+// Mirrors ModuleCard's expand/collapse + GeneRow body, without module/pattern UI.
+function DirectionCard({
+  title,
+  subtitle,
+  genes,
+  color,
+  onGeneSelect,
+}: {
+  title: string
+  subtitle: string
+  genes: LineAssociationGene[]
+  color: string
+  onGeneSelect: (gene: string) => void
+}) {
+  const [expanded, setExpanded] = useState(true)
+  return (
+    <div style={{
+      backgroundColor: '#0a0f1a',
+      borderRadius: '8px',
+      overflow: 'hidden',
+      marginBottom: '12px',
+      border: `1px solid ${expanded ? color + '44' : '#1a1a2e'}`,
+    }}>
+      <div
+        style={{
+          padding: '10px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          cursor: 'pointer',
+          borderBottom: expanded ? '1px solid #0f3460' : 'none',
+        }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div style={{ flex: 1 }}>
+          <span style={{ fontSize: '13px', fontWeight: 600, color: '#eee' }}>{title}</span>
+          <span style={{ fontSize: '11px', color: '#888', marginLeft: '8px' }}>
+            {genes.length} gene{genes.length !== 1 ? 's' : ''}
+          </span>
+          <div style={{ fontSize: '11px', color: '#666', marginTop: '2px' }}>{subtitle}</div>
+        </div>
+        <span style={{
+          fontSize: '14px',
+          color: '#666',
+          marginLeft: '4px',
+          transition: 'transform 0.15s',
+          transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+        }}>
+          &#9660;
+        </span>
+      </div>
+      {expanded && (
+        <div style={{ maxHeight: '300px', overflow: 'auto' }}>
+          {genes.map((gene) => (
+            <GeneRow key={gene.gene} gene={gene} onSelect={onGeneSelect} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // =========================================================================
 // Heatmap component
 // =========================================================================
@@ -637,7 +700,7 @@ export default function LineAssociationModal() {
     isLineAssociationModalOpen,
     lineAssociationResult,
     setLineAssociationModalOpen,
-    addGeneSetToCategory,
+    addFolderToCategory,
   } = useStore()
 
   const { colorByGene } = useDataActions()
@@ -702,34 +765,98 @@ export default function LineAssociationModal() {
         .filter((m) => m.genes.length > 0)
     : []
 
+  // Apply the same filters to positive/negative lists (used when clustering is off).
+  const geneFilterPredicate = (g: LineAssociationGene) =>
+    g.r_squared >= filterMinR2 &&
+    g.amplitude >= filterMinAmplitude &&
+    g.fdr <= filterMaxFDR
+  const filteredPositive = lineAssociationResult.positive.filter(geneFilterPredicate)
+  const filteredNegative = lineAssociationResult.negative.filter(geneFilterPredicate)
+
   const totalModuleGenes = filteredModules.reduce((sum, m) => sum + m.n_genes, 0)
-  const unfilteredTotal = hasModules ? modules.reduce((sum, m) => sum + m.genes.length, 0) : 0
-  const isFiltered = totalModuleGenes !== unfilteredTotal
+  const unfilteredModuleTotal = hasModules ? modules.reduce((sum, m) => sum + m.genes.length, 0) : 0
+  const directionTotal = filteredPositive.length + filteredNegative.length
+  const unfilteredDirectionTotal = lineAssociationResult.positive.length + lineAssociationResult.negative.length
+
+  // Genes that "Add to Gene Sets" would save, and the counts for UI state.
+  const totalAddableGenes = hasModules ? totalModuleGenes : directionTotal
+  const unfilteredTotal = hasModules ? unfilteredModuleTotal : unfilteredDirectionTotal
+  const isFiltered = totalAddableGenes !== unfilteredTotal
   const hasProfiles = filteredModules.length > 0 && filteredModules.some((m) => m.genes.some((g) => g.profile && g.profile.length > 0))
 
   const handleAddToGeneSets = () => {
     const lineName = lineAssociationResult.line_name
+    const timestamp = new Date().toLocaleString('en-US', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    })
+    const folderName = `${lineName} ${timestamp}`
 
-    if (filteredModules.length > 0) {
+    const geneSets: { name: string; genes: string[] }[] = []
+
+    if (hasModules) {
       for (const mod of filteredModules) {
         const genes = mod.genes.map((g) => g.gene)
         if (genes.length > 0) {
-          const label = `${lineName} - ${mod.pattern.charAt(0).toUpperCase() + mod.pattern.slice(1)}`
-          addGeneSetToCategory('manual', label, genes)
+          const label = `${mod.pattern.charAt(0).toUpperCase() + mod.pattern.slice(1)} (${genes.length})`
+          geneSets.push({ name: label, genes })
         }
       }
-    } else if (lineAssociationResult.positive.length > 0 || lineAssociationResult.negative.length > 0) {
-      if (lineAssociationResult.positive.length > 0) {
-        const posGenes = lineAssociationResult.positive.map((g) => g.gene)
-        addGeneSetToCategory('manual', `${lineName} - Increasing`, posGenes)
+    } else {
+      // When clustering is off, save a single combined set of all passing genes
+      // (both directions). Deduplicate while preserving order.
+      const seen = new Set<string>()
+      const allGenes: string[] = []
+      for (const g of filteredPositive) {
+        if (!seen.has(g.gene)) { seen.add(g.gene); allGenes.push(g.gene) }
       }
-      if (lineAssociationResult.negative.length > 0) {
-        const negGenes = lineAssociationResult.negative.map((g) => g.gene)
-        addGeneSetToCategory('manual', `${lineName} - Decreasing`, negGenes)
+      for (const g of filteredNegative) {
+        if (!seen.has(g.gene)) { seen.add(g.gene); allGenes.push(g.gene) }
+      }
+      if (allGenes.length > 0) {
+        geneSets.push({ name: `Associated genes (${allGenes.length})`, genes: allGenes })
       }
     }
 
+    if (geneSets.length > 0) {
+      addFolderToCategory('line_association', folderName, geneSets)
+    }
+
     handleClose()
+  }
+
+  const handleDownloadCsv = () => {
+    const rows = lineAssociationResult.all_genes ?? []
+    if (rows.length === 0) return
+
+    // RFC 4180: wrap each field in quotes to be robust to commas in gene names.
+    const quote = (v: string) => `"${v.replace(/"/g, '""')}"`
+    const header = ['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']
+    const lines: string[] = [header.join(',')]
+    for (const r of rows) {
+      lines.push([
+        quote(r.gene),
+        r.f_stat,
+        r.pval,
+        r.fdr,
+        r.r_squared,
+        r.amplitude,
+        r.direction,
+      ].join(','))
+    }
+    const csv = lines.join('\n') + '\n'
+
+    const safeLineName = (lineAssociationResult.line_name || 'line').replace(/[^A-Za-z0-9_.-]+/g, '_')
+    const filename = `${safeLineName}_line_association.csv`
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -873,7 +1000,7 @@ export default function LineAssociationModal() {
           )}
 
           {/* Filter controls */}
-          {hasModules && (
+          {(hasModules || unfilteredDirectionTotal > 0) && (
             <div style={{
               backgroundColor: '#0a0f1a',
               borderRadius: '6px',
@@ -884,7 +1011,7 @@ export default function LineAssociationModal() {
                 <span style={{ fontSize: '11px', color: '#aaa', fontWeight: 500 }}>Filters</span>
                 {isFiltered && (
                   <span style={{ fontSize: '11px', color: '#4ecdc4' }}>
-                    Showing {totalModuleGenes} of {unfilteredTotal} genes
+                    Showing {totalAddableGenes} of {unfilteredTotal} genes
                   </span>
                 )}
               </div>
@@ -957,7 +1084,8 @@ export default function LineAssociationModal() {
                 </div>
               </div>
 
-              {/* Pattern toggles */}
+              {/* Pattern toggles — only meaningful when clustering produced modules */}
+              {hasModules && (
               <div style={{ display: 'flex', gap: '4px', marginTop: '8px', flexWrap: 'wrap' }}>
                 {ALL_PATTERNS.map((pattern) => {
                   const active = filterPatterns.has(pattern)
@@ -984,6 +1112,7 @@ export default function LineAssociationModal() {
                   )
                 })}
               </div>
+              )}
             </div>
           )}
 
@@ -1010,6 +1139,28 @@ export default function LineAssociationModal() {
                 </div>
               )}
             </div>
+          ) : directionTotal > 0 ? (
+            /* Non-clustered results: render positive and negative lists as simple cards */
+            <div>
+              {filteredPositive.length > 0 && (
+                <DirectionCard
+                  title="Increasing"
+                  subtitle={test_variable === 'distance' ? 'Expression rises with distance from line' : 'Expression rises along the line'}
+                  genes={filteredPositive}
+                  color="#4ecdc4"
+                  onGeneSelect={handleGeneSelect}
+                />
+              )}
+              {filteredNegative.length > 0 && (
+                <DirectionCard
+                  title="Decreasing"
+                  subtitle={test_variable === 'distance' ? 'Expression falls with distance from line' : 'Expression falls along the line'}
+                  genes={filteredNegative}
+                  color="#ff7f7f"
+                  onGeneSelect={handleGeneSelect}
+                />
+              )}
+            </div>
           ) : (
             <div style={{ padding: '24px', color: '#666', textAlign: 'center' }}>
               {isFiltered ? 'No genes match current filters' : 'No significant genes found'}
@@ -1028,10 +1179,29 @@ export default function LineAssociationModal() {
             >
               Close
             </button>
+            {(() => {
+              const allRows = lineAssociationResult.all_genes ?? []
+              const hasAllGenes = allRows.length > 0
+              return (
+                <button
+                  style={{ ...styles.button, ...styles.secondaryButton }}
+                  onClick={handleDownloadCsv}
+                  disabled={!hasAllGenes}
+                  title={hasAllGenes
+                    ? `Download per-gene stats for all ${allRows.length.toLocaleString()} tested genes as CSV (ranked list for GSEA / external analysis)`
+                    : 'No per-gene table available for this result'}
+                >
+                  Download CSV
+                </button>
+              )
+            })()}
             <button
               style={{ ...styles.button, ...styles.primaryButton }}
               onClick={handleAddToGeneSets}
-              disabled={totalModuleGenes === 0}
+              disabled={totalAddableGenes === 0}
+              title={totalAddableGenes === 0
+                ? 'No genes to add (filters may be too strict)'
+                : `Add ${totalAddableGenes} gene${totalAddableGenes === 1 ? '' : 's'} to the Line Association category`}
             >
               Add to Gene Sets
             </button>

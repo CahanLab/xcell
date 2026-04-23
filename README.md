@@ -194,9 +194,12 @@ Typical workflow for "find DEGs by expression state in a region": lasso a region
   - **Gene subset**: filter to highly variable genes or other boolean columns
   - **Spline knots**: number of interior knots for the B-spline model (default 5; higher = more flexible fit)
   - **FDR**: significance threshold (default 0.05)
-  - **Max genes/module**: cap on genes returned per expression module
+  - **Max genes/direction** (or **/module** when clustering is on): cap on genes returned
+  - **Cluster genes into modules** (default off): when checked, significant genes are grouped by expression profile shape (increasing, decreasing, peak, trough, complex); when unchecked, only positive/negative lists are returned
 - Click **Find Associated Genes** to run the analysis
 - In the results modal, use the **Filters** bar to refine results interactively: adjust min R², min amplitude, max FDR, or toggle pattern types (increasing, decreasing, peak, trough, complex)
+- Click **Add to Gene Sets** in the results modal to save the genes — each run creates its own folder in the **Line Association** category of the Gene Panel (one set per module if clustering is on, or a single combined `Associated genes` set if clustering is off)
+- Click **Download CSV** in the results modal to export stats (gene, f_stat, pval, fdr, r_squared, amplitude, direction) for every gene tested — a ranked-list suitable for GSEA or other external analyses
 
 #### Multi-section / replicate analysis
 
@@ -206,6 +209,13 @@ Typical workflow for "find DEGs by expression state in a region": lasso a region
 - Click **Find Associated Genes** in the action bar
 - In the multi-line modal, toggle direction per line if needed (arrow button) and set analysis parameters
 - Results pool cells across all lines for a single, higher-powered analysis
+
+#### Combine neighbor graphs for spatially-aware clustering
+
+- After computing both **Neighbors** (Cell Analysis) and **Spatial Neighbors** (Spatial Analysis), open **Analyze** → **Cell Analysis** → **Combine Neighbors**
+- Select two or more graphs and set their weights (default: equal weights; weights are normalized to sum to 1)
+- Click **Combine graphs** — the combined graph becomes the default `connectivities` slot
+- Run **Leiden** (or **UMAP**) afterward and clustering/embedding will reflect both graphs, encouraging spatially neighboring cells to cluster together when the spatial graph is weighted in
 
 ### 11. Run Gene Analysis
 

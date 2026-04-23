@@ -47,7 +47,7 @@ export interface GeneSet {
 }
 
 // Category types for organizing gene sets
-export type GeneSetCategoryType = 'manual' | 'gene_clusters' | 'similar_genes' | 'diff_exp' | 'spatial' | 'marker_genes'
+export type GeneSetCategoryType = 'manual' | 'gene_clusters' | 'similar_genes' | 'diff_exp' | 'spatial' | 'marker_genes' | 'line_association'
 
 export interface GeneSetFolder {
   id: string
@@ -107,6 +107,13 @@ const createDefaultCategories = (): Record<GeneSetCategoryType, GeneSetCategory>
   marker_genes: {
     type: 'marker_genes',
     name: 'Marker Genes',
+    expanded: true,
+    folders: [],
+    geneSets: [],
+  },
+  line_association: {
+    type: 'line_association',
+    name: 'Line Association',
     expanded: true,
     folders: [],
     geneSets: [],
@@ -225,6 +232,7 @@ export interface LineAssociationResult {
   positive: LineAssociationGene[]  // Genes increasing along line (backward compat)
   negative: LineAssociationGene[]  // Genes decreasing along line (backward compat)
   modules: LineAssociationModule[] // All significant genes grouped by profile shape
+  all_genes?: LineAssociationGene[] // Stats for every gene tested (for CSV export / GSEA)
   n_cells: number
   n_significant: number
   n_positive: number

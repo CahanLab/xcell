@@ -556,7 +556,7 @@ export default function ScatterPlot({
         }
       }
     }
-  }, [interactionMode, screenToData, embedding.coordinates, quiltPhase, viewState])
+  }, [interactionMode, drawTool, screenToData, embedding.coordinates, quiltPhase, viewState])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     // Track cursor for click-based draw tool preview
@@ -666,7 +666,7 @@ export default function ScatterPlot({
     } else if (interactionMode === 'quilt' && quiltPhase === 'lasso') {
       setLassoPoints((prev) => [...prev, point])
     }
-  }, [isDrawing, interactionMode, screenToData, embedding.name, quiltPhase, viewState])
+  }, [isDrawing, interactionMode, drawTool, selectionTool, selectPolygonPoints.length, linePoints.length, screenToData, embedding.name, quiltPhase, viewState])
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
     // Handle adjust rotation release
@@ -773,7 +773,7 @@ export default function ScatterPlot({
         setQuiltPhase('transform')
       }
     }
-  }, [isDrawing, interactionMode, lassoPoints, linePoints, embedding.coordinates, onSelectionComplete, onLineDrawn, onTransformEmbedding, onTransformEmbeddingSubset, quiltPhase, setQuiltPhase, screenToData])
+  }, [isDrawing, interactionMode, drawTool, lassoPoints, linePoints, embedding.coordinates, onSelectionComplete, onLineDrawn, onTransformEmbedding, onTransformEmbeddingSubset, quiltPhase, setQuiltPhase, screenToData])
 
   // Handle click for click-based draw tools (polygon, segmented, smooth_curve)
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)

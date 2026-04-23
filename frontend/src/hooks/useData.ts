@@ -1129,6 +1129,7 @@ export interface LineAssociationParams {
   minCells?: number
   fdrThreshold?: number
   topN?: number
+  clusterGenes?: boolean
 }
 
 // Sync lines to backend
@@ -1159,6 +1160,7 @@ export async function runLineAssociation(params: LineAssociationParams, slot?: D
       min_cells: params.minCells ?? 20,
       fdr_threshold: params.fdrThreshold ?? 0.05,
       top_n: params.topN ?? 50,
+      cluster_genes: params.clusterGenes ?? false,
     }),
   })
   if (!response.ok) {
@@ -1202,6 +1204,7 @@ export interface MultiLineAssociationParams {
   minCells?: number
   fdrThreshold?: number
   topN?: number
+  clusterGenes?: boolean
 }
 
 export async function runMultiLineAssociation(params: MultiLineAssociationParams, slot?: DatasetSlot): Promise<LineAssociationResult> {
@@ -1220,6 +1223,7 @@ export async function runMultiLineAssociation(params: MultiLineAssociationParams
       min_cells: params.minCells ?? 20,
       fdr_threshold: params.fdrThreshold ?? 0.05,
       top_n: params.topN ?? 50,
+      cluster_genes: params.clusterGenes ?? false,
     }),
   })
   if (!response.ok) {

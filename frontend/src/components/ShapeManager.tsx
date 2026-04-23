@@ -247,6 +247,7 @@ function LineToolsModal({
   const [nSplineKnots, setNSplineKnots] = useState(5)
   const [fdrThreshold, setFdrThreshold] = useState(0.05)
   const [topN, setTopN] = useState(50)
+  const [clusterGenes, setClusterGenes] = useState(false)
 
   const { runAssociation, isLineAssociationLoading } = useLineAssociation()
   const activeTaskId = useStore((state) => state.activeTaskId)
@@ -281,7 +282,7 @@ function LineToolsModal({
       } else if (selectedGeneColumns.length > 1) {
         geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
       }
-      await runAssociation(line.name, { cellIndices, geneSubset, testVariable, nSplineKnots, fdrThreshold, topN })
+      await runAssociation(line.name, { cellIndices, geneSubset, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes })
       onClose()
     } catch (err) {
       const message = (err as Error).message
@@ -289,7 +290,7 @@ function LineToolsModal({
         setAssociationError(message)
       }
     }
-  }, [runAssociation, getCellIndices, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, line.name, onClose])
+  }, [runAssociation, getCellIndices, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes, line.name, onClose])
 
   const handleCancelAssociation = useCallback(async () => {
     if (activeTaskId) {
@@ -559,7 +560,11 @@ function LineToolsModal({
                 />
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: '#ccc' }}>
-                <span title="Maximum number of genes to return per module.">Max genes/module</span>
+                <span title={clusterGenes
+                  ? 'Maximum number of genes to return per module.'
+                  : 'Maximum number of genes to return per direction (positive/negative).'}>
+                  {clusterGenes ? 'Max genes/module' : 'Max genes/direction'}
+                </span>
                 <input
                   type="number"
                   min="10"
@@ -568,9 +573,20 @@ function LineToolsModal({
                   value={topN}
                   onChange={(e) => setTopN(Math.max(10, Math.min(500, parseInt(e.target.value) || 50)))}
                   style={styles.smallInput}
-                  title="Maximum genes returned per module (10-500)"
+                  title="Maximum genes returned (10-500)"
                 />
               </div>
+              <label
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontSize: '11px', color: '#ccc', cursor: 'pointer' }}
+                title="Cluster significant genes by expression profile shape into modules (increasing, decreasing, peak, trough, complex). When off, only positive/negative lists are returned."
+              >
+                <input
+                  type="checkbox"
+                  checked={clusterGenes}
+                  onChange={(e) => setClusterGenes(e.target.checked)}
+                />
+                Cluster genes into modules
+              </label>
             </div>
 
             <button
@@ -650,6 +666,7 @@ function MultiLineToolsModal({
   const [nSplineKnots, setNSplineKnots] = useState(5)
   const [fdrThreshold, setFdrThreshold] = useState(0.05)
   const [topN, setTopN] = useState(50)
+  const [clusterGenes, setClusterGenes] = useState(false)
 
   const API_BASE = '/api'
   const totalCells = lines.reduce((sum, l) => sum + l.projections.length, 0)
@@ -686,6 +703,7 @@ function MultiLineToolsModal({
         nSplineKnots,
         fdrThreshold,
         topN,
+        clusterGenes,
       })
       onClose()
     } catch (err) {
@@ -694,7 +712,7 @@ function MultiLineToolsModal({
         setAssociationError(message)
       }
     }
-  }, [runMultiAssociation, lines, reversals, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, onClose])
+  }, [runMultiAssociation, lines, reversals, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes, onClose])
 
   const handleCancelAssociation = useCallback(async () => {
     if (activeTaskId) {
@@ -858,11 +876,22 @@ function MultiLineToolsModal({
                 style={{ ...styles.smallInput, width: '56px' }} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: '#ccc' }}>
-              <span>Max genes/module</span>
+              <span>{clusterGenes ? 'Max genes/module' : 'Max genes/direction'}</span>
               <input type="number" min="10" max="500" step="10" value={topN}
                 onChange={(e) => setTopN(Math.max(10, Math.min(500, parseInt(e.target.value) || 50)))}
                 style={styles.smallInput} />
             </div>
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontSize: '11px', color: '#ccc', cursor: 'pointer' }}
+              title="Cluster significant genes by expression profile shape into modules."
+            >
+              <input
+                type="checkbox"
+                checked={clusterGenes}
+                onChange={(e) => setClusterGenes(e.target.checked)}
+              />
+              Cluster genes into modules
+            </label>
           </div>
 
           {/* Run button */}

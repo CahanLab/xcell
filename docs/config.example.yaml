@@ -1,0 +1,80 @@
+# xcell user configuration — parameter-default overrides.
+#
+# Copy this file to ~/.xcell/config.yaml (or set XCELL_CONFIG_PATH to point
+# to it) and edit the values you want to override. Remove entries you don't
+# care about — unknown keys are silently ignored, missing ones fall back to
+# the hardcoded application defaults. A backend restart is required to pick
+# up edits.
+#
+# The shape matches the modal namespaces in the UI: scanpy.<function>.<param>,
+# line_association.<param>, and display.<setting>. Use /api/config/defaults to
+# inspect what the server actually loaded.
+
+scanpy:
+  filter_cells:
+    # Default is 15. Lower it if you want to keep low-quality cells by default.
+    min_genes: 15
+
+  filter_genes:
+    min_cells: 3
+
+  normalize_total:
+    target_sum: 10000
+
+  highly_variable_genes:
+    n_top_genes: 4000
+    flavor: cell_ranger
+
+  pca:
+    n_comps: 50
+    svd_solver: arpack
+
+  neighbors:
+    n_neighbors: 15
+    metric: euclidean
+
+  umap:
+    min_dist: 0.5
+    spread: 1.0
+
+  leiden:
+    resolution: 0.25
+
+  spatial_autocorr:
+    # Set to 0 (or null) for the analytical-only path — much faster.
+    n_perms: 0
+    mode: moran
+
+line_association:
+  n_spline_knots: 5
+  fdr_threshold: 0.25
+  top_n: 50
+  cluster_genes: false
+  test_variable: position
+
+# Display defaults — applied to every dataset slot at startup and on every
+# fresh dataset load. Unknown keys are ignored, so it's safe to keep only the
+# settings you actually want to override.
+display:
+  # Scatter plot point size (1-10). Default 3.
+  point_size: 3
+  # Point opacity (0.0-1.0). Default 0.85.
+  point_opacity: 0.85
+  # Plot background color (hex). Default '#1a1a2e'.
+  background_color: '#1a1a2e'
+  # Color scale for single-gene / gene-set expression coloring.
+  # One of: viridis, plasma, magma, inferno, cividis, coolwarm, blues, reds.
+  color_scale: viridis
+  # Bivariate colormap: default | pinkgreen | orangepurple | custom.
+  bivariate_colormap: default
+  # Pre-coloring expression transform: none | log1p.
+  expression_transform: none
+  # Symmetric percentile clip for color-ramp anchors (0-5%, 0 = off). Default 1.0.
+  clip_percentile: 1.0
+  # Gene-set per-gene normalization before aggregation.
+  # One of: none | zscore_mad | zscore_sd | minmax | rank.
+  gene_set_per_gene_norm: zscore_mad
+  # Per-gene clip percentile for the minmax norm only (0-5%). Default 1.0.
+  gene_set_per_gene_clip: 1.0
+  # Aggregation across genes within a gene set: mean | median | sum | max.
+  gene_set_aggregation: mean

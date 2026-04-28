@@ -1,12 +1,17 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useStore } from '../store'
-import { runClusterGeneSet, useObsSummaries } from '../hooks/useData'
+import { runClusterGeneSet, useObsSummaries, appendDataset } from '../hooks/useData'
+
+interface LayerInfo {
+  name: string
+  density: number
+}
 
 // NOTE on useObsSummaries: it returns `{ summaries, isLoading, error, refresh }`
 // where `summaries: ObsSummary[]` and each ObsSummary has:
 //   { name: string; dtype: 'category' | 'numeric' | 'string'; categories?: { value: string; count: number }[] }
 
-type Method = 'hierarchical' | 'kmeans'
+type Method = 'hierarchical' | 'kmeans' | 'dbscan'
 type CellContext = 'all' | 'selection' | 'annotation'
 
 export default function ClusterGeneSetModal() {
@@ -18,7 +23,11 @@ export default function ClusterGeneSetModal() {
 
   const [method, setMethod] = useState<Method>('hierarchical')
   const [k, setK] = useState(3)
+  const [eps, setEps] = useState(0.3)
+  const [minSamples, setMinSamples] = useState(3)
   const [cellContext, setCellContext] = useState<CellContext>('all')
+  const [layer, setLayer] = useState<string>('X')
+  const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
   const [annotationColumn, setAnnotationColumn] = useState<string>('')
   const [annotationValues, setAnnotationValues] = useState<Set<string>>(new Set())
   const [isRunning, setIsRunning] = useState(false)
@@ -37,10 +46,22 @@ export default function ClusterGeneSetModal() {
     if (!source) return
     setMethod('hierarchical')
     setK(3)
+    setEps(0.3)
+    setMinSamples(3)
     setCellContext('all')
+    setLayer('X')
     setAnnotationValues(new Set())
     setError(null)
     setIsRunning(false)
+  }, [source])
+
+  // Load available layers when modal opens.
+  useEffect(() => {
+    if (!source) return
+    fetch(appendDataset('/api/scanpy/layers'))
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => setAvailableLayers(data.layers || [{ name: 'X', density: 0 }]))
+      .catch(() => setAvailableLayers([{ name: 'X', density: 0 }]))
   }, [source])
 
   // Pick a default annotation column once summaries have loaded, but only
@@ -74,12 +95,16 @@ export default function ClusterGeneSetModal() {
   if (!source) return null
 
   const maxK = Math.min(source.genes.length - 1, 20)
+  const maxMinSamples = source.genes.length
 
   const isFormValid =
-    k >= 2 &&
-    k <= maxK &&
     (cellContext !== 'annotation' ||
-      (annotationColumn !== '' && annotationValues.size > 0))
+      (annotationColumn !== '' && annotationValues.size > 0)) &&
+    (
+      method === 'dbscan'
+        ? eps > 0 && eps <= 2 && minSamples >= 2 && minSamples <= maxMinSamples
+        : k >= 2 && k <= maxK
+    )
 
   const toggleAnnotationValue = (value: string) => {
     setAnnotationValues((prev) => {
@@ -97,10 +122,11 @@ export default function ClusterGeneSetModal() {
       const payload = {
         geneNames: source.genes,
         method,
-        k,
+        ...(method === 'dbscan' ? { eps, minSamples } : { k }),
         cellContext,
         ...(cellContext === 'selection' ? { cellIndices: selectedCellIndices } : {}),
         ...(cellContext === 'annotation' ? { annotationColumn, annotationValues: Array.from(annotationValues) } : {}),
+        ...(layer && layer !== 'X' ? { layer } : {}),
       }
       const { clusters } = await runClusterGeneSet(payload)
       const now = new Date()
@@ -177,9 +203,98 @@ export default function ClusterGeneSetModal() {
           >
             <option value="hierarchical">Hierarchical (Ward linkage)</option>
             <option value="kmeans">K-means</option>
+            <option value="dbscan">DBSCAN (density-based)</option>
           </select>
         </div>
 
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
+            Source matrix
+          </label>
+          <select
+            value={layer}
+            onChange={(e) => setLayer(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '6px 8px',
+              fontSize: '12px',
+              backgroundColor: '#0f3460',
+              color: '#eee',
+              border: '1px solid #1a1a2e',
+              borderRadius: '4px',
+            }}
+          >
+            {availableLayers.length === 0 && <option value="X">.X (default)</option>}
+            {availableLayers.map((L) => (
+              <option key={L.name} value={L.name}>
+                {L.name === 'X' ? '.X (default)' : L.name}
+                {L.density > 0 ? ` — ${(L.density * 100).toFixed(1)}% dense` : ''}
+              </option>
+            ))}
+          </select>
+          <div style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
+            Pick a smoothed layer (from Preprocess → Smooth) to cluster on denoised expression.
+          </div>
+        </div>
+
+        {method === 'dbscan' ? (
+          <>
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
+                Neighbor radius (eps)
+              </label>
+              <input
+                type="number"
+                min={0.05}
+                max={2}
+                step={0.05}
+                value={eps}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value)
+                  setEps(Number.isFinite(v) ? Math.max(0.05, Math.min(2, v)) : 0.3)
+                }}
+                style={{
+                  width: '80px',
+                  padding: '6px 8px',
+                  fontSize: '12px',
+                  backgroundColor: '#0f3460',
+                  color: '#eee',
+                  border: '1px solid #1a1a2e',
+                  borderRadius: '4px',
+                }}
+              />
+              <span style={{ fontSize: '10px', color: '#666', marginLeft: '8px' }}>
+                Two genes are neighbors when 1 − Pearson(g1, g2) ≤ eps
+                {' '}(i.e. correlation ≥ {(1 - eps).toFixed(2)}). Lower = stricter.
+              </span>
+            </div>
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
+                Min samples
+              </label>
+              <input
+                type="number"
+                min={2}
+                max={maxMinSamples}
+                value={minSamples}
+                onChange={(e) => setMinSamples(Math.max(2, Math.min(maxMinSamples, parseInt(e.target.value) || 2)))}
+                style={{
+                  width: '80px',
+                  padding: '6px 8px',
+                  fontSize: '12px',
+                  backgroundColor: '#0f3460',
+                  color: '#eee',
+                  border: '1px solid #1a1a2e',
+                  borderRadius: '4px',
+                }}
+              />
+              <span style={{ fontSize: '10px', color: '#666', marginLeft: '8px' }}>
+                Min genes (incl. self) within eps to start a cluster.
+                {' '}Genes that don't reach this density become a "noise" sub-cluster.
+              </span>
+            </div>
+          </>
+        ) : (
         <div style={{ marginBottom: '12px' }}>
           <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
             Number of clusters (K)
@@ -204,6 +319,7 @@ export default function ClusterGeneSetModal() {
             (max {maxK})
           </span>
         </div>
+        )}
 
         <div style={{ marginBottom: '12px' }}>
           <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>

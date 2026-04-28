@@ -9,7 +9,11 @@ import {
   labelCells,
   useDiffExp,
   appendDataset,
+  renameObsLabel,
+  mergeObsLabels,
 } from '../hooks/useData'
+import { OverflowMenu } from './GenePanel'
+import MergeLabelsModal from './MergeLabelsModal'
 
 const API_BASE = '/api'
 
@@ -438,10 +442,117 @@ interface CategoryColumnProps {
   onToggleCategory: (category: string) => void
   onHide: () => void
   onRename: (newName: string) => void
+  onRenameLabel: (oldLabel: string, newLabel: string) => Promise<void> | void
+  onMergeLabels: () => void
   selectedCategorySource: { column: string; value: string } | null
 }
 
-function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, checkedCategories, onToggleCategory, onHide, onRename, selectedCategorySource }: CategoryColumnProps) {
+interface CategoryRowProps {
+  cat: CategoryValue
+  totalCount: number
+  checked: boolean
+  onToggle: () => void
+  onSelectCells: () => void
+  onRenameLabel: (newLabel: string) => Promise<void> | void
+  isHighlighted: boolean
+}
+
+function CategoryRow({ cat, totalCount, checked, onToggle, onSelectCells, onRenameLabel, isHighlighted }: CategoryRowProps) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(cat.value)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [editing])
+
+  const startEdit = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setDraft(cat.value)
+    setEditing(true)
+  }
+
+  const commit = async () => {
+    const next = draft.trim()
+    if (!next || next === cat.value) {
+      setEditing(false)
+      return
+    }
+    try {
+      await onRenameLabel(next)
+    } finally {
+      setEditing(false)
+    }
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      commit()
+    } else if (e.key === 'Escape') {
+      setEditing(false)
+      setDraft(cat.value)
+    }
+  }
+
+  return (
+    <div
+      style={{
+        ...styles.categoryItem,
+        ...(isHighlighted ? { borderLeft: '3px solid #4ecdc4', paddingLeft: '5px' } : {}),
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggle}
+          onClick={(e) => e.stopPropagation()}
+          style={{ marginRight: '6px', cursor: 'pointer', flexShrink: 0 }}
+          title="Check to select these cells"
+        />
+        {editing ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={onKeyDown}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: '11px',
+              padding: '1px 4px',
+              backgroundColor: '#0f1625',
+              color: '#e0e0e0',
+              border: '1px solid #4ecdc4',
+              borderRadius: '2px',
+              outline: 'none',
+            }}
+          />
+        ) : (
+          <span
+            style={{ ...styles.categoryName, cursor: 'pointer' }}
+            title={`${cat.value}\nClick to select these cells. Double-click to rename.`}
+            onClick={onSelectCells}
+            onDoubleClick={startEdit}
+          >
+            {cat.value}
+          </span>
+        )}
+      </div>
+      <span style={styles.categoryCount}>
+        {cat.count.toLocaleString()} ({((cat.count / totalCount) * 100).toFixed(1)}%)
+      </span>
+    </div>
+  )
+}
+
+function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, checkedCategories, onToggleCategory, onHide, onRename, onRenameLabel, onMergeLabels, selectedCategorySource }: CategoryColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -542,38 +653,36 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCel
         >
           Color
         </button>
+        <div onClick={(e) => e.stopPropagation()} style={{ marginLeft: '4px' }}>
+          <OverflowMenu
+            items={[
+              {
+                label: 'Merge labels…',
+                disabled: categories.length < 2,
+                tooltip: categories.length < 2 ? 'Need at least 2 labels to merge' : undefined,
+                onClick: onMergeLabels,
+              },
+            ]}
+          />
+        </div>
       </div>
       {expanded && (
         <div style={styles.categoryList}>
           {categories.map((cat: CategoryValue) => (
-              <div key={cat.value} style={{
-                ...styles.categoryItem,
-                ...(selectedCategorySource?.column === summary.name && selectedCategorySource?.value === cat.value
-                  ? { borderLeft: '3px solid #4ecdc4', paddingLeft: '5px' }
-                  : {}),
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
-                  <input
-                    type="checkbox"
-                    checked={checkedCategories.has(cat.value)}
-                    onChange={() => onToggleCategory(cat.value)}
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ marginRight: '6px', cursor: 'pointer', flexShrink: 0 }}
-                    title="Check to select these cells"
-                  />
-                  <span
-                    style={{ ...styles.categoryName, cursor: 'pointer' }}
-                    title={`${cat.value}\nClick to select these cells`}
-                    onClick={() => onSelectCells(cat.value)}
-                  >
-                    {cat.value}
-                  </span>
-                </div>
-                <span style={styles.categoryCount}>
-                  {cat.count.toLocaleString()} ({((cat.count / totalCount) * 100).toFixed(1)}%)
-                </span>
-              </div>
-            ))}
+            <CategoryRow
+              key={cat.value}
+              cat={cat}
+              totalCount={totalCount}
+              checked={checkedCategories.has(cat.value)}
+              onToggle={() => onToggleCategory(cat.value)}
+              onSelectCells={() => onSelectCells(cat.value)}
+              onRenameLabel={(newLabel) => onRenameLabel(cat.value, newLabel)}
+              isHighlighted={
+                selectedCategorySource?.column === summary.name &&
+                selectedCategorySource?.value === cat.value
+              }
+            />
+          ))}
         </div>
       )}
     </div>
@@ -755,6 +864,11 @@ export default function CellPanel() {
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
   const [selectedCategorySource, setSelectedCategorySource] = useState<{ column: string; value: string } | null>(null)
 
+  // Merge-labels modal state
+  const [mergeModalColumn, setMergeModalColumn] = useState<string | null>(null)
+
+  const setError = useStore((s) => s.setError)
+
   // Reset delete confirmation when selection changes
   useEffect(() => {
     setShowDeleteConfirm(false)
@@ -889,6 +1003,46 @@ export default function CellPanel() {
         })
     },
     [toggleComparisonCategory, addToSelection, setSelectedCellIndices, selectedCellIndices, comparisonCheckedColumn, comparisonCheckedCategories]
+  )
+
+  // Rename a single category value in an obs column.
+  const handleRenameLabel = useCallback(
+    async (columnName: string, oldLabel: string, newLabel: string) => {
+      try {
+        await renameObsLabel(columnName, oldLabel, newLabel)
+        // Keep the highlight glued to the renamed label so the user doesn't
+        // lose visual context.
+        setSelectedCategorySource((prev) =>
+          prev && prev.column === columnName && prev.value === oldLabel
+            ? { column: columnName, value: newLabel }
+            : prev
+        )
+        refresh()
+      } catch (err) {
+        setError(`Rename failed: ${(err as Error).message}`)
+      }
+    },
+    [refresh, setError]
+  )
+
+  // Merge labels — modal calls this on Confirm.
+  const handleMergeLabels = useCallback(
+    async (columnName: string, labels: string[], newLabel: string) => {
+      try {
+        await mergeObsLabels(columnName, labels, newLabel)
+        setSelectedCategorySource((prev) =>
+          prev && prev.column === columnName && labels.includes(prev.value)
+            ? { column: columnName, value: newLabel }
+            : prev
+        )
+        refresh()
+      } catch (err) {
+        // Re-throw so the modal can surface the error inline rather than only
+        // a global toast.
+        throw err
+      }
+    },
+    [refresh]
   )
 
   // Handle running comparison
@@ -1059,6 +1213,10 @@ export default function CellPanel() {
                   }
                   onHide={() => hideColumn(summary.name)}
                   onRename={(newName) => setColumnDisplayName(summary.name, newName)}
+                  onRenameLabel={(oldLabel, newLabel) =>
+                    handleRenameLabel(summary.name, oldLabel, newLabel)
+                  }
+                  onMergeLabels={() => setMergeModalColumn(summary.name)}
                   selectedCategorySource={selectedCategorySource}
                 />
               ))}
@@ -1347,6 +1505,16 @@ export default function CellPanel() {
             </div>
           )}
         </div>
+      )}
+      {mergeModalColumn && (
+        <MergeLabelsModal
+          columnName={mergeModalColumn}
+          summary={summaries.find((s) => s.name === mergeModalColumn) || null}
+          onClose={() => setMergeModalColumn(null)}
+          onMerge={(labels, newLabel) =>
+            handleMergeLabels(mergeModalColumn, labels, newLabel)
+          }
+        />
       )}
     </div>
   )

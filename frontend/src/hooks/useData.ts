@@ -148,6 +148,7 @@ export function useExpressionTransformEffect() {
     setError,
     layoutMode,
     activeSlot,
+    displayLayer,
   } = useStore()
 
   useEffect(() => {
@@ -157,13 +158,22 @@ export function useExpressionTransformEffect() {
     }
 
     const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined
+    // 'X' (the default) is omitted from requests; backend treats missing /
+    // 'X' identically and reads adata.X.
+    const layerArg = displayLayer && displayLayer !== 'X' ? displayLayer : undefined
 
     const fetchExpression = async () => {
       setLoading(true)
       try {
+        const clipPct = displayPreferences.clipPercentile
         if (selectedGenes.length === 1) {
-          const url = transform
-            ? appendDataset(`${API_BASE}/expression/${encodeURIComponent(selectedGenes[0])}?transform=${transform}`)
+          const qs = new URLSearchParams()
+          if (transform) qs.set('transform', transform)
+          if (clipPct > 0) qs.set('clip_percentile', String(clipPct))
+          if (layerArg) qs.set('layer', layerArg)
+          const suffix = qs.toString()
+          const url = suffix
+            ? appendDataset(`${API_BASE}/expression/${encodeURIComponent(selectedGenes[0])}?${suffix}`)
             : appendDataset(`${API_BASE}/expression/${encodeURIComponent(selectedGenes[0])}`)
           const data = await fetchJson<ExpressionData>(url)
           setExpressionData(data)
@@ -174,7 +184,11 @@ export function useExpressionTransformEffect() {
             body: JSON.stringify({
               genes: selectedGenes,
               transform,
-              scoring_method: displayPreferences.geneSetScoringMethod,
+              per_gene_norm: displayPreferences.geneSetPerGeneNorm,
+              per_gene_clip: displayPreferences.geneSetPerGeneClip,
+              aggregation: displayPreferences.geneSetAggregation,
+              clip_percentile: clipPct,
+              layer: layerArg,
             }),
           })
           setExpressionData(data)
@@ -183,9 +197,20 @@ export function useExpressionTransformEffect() {
           }
         }
 
-        // Mirror to other slot in dual mode
+        // Mirror to other slot in dual mode. The other slot uses ITS OWN
+        // displayLayer (read inside the helper), since layers are per-dataset.
         if (layoutMode === 'dual') {
-          mirrorExpressionToSlot(otherSlot(activeSlot), selectedGenes, transform, displayPreferences.geneSetScoringMethod)
+          mirrorExpressionToSlot(
+            otherSlot(activeSlot),
+            selectedGenes,
+            transform,
+            {
+              perGeneNorm: displayPreferences.geneSetPerGeneNorm,
+              perGeneClip: displayPreferences.geneSetPerGeneClip,
+              aggregation: displayPreferences.geneSetAggregation,
+            },
+            clipPct,
+          )
         }
       } catch (err) {
         setError((err as Error).message)
@@ -198,7 +223,14 @@ export function useExpressionTransformEffect() {
     }
 
     fetchExpression()
-  }, [displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod]) // Re-run when transform or scoring method changes
+  }, [
+    displayPreferences.expressionTransform,
+    displayPreferences.geneSetPerGeneNorm,
+    displayPreferences.geneSetPerGeneClip,
+    displayPreferences.geneSetAggregation,
+    displayPreferences.clipPercentile,
+    displayLayer,
+  ]) // Re-run when any aggregation knob changes (including the source layer).
 }
 
 // Hook to re-fetch bivariate data when transform setting changes
@@ -212,6 +244,7 @@ export function useBivariateTransformEffect() {
     setError,
     layoutMode,
     activeSlot,
+    displayLayer,
   } = useStore()
 
   useEffect(() => {
@@ -221,11 +254,13 @@ export function useBivariateTransformEffect() {
     }
 
     const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined
+    const layerArg = displayLayer && displayLayer !== 'X' ? displayLayer : undefined
     const { genes1, genes2 } = bivariateData
 
     const fetchBivariate = async () => {
       setLoading(true)
       try {
+        const clipPct = displayPreferences.clipPercentile
         const data = await fetchJson<BivariateExpressionData>(appendDataset(`${API_BASE}/expression/bivariate`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -233,15 +268,29 @@ export function useBivariateTransformEffect() {
             genes1,
             genes2,
             transform,
-            clip_percentile: 1.0,
-            scoring_method: displayPreferences.geneSetScoringMethod,
+            per_gene_norm: displayPreferences.geneSetPerGeneNorm,
+            per_gene_clip: displayPreferences.geneSetPerGeneClip,
+            aggregation: displayPreferences.geneSetAggregation,
+            clip_percentile: clipPct,
+            layer: layerArg,
           }),
         })
         setBivariateData(data)
 
         // Mirror to other slot in dual mode
         if (layoutMode === 'dual') {
-          mirrorBivariateToSlot(otherSlot(activeSlot), genes1, genes2, transform, displayPreferences.geneSetScoringMethod)
+          mirrorBivariateToSlot(
+            otherSlot(activeSlot),
+            genes1,
+            genes2,
+            transform,
+            {
+              perGeneNorm: displayPreferences.geneSetPerGeneNorm,
+              perGeneClip: displayPreferences.geneSetPerGeneClip,
+              aggregation: displayPreferences.geneSetAggregation,
+            },
+            clipPct,
+          )
         }
       } catch (err) {
         setError((err as Error).message)
@@ -251,33 +300,66 @@ export function useBivariateTransformEffect() {
     }
 
     fetchBivariate()
-  }, [displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod]) // Re-run when transform or scoring method changes
+  }, [
+    displayPreferences.expressionTransform,
+    displayPreferences.geneSetPerGeneNorm,
+    displayPreferences.geneSetPerGeneClip,
+    displayPreferences.geneSetAggregation,
+    displayPreferences.clipPercentile,
+    displayLayer,
+  ]) // Re-run when any aggregation knob changes (including the source layer).
 }
 
 // Helper: fetch expression data for a specific slot and patch its DatasetState.
 // Used to mirror gene coloring to the non-active plot in dual mode.
 // Errors are silently ignored (gene may not exist in the other dataset).
+// Aggregation knobs that the multi-gene & bivariate endpoints accept.
+// Inlined as a small object to avoid threading three separate args through
+// the mirror helpers and call sites.
+type AggregationParams = {
+  perGeneNorm?: string
+  perGeneClip?: number
+  aggregation?: string
+}
+
 async function mirrorExpressionToSlot(
   slot: DatasetSlot,
   genes: string[],
   transform?: string,
-  scoringMethod?: string,
+  agg?: AggregationParams,
+  clipPercentile?: number,
 ) {
   const state = useStore.getState()
   const ds = state.datasets[slot]
   if (!ds.schema) return
+  // Mirror uses the OTHER slot's own displayLayer — layers are per-dataset and
+  // a layer name like "smoothed" may exist in one slot but not the other.
+  const layerArg = ds.displayLayer && ds.displayLayer !== 'X' ? ds.displayLayer : undefined
   try {
     let data: ExpressionData
     if (genes.length === 1) {
-      const url = transform
-        ? appendDataset(`${API_BASE}/expression/${encodeURIComponent(genes[0])}?transform=${transform}`, slot)
+      const qs = new URLSearchParams()
+      if (transform) qs.set('transform', transform)
+      if (clipPercentile && clipPercentile > 0) qs.set('clip_percentile', String(clipPercentile))
+      if (layerArg) qs.set('layer', layerArg)
+      const suffix = qs.toString()
+      const url = suffix
+        ? appendDataset(`${API_BASE}/expression/${encodeURIComponent(genes[0])}?${suffix}`, slot)
         : appendDataset(`${API_BASE}/expression/${encodeURIComponent(genes[0])}`, slot)
       data = await fetchJson<ExpressionData>(url)
     } else {
       data = await fetchJson<ExpressionData>(appendDataset(`${API_BASE}/expression/multi`, slot), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genes, transform, scoring_method: scoringMethod }),
+        body: JSON.stringify({
+          genes,
+          transform,
+          per_gene_norm: agg?.perGeneNorm,
+          per_gene_clip: agg?.perGeneClip,
+          aggregation: agg?.aggregation,
+          clip_percentile: clipPercentile ?? 1.0,
+          layer: layerArg,
+        }),
       })
     }
     // Compute sort order for the other slot
@@ -303,16 +385,27 @@ async function mirrorBivariateToSlot(
   genes1: string[],
   genes2: string[],
   transform?: string,
-  scoringMethod?: string,
+  agg?: AggregationParams,
+  clipPercentile?: number,
 ) {
   const state = useStore.getState()
   const ds = state.datasets[slot]
   if (!ds.schema) return
+  const layerArg = ds.displayLayer && ds.displayLayer !== 'X' ? ds.displayLayer : undefined
   try {
     const data = await fetchJson<BivariateExpressionData>(appendDataset(`${API_BASE}/expression/bivariate`, slot), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ genes1, genes2, transform, clip_percentile: 1.0, scoring_method: scoringMethod }),
+      body: JSON.stringify({
+        genes1,
+        genes2,
+        transform,
+        per_gene_norm: agg?.perGeneNorm,
+        per_gene_clip: agg?.perGeneClip,
+        aggregation: agg?.aggregation,
+        clip_percentile: clipPercentile ?? 1.0,
+        layer: layerArg,
+      }),
     })
     const { values1, values2 } = data
     const indices = Array.from({ length: ds.schema.n_cells }, (_, i) => i)
@@ -353,6 +446,7 @@ export function useDataActions() {
     layoutMode,
     activeSlot,
     patchSlotState,
+    displayLayer,
   } = useStore()
 
   const selectEmbedding = useCallback(
@@ -382,8 +476,15 @@ export function useDataActions() {
       try {
         // Use provided transform or fall back to display preferences
         const effectiveTransform = transform ?? (displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined)
-        const url = effectiveTransform
-          ? appendDataset(`${API_BASE}/expression/${encodeURIComponent(gene)}?transform=${effectiveTransform}`)
+        const clipPct = displayPreferences.clipPercentile
+        const layerArg = displayLayer && displayLayer !== 'X' ? displayLayer : undefined
+        const qs = new URLSearchParams()
+        if (effectiveTransform) qs.set('transform', effectiveTransform)
+        if (clipPct > 0) qs.set('clip_percentile', String(clipPct))
+        if (layerArg) qs.set('layer', layerArg)
+        const suffix = qs.toString()
+        const url = suffix
+          ? appendDataset(`${API_BASE}/expression/${encodeURIComponent(gene)}?${suffix}`)
           : appendDataset(`${API_BASE}/expression/${encodeURIComponent(gene)}`)
         const data = await fetchJson<ExpressionData>(url)
         setExpressionData(data)
@@ -394,7 +495,7 @@ export function useDataActions() {
 
         // Mirror to other slot in dual mode (fire-and-forget)
         if (layoutMode === 'dual') {
-          mirrorExpressionToSlot(otherSlot(activeSlot), [gene], effectiveTransform)
+          mirrorExpressionToSlot(otherSlot(activeSlot), [gene], effectiveTransform, undefined as AggregationParams | undefined, clipPct)
         }
       } catch (err) {
         setError((err as Error).message)
@@ -405,7 +506,7 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn, setError, displayPreferences.expressionTransform, layoutMode, activeSlot]
+    [setLoading, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn, setError, displayPreferences.expressionTransform, displayPreferences.clipPercentile, layoutMode, activeSlot, displayLayer]
   )
 
   const colorByGenes = useCallback(
@@ -429,13 +530,19 @@ export function useDataActions() {
       try {
         // Use provided transform or fall back to display preferences
         const effectiveTransform = transform ?? (displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined)
+        const clipPct = displayPreferences.clipPercentile
+        const layerArg = displayLayer && displayLayer !== 'X' ? displayLayer : undefined
         const data = await fetchJson<ExpressionData>(appendDataset(`${API_BASE}/expression/multi`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             genes,
             transform: effectiveTransform,
-            scoring_method: displayPreferences.geneSetScoringMethod,
+            per_gene_norm: displayPreferences.geneSetPerGeneNorm,
+            per_gene_clip: displayPreferences.geneSetPerGeneClip,
+            aggregation: displayPreferences.geneSetAggregation,
+            clip_percentile: clipPct,
+            layer: layerArg,
           }),
         })
         setExpressionData(data)
@@ -450,7 +557,17 @@ export function useDataActions() {
 
         // Mirror to other slot in dual mode (fire-and-forget)
         if (layoutMode === 'dual') {
-          mirrorExpressionToSlot(otherSlot(activeSlot), genes, effectiveTransform, displayPreferences.geneSetScoringMethod)
+          mirrorExpressionToSlot(
+            otherSlot(activeSlot),
+            genes,
+            effectiveTransform,
+            {
+              perGeneNorm: displayPreferences.geneSetPerGeneNorm,
+              perGeneClip: displayPreferences.geneSetPerGeneClip,
+              aggregation: displayPreferences.geneSetAggregation,
+            },
+            clipPct,
+          )
         }
       } catch (err) {
         setError((err as Error).message)
@@ -460,7 +577,7 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod, layoutMode, activeSlot, patchSlotState]
+    [setLoading, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform, displayPreferences.geneSetPerGeneNorm, displayPreferences.geneSetPerGeneClip, displayPreferences.geneSetAggregation, displayPreferences.clipPercentile, layoutMode, activeSlot, patchSlotState, displayLayer]
   )
 
   const clearExpressionColor = useCallback(() => {
@@ -483,6 +600,8 @@ export function useDataActions() {
       setLoading(true)
       try {
         const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' : undefined
+        const clipPct = displayPreferences.clipPercentile
+        const layerArg = displayLayer && displayLayer !== 'X' ? displayLayer : undefined
         const data = await fetchJson<BivariateExpressionData>(appendDataset(`${API_BASE}/expression/bivariate`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -490,8 +609,11 @@ export function useDataActions() {
             genes1,
             genes2,
             transform,
-            clip_percentile: 1.0,
-            scoring_method: displayPreferences.geneSetScoringMethod,
+            per_gene_norm: displayPreferences.geneSetPerGeneNorm,
+            per_gene_clip: displayPreferences.geneSetPerGeneClip,
+            aggregation: displayPreferences.geneSetAggregation,
+            clip_percentile: clipPct,
+            layer: layerArg,
           }),
         })
         setBivariateData(data)
@@ -502,7 +624,18 @@ export function useDataActions() {
 
         // Mirror to other slot in dual mode (fire-and-forget)
         if (layoutMode === 'dual') {
-          mirrorBivariateToSlot(otherSlot(activeSlot), genes1, genes2, transform, displayPreferences.geneSetScoringMethod)
+          mirrorBivariateToSlot(
+            otherSlot(activeSlot),
+            genes1,
+            genes2,
+            transform,
+            {
+              perGeneNorm: displayPreferences.geneSetPerGeneNorm,
+              perGeneClip: displayPreferences.geneSetPerGeneClip,
+              aggregation: displayPreferences.geneSetAggregation,
+            },
+            clipPct,
+          )
         }
       } catch (err) {
         setError((err as Error).message)
@@ -510,7 +643,7 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setBivariateData, setColorMode, setSelectedColorColumn, setExpressionData, setSelectedGenes, setError, displayPreferences.expressionTransform, displayPreferences.geneSetScoringMethod, layoutMode, activeSlot]
+    [setLoading, setBivariateData, setColorMode, setSelectedColorColumn, setExpressionData, setSelectedGenes, setError, displayPreferences.expressionTransform, displayPreferences.geneSetPerGeneNorm, displayPreferences.geneSetPerGeneClip, displayPreferences.geneSetAggregation, displayPreferences.clipPercentile, layoutMode, activeSlot, displayLayer]
   )
 
   const clearBivariateColor = useCallback(() => {
@@ -1033,6 +1166,52 @@ export async function exportAnnotations(columns?: string[], slot?: DatasetSlot):
   return response.text()
 }
 
+export interface RenameObsLabelResult {
+  column: string
+  old_label: string
+  new_label: string
+  n_cells_renamed: number
+}
+
+export async function renameObsLabel(
+  column: string,
+  oldLabel: string,
+  newLabel: string,
+  slot?: DatasetSlot
+): Promise<RenameObsLabelResult> {
+  return fetchJson<RenameObsLabelResult>(
+    appendDataset(`${API_BASE}/obs/${encodeURIComponent(column)}/rename_label`, slot),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old_label: oldLabel, new_label: newLabel }),
+    }
+  )
+}
+
+export interface MergeObsLabelsResult {
+  column: string
+  merged_labels: string[]
+  new_label: string
+  n_cells_merged: number
+}
+
+export async function mergeObsLabels(
+  column: string,
+  labels: string[],
+  newLabel: string,
+  slot?: DatasetSlot
+): Promise<MergeObsLabelsResult> {
+  return fetchJson<MergeObsLabelsResult>(
+    appendDataset(`${API_BASE}/obs/${encodeURIComponent(column)}/merge_labels`, slot),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ labels, new_label: newLabel }),
+    }
+  )
+}
+
 // Differential expression parameters
 export interface DiffExpParams {
   method?: string
@@ -1397,12 +1576,19 @@ export async function createLineEmbedding(
 export async function runClusterGeneSet(
   params: {
     geneNames: string[]
-    method: 'hierarchical' | 'kmeans'
-    k: number
+    method: 'hierarchical' | 'kmeans' | 'dbscan'
+    /** Required for hierarchical / kmeans; ignored for dbscan. */
+    k?: number
     cellContext: 'all' | 'selection' | 'annotation'
     cellIndices?: number[]
     annotationColumn?: string
     annotationValues?: string[]
+    /** DBSCAN only: neighbor radius in correlation-distance space (0–2). */
+    eps?: number
+    /** DBSCAN only: minimum genes within `eps` for a gene to be a core point. */
+    minSamples?: number
+    /** Source matrix to read expression from. Undefined / 'X' → adata.X. */
+    layer?: string
   },
   slot?: DatasetSlot,
 ): Promise<{ clusters: string[][] }> {
@@ -1417,6 +1603,9 @@ export async function runClusterGeneSet(
       cell_indices: params.cellIndices,
       annotation_column: params.annotationColumn,
       annotation_values: params.annotationValues,
+      eps: params.eps,
+      min_samples: params.minSamples,
+      layer: params.layer,
     }),
   })
   if (!response.ok) {

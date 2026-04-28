@@ -486,7 +486,35 @@ export default function App() {
     quiltUndoDepth,
     setQuiltUndoDepth,
     setError,
+    displayLayer,
+    setDisplayLayer,
   } = useStore()
+
+  // Available expression layers for the in-plot Source matrix dropdown.
+  // Refetched whenever a new dataset is loaded into the active slot, since
+  // layers are per-dataset (e.g. 'smoothed' may exist in primary but not
+  // secondary). Also refetched after a Smooth (or other layer-producing) op
+  // by depending on the active slot's scanpyActionHistory length.
+  const [availableLayers, setAvailableLayers] = useState<{ name: string; density: number }[]>([])
+  const activeSchemaSig = datasets[activeSlot]?.schema ? `${datasets[activeSlot].schema!.n_cells}` : ''
+  const activeHistoryLen = datasets[activeSlot]?.scanpyActionHistory?.length ?? 0
+  useEffect(() => {
+    if (!activeSchemaSig) { setAvailableLayers([]); return }
+    fetch(appendDataset('/api/scanpy/layers'))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => setAvailableLayers(d.layers || [{ name: 'X', density: 0 }]))
+      .catch(() => setAvailableLayers([{ name: 'X', density: 0 }]))
+  }, [activeSlot, activeSchemaSig, activeHistoryLen])
+
+  // If the current displayLayer disappears (e.g. user reloaded a dataset that
+  // doesn't have it), fall back to 'X' so we don't keep posting bad layer names.
+  useEffect(() => {
+    if (!displayLayer || displayLayer === 'X') return
+    if (availableLayers.length === 0) return
+    if (!availableLayers.some((L) => L.name === displayLayer)) {
+      setDisplayLayer('X')
+    }
+  }, [displayLayer, availableLayers, setDisplayLayer])
 
   const schema = useSchema()
   const embedding = useEmbedding()
@@ -503,6 +531,70 @@ export default function App() {
     const timer = setTimeout(() => setError(null), 5000)
     return () => clearTimeout(timer)
   }, [error, setError])
+
+  // Fetch user-editable config defaults once on mount. Failures are silent —
+  // consumers fall back to their hardcoded defaults if the config is missing.
+  const setUserConfig = useStore((s) => s.setUserConfig)
+  const applyDisplayDefaultsFromConfig = useStore((s) => s.applyDisplayDefaultsFromConfig)
+  useEffect(() => {
+    fetch('/api/config/defaults')
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        if (data && typeof data.config === 'object' && data.config !== null) {
+          setUserConfig(data.config as Record<string, unknown>)
+          // Push the `display:` overrides into every slot's displayPreferences
+          // immediately so the very first frame shows the user's defaults.
+          applyDisplayDefaultsFromConfig()
+        }
+      })
+      .catch(() => { /* no config file → use hardcoded defaults */ })
+  }, [setUserConfig, applyDisplayDefaultsFromConfig])
+
+  // Hydrate gene-set state from the backend once on mount. Keeps gene sets
+  // alive across accidental browser reloads (server-lifetime persistence).
+  // After hydration, subscribe to geneSetCategories and debounce-save any
+  // changes back to the server.
+  const hydratedGeneSetsRef = useRef(false)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/gene_sets')
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        if (cancelled) return
+        const payload = data?.gene_sets
+        if (payload && typeof payload === 'object' && Object.keys(payload).length > 0) {
+          useStore.setState({ geneSetCategories: payload })
+        }
+      })
+      .catch(() => { /* nothing to hydrate */ })
+      .finally(() => {
+        if (!cancelled) hydratedGeneSetsRef.current = true
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  // Debounced save: whenever geneSetCategories changes AFTER hydration, push
+  // the full state to the backend (500 ms debounce to coalesce rapid edits).
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const unsubscribe = useStore.subscribe((state, prev) => {
+      if (!hydratedGeneSetsRef.current) return
+      if (state.geneSetCategories === prev.geneSetCategories) return
+      if (timer) clearTimeout(timer)
+      const snapshot = state.geneSetCategories
+      timer = setTimeout(() => {
+        fetch('/api/gene_sets', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gene_sets: snapshot }),
+        }).catch(() => { /* transient; next mutation will retry */ })
+      }, 500)
+    })
+    return () => {
+      unsubscribe()
+      if (timer) clearTimeout(timer)
+    }
+  }, [])
 
   // State for line naming dialog
   const [pendingLinePoints, setPendingLinePoints] = useState<[number, number][] | null>(null)
@@ -1514,9 +1606,29 @@ export default function App() {
                           onTransformEmbeddingSubset={handleTransformEmbeddingSubset}
                         />
 
-                        {/* Embedding selector - bottom left */}
-                        {schema && (schema.embeddings.length > 1 || interactionMode === 'adjust' || interactionMode === 'quilt') && (
+                        {/* Embedding + Source matrix selectors — bottom left.
+                            Source matrix appears whenever the dataset has any
+                            non-X layer to choose from (e.g. after Smooth). */}
+                        {schema && (schema.embeddings.length > 1 || availableLayers.length > 1 || interactionMode === 'adjust' || interactionMode === 'quilt') && (
                           <div style={{ ...styles.embeddingSelector, flexDirection: 'column' as const, alignItems: 'flex-start', gap: '6px' }}>
+                            {availableLayers.length > 1 && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={styles.embeddingLabel}>Source:</span>
+                                <select
+                                  style={styles.embeddingSelect}
+                                  value={displayLayer || 'X'}
+                                  onChange={(e) => setDisplayLayer(e.target.value)}
+                                  title="Read gene expression from this matrix. Default .X; pick a smoothed layer (from Preprocess → Smooth) to inspect denoised values."
+                                >
+                                  {availableLayers.map((L) => (
+                                    <option key={L.name} value={L.name}>
+                                      {L.name === 'X' ? '.X (default)' : L.name}
+                                      {L.density > 0 ? ` — ${(L.density * 100).toFixed(1)}% dense` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
                             {schema.embeddings.length > 1 && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 <span style={styles.embeddingLabel}>Embedding:</span>

@@ -58,6 +58,81 @@ class DataAdaptor:
         self._gene_mask_config: dict[str, Any] | None = None
         self._visible_gene_mask: np.ndarray | None = None  # bool array, shape (n_genes,)
 
+        # Defensively preserve raw counts: if .X looks like integer counts and
+        # a "counts" layer isn't already present, snapshot .X into
+        # adata.layers["counts"] so downstream tooling that wants raw counts
+        # (e.g. integer-required methods) can still reach them after the user
+        # runs normalize_total / log1p. Default expression paths still read
+        # from .X — this is purely additive.
+        self._maybe_snapshot_counts_layer()
+
+    def _maybe_snapshot_counts_layer(self) -> None:
+        """If ``adata.X`` looks like integer counts, copy it to ``layers['counts']``.
+
+        Safe to call many times — no-op if ``layers['counts']`` already exists.
+        Uses a random sample to avoid scanning huge matrices.
+        """
+        if self.adata is None:
+            return
+        if 'counts' in self.adata.layers:
+            return
+
+        X = self.adata.X
+        from scipy.sparse import issparse
+
+        try:
+            # Sample a limited number of values for the integer check. For sparse,
+            # use the stored nonzero data directly (which represents observed
+            # expression); for dense, sample a flat slice.
+            MAX_SAMPLE = 50_000
+            if issparse(X):
+                data = X.data
+                if data.size == 0:
+                    return  # All-zero matrix; nothing meaningful to snapshot
+                if data.size > MAX_SAMPLE:
+                    rng = np.random.default_rng(0)
+                    sample = rng.choice(data, size=MAX_SAMPLE, replace=False)
+                else:
+                    sample = data
+            else:
+                arr = np.asarray(X)
+                flat = arr.ravel()
+                if flat.size == 0:
+                    return
+                if flat.size > MAX_SAMPLE:
+                    rng = np.random.default_rng(0)
+                    idx = rng.integers(0, flat.size, size=MAX_SAMPLE)
+                    sample = flat[idx]
+                else:
+                    sample = flat
+
+            sample = np.asarray(sample)
+            if not np.issubdtype(sample.dtype, np.number):
+                return
+
+            # Ignore NaNs if any (rare for expression matrices but be safe).
+            sample = sample[~np.isnan(sample)] if np.issubdtype(sample.dtype, np.floating) else sample
+            if sample.size == 0:
+                return
+
+            # Counts must be non-negative and integer-valued.
+            if np.any(sample < 0):
+                return
+            is_integer_like = np.all(np.equal(np.mod(sample, 1), 0))
+            if not is_integer_like:
+                return
+
+            # Copy .X into the 'counts' layer. Use .copy() so later in-place
+            # edits to .X (e.g. normalize_total) don't touch the stored counts.
+            self.adata.layers['counts'] = X.copy()
+            self.adata.uns.setdefault('xcell', {})['counts_inferred'] = True
+            print(
+                "[xcell] .X looked like integer counts — snapshot to adata.layers['counts']"
+            )
+        except Exception as e:
+            # Detection is best-effort; never block loading on it.
+            print(f"[xcell] counts snapshot skipped: {e}")
+
     @staticmethod
     def _find_10x_trio_files(filepath: Path) -> tuple[Path, Path, Path] | None:
         """Check if filepath is a prefixed 10x matrix file with companion files.
@@ -370,7 +445,11 @@ class DataAdaptor:
         if pd.api.types.is_categorical_dtype(dtype):
             result["dtype"] = "category"
             result["values"] = series.cat.codes.tolist()
-            result["categories"] = series.cat.categories.tolist()
+            # Stringify so the wire format matches /api/obs/summary/{col}, which
+            # uses str(val). Without this, float-valued categoricals (e.g. from
+            # contourize) yield raw floats here vs. strings in the summary, and
+            # frontend lookups by category value silently fail.
+            result["categories"] = [str(v) for v in series.cat.categories.tolist()]
         elif pd.api.types.is_numeric_dtype(dtype):
             result["dtype"] = "numeric"
             # Handle NaN values by converting to None
@@ -506,7 +585,13 @@ class DataAdaptor:
 
         return matches[:limit]
 
-    def get_expression(self, gene: str, transform: str | None = None) -> dict[str, Any]:
+    def get_expression(
+        self,
+        gene: str,
+        transform: str | None = None,
+        clip_percentile: float = 0.0,
+        layer: str | None = None,
+    ) -> dict[str, Any]:
         """Get expression values for a single gene across all cells.
 
         Args:
@@ -514,6 +599,13 @@ class DataAdaptor:
             transform: Optional transformation to apply. Supported values:
                 - None: Raw expression values
                 - "log1p": Apply normalize_total followed by log1p transformation
+            clip_percentile: Symmetric percentile clip (0 = no clipping). When
+                >0, values are clipped at [clip_percentile, 100-clip_percentile]
+                and the returned min/max are those clipped anchors so the
+                frontend colormap stretches across the bulk of the distribution.
+            layer: Optional layer name. When set (and not 'X'), reads expression
+                from ``adata.layers[layer]`` directly and ignores ``transform``
+                — the layer is treated as already in the right scale.
 
         Returns:
             Dictionary containing:
@@ -522,6 +614,7 @@ class DataAdaptor:
             - min: Minimum expression value
             - max: Maximum expression value
             - transform: The transformation applied (if any)
+            - layer: The layer name read from (if non-default)
 
         Raises:
             KeyError: If gene not found in .var
@@ -532,21 +625,32 @@ class DataAdaptor:
         # Get gene index
         gene_idx = self.adata.var.index.get_loc(gene)
 
-        # Select data source based on transform
-        if transform == "log1p":
-            adata_source = self.normalized_adata
+        # Layer overrides transform: a layer is treated as authoritative source.
+        if layer is not None and layer != 'X':
+            X = self._resolve_source_matrix(layer)
+        elif transform == "log1p":
+            X = self.normalized_adata.X
         else:
-            adata_source = self.adata
+            X = self.adata.X
 
-        # Get expression values from X matrix
-        # Handle both dense and sparse matrices
-        X = adata_source.X
+        # Get expression values from the chosen matrix.
         if hasattr(X, 'toarray'):
-            # Sparse matrix
             values = X[:, gene_idx].toarray().flatten()
         else:
-            # Dense matrix
             values = X[:, gene_idx].flatten()
+
+        values = np.asarray(values, dtype=np.float64)
+
+        # Optional symmetric percentile clip. We clip the values in-place so
+        # the frontend colormap (min..max) stretches across the bulk of the
+        # distribution instead of being dominated by a few outliers.
+        if clip_percentile and clip_percentile > 0:
+            valid = values[~np.isnan(values)]
+            if valid.size > 0:
+                lo = float(np.percentile(valid, clip_percentile))
+                hi = float(np.percentile(valid, 100 - clip_percentile))
+                if hi > lo:
+                    values = np.clip(values, lo, hi)
 
         # Convert to regular Python floats and handle NaN
         values_list = []
@@ -569,36 +673,173 @@ class DataAdaptor:
         }
         if transform:
             result["transform"] = transform
+        if layer and layer != 'X':
+            result["layer"] = layer
         return result
+
+    @staticmethod
+    def _normalize_gene_column(
+        values: np.ndarray,
+        method: str,
+        clip_percentile: float = 0.0,
+    ) -> np.ndarray:
+        """Normalize a single gene's per-cell expression vector.
+
+        Args:
+            values: 1D float array, one entry per cell.
+            method: 'none' | 'zscore_mad' | 'zscore_sd' | 'minmax' | 'rank'.
+            clip_percentile: For 'minmax', symmetric percentile clip applied
+                before the rescale (e.g. 1.0 = clip at 1st/99th). Ignored for
+                other methods.
+        """
+        v = np.asarray(values, dtype=np.float64)
+        if method == 'none':
+            return v
+        if method == 'zscore_mad':
+            mean = np.nanmean(v)
+            centered = v - mean
+            mad = np.nanmedian(np.abs(centered - np.nanmedian(centered)))
+            if mad > 0:
+                return centered / (mad * 1.4826)
+            sd = np.nanstd(v)
+            if sd > 0:
+                return centered / sd
+            return np.zeros_like(v)
+        if method == 'zscore_sd':
+            mean = np.nanmean(v)
+            sd = np.nanstd(v)
+            if sd > 0:
+                return (v - mean) / sd
+            return np.zeros_like(v)
+        if method == 'minmax':
+            valid = v[~np.isnan(v)]
+            if valid.size == 0:
+                return np.zeros_like(v)
+            if clip_percentile and clip_percentile > 0:
+                lo = float(np.percentile(valid, clip_percentile))
+                hi = float(np.percentile(valid, 100 - clip_percentile))
+            else:
+                lo = float(np.nanmin(valid))
+                hi = float(np.nanmax(valid))
+            if hi <= lo:
+                return np.zeros_like(v)
+            clipped = np.clip(v, lo, hi)
+            return (clipped - lo) / (hi - lo)
+        if method == 'rank':
+            # Average ranks (handles ties) → divide by N to land in [0,1].
+            # NaNs propagate as NaN.
+            from scipy.stats import rankdata
+            mask_valid = ~np.isnan(v)
+            out = np.full_like(v, np.nan, dtype=np.float64)
+            if mask_valid.any():
+                ranks = rankdata(v[mask_valid], method='average')
+                out[mask_valid] = ranks / max(ranks.size, 1)
+            return out
+        raise ValueError(f"Unknown per-gene normalization method: {method!r}")
+
+    @staticmethod
+    def _aggregate_across_genes(
+        matrix: np.ndarray,
+        method: str,
+    ) -> np.ndarray:
+        """Aggregate a (n_cells, n_genes) float matrix to a 1D per-cell score.
+
+        method: 'mean' | 'median' | 'sum' | 'max'. NaN-aware.
+        """
+        if method == 'mean':
+            return np.nanmean(matrix, axis=1)
+        if method == 'median':
+            return np.nanmedian(matrix, axis=1)
+        if method == 'sum':
+            return np.nansum(matrix, axis=1)
+        if method == 'max':
+            # all-NaN columns return NaN under np.nanmax with a runtime warning;
+            # squelch by masking
+            with np.errstate(all='ignore'):
+                return np.nanmax(matrix, axis=1)
+        raise ValueError(f"Unknown aggregation method: {method!r}")
+
+    def _aggregate_gene_set_scores(
+        self,
+        genes: list[str],
+        source_matrix,
+        var_index=None,
+        per_gene_norm: str = 'zscore_mad',
+        per_gene_clip: float = 0.0,
+        aggregation: str = 'mean',
+    ) -> np.ndarray:
+        """Build per-cell summary score for a gene set.
+
+        Pulls each gene's column from ``source_matrix`` (a 2-D matrix shaped
+        like ``adata.X``: n_cells × n_genes), normalizes per-gene according to
+        ``per_gene_norm`` (with optional ``per_gene_clip`` for the 'minmax'
+        path), then aggregates across genes via ``aggregation``. Returns a 1D
+        float64 array of shape ``(n_cells,)``.
+
+        ``var_index`` defaults to ``self.adata.var.index``. Pass an explicit
+        index only if you're operating on a non-default matrix whose columns
+        align differently — for the standard `.X` and `adata.layers[*]` cases
+        the column order matches ``self.adata.var`` so the default works.
+        """
+        if var_index is None:
+            var_index = self.adata.var.index
+        gene_indices = [var_index.get_loc(g) for g in genes]
+        if hasattr(source_matrix, 'toarray'):
+            expr_matrix = source_matrix[:, gene_indices].toarray().astype(np.float64)
+        else:
+            expr_matrix = np.asarray(source_matrix[:, gene_indices], dtype=np.float64)
+
+        if per_gene_norm == 'none':
+            normed = expr_matrix
+        else:
+            cols = []
+            for j in range(expr_matrix.shape[1]):
+                cols.append(self._normalize_gene_column(
+                    expr_matrix[:, j], per_gene_norm, per_gene_clip,
+                ))
+            normed = np.column_stack(cols)
+
+        return self._aggregate_across_genes(normed, aggregation)
 
     def get_multi_gene_expression(
         self,
         genes: list[str],
         transform: str | None = None,
-        scoring_method: str = 'mean',
+        per_gene_norm: str = 'zscore_mad',
+        per_gene_clip: float = 0.0,
+        aggregation: str = 'mean',
         clip_percentile: float = 1.0,
+        layer: str | None = None,
     ) -> dict[str, Any]:
         """Get aggregated expression values for multiple genes across all cells.
 
+        The aggregation pipeline is:
+            source → per-gene normalize → aggregate across genes
+            → optional symmetric percentile clip (cell-level)
+
         Args:
-            genes: List of gene names
-            transform: Optional transformation to apply. Supported values:
-                - None: Raw expression values
-                - "log1p": Apply normalize_total followed by log1p transformation
-            scoring_method: How to aggregate expression across genes:
-                - "mean": Simple average of expression values (default)
-                - "zscore": Mean-center each gene, scale by MAD, then average
-            clip_percentile: For zscore method, percentile for symmetric clipping (default 1.0)
+            genes: List of gene names.
+            transform: Optional source transformation. ``None`` reads
+                ``adata.X``; ``"log1p"`` reads ``self.normalized_adata.X``
+                (lazy ``normalize_total`` + ``log1p``).
+            per_gene_norm: How each gene's column is normalized before
+                aggregation. One of ``'none'``, ``'zscore_mad'`` (default —
+                mean-center, MAD-scale, fallback SD, fallback zeros),
+                ``'zscore_sd'`` (mean-center, SD-scale), ``'minmax'`` (clip
+                at ``per_gene_clip`` percentile then rescale to [0, 1]), or
+                ``'rank'`` (average-rank, divided by N → [0, 1]).
+            per_gene_clip: Percentile clip used when ``per_gene_norm='minmax'``.
+                Ignored for other methods. 0 means use raw min/max.
+            aggregation: How per-gene values are combined per cell. One of
+                ``'mean'`` (default), ``'median'``, ``'sum'``, ``'max'``.
+            clip_percentile: Symmetric percentile clip applied to the
+                aggregated per-cell scores (0 = no clip). Anchors the
+                returned ``min``/``max`` for the colormap.
 
         Returns:
-            Dictionary containing:
-            - genes: List of gene names used
-            - values: List of aggregated expression values for each cell
-            - min: Minimum value
-            - max: Maximum value
-            - transform: The transformation applied (if any)
-            - scoring_method: The scoring method used
-
+            Dictionary with: genes (used), values, min, max, transform (if any),
+            n_masked_excluded, plus the per_gene_norm / per_gene_clip /
+            aggregation / clip_percentile actually used.
         """
         # Filter to only genes present in the dataset (silently skip missing),
         # then drop any genes currently masked by the gene mask.
@@ -612,93 +853,71 @@ class DataAdaptor:
                 "min": 0.0,
                 "max": 0.0,
                 "n_masked_excluded": n_masked_excluded,
+                "per_gene_norm": per_gene_norm,
+                "per_gene_clip": per_gene_clip,
+                "aggregation": aggregation,
+                "clip_percentile": clip_percentile,
             }
 
         genes = valid_genes
 
-        # Select data source based on transform
-        if transform == "log1p":
-            adata_source = self.normalized_adata
+        # Layer overrides transform: a layer is treated as authoritative source.
+        if layer is not None and layer != 'X':
+            source_matrix = self._resolve_source_matrix(layer)
+        elif transform == "log1p":
+            source_matrix = self.normalized_adata.X
         else:
-            adata_source = self.adata
+            source_matrix = self.adata.X
 
-        if scoring_method == 'zscore':
-            # Z-score method: mean-center each gene, scale by MAD, average
-            scaled_arrays = []
+        scores = self._aggregate_gene_set_scores(
+            genes=genes,
+            source_matrix=source_matrix,
+            per_gene_norm=per_gene_norm,
+            per_gene_clip=per_gene_clip,
+            aggregation=aggregation,
+        )
 
-            for gene in genes:
-                gene_idx = adata_source.var.index.get_loc(gene)
-                X = adata_source.X
-
-                if hasattr(X, 'toarray'):
-                    values = X[:, gene_idx].toarray().flatten().astype(np.float64)
+        # Optional cross-cell symmetric percentile clip — anchors the color
+        # ramp to the bulk of the distribution.
+        if clip_percentile and clip_percentile > 0:
+            valid_scores = scores[~np.isnan(scores)]
+            if valid_scores.size > 0:
+                lo = float(np.percentile(valid_scores, clip_percentile))
+                hi = float(np.percentile(valid_scores, 100 - clip_percentile))
+                if hi > lo:
+                    scores = np.clip(scores, lo, hi)
+                    min_val = lo
+                    max_val = hi
                 else:
-                    values = X[:, gene_idx].flatten().astype(np.float64)
-
-                # Mean-center the gene
-                gene_mean = np.nanmean(values)
-                centered = values - gene_mean
-
-                # Scale by MAD (median absolute deviation) for robustness
-                mad = np.nanmedian(np.abs(centered - np.nanmedian(centered)))
-                if mad > 0:
-                    scaled = centered / (mad * 1.4826)
-                else:
-                    sd = np.nanstd(values)
-                    if sd > 0:
-                        scaled = centered / sd
-                    else:
-                        scaled = np.zeros_like(values)
-
-                scaled_arrays.append(scaled)
-
-            # Stack and compute mean across genes
-            stacked = np.vstack(scaled_arrays).T
-            mean_scores = np.nanmean(stacked, axis=1)
-
-            # Clip extreme values symmetrically
-            valid_scores = mean_scores[~np.isnan(mean_scores)]
-            lo = np.percentile(valid_scores, clip_percentile)
-            hi = np.percentile(valid_scores, 100 - clip_percentile)
-            clipped = np.clip(mean_scores, lo, hi)
-
-            # Convert to Python floats (keep the z-score scale, don't normalize to 0-1)
-            values_list = [float(v) if not np.isnan(v) else 0.0 for v in clipped]
-            min_val = float(lo)
-            max_val = float(hi)
-
-        else:
-            # Mean method: simple average
-            gene_indices = [adata_source.var.index.get_loc(g) for g in genes]
-            X = adata_source.X
-            if hasattr(X, 'toarray'):
-                expr_matrix = X[:, gene_indices].toarray()
+                    min_val = float(np.nanmin(scores)) if valid_scores.size else 0.0
+                    max_val = float(np.nanmax(scores)) if valid_scores.size else 0.0
             else:
-                expr_matrix = X[:, gene_indices]
+                min_val, max_val = 0.0, 0.0
+        else:
+            valid_scores = scores[~np.isnan(scores)]
+            min_val = float(np.nanmin(valid_scores)) if valid_scores.size else 0.0
+            max_val = float(np.nanmax(valid_scores)) if valid_scores.size else 0.0
 
-            mean_expr = np.nanmean(expr_matrix, axis=1)
-
-            values_list = []
-            for v in mean_expr:
-                if np.isnan(v):
-                    values_list.append(None)
-                else:
-                    values_list.append(float(v))
-
-            valid_values = [v for v in values_list if v is not None]
-            min_val = min(valid_values) if valid_values else 0
-            max_val = max(valid_values) if valid_values else 0
+        values_list = [
+            float(v) if not np.isnan(v) else None
+            for v in scores
+        ]
 
         result = {
             "genes": genes,
             "values": values_list,
             "min": min_val,
             "max": max_val,
-            "scoring_method": scoring_method,
             "n_masked_excluded": n_masked_excluded,
+            "per_gene_norm": per_gene_norm,
+            "per_gene_clip": per_gene_clip,
+            "aggregation": aggregation,
+            "clip_percentile": clip_percentile,
         }
         if transform:
             result["transform"] = transform
+        if layer and layer != 'X':
+            result["layer"] = layer
         return result
 
     def get_bivariate_expression(
@@ -706,136 +925,83 @@ class DataAdaptor:
         genes1: list[str],
         genes2: list[str],
         transform: str | None = None,
-        scoring_method: str = 'zscore',
+        per_gene_norm: str = 'zscore_mad',
+        per_gene_clip: float = 0.0,
+        aggregation: str = 'mean',
         clip_percentile: float = 1.0,
+        layer: str | None = None,
     ) -> dict[str, Any]:
-        """Get normalized expression values for two gene sets for bivariate coloring.
+        """Get [0, 1]-normalized scores for two gene sets for bivariate coloring.
+
+        Same per-gene-norm + aggregation pipeline as
+        :meth:`get_multi_gene_expression`, run independently per axis. The
+        bivariate visualization needs both axes in [0, 1], so the per-cell
+        scores are then symmetrically clipped at ``clip_percentile`` and
+        rescaled to [0, 1] (``(score - lo) / (hi - lo)``).
 
         Args:
-            genes1: List of gene names for the first set (maps to red/x-axis)
-            genes2: List of gene names for the second set (maps to blue/y-axis)
-            transform: Optional transformation ('log1p' for normalize_total + log1p)
-            scoring_method: How to aggregate expression across genes:
-                - "mean": Simple average, then min-max normalize to [0,1]
-                - "zscore": Mean-center each gene, scale by MAD, average, then normalize to [0,1]
-            clip_percentile: Percentile for symmetric clipping (default 1.0 = clip at 1st/99th)
-
-        Returns:
-            Dictionary containing:
-            - genes1: List of gene names for set 1
-            - genes2: List of gene names for set 2
-            - values1: Normalized [0,1] expression values for gene set 1
-            - values2: Normalized [0,1] expression values for gene set 2
-            - transform: The transformation applied (if any)
-            - scoring_method: The scoring method used
-
+            genes1: Gene names for the first axis (e.g. red / x).
+            genes2: Gene names for the second axis (e.g. blue / y).
+            transform: ``None`` or ``"log1p"`` (route through normalized_adata).
+            per_gene_norm: 'none' | 'zscore_mad' | 'zscore_sd' | 'minmax' | 'rank'.
+            per_gene_clip: Percentile clip used by the 'minmax' per-gene norm.
+            aggregation: 'mean' | 'median' | 'sum' | 'max'.
+            clip_percentile: Symmetric percentile clip on the per-cell scores
+                before the [0, 1] rescale (0 = use raw min/max).
         """
-        # Filter to only genes present in the dataset (silently skip missing)
         genes1 = [g for g in genes1 if g in self.adata.var.index]
         genes2 = [g for g in genes2 if g in self.adata.var.index]
 
         if len(genes1) == 0 or len(genes2) == 0:
             raise ValueError("No valid genes found in one or both gene sets after filtering to dataset genes")
 
-        # Select data source based on transform
-        if transform == "log1p":
-            adata_source = self.normalized_adata
+        if layer is not None and layer != 'X':
+            source_matrix = self._resolve_source_matrix(layer)
+        elif transform == "log1p":
+            source_matrix = self.normalized_adata.X
         else:
-            adata_source = self.adata
+            source_matrix = self.adata.X
 
-        def summarize_geneset_zscore(genes: list[str]) -> list[float]:
-            """Summarize expression using z-score method (mean-centered, MAD-scaled)."""
-            scaled_arrays = []
+        def summarize(genes: list[str]) -> list[float]:
+            scores = self._aggregate_gene_set_scores(
+                genes=genes,
+                source_matrix=source_matrix,
+                per_gene_norm=per_gene_norm,
+                per_gene_clip=per_gene_clip,
+                aggregation=aggregation,
+            )
+            valid = scores[~np.isnan(scores)]
+            if valid.size == 0:
+                return [0.5] * len(scores)
 
-            for gene in genes:
-                gene_idx = adata_source.var.index.get_loc(gene)
-                X = adata_source.X
+            if clip_percentile and clip_percentile > 0:
+                lo = float(np.percentile(valid, clip_percentile))
+                hi = float(np.percentile(valid, 100 - clip_percentile))
+            else:
+                lo = float(np.nanmin(valid))
+                hi = float(np.nanmax(valid))
 
-                if hasattr(X, 'toarray'):
-                    values = X[:, gene_idx].toarray().flatten().astype(np.float64)
-                else:
-                    values = X[:, gene_idx].flatten().astype(np.float64)
-
-                # Mean-center the gene
-                gene_mean = np.nanmean(values)
-                centered = values - gene_mean
-
-                # Scale by MAD for robustness
-                mad = np.nanmedian(np.abs(centered - np.nanmedian(centered)))
-                if mad > 0:
-                    scaled = centered / (mad * 1.4826)
-                else:
-                    sd = np.nanstd(values)
-                    if sd > 0:
-                        scaled = centered / sd
-                    else:
-                        scaled = np.zeros_like(values)
-
-                scaled_arrays.append(scaled)
-
-            # Stack and compute mean across genes
-            stacked = np.vstack(scaled_arrays).T
-            mean_scores = np.nanmean(stacked, axis=1)
-
-            # Clip extreme values symmetrically
-            valid_scores = mean_scores[~np.isnan(mean_scores)]
-            lo = np.percentile(valid_scores, clip_percentile)
-            hi = np.percentile(valid_scores, 100 - clip_percentile)
-            clipped = np.clip(mean_scores, lo, hi)
-
-            # Rescale to [0, 1]
             if hi > lo:
+                clipped = np.clip(scores, lo, hi)
                 normalized = (clipped - lo) / (hi - lo)
             else:
-                normalized = np.full_like(clipped, 0.5)
-
+                normalized = np.full_like(scores, 0.5)
             return [float(v) if not np.isnan(v) else 0.5 for v in normalized]
-
-        def summarize_geneset_mean(genes: list[str]) -> list[float]:
-            """Summarize expression using simple mean, then min-max normalize."""
-            gene_indices = [adata_source.var.index.get_loc(g) for g in genes]
-            X = adata_source.X
-
-            if hasattr(X, 'toarray'):
-                expr_matrix = X[:, gene_indices].toarray()
-            else:
-                expr_matrix = X[:, gene_indices]
-
-            mean_expr = np.nanmean(expr_matrix, axis=1)
-
-            # Clip to percentiles
-            valid_values = mean_expr[~np.isnan(mean_expr)]
-            lo = np.percentile(valid_values, clip_percentile)
-            hi = np.percentile(valid_values, 100 - clip_percentile)
-            clipped = np.clip(mean_expr, lo, hi)
-
-            # Min-max normalize to [0, 1]
-            if hi > lo:
-                normalized = (clipped - lo) / (hi - lo)
-            else:
-                normalized = np.full_like(clipped, 0.5)
-
-            return [float(v) if not np.isnan(v) else 0.5 for v in normalized]
-
-        # Choose summarization function based on scoring method
-        if scoring_method == 'zscore':
-            summarize = summarize_geneset_zscore
-        else:
-            summarize = summarize_geneset_mean
-
-        values1 = summarize(genes1)
-        values2 = summarize(genes2)
 
         result = {
             "genes1": genes1,
             "genes2": genes2,
-            "values1": values1,
-            "values2": values2,
-            "scoring_method": scoring_method,
+            "values1": summarize(genes1),
+            "values2": summarize(genes2),
+            "per_gene_norm": per_gene_norm,
+            "per_gene_clip": per_gene_clip,
+            "aggregation": aggregation,
+            "clip_percentile": clip_percentile,
         }
         if transform:
             result["transform"] = transform
-
+        if layer and layer != 'X':
+            result["layer"] = layer
         return result
 
     def get_obs_column_summary(self, name: str) -> dict[str, Any]:
@@ -1006,6 +1172,168 @@ class DataAdaptor:
             raise KeyError(f"Annotation '{name}' not found")
 
         self.adata.obs.drop(columns=[name], inplace=True)
+
+    def rename_obs_label(self, column: str, old_label: str, new_label: str) -> dict[str, Any]:
+        """Rename a single category value in a categorical or string .obs column.
+
+        Args:
+            column: Name of the .obs column.
+            old_label: Existing category value (matched against str(category) for
+                categorical columns, exact match for string columns).
+            new_label: Replacement label. Must be non-empty after trimming.
+
+        Returns:
+            Dict with column, old_label, new_label, n_cells_renamed.
+
+        Raises:
+            KeyError: If column not found.
+            ValueError: If column is not categorical/string, old_label not found,
+                new_label is empty, or new_label collides with an existing label.
+        """
+        new_label = (new_label or "").strip()
+        if not new_label:
+            raise ValueError("new_label cannot be empty")
+        if column not in self.adata.obs.columns:
+            raise KeyError(f"Column '{column}' not found")
+
+        series = self.adata.obs[column]
+
+        if pd.api.types.is_categorical_dtype(series.dtype):
+            cats = series.cat.categories.tolist()
+            cat_strs = [str(c) for c in cats]
+            if old_label not in cat_strs:
+                raise ValueError(f"Label '{old_label}' not found in column '{column}'")
+            if new_label != old_label and new_label in cat_strs:
+                raise ValueError(
+                    f"A label '{new_label}' already exists in column '{column}'. "
+                    "Use merge_obs_labels to combine them instead."
+                )
+            old_cat = cats[cat_strs.index(old_label)]
+            n_cells = int((series == old_cat).sum())
+            new_cats = [new_label if str(c) == old_label else str(c) for c in cats]
+            self.adata.obs[column] = series.cat.rename_categories(new_cats)
+        elif series.dtype == object or pd.api.types.is_string_dtype(series.dtype):
+            mask = series.astype(str) == old_label
+            n_cells = int(mask.sum())
+            if n_cells == 0:
+                raise ValueError(f"Label '{old_label}' not found in column '{column}'")
+            existing = set(series.astype(str).unique())
+            if new_label != old_label and new_label in existing:
+                raise ValueError(
+                    f"A label '{new_label}' already exists in column '{column}'. "
+                    "Use merge_obs_labels to combine them instead."
+                )
+            new_series = series.astype(str).where(~mask, new_label)
+            self.adata.obs[column] = new_series
+        else:
+            raise ValueError(
+                f"Column '{column}' is not categorical or string (dtype={series.dtype})"
+            )
+
+        return {
+            "column": column,
+            "old_label": old_label,
+            "new_label": new_label,
+            "n_cells_renamed": n_cells,
+        }
+
+    def merge_obs_labels(
+        self, column: str, labels: list[str], new_label: str
+    ) -> dict[str, Any]:
+        """Merge two or more category values into a single new label.
+
+        For categorical columns, all rows whose stringified value is in `labels`
+        are reassigned to `new_label`, then unused categories are dropped. If
+        `new_label` matches an existing category that is not in `labels`, the
+        merge folds into it. For string columns, a vectorized replace is used.
+
+        Args:
+            column: Name of the .obs column.
+            labels: List (length >= 2) of existing labels to merge.
+            new_label: Target label. May reuse one of `labels` or be a fresh name.
+
+        Returns:
+            Dict with column, merged_labels, new_label, n_cells_merged.
+
+        Raises:
+            KeyError: If column not found.
+            ValueError: On invalid args, dtype, or unknown labels.
+        """
+        new_label = (new_label or "").strip()
+        if not new_label:
+            raise ValueError("new_label cannot be empty")
+        if not isinstance(labels, list) or len(labels) < 2:
+            raise ValueError("Provide at least 2 labels to merge")
+        if len(set(labels)) != len(labels):
+            raise ValueError("Labels list contains duplicates")
+        if column not in self.adata.obs.columns:
+            raise KeyError(f"Column '{column}' not found")
+
+        series = self.adata.obs[column]
+
+        if pd.api.types.is_categorical_dtype(series.dtype):
+            cats = series.cat.categories.tolist()
+            cat_strs = [str(c) for c in cats]
+            missing = [l for l in labels if l not in cat_strs]
+            if missing:
+                raise ValueError(
+                    f"Labels not found in column '{column}': {missing}"
+                )
+            label_set = set(labels)
+            old_cats = [cats[cat_strs.index(l)] for l in labels]
+            n_cells = int(series.isin(old_cats).sum())
+            ordered = bool(getattr(series.cat, 'ordered', False))
+            # Build new category list: keep non-merged categories as-is (stringified),
+            # insert new_label in place of the first merged category, drop the rest.
+            new_cats: list[str] = []
+            inserted = False
+            for c, cs in zip(cats, cat_strs):
+                if cs in label_set:
+                    if not inserted:
+                        new_cats.append(new_label)
+                        inserted = True
+                    # else: skip — folded into new_label
+                else:
+                    if cs == new_label and not inserted:
+                        # new_label is an existing non-merged category; merge folds
+                        # into it without duplicating.
+                        new_cats.append(new_label)
+                        inserted = True
+                    elif cs == new_label:
+                        # Already inserted; avoid duplicate.
+                        continue
+                    else:
+                        new_cats.append(cs)
+            if not inserted:
+                new_cats.append(new_label)
+            # Map original values to stringified, remap merged ones to new_label,
+            # then build a fresh Categorical with the new category set.
+            current_str = series.astype(str)
+            remapped = current_str.where(~current_str.isin(label_set), new_label)
+            # Categories must be unique; new_cats already deduped above.
+            self.adata.obs[column] = pd.Categorical(
+                remapped, categories=new_cats, ordered=ordered
+            )
+        elif series.dtype == object or pd.api.types.is_string_dtype(series.dtype):
+            current_str = series.astype(str)
+            mask = current_str.isin(labels)
+            n_cells = int(mask.sum())
+            if n_cells == 0:
+                raise ValueError(
+                    f"None of the labels were found in column '{column}'"
+                )
+            self.adata.obs[column] = current_str.where(~mask, new_label)
+        else:
+            raise ValueError(
+                f"Column '{column}' is not categorical or string (dtype={series.dtype})"
+            )
+
+        return {
+            "column": column,
+            "merged_labels": labels,
+            "new_label": new_label,
+            "n_cells_merged": n_cells,
+        }
 
     def get_user_annotations(self) -> list[str]:
         """Get list of user-created annotation columns.
@@ -2514,6 +2842,23 @@ class DataAdaptor:
                     })
         return bool_columns
 
+    def _resolve_source_matrix(self, layer: str | None):
+        """Return the (n_cells, n_genes) expression matrix to read from.
+
+        ``layer is None`` or ``'X'`` → ``adata.X``. Otherwise reads the named
+        layer; raises ValueError if the layer doesn't exist. Used by gene-side
+        analyses that support an optional ``layer=`` override (for routing
+        through e.g. a kNN-smoothed layer produced by ``run_smooth``).
+        """
+        if layer is None or layer == 'X':
+            return self.adata.X
+        if layer not in self.adata.layers:
+            raise ValueError(
+                f"Layer '{layer}' not found. "
+                f"Available: ['X'] + {sorted(self.adata.layers.keys())}"
+            )
+        return self.adata.layers[layer]
+
     def _resolve_gene_mask(
         self,
         gene_subset: str | list[str] | dict[str, Any] | None,
@@ -3610,6 +3955,153 @@ class DataAdaptor:
         }, result)
         return result
 
+    def list_layers(self) -> list[dict[str, Any]]:
+        """List the readable expression matrices for downstream gene analyses.
+
+        Always returns the synthetic 'X' entry first (the current ``adata.X``)
+        followed by every key in ``adata.layers``. Used by the frontend to
+        populate "Source matrix" dropdowns on Gene PCA / Gene Neighbors /
+        Cluster Genes — picking a non-default layer routes the computation
+        through ``adata.layers[layer]`` instead of ``adata.X``.
+        """
+        from scipy.sparse import issparse
+
+        out: list[dict[str, Any]] = []
+        n_obs, n_var = self.adata.shape
+
+        def _info(name: str, mat) -> dict[str, Any]:
+            sparse_flag = issparse(mat)
+            nnz = int(mat.nnz) if sparse_flag else int(np.count_nonzero(mat))
+            density = nnz / max(n_obs * n_var, 1)
+            return {
+                'name': name,
+                'shape': list(mat.shape),
+                'nnz': nnz,
+                'density': float(density),
+                'sparse': bool(sparse_flag),
+            }
+
+        out.append({**_info('X', self.adata.X), 'is_default': True})
+        for key in sorted(self.adata.layers.keys()):
+            out.append({**_info(key, self.adata.layers[key]), 'is_default': False})
+        return out
+
+    def run_smooth(
+        self,
+        graph_key: str,
+        n_steps: int = 1,
+        source_layer: str | None = None,
+        output_layer: str = 'smoothed',
+        self_loop_weight: float = 1.0,
+    ) -> dict[str, Any]:
+        """Smooth expression over a kNN graph and store the result in a layer.
+
+        Algorithm — one step is:  ``S ← D⁻¹·(A + α·I)·X``
+        where A is the obsp connectivity matrix specified by ``graph_key`` and
+        α is ``self_loop_weight``. The self-loop term keeps each cell's own
+        value in the average (α=1 weights it equally with its neighbors;
+        α=0 is pure neighbor average; large α barely smooths). Repeating
+        ``n_steps`` times applies the same operator iteratively, which spreads
+        the influence of distant neighbors at the cost of more over-smoothing.
+
+        The result is written to ``adata.layers[output_layer]`` as a sparse
+        matrix (the smoothing operator densifies relative to a sparse input,
+        but for typical kNN smoothing the output stays sparse enough to be
+        worth keeping in CSR form). ``adata.X`` is **not** modified — the
+        smoothed matrix is intended as an alternative source for downstream
+        gene-side analyses (Gene PCA / Gene Neighbors / Cluster Genes), each
+        of which gained a ``layer`` parameter to opt in.
+
+        Args:
+            graph_key: Key in ``adata.obsp`` whose connectivities define the
+                kNN structure. Typically ``connectivities`` (expression),
+                ``spatial_connectivities``, or a combined graph from
+                ``combine_neighbors``.
+            n_steps: Number of smoothing iterations. Default 1.
+            source_layer: Layer to read the input matrix from. None → ``adata.X``.
+            output_layer: Layer to write the smoothed matrix to. Existing
+                layer with the same name is overwritten.
+            self_loop_weight: Weight α for the self-loop term. Default 1.0.
+        """
+        from scipy.sparse import csr_matrix, diags, eye, issparse
+
+        if graph_key not in self.adata.obsp:
+            raise ValueError(
+                f"Graph '{graph_key}' not found in obsp. "
+                f"Available: {list(self.adata.obsp.keys())}"
+            )
+        if n_steps < 1:
+            raise ValueError(f"n_steps must be >= 1, got {n_steps}")
+        if self_loop_weight < 0:
+            raise ValueError(
+                f"self_loop_weight must be >= 0, got {self_loop_weight}"
+            )
+
+        n = self.n_cells
+        A = self.adata.obsp[graph_key]
+        if tuple(A.shape) != (n, n):
+            raise ValueError(
+                f"Graph '{graph_key}' has shape {A.shape}, expected ({n}, {n})."
+            )
+        if not issparse(A):
+            A = csr_matrix(A)
+        else:
+            A = A.tocsr().astype(np.float64)
+
+        if self_loop_weight > 0:
+            A = A + eye(n, format='csr') * self_loop_weight
+
+        # Row-normalize so each cell's smoothed values are a weighted average
+        # of its (own + neighbors') values, not a sum that depends on degree.
+        deg = np.asarray(A.sum(axis=1)).ravel()
+        deg[deg == 0] = 1.0
+        A_norm = diags(1.0 / deg) @ A
+
+        # Source matrix — None means read .X.
+        if source_layer is None or source_layer == 'X':
+            X = self.adata.X
+            source_label = 'X'
+        else:
+            if source_layer not in self.adata.layers:
+                raise ValueError(
+                    f"Source layer '{source_layer}' not found. "
+                    f"Available: {sorted(self.adata.layers.keys())}"
+                )
+            X = self.adata.layers[source_layer]
+            source_label = source_layer
+        if not issparse(X):
+            X = csr_matrix(X)
+
+        S = X
+        for _ in range(n_steps):
+            S = A_norm @ S
+        # scipy's sparse @ sparse keeps CSR; ensure that explicitly.
+        if not issparse(S):
+            S = csr_matrix(S)
+        S = S.tocsr().astype(np.float32)
+        S.eliminate_zeros()
+
+        self.adata.layers[output_layer] = S
+
+        result = {
+            'status': 'completed',
+            'graph_key': graph_key,
+            'n_steps': n_steps,
+            'source_layer': source_label,
+            'output_layer': output_layer,
+            'self_loop_weight': float(self_loop_weight),
+            'output_nnz': int(S.nnz),
+            'output_density': float(S.nnz / max(n * S.shape[1], 1)),
+        }
+        self._log_action('smooth', {
+            'graph_key': graph_key,
+            'n_steps': n_steps,
+            'source_layer': source_label,
+            'output_layer': output_layer,
+            'self_loop_weight': float(self_loop_weight),
+        }, result)
+        return result
+
     def run_umap(
         self,
         min_dist: float = 0.5,
@@ -3787,6 +4279,7 @@ class DataAdaptor:
         max_comps: int = 100,
         gene_subset: str | list[str] | dict[str, Any] | None = None,
         active_cell_indices: list[int] | None = None,
+        layer: str | None = None,
     ) -> dict[str, Any]:
         """Run PCA on genes (transposed expression matrix).
 
@@ -3805,6 +4298,9 @@ class DataAdaptor:
                 - dict: {'columns': ['col1', 'col2'], 'operation': 'intersection'|'union'}
                   for combining multiple boolean columns with AND/OR logic
             active_cell_indices: If provided, use only these cells for gene PCA
+            layer: Optional layer name in adata.layers to read expression from
+                instead of adata.X. Pass the output of run_smooth here to use a
+                kNN-smoothed matrix as the basis for gene PCA.
 
         Returns:
             Dict with operation status, n_comps used, and variance explained
@@ -3824,12 +4320,15 @@ class DataAdaptor:
             **subset_metadata,
         }
 
+        # Resolve source matrix (X or a layer).
+        source_matrix = self._resolve_source_matrix(layer)
+
         # Subset cells if active_cell_indices provided, then genes, then transpose
         cell_indices = self._validate_cell_indices(active_cell_indices)
         if cell_indices is not None:
-            X = self.adata.X[cell_indices][:, gene_mask].T
+            X = source_matrix[cell_indices][:, gene_mask].T
         else:
-            X = self.adata.X[:, gene_mask].T
+            X = source_matrix[:, gene_mask].T
         if sparse.issparse(X):
             X = X.toarray()
         X = np.asarray(X, dtype=np.float64)
@@ -3964,6 +4463,7 @@ class DataAdaptor:
         gene_subset: str | list[str] | dict[str, Any] | None = None,
         scale: bool = True,
         active_cell_indices: list[int] | None = None,
+        layer: str | None = None,
     ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
         """Prepare gene-gene kNN graph computation (cancellable).
 
@@ -4013,10 +4513,11 @@ class DataAdaptor:
             valid_indices = np.where(valid_mask)[0]
 
             cell_indices = self._validate_cell_indices(active_cell_indices)
+            source_matrix = self._resolve_source_matrix(layer)
             if cell_indices is not None:
-                X = self.adata.X[cell_indices][:, gene_mask].T
+                X = source_matrix[cell_indices][:, gene_mask].T
             else:
-                X = self.adata.X[:, gene_mask].T
+                X = source_matrix[:, gene_mask].T
 
             if sparse.issparse(X):
                 X = X.toarray()
@@ -4136,6 +4637,7 @@ class DataAdaptor:
         gene_subset: str | list[str] | dict[str, Any] | None = None,
         scale: bool = True,
         active_cell_indices: list[int] | None = None,
+        layer: str | None = None,
     ) -> dict[str, Any]:
         """Compute gene-gene kNN graph from gene PCA embedding or raw expression.
 
@@ -4149,6 +4651,9 @@ class DataAdaptor:
                 Can be str (boolean column), list[str] (gene names), or dict (multi-column spec).
             scale: Z-score scale genes before computing neighbors (only used when basis='expression')
             active_cell_indices: Optional cell subset (only used when basis='expression')
+            layer: Optional layer name to read expression from instead of adata.X
+                (only used when basis='expression'). Pass the output of run_smooth
+                to compute neighbors over a kNN-smoothed expression matrix.
 
         Returns:
             Dict with operation status
@@ -4188,10 +4693,11 @@ class DataAdaptor:
 
             # Subset cells if provided
             cell_indices = self._validate_cell_indices(active_cell_indices)
+            source_matrix = self._resolve_source_matrix(layer)
             if cell_indices is not None:
-                X = self.adata.X[cell_indices][:, gene_mask].T
+                X = source_matrix[cell_indices][:, gene_mask].T
             else:
-                X = self.adata.X[:, gene_mask].T
+                X = source_matrix[:, gene_mask].T
 
             # Densify if sparse
             if sparse.issparse(X):
@@ -4467,8 +4973,11 @@ class DataAdaptor:
         self,
         gene_names: list[str],
         method: str,
-        k: int,
+        k: int | None = None,
         cell_indices: list[int] | None = None,
+        eps: float = 0.3,
+        min_samples: int = 3,
+        layer: str | None = None,
     ) -> list[list[str]]:
         """Cluster a set of genes by expression pattern across cells.
 
@@ -4477,21 +4986,44 @@ class DataAdaptor:
 
         Args:
             gene_names: Gene symbols to cluster. Unknown names are dropped.
-            method: 'hierarchical' (Ward linkage on correlation distance)
-                    or 'kmeans' (K-means on raw gene expression vectors).
-            k: Number of clusters to produce. Must be at least 2.
+            method: One of:
+                * 'hierarchical' — Ward linkage on correlation distance, cut
+                  at K.
+                * 'kmeans' — K-means on raw gene expression vectors.
+                * 'dbscan' — density-based clustering on correlation distance.
+                  Discovers the number of clusters from the data; genes that
+                  don't reach the density threshold are returned as a trailing
+                  "noise" cluster.
+            k: Number of clusters. Required (>= 2) for hierarchical / kmeans.
+                Ignored for dbscan.
             cell_indices: Optional subset of cells. None means all cells.
+            eps: DBSCAN only — neighbor radius in correlation-distance space
+                (range [0, 2]; lower = stricter co-expression required).
+                Two genes are neighbors when ``1 - Pearson(g1, g2) <= eps``,
+                i.e. their Pearson correlation is at least ``1 - eps``.
+            min_samples: DBSCAN only — minimum genes (including the gene
+                itself) within the eps-radius for a gene to be a core point.
+                Smaller values find smaller programs but admit more noise.
 
         Returns:
-            A list of length up to k where each element is a list of gene
-            names belonging to that cluster. Deterministic ordering by
-            cluster id. K-means may return fewer than k groups if it
-            collapses an empty cluster; the UI handles this.
+            A list of clusters, each a list of gene names. Deterministic
+            ordering by cluster id. K-means may return fewer than k groups if
+            it collapses an empty cluster; DBSCAN may return any number of
+            groups (and an additional noise group at the end if any genes
+            were unassigned). The UI handles all of these.
         """
-        if method not in ('hierarchical', 'kmeans'):
+        if method not in ('hierarchical', 'kmeans', 'dbscan'):
             raise ValueError(f"Unknown method: {method}")
-        if k < 2:
-            raise ValueError(f"k must be at least 2, got {k}")
+        if method in ('hierarchical', 'kmeans'):
+            if k is None or k < 2:
+                raise ValueError(f"{method} requires k >= 2, got {k!r}")
+        if method == 'dbscan':
+            if not (0.0 < eps <= 2.0):
+                raise ValueError(f"dbscan eps must be in (0, 2], got {eps!r}")
+            if min_samples < 2:
+                raise ValueError(
+                    f"dbscan min_samples must be >= 2, got {min_samples!r}"
+                )
 
         var_names = self.adata.var_names
         found_genes: list[str] = []
@@ -4500,19 +5032,28 @@ class DataAdaptor:
             if name in var_names:
                 found_genes.append(name)
                 gene_idx.append(int(var_names.get_loc(name)))
-        if len(found_genes) < k:
+        # Hierarchical / kmeans need at least k genes; DBSCAN needs at least
+        # min_samples genes to seed any cluster.
+        min_required = k if method != 'dbscan' else min_samples
+        if len(found_genes) < min_required:
             raise ValueError(
-                f"cluster_gene_set: need at least {k} known genes, got {len(found_genes)}"
+                f"cluster_gene_set: need at least {min_required} known genes, "
+                f"got {len(found_genes)}"
             )
 
-        adata_norm = self.normalized_adata
+        # Source matrix: a user-supplied layer (read directly, no extra
+        # normalization), or the lazy normalize_total + log1p snapshot of .X.
+        if layer is not None and layer != 'X':
+            source_matrix = self._resolve_source_matrix(layer)
+        else:
+            source_matrix = self.normalized_adata.X
         if cell_indices is not None:
             if len(cell_indices) == 0:
                 raise ValueError("Cell subset is empty")
             cell_arr = np.asarray(cell_indices, dtype=np.int64)
-            X = adata_norm.X[cell_arr, :][:, gene_idx]
+            X = source_matrix[cell_arr, :][:, gene_idx]
         else:
-            X = adata_norm.X[:, gene_idx]
+            X = source_matrix[:, gene_idx]
 
         import scipy.sparse
         if scipy.sparse.issparse(X):
@@ -4536,15 +5077,39 @@ class DataAdaptor:
                 )
             Z = linkage(dist, method='ward')
             labels = fcluster(Z, t=k, criterion='maxclust')  # 1-indexed
-        else:  # kmeans
+        elif method == 'kmeans':
             from sklearn.cluster import KMeans
             km = KMeans(n_clusters=k, n_init=10, random_state=0)
             labels = km.fit_predict(X_genes)  # 0-indexed
+        else:  # dbscan
+            from scipy.spatial.distance import pdist, squareform
+            from sklearn.cluster import DBSCAN
+            # Pre-compute the full distance matrix so we can guard against
+            # zero-variance genes (which produce NaN correlation distances)
+            # before handing it to DBSCAN, and to keep the metric identical
+            # to the hierarchical path.
+            dist_vec = pdist(X_genes, metric='correlation')
+            dist_vec = np.clip(dist_vec, 0.0, 2.0)
+            if not np.isfinite(dist_vec).all():
+                raise ValueError(
+                    "Cannot cluster: one or more genes have zero variance "
+                    "across the selected cells"
+                )
+            dist_mat = squareform(dist_vec)
+            db = DBSCAN(eps=eps, min_samples=min_samples, metric='precomputed')
+            labels = db.fit_predict(dist_mat)  # cluster ids; -1 for noise
 
-        # Partition found_genes by cluster label.
+        # Partition found_genes by cluster label. For DBSCAN, push the noise
+        # bucket (-1) to the end as a single trailing group so the UI can
+        # render it as "cluster N" alongside the real clusters.
         partition: dict[int, list[str]] = {}
         for gene, label in zip(found_genes, labels):
             partition.setdefault(int(label), []).append(gene)
+        if method == 'dbscan' and -1 in partition:
+            noise = partition.pop(-1)
+            ordered = [partition[key] for key in sorted(partition.keys())]
+            ordered.append(noise)
+            return ordered
         return [partition[key] for key in sorted(partition.keys())]
 
     def run_build_gene_graph(

@@ -1,6 +1,14 @@
 import { useState, useCallback, useEffect } from 'react'
-import { useStore } from '../store'
+import { useStore, userConfigGet } from '../store'
 import { useLineAssociation, createLineEmbedding, appendDataset, cancelTask } from '../hooks/useData'
+
+// Pull line_association defaults from user config, with hardcoded fallbacks.
+// Evaluated lazily inside useState so that if the config loads after the
+// component mounts (shouldn't, but possible), any remount gets fresh values.
+function laDefault<T>(path: string, fallback: T): T {
+  const cfg = useStore.getState().userConfig
+  return userConfigGet(cfg, ['line_association', path], fallback)
+}
 
 const API_BASE = '/api'
 
@@ -243,11 +251,11 @@ function LineToolsModal({
   const [geneSubsetColumns, setGeneSubsetColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])
   const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
   const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
-  const [testVariable, setTestVariable] = useState<'position' | 'distance'>('position')
-  const [nSplineKnots, setNSplineKnots] = useState(5)
-  const [fdrThreshold, setFdrThreshold] = useState(0.05)
-  const [topN, setTopN] = useState(50)
-  const [clusterGenes, setClusterGenes] = useState(false)
+  const [testVariable, setTestVariable] = useState<'position' | 'distance'>(() => laDefault('test_variable', 'position'))
+  const [nSplineKnots, setNSplineKnots] = useState<number>(() => laDefault('n_spline_knots', 5))
+  const [fdrThreshold, setFdrThreshold] = useState<number>(() => laDefault('fdr_threshold', 0.05))
+  const [topN, setTopN] = useState<number>(() => laDefault('top_n', 50))
+  const [clusterGenes, setClusterGenes] = useState<boolean>(() => laDefault('cluster_genes', false))
 
   const { runAssociation, isLineAssociationLoading } = useLineAssociation()
   const activeTaskId = useStore((state) => state.activeTaskId)
@@ -662,11 +670,11 @@ function MultiLineToolsModal({
   const [geneSubsetColumns, setGeneSubsetColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])
   const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
   const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
-  const [testVariable, setTestVariable] = useState<'position' | 'distance'>('position')
-  const [nSplineKnots, setNSplineKnots] = useState(5)
-  const [fdrThreshold, setFdrThreshold] = useState(0.05)
-  const [topN, setTopN] = useState(50)
-  const [clusterGenes, setClusterGenes] = useState(false)
+  const [testVariable, setTestVariable] = useState<'position' | 'distance'>(() => laDefault('test_variable', 'position'))
+  const [nSplineKnots, setNSplineKnots] = useState<number>(() => laDefault('n_spline_knots', 5))
+  const [fdrThreshold, setFdrThreshold] = useState<number>(() => laDefault('fdr_threshold', 0.05))
+  const [topN, setTopN] = useState<number>(() => laDefault('top_n', 50))
+  const [clusterGenes, setClusterGenes] = useState<boolean>(() => laDefault('cluster_genes', false))
 
   const API_BASE = '/api'
   const totalCells = lines.reduce((sum, l) => sum + l.projections.length, 0)

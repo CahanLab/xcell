@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { useStore, ScanpyActionRecord, PCASubsetSummary } from '../store'
+import { useStore, ScanpyActionRecord, PCASubsetSummary, userConfigGet } from '../store'
 import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset } from '../hooks/useData'
 import { MESSAGES } from '../messages'
 
@@ -147,7 +147,7 @@ function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData
 interface ParamDef {
   name: string
   label: string
-  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select'
+  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select' | 'layer_select' | 'graph_select'
   default: string | number | null
   description: string
   options?: string[]
@@ -227,6 +227,18 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'max_mean', label: 'Max mean', type: 'number', default: 6, description: 'Maximum mean expression' },
           { name: 'min_disp', label: 'Min dispersion', type: 'number', default: 0.5, description: 'Minimum normalized dispersion' },
           { name: 'flavor', label: 'Method', type: 'select', default: 'cell_ranger', options: ['seurat', 'cell_ranger', 'seurat_v3'], description: 'HVG selection method' },
+        ],
+      },
+      smooth: {
+        label: 'Smooth (kNN)',
+        description: 'Smooth expression over a kNN graph (e.g. spatial or expression neighbors). Result is written to adata.layers[output_layer] — .X is unchanged. Pass the output layer to Gene PCA / Gene Neighbors / Cluster Genes via their Source layer dropdown.',
+        prerequisites: [],
+        params: [
+          { name: 'graph_key', label: 'kNN graph', type: 'graph_select', default: '', description: 'Cell-cell connectivity graph (from Spatial Neighbors, Neighbors, or Combine Neighbors)' },
+          { name: 'source_layer', label: 'Source matrix', type: 'layer_select', default: 'X', description: 'Matrix to smooth (default .X)' },
+          { name: 'output_layer', label: 'Output layer', type: 'text', default: 'smoothed', description: 'Name of the layer to write the smoothed matrix to (overwrites if exists)' },
+          { name: 'n_steps', label: 'Steps', type: 'number', default: 1, description: 'Number of smoothing iterations (1 is usually plenty)' },
+          { name: 'self_loop_weight', label: 'Self-loop weight', type: 'number', default: 1.0, description: 'α in (D⁻¹·(A+α·I))·X. 0 = pure neighbor average; ≥1 = blend with own value (less smoothing).' },
         ],
       },
     },
@@ -322,6 +334,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'use_kneedle', label: 'Auto-detect PCs', type: 'select', default: 'true', options: ['true', 'false'], description: 'Use Kneedle algorithm' },
           { name: 'max_comps', label: 'Max components', type: 'number', default: 100, description: 'Max PCs to compute for Kneedle' },
           { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: 'highly_variable', description: 'Filter to specific genes using boolean columns from .var' },
+          { name: 'layer', label: 'Source matrix', type: 'layer_select', default: 'X', description: 'Read expression from this matrix instead of .X (e.g. a smoothed layer from Preprocess → Smooth)' },
         ],
       },
       gene_neighbors: {
@@ -334,6 +347,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'metric', label: 'Metric', type: 'select', default: 'euclidean', options: ['euclidean', 'cosine', 'pearson'], description: 'Distance metric' },
           { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: 'highly_variable', description: 'Filter to specific genes using boolean columns from .var', visibleWhen: { param: 'basis', value: 'expression' } },
           { name: 'scale', label: 'Scale', type: 'select', default: 'true', options: ['true', 'false'], description: 'Z-score scale genes before computing neighbors', visibleWhen: { param: 'basis', value: 'expression' } },
+          { name: 'layer', label: 'Source matrix', type: 'layer_select', default: 'X', description: 'Read expression from this matrix instead of .X (only used when basis=expression)', visibleWhen: { param: 'basis', value: 'expression' } },
         ],
       },
       find_similar_genes: {
@@ -652,6 +666,15 @@ export default function ScanpyModal() {
   const [combineWeights, setCombineWeights] = useState<Record<string, number>>({})
   const [combineLoading, setCombineLoading] = useState<boolean>(false)
   const [combineError, setCombineError] = useState<string | null>(null)
+  // Default target_key avoids overwriting the expression-based kNN at
+  // obsp['connectivities']. Backend's list_neighbor_graphs only surfaces keys
+  // ending in '_connectivities', so we enforce that suffix at submit.
+  const [combineTargetKey, setCombineTargetKey] = useState<string>('combined_connectivities')
+
+  // Layer + graph dropdowns (smooth + gene_pca/gene_neighbors source overrides)
+  type LayerInfo = { name: string; nnz: number; density: number; is_default?: boolean }
+  const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
+  const [availableGraphs, setAvailableGraphs] = useState<NeighborGraphInfo[]>([])
   const activeSlot = useStore((s) => s.activeSlot)
   const pcaSubsetsFromStore: PCASubsetSummary[] =
     useStore((s) => s.datasets[s.activeSlot]?.pcaSubsets || [])
@@ -676,18 +699,25 @@ export default function ScanpyModal() {
   const categoryDef = SCANPY_FUNCTIONS[selectedCategory]
   const functionDef: FunctionDef | undefined = categoryDef?.functions[selectedFunction]
 
-  // Initialize param values when function changes
+  // Initialize param values when function changes. User config overrides
+  // (from ~/.xcell/config.yaml|json via /api/config/defaults) take precedence
+  // over the hardcoded defaults in SCANPY_FUNCTIONS for matching param names.
+  const userConfig = useStore((s) => s.userConfig)
   useEffect(() => {
     if (functionDef) {
       const defaults: ParamValues = {}
       functionDef.params.forEach((param) => {
-        defaults[param.name] = param.default
+        defaults[param.name] = userConfigGet(
+          userConfig,
+          ['scanpy', selectedFunction, param.name],
+          param.default,
+        ) as ParamValues[string]
       })
       setParamValues(defaults)
       setResult(null)
       setVarianceData(null)
     }
-  }, [selectedFunction, functionDef])
+  }, [selectedFunction, functionDef, userConfig])
 
   // Fetch cell PCA variance when Neighbors is selected
   useEffect(() => {
@@ -708,6 +738,25 @@ export default function ScanpyModal() {
       fetchPcaSubsets().catch(() => { /* ignore; dropdown falls back to X_pca */ })
     }
   }, [selectedFunction, activeSlot])
+
+  // Load layer + graph lists when any function that consumes them is selected.
+  useEffect(() => {
+    const needsLayers = ['smooth', 'gene_pca', 'gene_neighbors', 'build_gene_graph'].includes(selectedFunction)
+    const needsGraphs = ['smooth'].includes(selectedFunction)
+    if (!needsLayers && !needsGraphs) return
+    if (needsLayers) {
+      fetch(appendDataset(`${API_BASE}/scanpy/layers`))
+        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+        .then((data) => setAvailableLayers(data.layers || []))
+        .catch(() => setAvailableLayers([{ name: 'X', nnz: 0, density: 0, is_default: true }]))
+    }
+    if (needsGraphs) {
+      fetch(appendDataset(`${API_BASE}/scanpy/neighbor_graphs`))
+        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+        .then((data) => setAvailableGraphs(data.graphs || []))
+        .catch(() => setAvailableGraphs([]))
+    }
+  }, [selectedFunction, activeSlot, scanpyActionHistory])
 
   // Load available neighbor graphs when combine_neighbors is selected.
   useEffect(() => {
@@ -836,6 +885,15 @@ export default function ScanpyModal() {
       setCombineError('Select at least 2 graphs to combine.')
       return
     }
+
+    // Normalize target name: trim, default if empty, enforce _connectivities
+    // suffix so the result shows up in the neighbor-graph picker later.
+    let targetKey = combineTargetKey.trim()
+    if (!targetKey) targetKey = 'combined_connectivities'
+    if (targetKey !== 'connectivities' && !targetKey.endsWith('_connectivities')) {
+      targetKey = `${targetKey}_connectivities`
+    }
+
     setCombineLoading(true)
     setCombineError(null)
     setResult(null)
@@ -845,7 +903,7 @@ export default function ScanpyModal() {
           key: g.key,
           weight: Number.isFinite(combineWeights[g.key]) ? Number(combineWeights[g.key]) : 1,
         })),
-        target_key: 'connectivities',
+        target_key: targetKey,
       }
       const response = await fetch(appendDataset(`${API_BASE}/scanpy/combine_neighbors`), {
         method: 'POST',
@@ -856,9 +914,12 @@ export default function ScanpyModal() {
       if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`)
 
       const labels = selectedList.map((g) => g.label).join(' + ')
+      const downstreamNote = targetKey === 'connectivities'
+        ? 'Leiden / UMAP will now use this graph automatically.'
+        : `Stored at obsp["${targetKey}"]. Pick it as a Smooth source or re-run Combine into "connectivities" to make Leiden/UMAP pick it up.`
       setResult({
         success: true,
-        message: `Combined neighbor graph: ${labels} → ${Number(data.n_edges).toLocaleString()} edges. Leiden/UMAP will now use this graph.`,
+        message: `Combined ${labels} → ${Number(data.n_edges).toLocaleString()} edges. ${downstreamNote}`,
       })
       addScanpyAction({
         action: 'combine_neighbors',
@@ -871,7 +932,7 @@ export default function ScanpyModal() {
     } finally {
       setCombineLoading(false)
     }
-  }, [combineGraphs, combineSelected, combineWeights, addScanpyAction])
+  }, [combineGraphs, combineSelected, combineWeights, combineTargetKey, addScanpyAction])
 
   // Handle compare cells run
   const handleCompareRun = useCallback(async () => {
@@ -1132,6 +1193,10 @@ export default function ScanpyModal() {
       } else if (data.n_highly_variable !== undefined) {
         // highly_variable_genes result
         message = `Identified ${data.n_highly_variable.toLocaleString()} highly variable genes (${data.flavor} method)`
+      } else if (data.output_layer !== undefined && data.graph_key !== undefined) {
+        // smooth result
+        const dens = data.output_density != null ? `${(Number(data.output_density) * 100).toFixed(1)}% dense` : ''
+        message = `Smoothed ${data.source_layer || '.X'} → layers["${data.output_layer}"] over ${data.graph_key} (${data.n_steps} step${data.n_steps === 1 ? '' : 's'}; ${dens}). Use it via "Source matrix" on Gene PCA / Gene Neighbors / Cluster Genes.`
       }
 
       // PCA re-runs clear any derived PC subsets server-side. If the response
@@ -1694,6 +1759,39 @@ export default function ScanpyModal() {
                     </div>
                   )
                 })()}
+                <div style={{ marginTop: '12px', marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '11px', color: '#888' }}>
+                    Output graph name (obsp key)
+                  </label>
+                  <input
+                    type="text"
+                    value={combineTargetKey}
+                    onChange={(e) => setCombineTargetKey(e.target.value)}
+                    placeholder="combined_connectivities"
+                    style={{
+                      padding: '6px 8px',
+                      fontSize: '12px',
+                      backgroundColor: '#0f3460',
+                      color: '#eee',
+                      border: '1px solid #1a1a2e',
+                      borderRadius: '4px',
+                      width: '100%',
+                    }}
+                  />
+                  <div style={{ fontSize: '10px', color: '#666' }}>
+                    Result lands in <code>obsp[name]</code>; the
+                    {' '}<code>_connectivities</code> suffix is auto-added if missing so the
+                    graph appears in pickers (Smooth, Combine Neighbors).
+                  </div>
+                  {combineTargetKey.trim() === 'connectivities' && (
+                    <div style={{ fontSize: '11px', color: '#ffc107' }}>
+                      Heads-up: this overwrites the expression-based kNN at
+                      {' '}<code>obsp["connectivities"]</code> and re-points
+                      Leiden / UMAP to the combined graph automatically.
+                      Use a different name to keep both around.
+                    </div>
+                  )}
+                </div>
                 {combineError && (
                   <div style={{ fontSize: '12px', color: '#ff7f7f', marginBottom: '8px' }}>
                     {combineError}
@@ -1878,6 +1976,41 @@ export default function ScanpyModal() {
                               {s.obsmKey} ({s.nPcsKept} kept)
                             </option>
                           ))}
+                        </select>
+                      ) : param.type === 'layer_select' ? (
+                        <select
+                          style={styles.paramInput}
+                          value={paramValues[param.name] ?? 'X'}
+                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                        >
+                          {availableLayers.length === 0 && (
+                            <option value="X">.X (default)</option>
+                          )}
+                          {availableLayers.map((L) => (
+                            <option key={L.name} value={L.name}>
+                              {L.name === 'X' ? '.X (default)' : L.name}
+                              {L.density > 0 ? ` — ${(L.density * 100).toFixed(1)}% dense` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      ) : param.type === 'graph_select' ? (
+                        <select
+                          style={styles.paramInput}
+                          value={paramValues[param.name] ?? ''}
+                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                        >
+                          {availableGraphs.length === 0 ? (
+                            <option value="">No kNN graph found — run Spatial / Cell Neighbors first</option>
+                          ) : (
+                            <>
+                              <option value="">— pick a graph —</option>
+                              {availableGraphs.map((g) => (
+                                <option key={g.key} value={g.key}>
+                                  {g.label} ({g.key}, {g.n_edges.toLocaleString()} edges)
+                                </option>
+                              ))}
+                            </>
+                          )}
                         </select>
                       ) : param.type === 'select' ? (
                         <select

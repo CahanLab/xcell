@@ -72,6 +72,8 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
   - **Polygon**: click to add vertices, double-click to close and select cells inside
 - Hold **Shift** while selecting to add to the existing selection
 - Checkboxes in the Cell Manager also select/deselect cells by category
+- **Rename a category label** by double-clicking the label in the expanded category list. Press Enter to commit (or Escape to cancel). Works on Leiden clusters, Contourize results, user annotations — any categorical metadata.
+- **Merge two or more labels** by clicking the `⋯` menu in a column header and choosing **Merge labels…**. Pick the labels to merge, type a new name (or reuse an existing one to fold them in), then click Merge.
 - Selected cells can be masked or deleted
 
 ### 4. Run Preprocessing
@@ -244,6 +246,38 @@ Typical workflow for "find DEGs by expression state in a region": lasso a region
 ### 14. Export Results
 
 - Click **Export** in the toolbar to download annotations and results
+
+## Customizing default parameters
+
+xcell ships with hardcoded defaults for every form in the Scanpy modal, the Line Association dialog, and the Display Settings panel (e.g. `filter_cells` → min genes = 25, point size = 3). To change these without touching code, drop a YAML (or JSON) file at **`~/.xcell/config.yaml`** — or set `XCELL_CONFIG_PATH` to point somewhere else. A sample is included at `docs/config.example.yaml`.
+
+Shape is a nested mapping matching the form namespace — only include keys you want to override, everything else falls back to the built-in default:
+
+```yaml
+scanpy:
+  filter_cells:
+    min_genes: 15       # was 25
+  neighbors:
+    n_neighbors: 20     # was 15
+
+line_association:
+  fdr_threshold: 0.1    # was 0.05
+  cluster_genes: true   # was false
+
+display:
+  point_size: 4               # was 3
+  point_opacity: 0.7          # was 0.85
+  background_color: '#000000' # was '#1a1a2e'
+  color_scale: magma          # was viridis
+  clip_percentile: 0.5        # was 1.0
+  gene_set_aggregation: median # was mean
+```
+
+A backend restart is required to pick up edits. Verify what was loaded by hitting `GET /api/config/defaults`; unknown keys are silently ignored. Display defaults are applied to every dataset slot at startup and re-applied on each fresh dataset load — you can still tweak any value in the Display Settings panel for the current session.
+
+## Session persistence
+
+Most changes you make in a session survive on the backend process: deleted cells, transformed embeddings, computed PCA / neighbors / UMAP / Leiden, drawn lines, and — as of this version — your **gene sets** (categories, folders, individual sets). If the browser tab accidentally reloads, the gene panel is rehydrated from the server. Restarting the backend still clears everything; persist important sets via the Gene Panel export controls before shutting down.
 
 ## Features
 

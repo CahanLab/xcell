@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { useStore, ColorScale, ExpressionTransform, BivariateColormap, GeneSetScoringMethod } from '../store'
+import { useStore, ColorScale, ExpressionTransform, BivariateColormap, GeneSetPerGeneNorm, GeneSetAggregation } from '../store'
 import { getBivariateColor } from './ScatterPlot'
 
 const styles = {
@@ -286,15 +286,8 @@ export default function DisplaySettings() {
     setDisplayPreferences({ expressionTransform: newTransform })
   }
 
-  const handleScoringMethodToggle = () => {
-    const newMethod: GeneSetScoringMethod =
-      displayPreferences.geneSetScoringMethod === 'mean' ? 'zscore' : 'mean'
-    setDisplayPreferences({ geneSetScoringMethod: newMethod })
-  }
-
   const currentScale = COLOR_SCALES.find((s) => s.value === displayPreferences.colorScale)
   const isTransformEnabled = displayPreferences.expressionTransform === 'log1p'
-  const isZscoreEnabled = displayPreferences.geneSetScoringMethod === 'zscore'
 
   return (
     <div style={styles.container}>
@@ -432,31 +425,117 @@ export default function DisplaySettings() {
                 </div>
               </div>
 
-              {/* Gene Set Scoring Method */}
+              {/* Gene Set Aggregation */}
               <div style={styles.settingGroup}>
-                <div style={styles.toggleContainer}>
-                  <div>
-                    <span style={styles.toggleLabel}>Z-score Scaling</span>
-                    <div style={styles.toggleDescription}>
-                      {isZscoreEnabled
-                        ? 'Mean-center + MAD scale each gene'
-                        : 'Simple mean across genes'}
+                <label style={styles.label}>Gene Set Aggregation</label>
+                <div style={{ fontSize: '10px', color: '#666', marginTop: '-2px', marginBottom: '8px', lineHeight: 1.4 }}>
+                  Pipeline used to summarize a gene set into one per-cell score
+                  (and each axis of bivariate). Order: per-gene normalize →
+                  aggregate across genes → color-ramp clip below. Contourize is
+                  unaffected.
+                </div>
+
+                {/* Per-gene normalization */}
+                <div style={{ marginBottom: '8px' }}>
+                  <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>
+                    Per-gene normalization
+                  </div>
+                  <select
+                    value={displayPreferences.geneSetPerGeneNorm}
+                    onChange={(e) => setDisplayPreferences({ geneSetPerGeneNorm: e.target.value as GeneSetPerGeneNorm })}
+                    style={{ ...styles.select, width: '100%' }}
+                  >
+                    <option value="none">None (raw values)</option>
+                    <option value="zscore_mad">Z-score (MAD, robust)</option>
+                    <option value="zscore_sd">Z-score (SD)</option>
+                    <option value="minmax">Min-max [0, 1]</option>
+                    <option value="rank">Rank → [0, 1]</option>
+                  </select>
+                  <div style={{ fontSize: '10px', color: '#666', marginTop: '3px' }}>
+                    {displayPreferences.geneSetPerGeneNorm === 'none' && 'Use raw expression — high-magnitude genes dominate.'}
+                    {displayPreferences.geneSetPerGeneNorm === 'zscore_mad' && 'Center on the median, scale by MAD; falls back to SD if MAD is 0.'}
+                    {displayPreferences.geneSetPerGeneNorm === 'zscore_sd' && 'Center on the mean, scale by standard deviation.'}
+                    {displayPreferences.geneSetPerGeneNorm === 'minmax' && 'Clip per gene then rescale to [0, 1] — every gene votes equally regardless of scale.'}
+                    {displayPreferences.geneSetPerGeneNorm === 'rank' && 'Replace each cell’s value with its average rank within the gene, then divide by N.'}
+                  </div>
+                </div>
+
+                {/* Per-gene clip — only meaningful for minmax */}
+                {displayPreferences.geneSetPerGeneNorm === 'minmax' && (
+                  <div style={{ marginBottom: '8px' }}>
+                    <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>
+                      Per-gene clip percentile
+                    </div>
+                    <div style={styles.sliderContainer}>
+                      <input
+                        type="range"
+                        min="0"
+                        max="5"
+                        step="0.5"
+                        value={displayPreferences.geneSetPerGeneClip}
+                        onChange={(e) => setDisplayPreferences({ geneSetPerGeneClip: parseFloat(e.target.value) })}
+                        style={styles.slider}
+                      />
+                      <span style={styles.sliderValue}>
+                        {displayPreferences.geneSetPerGeneClip.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#666', marginTop: '2px' }}>
+                      Clip each gene at the Nth / (100−N)th percentile before
+                      rescaling. 0 = use raw min/max.
                     </div>
                   </div>
-                  <div
-                    style={{
-                      ...styles.toggle,
-                      ...(isZscoreEnabled ? styles.toggleActive : {}),
-                    }}
-                    onClick={handleScoringMethodToggle}
-                  >
-                    <div
-                      style={{
-                        ...styles.toggleKnob,
-                        ...(isZscoreEnabled ? styles.toggleKnobActive : {}),
-                      }}
-                    />
+                )}
+
+                {/* Aggregation across genes */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>
+                    Aggregation across genes
                   </div>
+                  <select
+                    value={displayPreferences.geneSetAggregation}
+                    onChange={(e) => setDisplayPreferences({ geneSetAggregation: e.target.value as GeneSetAggregation })}
+                    style={{ ...styles.select, width: '100%' }}
+                  >
+                    <option value="mean">Mean</option>
+                    <option value="median">Median</option>
+                    <option value="sum">Sum</option>
+                    <option value="max">Max</option>
+                  </select>
+                  <div style={{ fontSize: '10px', color: '#666', marginTop: '3px' }}>
+                    {displayPreferences.geneSetAggregation === 'mean' && 'Average of per-gene values per cell.'}
+                    {displayPreferences.geneSetAggregation === 'median' && 'Middle value per cell — robust to one or two outlier genes.'}
+                    {displayPreferences.geneSetAggregation === 'sum' && 'Total per cell — emphasizes broad expression.'}
+                    {displayPreferences.geneSetAggregation === 'max' && 'Brightest gene per cell — emphasizes any-of-set expression.'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Color-ramp clip percentile */}
+              <div style={styles.settingGroup}>
+                <label style={styles.label}>
+                  Color-ramp clip percentile
+                </label>
+                <div style={styles.sliderContainer}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="5"
+                    step="0.5"
+                    value={displayPreferences.clipPercentile}
+                    onChange={(e) =>
+                      setDisplayPreferences({ clipPercentile: parseFloat(e.target.value) })
+                    }
+                    style={styles.slider}
+                  />
+                  <span style={styles.sliderValue}>
+                    {displayPreferences.clipPercentile.toFixed(1)}%
+                  </span>
+                </div>
+                <div style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
+                  Trim extreme values at the Nth / (100−N)th percentile before
+                  setting color-ramp endpoints. Applies to single gene, gene
+                  set, and bivariate coloring. 0 = no clipping.
                 </div>
               </div>
 

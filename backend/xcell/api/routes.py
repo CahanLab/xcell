@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 from xcell.adaptor import DataAdaptor
 from xcell.task_manager import task_manager
+from xcell import config as user_config
+from xcell import gene_set_store
 
 router = APIRouter(prefix="/api")
 
@@ -434,6 +436,92 @@ def get_obs_column(column: str, dataset: str | None = Query(None)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+class RenameObsLabelRequest(BaseModel):
+    old_label: str
+    new_label: str
+
+
+@router.post("/obs/{column}/rename_label")
+def rename_obs_label(
+    column: str,
+    request: RenameObsLabelRequest,
+    dataset: str | None = Query(None),
+):
+    """Rename a single category value in a categorical or string .obs column."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.rename_obs_label(column, request.old_label, request.new_label)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        msg = str(e)
+        # Collisions get a 409 so the frontend can offer "merge instead".
+        if "already exists" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+class MergeObsLabelsRequest(BaseModel):
+    labels: list[str]
+    new_label: str
+
+
+@router.post("/obs/{column}/merge_labels")
+def merge_obs_labels(
+    column: str,
+    request: MergeObsLabelsRequest,
+    dataset: str | None = Query(None),
+):
+    """Merge two or more category values in a categorical or string .obs column."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.merge_obs_labels(column, request.labels, request.new_label)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/gene_sets")
+def get_gene_sets_state():
+    """Return the currently-persisted gene-set state (opaque JSON blob).
+
+    The shape matches the frontend's ``geneSetCategories`` dict. The server
+    doesn't inspect the contents — it just round-trips them so reloads in
+    the browser can restore the user's sets. Empty dict means nothing has
+    been saved this server lifetime.
+    """
+    return {"gene_sets": gene_set_store.get_gene_sets()}
+
+
+class GeneSetsPutRequest(BaseModel):
+    gene_sets: dict[str, Any]
+
+
+@router.put("/gene_sets")
+def put_gene_sets_state(request: GeneSetsPutRequest):
+    """Replace the persisted gene-set state. Called by the frontend on any
+    mutation (debounced). Server-lifetime storage — cleared on restart."""
+    try:
+        gene_set_store.set_gene_sets(request.gene_sets)
+        return {"status": "ok"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/config/defaults")
+def get_config_defaults():
+    """Return the raw user-config dict (loaded from ~/.xcell/config.* at startup).
+
+    The frontend merges these values over its hardcoded defaults when
+    initializing modal param forms. Restarting the backend picks up edits.
+    """
+    return {
+        "config": user_config.get_user_config(),
+        "meta": user_config.get_config_meta(),
+    }
+
+
 @router.get("/health")
 def health_check(dataset: str | None = Query(None)):
     """Health check endpoint."""
@@ -516,13 +604,20 @@ def search_genes(q: str, limit: int = 20, dataset: str | None = Query(None)):
 
 
 @router.get("/expression/{gene}")
-def get_expression(gene: str, transform: str | None = None, dataset: str | None = Query(None)):
+def get_expression(
+    gene: str,
+    transform: str | None = None,
+    clip_percentile: float = 0.0,
+    layer: str | None = None,
+    dataset: str | None = Query(None),
+):
     """Get expression values for a single gene.
 
     Args:
         gene: Gene name
         transform: Optional transformation to apply. Supported values:
             - "log1p": Apply normalize_total followed by log1p transformation
+        clip_percentile: Optional symmetric percentile clip (0 = off).
 
     Returns:
         JSON object containing:
@@ -534,16 +629,33 @@ def get_expression(gene: str, transform: str | None = None, dataset: str | None 
     """
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.get_expression(gene, transform=transform)
+        return adaptor.get_expression(
+            gene,
+            transform=transform,
+            clip_percentile=clip_percentile,
+            layer=layer,
+        )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 class MultiExpressionRequest(BaseModel):
-    """Request model for multi-gene expression."""
+    """Request model for multi-gene expression aggregation.
+
+    The pipeline is: source → per-gene normalize → aggregate across genes
+    → optional symmetric percentile clip on per-cell scores.
+    """
     genes: list[str]
     transform: str | None = None
-    scoring_method: str = 'mean'  # 'mean' or 'zscore'
+    # 'none' | 'zscore_mad' | 'zscore_sd' | 'minmax' | 'rank'
+    per_gene_norm: str = 'zscore_mad'
+    per_gene_clip: float = 0.0  # used by 'minmax' per-gene norm
+    # 'mean' | 'median' | 'sum' | 'max'
+    aggregation: str = 'mean'
+    clip_percentile: float = 1.0
+    # Optional layer name in adata.layers; None / 'X' / omitted → adata.X.
+    # Overrides `transform` when set (the layer is treated as authoritative).
+    layer: str | None = None
 
 
 @router.post("/expression/multi")
@@ -568,19 +680,30 @@ def get_multi_expression(request: MultiExpressionRequest, dataset: str | None = 
         return adaptor.get_multi_gene_expression(
             request.genes,
             transform=request.transform,
-            scoring_method=request.scoring_method,
+            per_gene_norm=request.per_gene_norm,
+            per_gene_clip=request.per_gene_clip,
+            aggregation=request.aggregation,
+            clip_percentile=request.clip_percentile,
+            layer=request.layer,
         )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 class BivariateExpressionRequest(BaseModel):
-    """Request model for bivariate gene expression."""
+    """Request model for bivariate gene expression.
+
+    Same per-gene-norm + aggregation pipeline as ``MultiExpressionRequest``,
+    applied independently per axis.
+    """
     genes1: list[str]
     genes2: list[str]
     transform: str | None = None
-    clip_percentile: float = 1.0  # Symmetric percentile clipping (1.0 = clip at 1st/99th)
-    scoring_method: str = 'zscore'  # 'mean' or 'zscore'
+    per_gene_norm: str = 'zscore_mad'
+    per_gene_clip: float = 0.0
+    aggregation: str = 'mean'
+    clip_percentile: float = 1.0
+    layer: str | None = None
 
 
 @router.post("/expression/bivariate")
@@ -610,8 +733,11 @@ def get_bivariate_expression(request: BivariateExpressionRequest, dataset: str |
             genes1=request.genes1,
             genes2=request.genes2,
             transform=request.transform,
+            per_gene_norm=request.per_gene_norm,
+            per_gene_clip=request.per_gene_clip,
+            aggregation=request.aggregation,
             clip_percentile=request.clip_percentile,
-            scoring_method=request.scoring_method,
+            layer=request.layer,
         )
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -861,12 +987,20 @@ class MarkerGenesRequest(BaseModel):
 
 class ClusterGeneSetRequest(BaseModel):
     gene_names: list[str]
-    method: str  # 'hierarchical' | 'kmeans'
-    k: int
+    method: str  # 'hierarchical' | 'kmeans' | 'dbscan'
+    k: int | None = None  # required for hierarchical/kmeans, ignored for dbscan
     cell_context: str  # 'all' | 'selection' | 'annotation'
     cell_indices: list[int] | None = None
     annotation_column: str | None = None
     annotation_values: list[str] | None = None
+    # DBSCAN-only knobs (ignored for other methods).
+    eps: float = 0.3
+    min_samples: int = 3
+    # Optional layer name. None / 'X' / omitted → adata.X (passes through the
+    # lazy normalize_total + log1p snapshot, the historical default). When
+    # set to a layer name, that layer is read directly without renormalization
+    # — pass the output of run_smooth here to cluster on smoothed expression.
+    layer: str | None = None
 
 
 class MarkerGeneEntry(BaseModel):
@@ -1597,6 +1731,47 @@ def combine_neighbors(request: CombineNeighborsRequest, dataset: str | None = Qu
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/scanpy/layers")
+def list_layers(dataset: str | None = Query(None)):
+    """List the readable expression matrices for downstream gene analyses.
+
+    Returns a synthetic 'X' entry first (always present) followed by the
+    available adata.layers keys; used by Gene PCA / Gene Neighbors / Cluster
+    Genes "Source matrix" dropdowns.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return {'layers': adaptor.list_layers()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SmoothRequest(BaseModel):
+    graph_key: str
+    n_steps: int = 1
+    source_layer: str | None = None
+    output_layer: str = 'smoothed'
+    self_loop_weight: float = 1.0
+
+
+@router.post("/scanpy/smooth")
+def run_smooth(request: SmoothRequest, dataset: str | None = Query(None)):
+    """Smooth expression over a kNN graph; result lands in adata.layers[output_layer]."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.run_smooth(
+            graph_key=request.graph_key,
+            n_steps=request.n_steps,
+            source_layer=request.source_layer,
+            output_layer=request.output_layer,
+            self_loop_weight=request.self_loop_weight,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/scanpy/umap")
 def run_umap(request: UmapRequest, dataset: str | None = Query(None)):
     """Compute UMAP embedding.
@@ -1717,6 +1892,9 @@ class GenePcaRequest(BaseModel):
     # - GeneSubsetSpec: combine multiple columns with AND/OR
     gene_subset: str | list[str] | GeneSubsetSpec | None = None
     active_cell_indices: list[int] | None = None
+    # Optional layer name in adata.layers to read from instead of adata.X.
+    # None / 'X' / omitted → adata.X (the default).
+    layer: str | None = None
 
 
 class GeneNeighborsRequest(BaseModel):
@@ -1726,6 +1904,8 @@ class GeneNeighborsRequest(BaseModel):
     gene_subset: str | list[str] | GeneSubsetSpec | None = None
     scale: bool = True
     active_cell_indices: list[int] | None = None
+    # Only used when basis='expression'. None / 'X' / omitted → adata.X.
+    layer: str | None = None
 
 
 class FindSimilarGenesRequest(BaseModel):
@@ -1892,6 +2072,7 @@ def run_gene_pca(request: GenePcaRequest, dataset: str | None = Query(None)):
             max_comps=request.max_comps,
             gene_subset=gene_subset,
             active_cell_indices=request.active_cell_indices,
+            layer=request.layer,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1941,6 +2122,7 @@ def run_gene_neighbors(request: GeneNeighborsRequest, dataset: str | None = Quer
             gene_subset=gene_subset,
             scale=request.scale,
             active_cell_indices=request.active_cell_indices,
+            layer=request.layer,
         )
         task_id = task_manager.submit(compute_fn, apply_fn)
         return {"task_id": task_id, "status": "running"}
@@ -2267,6 +2449,9 @@ def cluster_gene_set_route(req: ClusterGeneSetRequest, dataset: str | None = Que
             method=req.method,
             k=req.k,
             cell_indices=cell_indices,
+            eps=req.eps,
+            min_samples=req.min_samples,
+            layer=req.layer,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

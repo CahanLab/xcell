@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from xcell.adaptor import DataAdaptor
 from xcell.api.routes import router, set_adaptor
+from xcell import config as user_config
 
 app = FastAPI(
     title="XCell",
@@ -35,6 +36,10 @@ app.include_router(router)
 @app.on_event("startup")
 async def startup_event():
     """Load data on application startup."""
+    # Load user config (~/.xcell/config.yaml|.yml|.json or $XCELL_CONFIG_PATH).
+    # Missing / malformed is logged but not fatal — defaults fall through.
+    user_config.load_user_config()
+
     # Get data file path from environment variable
     data_path = os.environ.get("XCELL_DATA_PATH")
 

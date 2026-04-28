@@ -125,6 +125,21 @@ let geneSetIdCounter = 0
 export const generateGeneSetId = () => `gs_${Date.now()}_${++geneSetIdCounter}`
 export const generateFolderId = () => `folder_${Date.now()}_${++geneSetIdCounter}`
 
+// Look up a user-config override; returns `fallback` if the path doesn't exist.
+// Shape:
+//   userConfigGet(cfg, ['scanpy', 'filter_cells', 'min_genes'], 25)
+export function userConfigGet<T>(cfg: Record<string, unknown>, path: string[], fallback: T): T {
+  let cursor: unknown = cfg
+  for (const key of path) {
+    if (cursor && typeof cursor === 'object' && key in (cursor as Record<string, unknown>)) {
+      cursor = (cursor as Record<string, unknown>)[key]
+    } else {
+      return fallback
+    }
+  }
+  return (cursor === undefined ? fallback : (cursor as T))
+}
+
 // Differential expression types
 export interface DiffExpGene {
   gene: string
@@ -291,7 +306,16 @@ export type ColorScale = 'viridis' | 'plasma' | 'magma' | 'inferno' | 'cividis' 
 export type BivariateColormap = 'default' | 'pinkgreen' | 'orangepurple' | 'custom'
 
 // Gene set scoring method options
-export type GeneSetScoringMethod = 'mean' | 'zscore'
+// Per-gene normalization applied before aggregating across genes.
+// 'none'        — raw values
+// 'zscore_mad'  — mean-center + scale by MAD (fallback SD); robust to outliers
+// 'zscore_sd'   — mean-center + scale by SD
+// 'minmax'      — clip at per_gene_clip then rescale to [0,1] (Contourize-style)
+// 'rank'        — average-rank within each gene, divided by N → [0,1]
+export type GeneSetPerGeneNorm = 'none' | 'zscore_mad' | 'zscore_sd' | 'minmax' | 'rank'
+
+// How per-gene values are combined into one per-cell summary.
+export type GeneSetAggregation = 'mean' | 'median' | 'sum' | 'max'
 
 // Expression transform options
 export type ExpressionTransform = 'none' | 'log1p'
@@ -302,9 +326,14 @@ export interface DisplayPreferences {
   backgroundColor: string  // Hex color
   colorScale: ColorScale  // Color scale for expression data
   bivariateColormap: BivariateColormap  // Colormap for bivariate expression
-  geneSetScoringMethod: GeneSetScoringMethod  // How to aggregate gene set expression
+  // Gene set aggregation pipeline (used for both single-gene-set coloring and bivariate).
+  // Pipeline: source → per-gene normalize → aggregate across genes → per-cell clip.
+  geneSetPerGeneNorm: GeneSetPerGeneNorm
+  geneSetPerGeneClip: number  // percentile (0–5%); only used by 'minmax' per-gene norm
+  geneSetAggregation: GeneSetAggregation
   pointOpacity: number  // 0-1
   expressionTransform: ExpressionTransform  // Transformation for expression values
+  clipPercentile: number  // Symmetric percentile clip for color-ramp anchors (0 = off)
 }
 
 // Scanpy action history entry
@@ -346,9 +375,69 @@ export interface DatasetState {
   currentVarIndex: string
   geneMaskConfig: GeneMaskConfig | null
   pcaSubsets: PCASubsetSummary[]
+  // Layer used for visualization-side gene expression coloring (single-gene,
+  // multi-gene, bivariate). 'X' (default) reads adata.X; any other value reads
+  // adata.layers[displayLayer]. Per-dataset because layers are per-dataset.
+  displayLayer: string
 }
 
-export function createDefaultDatasetState(): DatasetState {
+// Hardcoded fallback defaults for display preferences. Kept as a factory so
+// every consumer gets a fresh object (no aliasing across slots).
+export function defaultDisplayPreferences(): DisplayPreferences {
+  return {
+    pointSize: 3,
+    backgroundColor: '#1a1a2e',
+    colorScale: 'viridis',
+    bivariateColormap: 'default',
+    geneSetPerGeneNorm: 'zscore_mad',
+    geneSetPerGeneClip: 1.0,
+    geneSetAggregation: 'mean',
+    pointOpacity: 0.85,
+    expressionTransform: 'none',
+    clipPercentile: 1.0,
+  }
+}
+
+// Map a `display:` section of the user config (snake_case keys) to a
+// Partial<DisplayPreferences> overlay. Unknown / mistyped keys are ignored
+// silently — same forgiving philosophy as the rest of the config loader.
+export function displayPreferencesFromConfig(
+  cfg: Record<string, unknown>
+): Partial<DisplayPreferences> {
+  const display = cfg.display
+  if (!display || typeof display !== 'object') return {}
+  const d = display as Record<string, unknown>
+  const out: Partial<DisplayPreferences> = {}
+  const num = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined
+  const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
+
+  const pointSize = num(d.point_size)
+  if (pointSize !== undefined) out.pointSize = pointSize
+  const pointOpacity = num(d.point_opacity)
+  if (pointOpacity !== undefined) out.pointOpacity = pointOpacity
+  const bg = str(d.background_color)
+  if (bg !== undefined) out.backgroundColor = bg
+  const cs = str(d.color_scale)
+  if (cs !== undefined) out.colorScale = cs as ColorScale
+  const bc = str(d.bivariate_colormap)
+  if (bc !== undefined) out.bivariateColormap = bc as BivariateColormap
+  const et = str(d.expression_transform)
+  if (et !== undefined) out.expressionTransform = et as ExpressionTransform
+  const clip = num(d.clip_percentile)
+  if (clip !== undefined) out.clipPercentile = clip
+  const gsn = str(d.gene_set_per_gene_norm)
+  if (gsn !== undefined) out.geneSetPerGeneNorm = gsn as GeneSetPerGeneNorm
+  const gsc = num(d.gene_set_per_gene_clip)
+  if (gsc !== undefined) out.geneSetPerGeneClip = gsc
+  const gsa = str(d.gene_set_aggregation)
+  if (gsa !== undefined) out.geneSetAggregation = gsa as GeneSetAggregation
+  return out
+}
+
+export function createDefaultDatasetState(
+  displayOverrides: Partial<DisplayPreferences> = {}
+): DatasetState {
   return {
     schema: null,
     embedding: null,
@@ -366,15 +455,7 @@ export function createDefaultDatasetState(): DatasetState {
     cellSortOrder: null,
     cellSortVersion: 0,
     bivariateSortReversed: false,
-    displayPreferences: {
-      pointSize: 3,
-      backgroundColor: '#1a1a2e',
-      colorScale: 'viridis',
-      bivariateColormap: 'default',
-      geneSetScoringMethod: 'mean',
-      pointOpacity: 0.85,
-      expressionTransform: 'none',
-    },
+    displayPreferences: { ...defaultDisplayPreferences(), ...displayOverrides },
     drawnLines: [],
     hiddenColumns: new Set<string>(),
     columnDisplayNames: {},
@@ -384,6 +465,7 @@ export function createDefaultDatasetState(): DatasetState {
     currentVarIndex: '_index',
     geneMaskConfig: null,
     pcaSubsets: [],
+    displayLayer: 'X',
   }
 }
 
@@ -466,6 +548,10 @@ interface AppState {
   // Gene mask modal state (global)
   geneMaskModalOpen: boolean
 
+  // User config (loaded from backend once at app mount; overrides param defaults)
+  // Shape: loose — { scanpy: { <fn>: { <param>: value } }, line_association: { <param>: value } }
+  userConfig: Record<string, unknown>
+
   // Scanpy modal state
   isScanpyModalOpen: boolean
   scanpyActionHistory: ScanpyActionRecord[]
@@ -482,6 +568,10 @@ interface AppState {
 
   // PCA subsets (per-dataset, flat mirror)
   pcaSubsets: PCASubsetSummary[]
+
+  // Display layer for visualization-side expression coloring (per-dataset).
+  // 'X' = adata.X (default); any other value = adata.layers[displayLayer].
+  displayLayer: string
 
   // Marker genes modal state
   isMarkerGenesModalOpen: boolean
@@ -633,6 +723,16 @@ interface AppState {
   setGeneMaskConfig: (config: GeneMaskConfig | null) => void
   setPcaSubsets: (subsets: PCASubsetSummary[]) => void
 
+  // Display layer (per-dataset) — chooses adata.X or a layer for visualization.
+  setDisplayLayer: (layer: string) => void
+
+  // User config action
+  setUserConfig: (config: Record<string, unknown>) => void
+  // Apply the `display:` section of the user config to all dataset slots and
+  // the flat top-level mirror. Called once after the config is fetched at
+  // startup so the very first frame already reflects user defaults.
+  applyDisplayDefaultsFromConfig: () => void
+
   // Scanpy modal actions
   setScanpyModalOpen: (open: boolean) => void
   setScanpyActionHistory: (history: ScanpyActionRecord[]) => void
@@ -725,6 +825,7 @@ export const useStore = create<AppState>((set, get) => {
       currentVarIndex: ds.currentVarIndex,
       geneMaskConfig: ds.geneMaskConfig,
       pcaSubsets: ds.pcaSubsets,
+      displayLayer: ds.displayLayer,
     }
   }
 
@@ -746,15 +847,7 @@ export const useStore = create<AppState>((set, get) => {
     colorMode: 'none',
     isLoading: false,
     error: null,
-    displayPreferences: {
-      pointSize: 3,
-      backgroundColor: '#1a1a2e',
-      colorScale: 'viridis',
-      bivariateColormap: 'default',
-      geneSetScoringMethod: 'mean',
-      pointOpacity: 0.85,
-      expressionTransform: 'none',
-    },
+    displayPreferences: defaultDisplayPreferences(),
     comparison: {
       group1: null,
       group2: null,
@@ -789,6 +882,8 @@ export const useStore = create<AppState>((set, get) => {
     geneMaskModalOpen: false,
     geneMaskConfig: null,
     pcaSubsets: [],
+    displayLayer: 'X',
+    userConfig: {},
     isScanpyModalOpen: false,
     scanpyActionHistory: [],
     obsSummariesVersion: 0,
@@ -1747,6 +1842,31 @@ export const useStore = create<AppState>((set, get) => {
     setGeneMaskConfig: (config) => set(dsUpdate({ geneMaskConfig: config })),
     setPcaSubsets: (subsets) => set(dsUpdate({ pcaSubsets: subsets })),
 
+    setDisplayLayer: (layer) => set(dsUpdate({ displayLayer: layer })),
+
+    setUserConfig: (config) => set({ userConfig: config }),
+
+    applyDisplayDefaultsFromConfig: () => {
+      const state = get()
+      const overrides = displayPreferencesFromConfig(state.userConfig)
+      if (Object.keys(overrides).length === 0) return
+      const newDatasets = {
+        ...state.datasets,
+        primary: {
+          ...state.datasets.primary,
+          displayPreferences: { ...state.datasets.primary.displayPreferences, ...overrides },
+        },
+        secondary: {
+          ...state.datasets.secondary,
+          displayPreferences: { ...state.datasets.secondary.displayPreferences, ...overrides },
+        },
+      }
+      set({
+        datasets: newDatasets,
+        displayPreferences: { ...state.displayPreferences, ...overrides },
+      })
+    },
+
     // Scanpy modal actions
     setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),  // global
     setScanpyActionHistory: (history) => set(dsUpdate({ scanpyActionHistory: history })),  // per-dataset
@@ -1847,7 +1967,10 @@ export const useStore = create<AppState>((set, get) => {
 
     loadDatasetIntoSlot: (slot, schema) => {
       const state = get()
-      const freshDs = createDefaultDatasetState()
+      // Apply user-config display defaults so a freshly loaded dataset shows
+      // the user's preferred point size / colormap / etc. on the first frame.
+      const overrides = displayPreferencesFromConfig(state.userConfig)
+      const freshDs = createDefaultDatasetState(overrides)
       freshDs.schema = schema
       // Auto-select embedding by preference: spatial > umap > pca > first
       if (schema.embeddings.length > 0) {

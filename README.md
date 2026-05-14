@@ -243,6 +243,22 @@ Typical workflow for "find DEGs by expression state in a region": lasso a region
 - Click **Run** — a new categorical column appears in the Cell Panel
 - Color cells by the contour column to visualize spatial expression zones
 
+### Combining Spatial Sections
+
+To compare the same tissue across timepoints (or any cross-sample analysis), you can load 2+ spatial-transcriptomics h5ads into one dataset:
+
+- Click **File → Combine spatial sections…** in the toolbar
+- In the load modal, switch the mode toggle to **Combine sections** (already set when you arrive via the menu)
+- Click `.h5ad` files in the browser to add them to the list — each file gets an editable label (defaults to the filename stem)
+- Adjust the gap (% of mean section width) and the slot to load into
+- Click **Combine N sections** — sections are placed left-to-right along the spatial x-axis with the configured gap; a new `sample` categorical `.obs` column tags each cell with its source file label
+- The combined dataset behaves like any other — color by `sample` to see the layout, run Compare Cells across timepoints, etc.
+
+Notes:
+- Genes = intersection of the input files' var indices. Use **Gene IDs** swap in the Gene Panel beforehand if your files use different identifier columns.
+- v1 supports `.h5ad` only. For `.rds` / 10x files, load them once via single-file Load and export as h5ad first.
+- Per-file UMAPs/PCAs are dropped — re-run PCA/UMAP via the Scanpy modal on the combined data.
+
 ### 13. Load a Second Dataset
 
 - Click **Load** in the toolbar — the modal shows a sidebar with quick-access locations (Home, Desktop, Documents, Downloads) and recently loaded files, plus breadcrumb path navigation for clicking any ancestor directory

@@ -643,6 +643,7 @@ export default function App() {
   const [showDrawMenu, setShowDrawMenu] = useState(false)
   const [showSelectMenu, setShowSelectMenu] = useState(false)
   const [showAdjustMenu, setShowAdjustMenu] = useState(false)
+  const [showFileMenu, setShowFileMenu] = useState(false)
   const [adjustSubMode, setAdjustSubMode] = useState<'adjust' | 'quilt'>('adjust')
 
   // State for export modal
@@ -653,6 +654,10 @@ export default function App() {
   const [loadSlot, setLoadSlot] = useState<DatasetSlot>('primary')
   const [isLoadModalOpen, setIsLoadModalOpen] = useState(false)
   const [loadFilePath, setLoadFilePath] = useState('')
+  // Combine-sections mode state for the Load modal.
+  const [loadMode, setLoadMode] = useState<'single' | 'combine'>('single')
+  const [combineFiles, setCombineFiles] = useState<{ path: string; label: string }[]>([])
+  const [combineGapPct, setCombineGapPct] = useState<number>(5)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loadLoading, setLoadLoading] = useState(false)
 
@@ -731,11 +736,11 @@ export default function App() {
 
   // Close dropdown menus on outside click
   useEffect(() => {
-    if (!showDrawMenu && !showSelectMenu && !showAdjustMenu) return
-    const close = () => { setShowDrawMenu(false); setShowSelectMenu(false); setShowAdjustMenu(false) }
+    if (!showDrawMenu && !showSelectMenu && !showAdjustMenu && !showFileMenu) return
+    const close = () => { setShowDrawMenu(false); setShowSelectMenu(false); setShowAdjustMenu(false); setShowFileMenu(false) }
     document.addEventListener('click', close)
     return () => document.removeEventListener('click', close)
-  }, [showDrawMenu, showSelectMenu, showAdjustMenu])
+  }, [showDrawMenu, showSelectMenu, showAdjustMenu, showFileMenu])
 
 
   const handleTransformEmbedding = useCallback(async (opts: { rotation_degrees?: number; reflect_x?: boolean; reflect_y?: boolean }) => {
@@ -929,6 +934,39 @@ export default function App() {
     }
   }, [])
 
+  const handleCombineDatasets = useCallback(async () => {
+    if (combineFiles.length < 2) return
+    setLoadLoading(true)
+    setLoadError(null)
+    try {
+      const response = await fetch('/api/combine_spatial', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: combineFiles.map(f => ({ file_path: f.path, label: f.label || undefined })),
+          slot: loadSlot,
+          gap_fraction: combineGapPct / 100,
+        }),
+      })
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: response.statusText }))
+        throw new Error(err.detail || `HTTP ${response.status}`)
+      }
+      const schemaUrl = loadSlot === 'primary' ? '/api/schema' : `/api/schema?dataset=${loadSlot}`
+      const schemaData = await fetch(schemaUrl).then(r => r.json())
+      loadDatasetIntoSlot(loadSlot, schemaData)
+      await fetchGeneMask(loadSlot)
+      if (loadSlot !== activeSlot) setActiveSlot(loadSlot)
+      setIsLoadModalOpen(false)
+      setCombineFiles([])
+      setLoadMode('single')
+    } catch (err) {
+      setLoadError((err as Error).message)
+    } finally {
+      setLoadLoading(false)
+    }
+  }, [combineFiles, loadSlot, combineGapPct, activeSlot, loadDatasetIntoSlot, setActiveSlot])
+
   const handleLoadDataset = useCallback(async () => {
     if (!loadFilePath.trim()) return
     setLoadLoading(true)
@@ -992,6 +1030,83 @@ export default function App() {
         </div>
 
         <div style={styles.controls}>
+          {/* File menu — sits to the left of Select. Houses Load + Export
+              (and a Combine spatial sections action inside the Load modal). */}
+          <div style={{ position: 'relative', display: 'inline-flex' }}>
+            <button
+              style={styles.toolButton}
+              onClick={(e) => { e.stopPropagation(); setShowFileMenu((v) => !v) }}
+              title="File operations: load / export / combine sections"
+            >
+              File <span style={{ fontSize: '8px', marginLeft: '2px' }}>{'▼'}</span>
+            </button>
+            {showFileMenu && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  left: 0,
+                  backgroundColor: '#16213e',
+                  border: '1px solid #0f3460',
+                  borderRadius: '4px',
+                  zIndex: 100,
+                  minWidth: '200px',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                }}
+              >
+                <div
+                  onClick={() => {
+                    setShowFileMenu(false)
+                    setIsLoadModalOpen(true)
+                    setLoadError(null)
+                    setLoadFilePath('')
+                    setLoadMode('single')
+                    setCombineFiles([])
+                    browseDirectory()
+                  }}
+                  style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', color: '#ccc', display: 'flex', alignItems: 'center', gap: '8px' }}
+                >
+                  <span style={{ fontSize: '14px', width: '18px', textAlign: 'center' }}>{'\u{1F4C2}'}</span>
+                  <div>
+                    <div>Load…</div>
+                    <div style={{ fontSize: '10px', color: '#888' }}>Load a single h5ad / 10x / .rds file</div>
+                  </div>
+                </div>
+                <div
+                  onClick={() => {
+                    setShowFileMenu(false)
+                    setIsLoadModalOpen(true)
+                    setLoadError(null)
+                    setLoadFilePath('')
+                    setLoadMode('combine')
+                    setCombineFiles([])
+                    browseDirectory()
+                  }}
+                  style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', color: '#ccc', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  title="Combine 2+ spatial-transcriptomics h5ads side-by-side"
+                >
+                  <span style={{ fontSize: '14px', width: '18px', textAlign: 'center' }}>{'☰'}</span>
+                  <div>
+                    <div>Combine spatial sections…</div>
+                    <div style={{ fontSize: '10px', color: '#888' }}>Place 2+ ST h5ads left-to-right</div>
+                  </div>
+                </div>
+                {schema && (
+                  <div
+                    onClick={() => { setShowFileMenu(false); setIsExportModalOpen(true) }}
+                    style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', color: '#ccc', display: 'flex', alignItems: 'center', gap: '8px', borderTop: '1px solid #0f3460' }}
+                  >
+                    <span style={{ fontSize: '14px', width: '18px', textAlign: 'center' }}>{'⭳'}</span>
+                    <div>
+                      <div>Export…</div>
+                      <div style={{ fontSize: '10px', color: '#888' }}>Export h5ad / annotations / gene sets</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {datasets.secondary.schema && (
             <>
               <select
@@ -1341,24 +1456,8 @@ export default function App() {
             </>
           )}
 
-          <button
-            style={styles.exportButton}
-            onClick={() => { setIsLoadModalOpen(true); setLoadError(null); setLoadFilePath(''); browseDirectory() }}
-            title="Load a dataset file"
-          >
-            Load
-          </button>
-
           {schema && (
             <>
-              <button
-                style={styles.exportButton}
-                onClick={() => setIsExportModalOpen(true)}
-                title="Export data"
-              >
-                Export
-              </button>
-
               {selectedCellIndices.length > 0 && (
                 <div style={styles.selectionInfo}>
                   {selectedCellIndices.length.toLocaleString()} cells selected
@@ -2030,12 +2129,32 @@ export default function App() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header row: title + slot selector */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+            {/* Header row: title + mode toggle + slot selector */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', gap: '12px' }}>
               <div style={{ fontSize: '16px', fontWeight: 600, color: '#e94560' }}>
-                Load Dataset
+                {loadMode === 'combine' ? 'Combine Spatial Sections' : 'Load Dataset'}
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                {/* Mode toggle */}
+                <div style={{ display: 'flex', gap: '4px', backgroundColor: '#0f3460', borderRadius: '4px', padding: '2px' }}>
+                  {(['single', 'combine'] as const).map(m => (
+                    <button
+                      key={m}
+                      onClick={() => { setLoadMode(m); setLoadError(null) }}
+                      style={{
+                        padding: '4px 10px',
+                        fontSize: '11px',
+                        backgroundColor: loadMode === m ? '#e94560' : 'transparent',
+                        color: loadMode === m ? '#fff' : '#aaa',
+                        border: 'none',
+                        borderRadius: '3px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {m === 'single' ? 'Single file' : 'Combine sections'}
+                    </button>
+                  ))}
+                </div>
                 <span style={{ fontSize: '12px', color: '#888' }}>Load into:</span>
                 <select
                   value={loadSlot}
@@ -2047,6 +2166,57 @@ export default function App() {
                 </select>
               </div>
             </div>
+
+            {loadMode === 'combine' && (
+              <div style={{ marginBottom: '12px', padding: '10px 12px', backgroundColor: '#0f3460', border: '1px solid #1a1a2e', borderRadius: '4px' }}>
+                <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>
+                  Click .h5ad files below to add them to the list. Sections will be laid out left-to-right along X with a gap. Genes = intersection of inputs.
+                </div>
+                {combineFiles.length === 0 ? (
+                  <div style={{ fontSize: '12px', color: '#666', fontStyle: 'italic' }}>
+                    No sections added yet. Pick at least 2 .h5ad files from the browser.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {combineFiles.map((f, i) => (
+                      <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
+                        <span style={{ color: '#666', width: '18px', textAlign: 'right' }}>{i + 1}.</span>
+                        <input
+                          type="text"
+                          value={f.label}
+                          onChange={(e) => setCombineFiles(prev => prev.map((x, j) => j === i ? { ...x, label: e.target.value } : x))}
+                          style={{ width: '140px', padding: '3px 6px', fontSize: '11px', backgroundColor: '#1a1a2e', color: '#eee', border: '1px solid #0f3460', borderRadius: '3px' }}
+                          title="Label for this section (used as sample column value)"
+                        />
+                        <span title={f.path} style={{ flex: 1, color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {f.path.split('/').pop()}
+                        </span>
+                        <button
+                          onClick={() => setCombineFiles(prev => prev.filter((_, j) => j !== i))}
+                          style={{ padding: '2px 6px', fontSize: '11px', backgroundColor: 'transparent', color: '#888', border: '1px solid #333', borderRadius: '3px', cursor: 'pointer' }}
+                          title="Remove from combine list"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '11px', color: '#888' }}>Gap:</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={50}
+                    step={1}
+                    value={combineGapPct}
+                    onChange={(e) => setCombineGapPct(parseFloat(e.target.value) || 0)}
+                    style={{ width: '50px', padding: '3px 6px', fontSize: '11px', backgroundColor: '#1a1a2e', color: '#eee', border: '1px solid #0f3460', borderRadius: '3px' }}
+                  />
+                  <span style={{ fontSize: '11px', color: '#888' }}>% of mean section width</span>
+                </div>
+              </div>
+            )}
 
             {/* Two-column browser */}
             <div style={{ display: 'flex', gap: '12px', flex: 1, minHeight: 0 }}>
@@ -2201,8 +2371,20 @@ export default function App() {
                         onClick={() => {
                           if (entry.type === 'directory') {
                             browseDirectory(entry.path)
+                          } else if (loadMode === 'combine') {
+                            // Combine mode rejects non-.h5ad files for now and de-dupes.
+                            if (entry.type !== 'file' || !entry.path.endsWith('.h5ad')) {
+                              setLoadError('Combine sections supports .h5ad files only.')
+                              return
+                            }
+                            setLoadError(null)
+                            setCombineFiles(prev => {
+                              if (prev.some(f => f.path === entry.path)) return prev
+                              const stem = (entry.name.replace(/\.h5ad$/i, ''))
+                              return [...prev, { path: entry.path, label: stem }]
+                            })
                           } else {
-                            // 'file', '10x_mtx', and '10x_mtx_trio' are all loadable
+                            // Single mode: 'file', '10x_mtx', and '10x_mtx_trio' are all loadable
                             setLoadFilePath(entry.path)
                             setLoadError(null)
                           }
@@ -2288,22 +2470,41 @@ export default function App() {
               >
                 Cancel
               </button>
-              <button
-                onClick={handleLoadDataset}
-                disabled={loadLoading || !loadFilePath.trim()}
-                style={{
-                  padding: '8px 16px',
-                  fontSize: '13px',
-                  backgroundColor: '#e94560',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: loadLoading || !loadFilePath.trim() ? 'not-allowed' : 'pointer',
-                  opacity: !loadFilePath.trim() ? 0.5 : 1,
-                }}
-              >
-                {loadLoading ? 'Loading...' : 'Load'}
-              </button>
+              {loadMode === 'combine' ? (
+                <button
+                  onClick={handleCombineDatasets}
+                  disabled={loadLoading || combineFiles.length < 2}
+                  style={{
+                    padding: '8px 16px',
+                    fontSize: '13px',
+                    backgroundColor: '#e94560',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: loadLoading || combineFiles.length < 2 ? 'not-allowed' : 'pointer',
+                    opacity: combineFiles.length < 2 ? 0.5 : 1,
+                  }}
+                >
+                  {loadLoading ? 'Combining...' : `Combine ${combineFiles.length} section${combineFiles.length === 1 ? '' : 's'}`}
+                </button>
+              ) : (
+                <button
+                  onClick={handleLoadDataset}
+                  disabled={loadLoading || !loadFilePath.trim()}
+                  style={{
+                    padding: '8px 16px',
+                    fontSize: '13px',
+                    backgroundColor: '#e94560',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: loadLoading || !loadFilePath.trim() ? 'not-allowed' : 'pointer',
+                    opacity: !loadFilePath.trim() ? 0.5 : 1,
+                  }}
+                >
+                  {loadLoading ? 'Loading...' : 'Load'}
+                </button>
+              )}
             </div>
           </div>
         </div>

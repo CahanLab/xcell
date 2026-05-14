@@ -17,6 +17,108 @@ import scanpy as sc
 from .diffexp import compute_diffexp
 
 
+def combine_spatial_h5ads(
+    file_paths: list[Path],
+    labels: list[str],
+    gap_fraction: float = 0.05,
+) -> anndata.AnnData:
+    """Combine multiple spatial-transcriptomics h5ads into one side-by-side adata.
+
+    Used for cross-sample comparison (e.g. two time points of the same tissue).
+    Sections are laid out left-to-right along the spatial x-axis with a gap
+    proportional to the mean section width; y is unchanged. The resulting adata
+    has a new ``sample`` categorical .obs column identifying which source file
+    each cell came from, the intersection of input gene indices, and only
+    ``X_spatial`` in .obsm (per-file UMAPs/PCAs are dropped — re-run scanpy on
+    the combined data).
+
+    Args:
+        file_paths: List of >=2 absolute paths to .h5ad files. Each must have
+                    ``obsm['X_spatial']``.
+        labels: Per-file labels for the new ``sample`` column. Must match
+                ``file_paths`` length; collisions are de-duplicated by suffix.
+        gap_fraction: Horizontal gap between adjacent sections, as a fraction
+                      of mean section width (default 0.05 = 5%).
+
+    Returns:
+        Combined AnnData. ``.var.index`` is the intersection across inputs;
+        ``.obs`` is outer-joined (missing values become NaN); ``.raw``,
+        per-file ``.varm`` / ``.obsp`` / ``.uns`` / other ``.obsm`` are dropped.
+
+    Raises:
+        ValueError: if fewer than 2 files, missing X_spatial, no shared genes,
+                    or non-.h5ad input.
+    """
+    if len(file_paths) < 2:
+        raise ValueError("At least 2 files required for combination")
+    if len(labels) != len(file_paths):
+        raise ValueError("labels must match file_paths length")
+
+    # De-duplicate labels (filename collisions, etc.)
+    seen: dict[str, int] = {}
+    unique_labels: list[str] = []
+    for lbl in labels:
+        base = (lbl or "section").strip() or "section"
+        if base in seen:
+            seen[base] += 1
+            unique_labels.append(f"{base}_{seen[base]}")
+        else:
+            seen[base] = 1
+            unique_labels.append(base)
+
+    adatas: list[anndata.AnnData] = []
+    widths: list[float] = []
+    for p in file_paths:
+        if p.suffix != '.h5ad':
+            raise ValueError(f"Combine supports .h5ad only; got {p.name}")
+        a = anndata.read_h5ad(p)
+        if 'X_spatial' not in a.obsm:
+            raise ValueError(f"{p.name} lacks obsm['X_spatial']")
+        adatas.append(a)
+        sp = np.asarray(a.obsm['X_spatial'][:, :2])
+        widths.append(float(sp[:, 0].max() - sp[:, 0].min()))
+
+    mean_width = float(np.mean(widths)) if widths else 0.0
+    gap = mean_width * gap_fraction
+
+    # Shift each section's spatial x so they lay out left-to-right with gaps.
+    cleaned: list[anndata.AnnData] = []
+    current_offset = 0.0
+    for a, w in zip(adatas, widths):
+        sp = np.asarray(a.obsm['X_spatial'][:, :2], dtype=np.float64).copy()
+        sp[:, 0] = sp[:, 0] - sp[:, 0].min() + current_offset
+        b = a.copy()
+        # Reset obsm/obsp/varm/uns; drop .raw. The concat below operates on .X
+        # via the intersection of var indices — keeping per-file .raw with
+        # different gene spaces would conflict on concat.
+        b.obsm = {'X_spatial': sp}
+        b.obsp = {}
+        b.varm = {}
+        b.uns = {}
+        b.raw = None
+        cleaned.append(b)
+        current_offset += w + gap
+
+    combined = anndata.concat(
+        cleaned,
+        axis=0,
+        join='inner',          # intersection of var.index
+        label='sample',
+        keys=unique_labels,
+        index_unique='-',      # collision-safe obs_names
+        merge='first',
+    )
+    if combined.n_vars == 0:
+        raise ValueError(
+            "No shared genes across the provided files — cannot combine. "
+            "Check that each h5ad uses the same gene identifiers (consider "
+            "Gene IDs swap in xcell before exporting)."
+        )
+    # Ensure the `sample` column is a clean categorical for downstream UI.
+    combined.obs['sample'] = pd.Categorical(combined.obs['sample'], categories=unique_labels, ordered=False)
+    return combined
+
+
 class DataAdaptor:
     """Wraps an AnnData object and provides accessor methods.
 
@@ -30,25 +132,32 @@ class DataAdaptor:
         filepath: Path to the loaded h5ad file
     """
 
-    def __init__(self, filepath: str | Path):
+    def __init__(self, filepath: str | Path, *, adata: anndata.AnnData | None = None):
         """Load an h5ad, 10x h5, or 10x mtx directory and initialize the adaptor.
 
         Args:
             filepath: Path to the .h5ad/.h5 file, 10x CellRanger matrix directory,
-                      or a *_matrix.mtx(.gz) file from a prefixed file trio
+                      or a *_matrix.mtx(.gz) file from a prefixed file trio. Used
+                      for display only when ``adata`` is provided.
+            adata: Optional pre-loaded AnnData. When supplied, the constructor
+                   skips file I/O and uses this object directly. Used by the
+                   combine-spatial route which builds the AnnData in memory.
         """
         self.filepath = Path(filepath)
-        trio = self._find_10x_trio_files(self.filepath)
-        if self.filepath.is_dir():
-            self.adata = sc.read_10x_mtx(self.filepath)
-            self.adata.var_names_make_unique()
-        elif trio is not None:
-            self._load_10x_mtx_trio(*trio)
-        elif self.filepath.suffix == '.h5':
-            self.adata = sc.read_10x_h5(self.filepath)
-            self.adata.var_names_make_unique()
+        if adata is not None:
+            self.adata = adata
         else:
-            self.adata = anndata.read_h5ad(self.filepath)
+            trio = self._find_10x_trio_files(self.filepath)
+            if self.filepath.is_dir():
+                self.adata = sc.read_10x_mtx(self.filepath)
+                self.adata.var_names_make_unique()
+            elif trio is not None:
+                self._load_10x_mtx_trio(*trio)
+            elif self.filepath.suffix == '.h5':
+                self.adata = sc.read_10x_h5(self.filepath)
+                self.adata.var_names_make_unique()
+            else:
+                self.adata = anndata.read_h5ad(self.filepath)
         self._normalized_adata: anndata.AnnData | None = None
         self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
         self._action_history: list[dict[str, Any]] = []  # Track scanpy operations

@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Arrow-key nudge in Quilt mode (transform phase)** — once you've lassoed a cell subset, press the arrow keys to translate the selection. Step is ~0.2% of the embedding's spatial range per press; **Shift+arrow** is 10× larger (matches Figma / Illustrator convention). Up/Down move along the data y-axis (math y-up). The handler is no-op when typing in inputs/textareas.
+
+### Added
 - **Combine spatial sections** — a new way to load 2+ spatial-transcriptomics h5ads as one dataset for cross-sample analysis (e.g. comparing the same tissue across two timepoints). Sections are laid out left-to-right along the spatial x-axis with a gap proportional to the mean section width (default 5%); y is unchanged so vertical alignment is preserved. Gene index is the intersection across inputs; a new `sample` categorical .obs column tags each cell with its source-file label. Per-file UMAPs/PCAs are dropped — run scanpy on the combined adata. New backend route `POST /api/combine_spatial` (body: `{files: [{file_path, label?}], slot, gap_fraction}`). New UI: a "Combine sections" mode toggle in the Load modal — click .h5ad files in the browser to build a list with editable per-file labels and an adjustable gap percentage. v1 supports `.h5ad` files only with `obsm['X_spatial']`; the route rejects others with a clear error.
 - **File menu** — new "File" toolbar button (left of Select) consolidating Load, Combine spatial sections, and Export under one dropdown. The standalone Load and Export buttons are gone; everything file-related lives behind one click.
 

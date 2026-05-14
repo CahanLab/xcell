@@ -81,7 +81,7 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 The **Adjust** toolbar dropdown has three sections:
 
 - **Rotate** — enter Rotate mode then **drag inside the plot** to rotate around the data centroid. A live angle badge and a faint orange ring at the pivot show what's happening. Hold **Shift** to snap to 15° increments. The bottom-of-viewport toolbar gives **±90°** quick buttons and a precise degree input (Enter to apply).
-- **Quilt** — lasso a cell subset, then drag to translate it (or Shift+drag to rotate it) — for stitching together adjacent tissue sections. Press **Ctrl/Cmd+Z** (or click "Undo") to revert the last quilt transform.
+- **Quilt** — lasso a cell subset, then drag to translate it (or Shift+drag to rotate it) — for stitching together adjacent tissue sections. **Arrow keys** nudge the selection (Shift+arrow for 10× larger step). Press **Ctrl/Cmd+Z** (or click "Undo") to revert the last quilt transform.
 - **Flip** — one-shot actions: **Flip Horizontal** mirrors the embedding left↔right (about the y-axis), **Flip Vertical** mirrors top↔bottom (about the x-axis). If you're in Quilt mode with cells selected, the flip applies only to those cells.
 
 All adjustments persist on the backend and are saved on h5ad export.

@@ -801,6 +801,41 @@ export default function App() {
     addLine(`Line ${drawnLines.length + 1}`, points, selectedEmbedding, drawTool, closed)
   }, [drawnLines.length, selectedEmbedding, drawTool, addLine])
 
+  // Arrow-key nudge for the Quilt selection (transform phase only). Plain arrow
+  // = ~0.2% of the embedding range; Shift+arrow = ~2% (matches Figma /
+  // Illustrator convention). Skipped when the user is typing in an input.
+  useEffect(() => {
+    const handleArrowNudge = (e: KeyboardEvent) => {
+      if (interactionMode !== 'quilt' || quiltPhase !== 'transform') return
+      if (selectedCellIndices.length === 0 || !embedding) return
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      e.preventDefault()
+      let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity
+      for (const [x, y] of embedding.coordinates) {
+        if (x < xMin) xMin = x; if (x > xMax) xMax = x
+        if (y < yMin) yMin = y; if (y > yMax) yMax = y
+      }
+      const range = Math.max(xMax - xMin, yMax - yMin) || 1
+      const stepFrac = e.shiftKey ? 0.02 : 0.002
+      const step = range * stepFrac
+      let dx = 0, dy = 0
+      // Embedding y is math y-up: ArrowUp → +y in data space.
+      if (e.key === 'ArrowLeft') dx = -step
+      else if (e.key === 'ArrowRight') dx = step
+      else if (e.key === 'ArrowUp') dy = step
+      else if (e.key === 'ArrowDown') dy = -step
+      handleTransformEmbeddingSubset({
+        translate_x: dx,
+        translate_y: dy,
+        cell_indices: selectedCellIndices,
+      })
+    }
+    window.addEventListener('keydown', handleArrowNudge)
+    return () => window.removeEventListener('keydown', handleArrowNudge)
+  }, [interactionMode, quiltPhase, selectedCellIndices, embedding, handleTransformEmbeddingSubset])
+
 
   const geneSetCategories = useStore((state) => state.geneSetCategories)
 

@@ -10,6 +10,7 @@ interface ScatterPlotProps {
   colorBy: ObsColumnData | null
   expressionData: ExpressionData | null
   bivariateData: BivariateExpressionData | null
+  highlightData: import('../store').HighlightData | null
   colorMode: ColorMode
   interactionMode: InteractionMode
   selectedCellIndices: number[]
@@ -305,6 +306,7 @@ export default function ScatterPlot({
   colorBy,
   expressionData,
   bivariateData,
+  highlightData,
   colorMode,
   interactionMode,
   selectedCellIndices,
@@ -434,11 +436,15 @@ export default function ScatterPlot({
       return activeCellMask !== null && !activeCellMask[index]
     }
 
+    // Compute the base color function (depends on colorMode); we may wrap it
+    // below with a highlight overlay blender.
+    let baseColorFn: (d: { index: number }) => [number, number, number, number]
+
     if (colorMode === 'bivariate' && bivariateData) {
       const { values1, values2 } = bivariateData
       const bivariateColormap = displayPreferences.bivariateColormap
 
-      return (d: { index: number }): [number, number, number, number] => {
+      baseColorFn = (d: { index: number }): [number, number, number, number] => {
         if (isMasked(d.index)) {
           return maskedColor
         }
@@ -455,7 +461,7 @@ export default function ScatterPlot({
       const range = max - min || 1
       const colorScale = displayPreferences.colorScale
 
-      return (d: { index: number }): [number, number, number, number] => {
+      baseColorFn = (d: { index: number }): [number, number, number, number] => {
         // Show masked cells as gray (when showMaskedCells is true, they're in the data)
         if (isMasked(d.index)) {
           return maskedColor
@@ -471,54 +477,80 @@ export default function ScatterPlot({
         const color = getColorFromScale(t, colorScale)
         return [...color, opacity] as [number, number, number, number]
       }
-    } else if (colorMode === 'metadata' && colorBy) {
-      if (colorBy.dtype === 'category') {
-        const nCats = colorBy.categories?.length ?? 0
-        const palette = resolveCategoryPalette(Math.max(nCats, 1), colorBy.colors)
-        return (d: { index: number }): [number, number, number, number] => {
-          if (isMasked(d.index)) {
-            return maskedColor
-          }
-          if (selectedSet.size > 0 && selectedSet.has(d.index)) {
-            return SELECTED_COLOR
-          }
-          const value = colorBy.values[d.index] as number
-          const color = palette[value] ?? palette[0]
-          return [...color, opacity] as [number, number, number, number]
+    } else if (colorMode === 'metadata' && colorBy && colorBy.dtype === 'category') {
+      const nCats = colorBy.categories?.length ?? 0
+      const palette = resolveCategoryPalette(Math.max(nCats, 1), colorBy.colors)
+      baseColorFn = (d: { index: number }): [number, number, number, number] => {
+        if (isMasked(d.index)) {
+          return maskedColor
         }
-      } else if (colorBy.dtype === 'numeric') {
-        const values = colorBy.values.filter((v) => v !== null) as number[]
-        const min = Math.min(...values)
-        const max = Math.max(...values)
-        const range = max - min || 1
+        if (selectedSet.size > 0 && selectedSet.has(d.index)) {
+          return SELECTED_COLOR
+        }
+        const value = colorBy.values[d.index] as number
+        const color = palette[value] ?? palette[0]
+        return [...color, opacity] as [number, number, number, number]
+      }
+    } else if (colorMode === 'metadata' && colorBy && colorBy.dtype === 'numeric') {
+      const values = colorBy.values.filter((v) => v !== null) as number[]
+      const min = Math.min(...values)
+      const max = Math.max(...values)
+      const range = max - min || 1
 
-        return (d: { index: number }): [number, number, number, number] => {
-          if (isMasked(d.index)) {
-            return maskedColor
-          }
-          if (selectedSet.size > 0 && selectedSet.has(d.index)) {
-            return SELECTED_COLOR
-          }
-          const value = colorBy.values[d.index]
-          if (value === null) return [128, 128, 128, Math.round(opacity * 0.5)]
-          const t = ((value as number) - min) / range
-          const color = interpolateColor(t)
-          return [...color, opacity] as [number, number, number, number]
+      baseColorFn = (d: { index: number }): [number, number, number, number] => {
+        if (isMasked(d.index)) {
+          return maskedColor
         }
+        if (selectedSet.size > 0 && selectedSet.has(d.index)) {
+          return SELECTED_COLOR
+        }
+        const value = colorBy.values[d.index]
+        if (value === null) return [128, 128, 128, Math.round(opacity * 0.5)]
+        const t = ((value as number) - min) / range
+        const color = interpolateColor(t)
+        return [...color, opacity] as [number, number, number, number]
+      }
+    } else {
+      // Default color function (no active color mode, or metadata without dtype)
+      baseColorFn = (d: { index: number }): [number, number, number, number] => {
+        if (isMasked(d.index)) {
+          return maskedColor
+        }
+        if (selectedSet.size > 0 && selectedSet.has(d.index)) {
+          return SELECTED_COLOR
+        }
+        return [DEFAULT_COLOR[0], DEFAULT_COLOR[1], DEFAULT_COLOR[2], opacity]
       }
     }
 
-    // Default color function
-    return (d: { index: number }): [number, number, number, number] => {
-      if (isMasked(d.index)) {
-        return maskedColor
+    // Highlight overlay: blend a single user-picked color over the base color,
+    // weighted per cell by an independent gene/gene-set score. Skipped for
+    // selected and masked cells so their visual cues stay intact.
+    if (highlightData) {
+      const { values: hVals, min: hMin, max: hMax, color: hHex, intensity } = highlightData
+      const range = hMax - hMin || 1
+      const rgb = hexToRgb(hHex) ?? [34, 197, 94]
+      const fn = baseColorFn
+      return (d: { index: number }): [number, number, number, number] => {
+        const base = fn(d)
+        if (isMasked(d.index)) return base
+        if (selectedSet.size > 0 && selectedSet.has(d.index)) return base
+        const v = hVals[d.index]
+        if (v === null || v === undefined) return base
+        let w = ((v - hMin) / range) * intensity
+        if (w <= 0) return base
+        if (w > 1) w = 1
+        return [
+          Math.round(base[0] * (1 - w) + rgb[0] * w),
+          Math.round(base[1] * (1 - w) + rgb[1] * w),
+          Math.round(base[2] * (1 - w) + rgb[2] * w),
+          base[3],
+        ] as [number, number, number, number]
       }
-      if (selectedSet.size > 0 && selectedSet.has(d.index)) {
-        return SELECTED_COLOR
-      }
-      return [DEFAULT_COLOR[0], DEFAULT_COLOR[1], DEFAULT_COLOR[2], opacity]
     }
-  }, [colorBy, expressionData, bivariateData, colorMode, selectedSet, displayPreferences, activeCellMask])
+
+    return baseColorFn
+  }, [colorBy, expressionData, bivariateData, highlightData, colorMode, selectedSet, displayPreferences, activeCellMask])
 
   // Initialize view state when bounds change
   useEffect(() => {
@@ -1051,7 +1083,7 @@ export default function ScatterPlot({
       radiusMaxPixels: 20,
       pickable: true,
       updateTriggers: {
-        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.bivariateColormap, displayPreferences.pointOpacity, activeCellMask],
+        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.bivariateColormap, displayPreferences.pointOpacity, activeCellMask, highlightData?.source, highlightData?.color, highlightData?.intensity],
         getRadius: [selectedCellIndices, displayPreferences.pointSize, activeCellMask],
       },
     }),

@@ -42,6 +42,20 @@ export interface BivariateExpressionData {
   transform?: string
 }
 
+// A "highlight" overlay — a single color blended on top of whatever color mode
+// is active, weighted per cell by an independent gene or gene-set score. Lets
+// the user demarcate a feature (e.g. epithelium in green) while keeping
+// expression/bivariate/metadata coloring active for the rest of the data.
+export interface HighlightData {
+  source: string         // gene name or gene-set name (display label)
+  isGeneSet: boolean
+  values: (number | null)[]  // raw per-cell scores (length n_cells)
+  min: number
+  max: number
+  color: string          // hex string, e.g. "#22c55e"
+  intensity: number      // 0..1 multiplier on the per-cell weight
+}
+
 export interface GeneSet {
   id: string
   name: string
@@ -357,6 +371,7 @@ export interface DatasetState {
   colorBy: ObsColumnData | null
   expressionData: ExpressionData | null
   bivariateData: BivariateExpressionData | null
+  highlightData: HighlightData | null
   selectedGenes: string[]
   selectedGeneSetName: string | null
   selectedEmbedding: string | null
@@ -447,6 +462,7 @@ export function createDefaultDatasetState(
     colorBy: null,
     expressionData: null,
     bivariateData: null,
+    highlightData: null,
     selectedGenes: [],
     selectedGeneSetName: null,
     selectedEmbedding: null,
@@ -481,6 +497,9 @@ interface AppState {
 
   // Bivariate expression data
   bivariateData: BivariateExpressionData | null
+
+  // Highlight overlay (single color blended on top of any base color mode)
+  highlightData: HighlightData | null
 
   // Gene management (hierarchical)
   geneSetCategories: Record<GeneSetCategoryType, GeneSetCategory>
@@ -606,6 +625,8 @@ interface AppState {
   setExpressionData: (data: ExpressionData | null) => void
   setBivariateData: (data: BivariateExpressionData | null) => void
   clearBivariateMode: () => void
+  setHighlightData: (data: HighlightData | null) => void
+  clearHighlight: () => void
   setSelectedEmbedding: (name: string) => void
   setSelectedColorColumn: (name: string | null) => void
   setColorMode: (mode: ColorMode) => void
@@ -807,6 +828,7 @@ export const useStore = create<AppState>((set, get) => {
       colorBy: ds.colorBy,
       expressionData: ds.expressionData,
       bivariateData: ds.bivariateData,
+      highlightData: ds.highlightData,
       selectedGenes: ds.selectedGenes,
       selectedGeneSetName: ds.selectedGeneSetName,
       selectedEmbedding: ds.selectedEmbedding,
@@ -839,6 +861,7 @@ export const useStore = create<AppState>((set, get) => {
     colorBy: null,
     expressionData: null,
     bivariateData: null,
+    highlightData: null,
     geneSetCategories: createDefaultCategories(),
     geneSets: [],  // Legacy, kept for backward compatibility
     selectedGenes: [],
@@ -962,6 +985,8 @@ export const useStore = create<AppState>((set, get) => {
       })),
 
     clearBivariateMode: () => set(dsUpdate({ bivariateData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 })),
+    setHighlightData: (data) => set(dsUpdate({ highlightData: data })),
+    clearHighlight: () => set(dsUpdate({ highlightData: null })),
     setSelectedEmbedding: (name) => set(dsUpdate({ selectedEmbedding: name })),
     setSelectedColorColumn: (name) => set(dsUpdate({ selectedColorColumn: name })),
     setColorMode: (mode) => set(dsUpdate({ colorMode: mode })),

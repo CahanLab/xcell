@@ -436,6 +436,8 @@ export function useDataActions() {
     setColorMode,
     setExpressionData,
     setBivariateData,
+    setHighlightData,
+    clearHighlight,
     setSelectedGenes,
     setSelectedGeneSetName,
     clearSelectedGenes,
@@ -657,6 +659,50 @@ export function useDataActions() {
     }
   }, [clearBivariateMode, layoutMode, activeSlot, patchSlotState])
 
+  // Set the Highlight overlay from a gene-set score (or single gene). Reuses
+  // /api/expression/multi (which already runs the per-gene-norm + aggregation
+  // pipeline used by gene-set coloring). The result is stored as `highlightData`
+  // and rendered as a color blend on top of any active color mode — it does NOT
+  // change `colorMode` or other state.
+  const colorByHighlightSet = useCallback(
+    async (genes: string[], setName: string, color: string, intensity: number) => {
+      if (!genes.length) return
+      const layer = displayLayer && displayLayer !== 'X' ? displayLayer : undefined
+      try {
+        const body: Record<string, unknown> = {
+          genes,
+          transform: displayPreferences.expressionTransform,
+          per_gene_norm: displayPreferences.geneSetPerGeneNorm,
+          per_gene_clip: displayPreferences.geneSetPerGeneClip,
+          aggregation: displayPreferences.geneSetAggregation,
+          clip_percentile: displayPreferences.clipPercentile,
+        }
+        if (layer) body.layer = layer
+        const data = await fetchJson<ExpressionData>(appendDataset(`${API_BASE}/expression/multi`, activeSlot), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        setHighlightData({
+          source: setName,
+          isGeneSet: genes.length > 1,
+          values: data.values,
+          min: data.min,
+          max: data.max,
+          color,
+          intensity,
+        })
+      } catch (err) {
+        setError((err as Error).message)
+      }
+    },
+    [activeSlot, displayLayer, displayPreferences.expressionTransform, displayPreferences.geneSetPerGeneNorm, displayPreferences.geneSetPerGeneClip, displayPreferences.geneSetAggregation, displayPreferences.clipPercentile, setHighlightData, setError]
+  )
+
+  const clearHighlightOverlay = useCallback(() => {
+    clearHighlight()
+  }, [clearHighlight])
+
   return {
     selectEmbedding,
     selectColorColumn,
@@ -665,6 +711,8 @@ export function useDataActions() {
     clearExpressionColor,
     colorByBivariate,
     clearBivariateColor,
+    colorByHighlightSet,
+    clearHighlightOverlay,
   }
 }
 

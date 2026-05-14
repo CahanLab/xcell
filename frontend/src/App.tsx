@@ -495,6 +495,7 @@ export default function App() {
     colorMode,
     expressionData,
     bivariateData,
+    highlightData,
     selectedGenes,
     selectedGeneSetName,
     interactionMode,
@@ -639,10 +640,6 @@ export default function App() {
     }
   }, [])
 
-  // State for line naming dialog
-  const [pendingLinePoints, setPendingLinePoints] = useState<[number, number][] | null>(null)
-  const [pendingDrawType, setPendingDrawType] = useState<'pencil' | 'lasso' | 'polygon' | 'segmented' | 'smooth_curve'>('pencil')
-  const [newLineName, setNewLineName] = useState('')
   const [showDrawMenu, setShowDrawMenu] = useState(false)
   const [showSelectMenu, setShowSelectMenu] = useState(false)
   const [showAdjustMenu, setShowAdjustMenu] = useState(false)
@@ -706,7 +703,6 @@ export default function App() {
           return
         }
         setInteractionMode('pan')
-        setPendingLinePoints(null)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -793,25 +789,12 @@ export default function App() {
   }, [selectedEmbedding, setEmbedding, setQuiltUndoDepth])
 
   const handleLineDrawn = useCallback((points: [number, number][]) => {
-    setPendingLinePoints(points)
-    setPendingDrawType(drawTool)
-    setNewLineName(`Line ${drawnLines.length + 1}`)
-    setInteractionMode('pan')
-  }, [drawnLines.length, setInteractionMode, drawTool])
-
-  const handleSaveLine = useCallback(() => {
-    if (pendingLinePoints && newLineName.trim() && selectedEmbedding) {
-      const closed = pendingDrawType === 'polygon' || pendingDrawType === 'lasso'
-      addLine(newLineName.trim(), pendingLinePoints, selectedEmbedding, pendingDrawType, closed)
-      setPendingLinePoints(null)
-      setNewLineName('')
-    }
-  }, [pendingLinePoints, newLineName, selectedEmbedding, addLine, pendingDrawType])
-
-  const handleCancelLine = useCallback(() => {
-    setPendingLinePoints(null)
-    setNewLineName('')
-  }, [])
+    if (!selectedEmbedding) return
+    const closed = drawTool === 'polygon' || drawTool === 'lasso'
+    // Auto-name and add immediately. Don't exit draw mode — user can keep drawing.
+    // (Lines can be renamed in-place from the Shapes panel.)
+    addLine(`Line ${drawnLines.length + 1}`, points, selectedEmbedding, drawTool, closed)
+  }, [drawnLines.length, selectedEmbedding, drawTool, addLine])
 
 
   const geneSetCategories = useStore((state) => state.geneSetCategories)
@@ -1515,6 +1498,7 @@ export default function App() {
                             colorBy={datasets.primary.colorBy}
                             expressionData={datasets.primary.expressionData}
                             bivariateData={datasets.primary.bivariateData}
+                            highlightData={datasets.primary.highlightData}
                             colorMode={datasets.primary.colorMode}
                             interactionMode={interactionMode}
                             selectedCellIndices={datasets.primary.selectedCellIndices}
@@ -1603,6 +1587,7 @@ export default function App() {
                             colorBy={datasets.secondary.colorBy}
                             expressionData={datasets.secondary.expressionData}
                             bivariateData={datasets.secondary.bivariateData}
+                            highlightData={datasets.secondary.highlightData}
                             colorMode={datasets.secondary.colorMode}
                             interactionMode={interactionMode}
                             selectedCellIndices={datasets.secondary.selectedCellIndices}
@@ -1682,6 +1667,7 @@ export default function App() {
                           colorBy={colorBy}
                           expressionData={expressionData}
                           bivariateData={bivariateData}
+                          highlightData={highlightData}
                           colorMode={colorMode}
                           interactionMode={interactionMode}
                           selectedCellIndices={selectedCellIndices}
@@ -2323,89 +2309,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Line naming dialog */}
-      {pendingLinePoints && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.6)',
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-          onClick={handleCancelLine}
-        >
-          <div
-            style={{
-              backgroundColor: '#16213e',
-              border: '1px solid #0f3460',
-              borderRadius: '8px',
-              padding: '20px',
-              minWidth: '300px',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ fontSize: '14px', fontWeight: 600, color: '#4ecdc4', marginBottom: '16px' }}>
-              Save Line
-            </div>
-            <input
-              type="text"
-              value={newLineName}
-              onChange={(e) => setNewLineName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSaveLine()}
-              placeholder="Line name..."
-              autoFocus
-              style={{
-                width: '100%',
-                padding: '8px 12px',
-                fontSize: '14px',
-                backgroundColor: '#0f3460',
-                color: '#eee',
-                border: '1px solid #1a1a2e',
-                borderRadius: '4px',
-                marginBottom: '16px',
-                outline: 'none',
-              }}
-            />
-            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-              <button
-                onClick={handleCancelLine}
-                style={{
-                  padding: '8px 16px',
-                  fontSize: '13px',
-                  backgroundColor: '#0f3460',
-                  color: '#aaa',
-                  border: '1px solid #1a1a2e',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveLine}
-                disabled={!newLineName.trim()}
-                style={{
-                  padding: '8px 16px',
-                  fontSize: '13px',
-                  backgroundColor: '#4ecdc4',
-                  color: '#000',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                }}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

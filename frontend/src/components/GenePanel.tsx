@@ -1661,8 +1661,13 @@ function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetCategory
 }
 
 export default function GenePanel() {
-  const { geneSetCategories, selectedGenes, bivariateData, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen } = useStore()
-  const { colorByGene, colorByGenes, clearExpressionColor, colorByBivariate, clearBivariateColor } = useDataActions()
+  const { geneSetCategories, selectedGenes, bivariateData, highlightData, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen } = useStore()
+  const { colorByGene, colorByGenes, clearExpressionColor, colorByBivariate, clearBivariateColor, colorByHighlightSet, clearHighlightOverlay } = useDataActions()
+
+  // Highlight overlay UI state — independent of bivariate, lives alongside it
+  const [highlightSetId, setHighlightSetId] = useState<string | null>(null)
+  const [highlightColor, setHighlightColor] = useState<string>('#22c55e') // tailwind green-500
+  const [highlightIntensity, setHighlightIntensity] = useState<number>(0.85)
 
   const handleColorBySet = useCallback((genes: string[], geneSetName?: string) => {
     colorByGenes(genes, undefined, geneSetName)
@@ -2143,6 +2148,83 @@ export default function GenePanel() {
               </button>
               <div style={{ fontSize: '10px', color: '#666', marginTop: '8px', textAlign: 'center' }}>
                 Colors cells by expression of both gene sets simultaneously
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Highlight overlay — single color blended on top of any base coloring,
+            weighted per cell by an independent gene-set score. Useful for
+            demarcating a feature (e.g. epithelium) while keeping bivariate or
+            single-gene coloring active for the rest of the data. */}
+        {allGeneSets.filter(gs => gs.genes.length > 0).length >= 1 && (
+          <div style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <span style={styles.sectionTitle}>Highlight (overlay)</span>
+              {highlightData && (
+                <button
+                  onClick={clearHighlightOverlay}
+                  style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: '11px', backgroundColor: 'transparent', color: '#888', border: '1px solid #444', borderRadius: '3px', cursor: 'pointer' }}
+                  title="Clear the highlight overlay"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <div style={{ backgroundColor: '#0f3460', borderRadius: '4px', padding: '12px' }}>
+              <div style={{ marginBottom: '8px' }}>
+                <label style={{ fontSize: '11px', color: '#888', display: 'block', marginBottom: '4px' }}>Gene set</label>
+                <select
+                  value={highlightSetId || ''}
+                  onChange={(e) => setHighlightSetId(e.target.value || null)}
+                  style={{ width: '100%', padding: '6px 8px', fontSize: '12px', backgroundColor: '#1a1a2e', color: '#eee', border: '1px solid #0f3460', borderRadius: '4px', cursor: 'pointer' }}
+                >
+                  <option value="">Select gene set...</option>
+                  {allGeneSets.filter(gs => gs.genes.length > 0).map((gs) => (
+                    <option key={gs.id} value={gs.id}>{gs.name} ({gs.genes.length} genes)</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                <label style={{ fontSize: '11px', color: '#888' }}>Color</label>
+                <input
+                  type="color"
+                  value={highlightColor}
+                  onChange={(e) => setHighlightColor(e.target.value)}
+                  style={{ width: '36px', height: '24px', padding: 0, border: '1px solid #0f3460', borderRadius: '3px', backgroundColor: '#1a1a2e', cursor: 'pointer' }}
+                />
+                <label style={{ fontSize: '11px', color: '#888', marginLeft: '8px' }}>Intensity</label>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={highlightIntensity}
+                  onChange={(e) => setHighlightIntensity(parseFloat(e.target.value))}
+                  style={{ flex: 1 }}
+                />
+                <span style={{ fontSize: '10px', color: '#888', width: '32px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                  {Math.round(highlightIntensity * 100)}%
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  const set = allGeneSets.find(gs => gs.id === highlightSetId)
+                  if (set) colorByHighlightSet(set.genes, set.name, highlightColor, highlightIntensity)
+                }}
+                disabled={!highlightSetId}
+                style={{ width: '100%', padding: '8px', fontSize: '12px', fontWeight: 500, backgroundColor: highlightSetId ? '#4ecdc4' : '#1a1a2e', color: highlightSetId ? '#000' : '#666', border: 'none', borderRadius: '4px', cursor: highlightSetId ? 'pointer' : 'not-allowed' }}
+              >
+                {highlightData ? 'Update Highlight' : 'Apply Highlight'}
+              </button>
+              {highlightData && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px', color: '#888', marginTop: '8px' }}>
+                  <span style={{ display: 'inline-block', width: '12px', height: '12px', backgroundColor: highlightData.color, borderRadius: '2px', border: '1px solid #444' }} />
+                  Highlighting <strong style={{ color: '#ccc' }}>{highlightData.source}</strong> at {Math.round(highlightData.intensity * 100)}%
+                </div>
+              )}
+              <div style={{ fontSize: '10px', color: '#666', marginTop: '8px', textAlign: 'center' }}>
+                Blends color over the base view. Works with single, bivariate, or metadata coloring.
               </div>
             </div>
           </div>

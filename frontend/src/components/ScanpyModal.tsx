@@ -968,7 +968,7 @@ export default function ScanpyModal() {
         setDiffExpModalOpen(true)
         setScanpyModalOpen(false)
         try {
-          const result = await runDiffExp(group1, group2, compareTopN)
+          const result = await runDiffExp(group1, group2, compareTopN, activeSlot)
           setDiffExpResult(result)
         } finally {
           setDiffExpLoading(false)

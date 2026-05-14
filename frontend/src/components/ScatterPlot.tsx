@@ -26,8 +26,9 @@ interface ScatterPlotProps {
   }) => void
 }
 
-// Color palette for categorical data (similar to d3 category10)
-const CATEGORY_COLORS: [number, number, number][] = [
+// Base palette for categorical data (d3 category10). Beyond 10 categories we
+// extend with golden-angle hue stepping in HSL — see generateCategoryPalette.
+const BASE_CATEGORY_COLORS: [number, number, number][] = [
   [31, 119, 180],
   [255, 127, 14],
   [44, 160, 44],
@@ -39,6 +40,72 @@ const CATEGORY_COLORS: [number, number, number][] = [
   [188, 189, 34],
   [23, 190, 207],
 ]
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const C = (1 - Math.abs(2 * l - 1)) * s
+  const hh = h / 60
+  const X = C * (1 - Math.abs((hh % 2) - 1))
+  let r1 = 0, g1 = 0, b1 = 0
+  if (hh < 1) { r1 = C; g1 = X }
+  else if (hh < 2) { r1 = X; g1 = C }
+  else if (hh < 3) { g1 = C; b1 = X }
+  else if (hh < 4) { g1 = X; b1 = C }
+  else if (hh < 5) { r1 = X; b1 = C }
+  else { r1 = C; b1 = X }
+  const m = l - C / 2
+  return [
+    Math.round((r1 + m) * 255),
+    Math.round((g1 + m) * 255),
+    Math.round((b1 + m) * 255),
+  ]
+}
+
+// Return N visually distinct RGB triplets. First 10 follow d3-cat10; the rest
+// step through HSL hue space by the golden angle (137.5°) so adjacent indices
+// land far apart on the color wheel, with alternating saturation/lightness to
+// disambiguate when hues wrap close together.
+export function generateCategoryPalette(n: number): [number, number, number][] {
+  if (n <= BASE_CATEGORY_COLORS.length) return BASE_CATEGORY_COLORS.slice(0, n)
+  const out: [number, number, number][] = BASE_CATEGORY_COLORS.slice()
+  const GOLDEN_ANGLE = 137.508
+  for (let i = BASE_CATEGORY_COLORS.length; i < n; i++) {
+    const k = i - BASE_CATEGORY_COLORS.length
+    const hue = (k * GOLDEN_ANGLE + 25) % 360
+    const sat = k % 2 === 0 ? 0.70 : 0.85
+    const lit = k % 3 === 0 ? 0.55 : k % 3 === 1 ? 0.45 : 0.60
+    out.push(hslToRgb(hue, sat, lit))
+  }
+  return out
+}
+
+// Parse a #RGB / #RRGGBB / #RRGGBBAA hex color into an RGB triplet.
+export function hexToRgb(hex: string): [number, number, number] | null {
+  if (typeof hex !== 'string') return null
+  let h = hex.trim().replace(/^#/, '')
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('')
+  if (h.length !== 6 && h.length !== 8) return null
+  const r = parseInt(h.slice(0, 2), 16)
+  const g = parseInt(h.slice(2, 4), 16)
+  const b = parseInt(h.slice(4, 6), 16)
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return null
+  return [r, g, b]
+}
+
+// Resolve a per-category palette. If `existingColors` (e.g. from adata.uns
+// [`${col}_colors`]) is provided and parseable, those win; missing/invalid
+// entries fall through to the generated palette. Output length = n.
+export function resolveCategoryPalette(
+  n: number,
+  existingColors?: (string | null | undefined)[],
+): [number, number, number][] {
+  const generated = generateCategoryPalette(n)
+  if (!existingColors || existingColors.length === 0) return generated
+  return generated.map((fallback, i) => {
+    const hex = existingColors[i]
+    if (!hex) return fallback
+    return hexToRgb(hex) ?? fallback
+  })
+}
 
 const DEFAULT_COLOR: [number, number, number, number] = [100, 149, 237, 200]
 const SELECTED_COLOR: [number, number, number, number] = [255, 255, 0, 255]
@@ -259,6 +326,12 @@ export default function ScatterPlot({
   const rotateStartAngle = useRef(0)
   const accumulatedRotation = useRef(0)
   const preRotationCoords = useRef<[number, number][] | null>(null)
+  // Screen-space pivot for the active rotate drag (data centroid projected to
+  // screen at drag-start). Stored so handleMouseMove uses the same pivot the
+  // rotation math actually applies, instead of viewport center.
+  const rotatePivotScreen = useRef<{ x: number; y: number } | null>(null)
+  // Live rotation angle for the on-screen badge. Set during drag, cleared on release.
+  const [activeRotationDeg, setActiveRotationDeg] = useState<number | null>(null)
 
   // Quilt mode state
   const quiltPhase = useStore((state) => state.quiltPhase)
@@ -400,6 +473,8 @@ export default function ScatterPlot({
       }
     } else if (colorMode === 'metadata' && colorBy) {
       if (colorBy.dtype === 'category') {
+        const nCats = colorBy.categories?.length ?? 0
+        const palette = resolveCategoryPalette(Math.max(nCats, 1), colorBy.colors)
         return (d: { index: number }): [number, number, number, number] => {
           if (isMasked(d.index)) {
             return maskedColor
@@ -408,7 +483,7 @@ export default function ScatterPlot({
             return SELECTED_COLOR
           }
           const value = colorBy.values[d.index] as number
-          const color = CATEGORY_COLORS[value % CATEGORY_COLORS.length]
+          const color = palette[value] ?? palette[0]
           return [...color, opacity] as [number, number, number, number]
         }
       } else if (colorBy.dtype === 'numeric') {
@@ -510,15 +585,27 @@ export default function ScatterPlot({
         setLinePoints([point])
       }
       // Click-based tools handled via onClick/onDoubleClick below
-    } else if (interactionMode === 'adjust' && e.shiftKey && containerRef.current) {
+    } else if (interactionMode === 'adjust' && containerRef.current) {
+      // Pivot = data centroid projected to screen. Matches the rotation math
+      // (which spins around data centroid), so cursor angle relative to pivot
+      // corresponds exactly to applied rotation.
+      const coords = embedding.coordinates
+      let cx = 0, cy = 0
+      for (const [x, y] of coords) { cx += x; cy += y }
+      cx /= coords.length
+      cy /= coords.length
       const rect = containerRef.current.getBoundingClientRect()
-      const centerX = rect.left + rect.width / 2
-      const centerY = rect.top + rect.height / 2
-      const angle = Math.atan2(e.clientY - centerY, e.clientX - centerX)
+      const scale = viewState ? Math.pow(2, typeof viewState.zoom === 'number' ? viewState.zoom : 0) : 1
+      const target = viewState?.target as [number, number, number] | undefined
+      const screenCx = target ? (cx - target[0]) * scale + rect.width / 2 + rect.left : rect.left + rect.width / 2
+      const screenCy = target ? (cy - target[1]) * scale + rect.height / 2 + rect.top : rect.top + rect.height / 2
+      const angle = Math.atan2(e.clientY - screenCy, e.clientX - screenCx)
       isRotating.current = true
       rotateStartAngle.current = angle
       accumulatedRotation.current = 0
-      preRotationCoords.current = embedding.coordinates.map(c => [c[0], c[1]] as [number, number])
+      rotatePivotScreen.current = { x: screenCx, y: screenCy }
+      preRotationCoords.current = coords.map(c => [c[0], c[1]] as [number, number])
+      setActiveRotationDeg(0)
     } else if (interactionMode === 'quilt') {
       if (quiltPhase === 'lasso') {
         // Start lasso to select cells
@@ -556,7 +643,7 @@ export default function ScatterPlot({
         }
       }
     }
-  }, [interactionMode, drawTool, screenToData, embedding.coordinates, quiltPhase, viewState])
+  }, [interactionMode, selectionTool, drawTool, screenToData, embedding.coordinates, quiltPhase, viewState])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     // Track cursor for click-based draw tool preview
@@ -571,14 +658,17 @@ export default function ScatterPlot({
     }
 
     // Handle adjust rotation independently of isDrawing
-    if (isRotating.current && interactionMode === 'adjust' && containerRef.current && preRotationCoords.current) {
-      const rect = containerRef.current.getBoundingClientRect()
-      const centerX = rect.left + rect.width / 2
-      const centerY = rect.top + rect.height / 2
-      const currentAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX)
+    if (isRotating.current && interactionMode === 'adjust' && containerRef.current && preRotationCoords.current && rotatePivotScreen.current) {
+      const { x: pivotX, y: pivotY } = rotatePivotScreen.current
+      const currentAngle = Math.atan2(e.clientY - pivotY, e.clientX - pivotX)
       const totalDelta = currentAngle - rotateStartAngle.current
-      const totalDegrees = -(totalDelta * 180) / Math.PI
+      let totalDegrees = -(totalDelta * 180) / Math.PI
+      // Hold Shift to constrain rotation to 15° increments.
+      if (e.shiftKey) {
+        totalDegrees = Math.round(totalDegrees / 15) * 15
+      }
       accumulatedRotation.current = totalDegrees
+      setActiveRotationDeg(totalDegrees)
 
       // Apply rotation client-side from the pre-rotation snapshot
       const theta = (totalDegrees * Math.PI) / 180
@@ -674,6 +764,8 @@ export default function ScatterPlot({
       isRotating.current = false
       const totalDeg = accumulatedRotation.current
       preRotationCoords.current = null
+      rotatePivotScreen.current = null
+      setActiveRotationDeg(null)
       if (Math.abs(totalDeg) > 0.1) {
         onTransformEmbedding(totalDeg)
       }
@@ -1114,7 +1206,55 @@ export default function ScatterPlot({
             </g>
           )
         })()}
+
+        {/* Rotate-mode pivot indicator: faint ring at the data centroid in screen
+            space, plus a tick marking the original cursor angle. Visible only
+            during an active rotate drag. */}
+        {activeRotationDeg !== null && rotatePivotScreen.current && (() => {
+          const rect = containerRef.current?.getBoundingClientRect()
+          if (!rect) return null
+          const px = rotatePivotScreen.current.x - rect.left
+          const py = rotatePivotScreen.current.y - rect.top
+          return (
+            <g pointerEvents="none">
+              <circle cx={px} cy={py} r={28} fill="none" stroke="#ffa500" strokeWidth={1.5} strokeDasharray="3,3" opacity={0.7} />
+              <circle cx={px} cy={py} r={3} fill="#ffa500" />
+            </g>
+          )
+        })()}
       </svg>
+
+      {/* Live rotation badge — anchored just above-right of the pivot ring. */}
+      {activeRotationDeg !== null && rotatePivotScreen.current && containerRef.current && (() => {
+        const rect = containerRef.current.getBoundingClientRect()
+        const px = rotatePivotScreen.current.x - rect.left
+        const py = rotatePivotScreen.current.y - rect.top
+        // Normalize to (-180, 180] for display
+        let display = activeRotationDeg
+        while (display > 180) display -= 360
+        while (display <= -180) display += 360
+        return (
+          <div
+            style={{
+              position: 'absolute',
+              left: px + 36,
+              top: py - 24,
+              padding: '3px 8px',
+              fontSize: '12px',
+              fontVariantNumeric: 'tabular-nums',
+              color: '#fff',
+              backgroundColor: 'rgba(255, 165, 0, 0.92)',
+              border: '1px solid #ffa500',
+              borderRadius: '4px',
+              pointerEvents: 'none',
+              zIndex: 11,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {display.toFixed(1)}°
+          </div>
+        )
+      })()}
 
       {/* Polygon selection tool preview */}
       {interactionMode === 'lasso' && selectionTool === 'polygon' && (selectPolygonPoints.length >= 1 || cursorPoint) && (() => {

@@ -450,6 +450,9 @@ class DataAdaptor:
             # contourize) yield raw floats here vs. strings in the summary, and
             # frontend lookups by category value silently fail.
             result["categories"] = [str(v) for v in series.cat.categories.tolist()]
+            colors = self._get_category_colors(name)
+            if colors is not None:
+                result["colors"] = colors
         elif pd.api.types.is_numeric_dtype(dtype):
             result["dtype"] = "numeric"
             # Handle NaN values by converting to None
@@ -1004,6 +1007,33 @@ class DataAdaptor:
             result["layer"] = layer
         return result
 
+    def _get_category_colors(self, name: str) -> list[str] | None:
+        """Read positional hex colors from adata.uns[f'{name}_colors'].
+
+        Follows the scanpy convention: a list aligned to .cat.categories. Returns
+        None if the column isn't categorical, the uns key is missing, the length
+        doesn't match, or any entry isn't a string. Numpy str_ values pass since
+        they subclass str.
+        """
+        series = self.adata.obs.get(name)
+        if series is None or not pd.api.types.is_categorical_dtype(series.dtype):
+            return None
+        raw = self.adata.uns.get(f"{name}_colors")
+        if raw is None:
+            return None
+        try:
+            colors = list(raw)
+        except TypeError:
+            return None
+        if len(colors) != len(series.cat.categories):
+            return None
+        out: list[str] = []
+        for c in colors:
+            if not isinstance(c, str):
+                return None
+            out.append(str(c))
+        return out
+
     def get_obs_column_summary(self, name: str) -> dict[str, Any]:
         """Get summary statistics for a cell metadata column.
 
@@ -1035,12 +1065,20 @@ class DataAdaptor:
 
         if pd.api.types.is_categorical_dtype(dtype):
             result["dtype"] = "category"
-            # Get value counts
             value_counts = series.value_counts()
-            result["categories"] = [
-                {"value": str(val), "count": int(count)}
-                for val, count in value_counts.items()
-            ]
+            colors = self._get_category_colors(name)
+            color_by_value: dict[str, str] = {}
+            if colors is not None:
+                for cat, c in zip(series.cat.categories.tolist(), colors):
+                    color_by_value[str(cat)] = c
+            entries: list[dict[str, Any]] = []
+            for val, count in value_counts.items():
+                entry: dict[str, Any] = {"value": str(val), "count": int(count)}
+                hex_color = color_by_value.get(str(val))
+                if hex_color is not None:
+                    entry["color"] = hex_color
+                entries.append(entry)
+            result["categories"] = entries
         elif pd.api.types.is_numeric_dtype(dtype):
             result["dtype"] = "numeric"
             result["min"] = float(series.min()) if not pd.isna(series.min()) else None
@@ -1306,6 +1344,12 @@ class DataAdaptor:
                         new_cats.append(cs)
             if not inserted:
                 new_cats.append(new_label)
+            # Snapshot existing per-category colors BEFORE mutating obs so we can
+            # rebuild adata.uns[f'{column}_colors'] aligned to the new categories.
+            old_colors_list = self._get_category_colors(column)
+            old_color_by_cs = (
+                dict(zip(cat_strs, old_colors_list)) if old_colors_list else None
+            )
             # Map original values to stringified, remap merged ones to new_label,
             # then build a fresh Categorical with the new category set.
             current_str = series.astype(str)
@@ -1314,6 +1358,18 @@ class DataAdaptor:
             self.adata.obs[column] = pd.Categorical(
                 remapped, categories=new_cats, ordered=ordered
             )
+            # Update uns[f'{column}_colors'] to stay aligned to new categories.
+            # The merged label inherits the color of an existing fold-into target
+            # if applicable, otherwise the color of the first merged label.
+            if old_color_by_cs is not None:
+                if new_label in old_color_by_cs and new_label not in label_set:
+                    new_label_color = old_color_by_cs[new_label]
+                else:
+                    new_label_color = old_color_by_cs.get(labels[0], "#888888")
+                self.adata.uns[f"{column}_colors"] = [
+                    new_label_color if cs == new_label else old_color_by_cs.get(cs, "#888888")
+                    for cs in new_cats
+                ]
         elif series.dtype == object or pd.api.types.is_string_dtype(series.dtype):
             current_str = series.astype(str)
             mask = current_str.isin(labels)
@@ -6013,11 +6069,17 @@ class DataAdaptor:
         if n_groups < 2:
             raise ValueError(f"Need at least 2 groups for marker gene analysis, got {n_groups}")
 
-        # Run rank_genes_groups (one-vs-rest)
+        # Run rank_genes_groups (one-vs-rest). use_raw=False so we test against
+        # the in-session adata.X (which the user has been preprocessing), not
+        # adata.raw — which may carry an older/larger gene index than .X, leading
+        # to marker names that don't exist in the current var_names and fail to
+        # color/visualize. The two-group diffexp path already uses use_raw=False;
+        # this matches that behavior.
         sc.tl.rank_genes_groups(
             work_adata,
             groupby=obs_column,
             method='wilcoxon',
+            use_raw=False,
             key_added='marker_genes',
         )
 

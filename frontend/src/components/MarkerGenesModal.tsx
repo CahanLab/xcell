@@ -223,6 +223,7 @@ export default function MarkerGenesModal() {
     addFolderToCategory,
     comparisonCheckedColumn,
     comparisonCheckedCategories,
+    activeSlot,
   } = useStore()
 
   const { summaries } = useObsSummaries()
@@ -242,7 +243,7 @@ export default function MarkerGenesModal() {
   // Fetch boolean columns when modal opens
   useEffect(() => {
     if (!isMarkerGenesModalOpen) return
-    fetch(appendDataset('/api/var/boolean_columns'))
+    fetch(appendDataset('/api/var/boolean_columns', activeSlot))
       .then((res) => res.json())
       .then((cols: { name: string; n_true: number; n_total: number }[]) => {
         setBooleanColumns(cols)
@@ -250,7 +251,7 @@ export default function MarkerGenesModal() {
         setGeneSubset(hvg ? 'highly_variable' : '')
       })
       .catch(() => setBooleanColumns([]))
-  }, [isMarkerGenesModalOpen])
+  }, [isMarkerGenesModalOpen, activeSlot])
 
   // Results state
   const [results, setResults] = useState<MarkerGenesGroupResult[] | null>(null)
@@ -348,7 +349,7 @@ export default function MarkerGenesModal() {
       const minFC = parseFloat(minFoldChange)
       if (!isNaN(minFC)) params.min_fold_change = minFC
 
-      const response = await runMarkerGenes(params)
+      const response = await runMarkerGenes(params, activeSlot)
       setResults(response.results)
       // Auto-expand first group
       if (response.results.length > 0) {
@@ -359,7 +360,7 @@ export default function MarkerGenesModal() {
     } finally {
       setIsRunning(false)
     }
-  }, [markerGenesColumn, selectedGroups, categories.length, topN, minInGroupFraction, maxOutGroupFraction, minFoldChange])
+  }, [markerGenesColumn, selectedGroups, categories.length, topN, minInGroupFraction, maxOutGroupFraction, minFoldChange, activeSlot])
 
   const handleAddToGeneSets = useCallback(() => {
     if (!results || !markerGenesColumn) return

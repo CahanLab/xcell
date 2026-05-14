@@ -1080,6 +1080,9 @@ export async function fetchBooleanColumnValues(
 export interface CategoryValue {
   value: string
   count: number
+  // Hex color sourced from adata.uns[`${col}_colors`] when the dataset author
+  // pre-assigned one; absent otherwise.
+  color?: string
 }
 
 export interface ObsSummary {
@@ -1124,6 +1127,19 @@ export async function createAnnotation(name: string, defaultValue: string = 'una
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, default_value: defaultValue }),
   })
+}
+
+// Re-fetch /api/schema and write it to the store. Call after operations that
+// add or remove .obs columns (createAnnotation, deleteAnnotation) so dropdowns
+// that read schema.obs_dtypes (Compare Cells, Heatmap config) pick up the new
+// column without a page reload. Scanpy operations call this internally.
+export async function refreshSchema(slot?: DatasetSlot): Promise<void> {
+  try {
+    const newSchema = await fetchJson<Schema>(appendDataset(`${API_BASE}/schema`, slot))
+    useStore.getState().setSchema(newSchema)
+  } catch (err) {
+    console.error('Failed to refresh schema:', err)
+  }
 }
 
 export async function addLabelToAnnotation(annotationName: string, label: string, slot?: DatasetSlot): Promise<ObsSummary> {
@@ -1256,6 +1272,7 @@ export function useDiffExp() {
     setDiffExpLoading,
     setDiffExpModalOpen,
     activeCellMask,
+    activeSlot,
   } = useStore()
 
   const runComparison = useCallback(async (topN: number = 25, params?: DiffExpParams) => {
@@ -1278,7 +1295,7 @@ export function useDiffExp() {
 
     setDiffExpLoading(true)
     try {
-      const result = await runDiffExp(group1, group2, topN, undefined, params)
+      const result = await runDiffExp(group1, group2, topN, activeSlot, params)
       setDiffExpResult(result)
       setDiffExpModalOpen(true)
       return result
@@ -1288,7 +1305,7 @@ export function useDiffExp() {
     } finally {
       setDiffExpLoading(false)
     }
-  }, [comparison.group1, comparison.group2, activeCellMask, setDiffExpLoading, setDiffExpResult, setDiffExpModalOpen])
+  }, [comparison.group1, comparison.group2, activeCellMask, activeSlot, setDiffExpLoading, setDiffExpResult, setDiffExpModalOpen])
 
   return {
     comparison,

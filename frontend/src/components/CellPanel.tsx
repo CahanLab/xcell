@@ -11,6 +11,7 @@ import {
   appendDataset,
   renameObsLabel,
   mergeObsLabels,
+  refreshSchema,
 } from '../hooks/useData'
 import { OverflowMenu } from './GenePanel'
 import MergeLabelsModal from './MergeLabelsModal'
@@ -1068,6 +1069,8 @@ export default function CellPanel() {
       await createAnnotation(newAnnotationName.trim())
       setNewAnnotationName('')
       refresh()
+      // Refresh schema so Compare Cells / Heatmap dropdowns pick up the new column.
+      refreshSchema()
     } catch (err) {
       console.error('Failed to create annotation:', err)
       alert(`Failed to create annotation: ${(err as Error).message}`)

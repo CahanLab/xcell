@@ -19,6 +19,9 @@ export interface ObsColumnData {
   values: (number | string | null)[]
   dtype: 'category' | 'numeric' | 'string'
   categories?: string[]
+  // Hex strings aligned positionally to `categories`. Sourced from
+  // adata.uns[`${name}_colors`] when present; absent otherwise.
+  colors?: string[]
 }
 
 export interface ExpressionData {

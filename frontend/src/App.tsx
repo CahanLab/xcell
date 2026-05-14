@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, DatasetSlot } from './store'
 import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, appendDataset, fetchGeneMask } from './hooks/useData'
-import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor } from './components/ScatterPlot'
+import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor, resolveCategoryPalette } from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
 import DisplaySettings from './components/DisplaySettings'
@@ -283,38 +283,81 @@ const styles = {
   },
 }
 
-const CATEGORY_COLORS = [
-  'rgb(31, 119, 180)',
-  'rgb(255, 127, 14)',
-  'rgb(44, 160, 44)',
-  'rgb(214, 39, 40)',
-  'rgb(148, 103, 189)',
-  'rgb(140, 86, 75)',
-  'rgb(227, 119, 194)',
-  'rgb(127, 127, 127)',
-  'rgb(188, 189, 34)',
-  'rgb(23, 190, 207)',
-]
+// Inline toolbar shown in the Rotate-mode status row. Replaces the previous
+// "Flip X / Flip Y" buttons (now in the Adjust dropdown) with controls that are
+// useful while rotating: precise degree input + ±90° quick buttons. The hint
+// text reminds the user that drag-to-rotate is the primary gesture.
+function RotateToolbar({ onRotate }: { onRotate: (deg: number) => void }) {
+  const [deg, setDeg] = useState('')
+  const apply = () => {
+    const n = parseFloat(deg)
+    if (Number.isFinite(n) && Math.abs(n) > 0.001) {
+      onRotate(n)
+      setDeg('')
+    }
+  }
+  const inputStyle: React.CSSProperties = {
+    width: '52px',
+    padding: '3px 6px',
+    fontSize: '11px',
+    backgroundColor: '#0f3460',
+    color: '#eee',
+    border: '1px solid #1a1a2e',
+    borderRadius: '4px',
+    fontVariantNumeric: 'tabular-nums',
+  }
+  const btnStyle: React.CSSProperties = {
+    padding: '4px 8px',
+    fontSize: '11px',
+    backgroundColor: '#0f3460',
+    color: '#aaa',
+    border: '1px solid #1a1a2e',
+    borderRadius: '4px',
+    cursor: 'pointer',
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <button style={btnStyle} onClick={() => onRotate(-90)} title="Rotate 90° counter-clockwise">↺ 90°</button>
+      <button style={btnStyle} onClick={() => onRotate(90)} title="Rotate 90° clockwise">↻ 90°</button>
+      <input
+        type="number"
+        value={deg}
+        placeholder="±°"
+        onChange={(e) => setDeg(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); apply() } }}
+        style={inputStyle}
+        title="Type a precise rotation in degrees and press Enter"
+      />
+      <button style={btnStyle} onClick={apply} title="Apply rotation">Apply</button>
+      <span style={{ fontSize: '10px', color: '#888' }}>or drag in plot (Shift = snap 15°)</span>
+    </div>
+  )
+}
 
-function CategoryLegend({ colorBy }: { colorBy: { name: string; categories?: string[]; dtype: string } }) {
+function CategoryLegend({ colorBy }: { colorBy: { name: string; categories?: string[]; colors?: string[]; dtype: string } }) {
   if (colorBy.dtype !== 'category' || !colorBy.categories) {
     return null
   }
 
+  const palette = resolveCategoryPalette(colorBy.categories.length, colorBy.colors)
+
   return (
     <div style={styles.legend}>
       <div style={styles.legendTitle}>{colorBy.name}</div>
-      {colorBy.categories.map((cat, i) => (
-        <div key={cat} style={styles.legendItem}>
-          <div
-            style={{
-              ...styles.legendColor,
-              backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-            }}
-          />
-          <span>{cat}</span>
-        </div>
-      ))}
+      {colorBy.categories.map((cat, i) => {
+        const [r, g, b] = palette[i] ?? palette[0]
+        return (
+          <div key={cat} style={styles.legendItem}>
+            <div
+              style={{
+                ...styles.legendColor,
+                backgroundColor: `rgb(${r}, ${g}, ${b})`,
+              }}
+            />
+            <span>{cat}</span>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -1207,7 +1250,7 @@ export default function App() {
                       border: '1px solid #0f3460',
                       borderRadius: '4px',
                       zIndex: 100,
-                      minWidth: '200px',
+                      minWidth: '220px',
                       boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
                     }}
                   >
@@ -1231,7 +1274,7 @@ export default function App() {
                       <span style={{ fontSize: '16px', width: '20px', textAlign: 'center' }}>{'\u21BA'}</span>
                       <div>
                         <div>Rotate</div>
-                        <div style={{ fontSize: '10px', color: '#888' }}>Flip or shift+drag to rotate embedding</div>
+                        <div style={{ fontSize: '10px', color: '#888' }}>Drag to rotate (Shift = snap to 15\u00B0)</div>
                       </div>
                     </div>
                     <div
@@ -1255,6 +1298,48 @@ export default function App() {
                       <div>
                         <div>Quilt</div>
                         <div style={{ fontSize: '10px', color: '#888' }}>Lasso cells then drag/rotate/flip</div>
+                      </div>
+                    </div>
+                    {/* Flip section \u2014 one-shot reflections (not a mode). If Quilt
+                        has a current selection, flip applies only to those cells;
+                        otherwise it flips the whole embedding around its centroid. */}
+                    <div style={{ borderTop: '1px solid #0f3460', padding: '4px 12px 2px', fontSize: '10px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Flip
+                    </div>
+                    <div
+                      onClick={() => {
+                        setShowAdjustMenu(false)
+                        if (interactionMode === 'quilt' && quiltPhase === 'transform' && selectedCellIndices.length > 0) {
+                          handleTransformEmbeddingSubset({ reflect_y: true, cell_indices: selectedCellIndices })
+                        } else {
+                          handleTransformEmbedding({ reflect_y: true })
+                        }
+                      }}
+                      style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', color: '#ccc', display: 'flex', alignItems: 'center', gap: '8px' }}
+                      title="Mirror left \u2194 right (reflect about y-axis)"
+                    >
+                      <span style={{ fontSize: '16px', width: '20px', textAlign: 'center' }}>{'\u2194'}</span>
+                      <div>
+                        <div>Flip Horizontal</div>
+                        <div style={{ fontSize: '10px', color: '#888' }}>Reflect about y-axis</div>
+                      </div>
+                    </div>
+                    <div
+                      onClick={() => {
+                        setShowAdjustMenu(false)
+                        if (interactionMode === 'quilt' && quiltPhase === 'transform' && selectedCellIndices.length > 0) {
+                          handleTransformEmbeddingSubset({ reflect_x: true, cell_indices: selectedCellIndices })
+                        } else {
+                          handleTransformEmbedding({ reflect_x: true })
+                        }
+                      }}
+                      style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', color: '#ccc', display: 'flex', alignItems: 'center', gap: '8px' }}
+                      title="Mirror top \u2194 bottom (reflect about x-axis)"
+                    >
+                      <span style={{ fontSize: '16px', width: '20px', textAlign: 'center' }}>{'\u2195'}</span>
+                      <div>
+                        <div>Flip Vertical</div>
+                        <div style={{ fontSize: '10px', color: '#888' }}>Reflect about x-axis</div>
                       </div>
                     </div>
                   </div>
@@ -1646,23 +1731,7 @@ export default function App() {
                               </div>
                             )}
                             {interactionMode === 'adjust' && (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                <button
-                                  style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
-                                  onClick={() => handleTransformEmbedding({ reflect_y: true })}
-                                  title="Mirror x-coordinates (reflect about y-axis)"
-                                >
-                                  &#8596; Flip X
-                                </button>
-                                <button
-                                  style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#0f3460', color: '#aaa', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
-                                  onClick={() => handleTransformEmbedding({ reflect_x: true })}
-                                  title="Mirror y-coordinates (reflect about x-axis)"
-                                >
-                                  &#8597; Flip Y
-                                </button>
-                                <span style={{ fontSize: '10px', color: '#666' }}>Shift+drag to rotate</span>
-                              </div>
+                              <RotateToolbar onRotate={handleRotateEmbedding} />
                             )}
                             {interactionMode === 'quilt' && quiltPhase === 'transform' && selectedCellIndices.length > 0 && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>

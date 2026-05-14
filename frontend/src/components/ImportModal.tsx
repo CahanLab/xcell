@@ -162,12 +162,34 @@ function parseCSV(text: string, filename: string): ParsedGeneList[] {
 
 function parseJSON(text: string): ParsedGeneList[] {
   const data = JSON.parse(text)
-  if (!Array.isArray(data)) return []
+  // Accept three shapes:
+  //   1. legacy:                 [{name, genes: [string]}]
+  //   2. geneset-builder export: {sets: [{name, genes: [string]}], ...}
+  //   3. geneset-builder project (.gsb.json): {sets: [{name, genes: [{symbol, from}]}], ...}
+  let rawSets: unknown[] | null = null
+  if (Array.isArray(data)) {
+    rawSets = data
+  } else if (data && typeof data === 'object' && Array.isArray((data as { sets?: unknown }).sets)) {
+    rawSets = (data as { sets: unknown[] }).sets
+  }
+  if (!rawSets) return []
 
   const lists: ParsedGeneList[] = []
-  for (const item of data) {
-    if (item && typeof item.name === 'string' && Array.isArray(item.genes) && item.genes.length > 0) {
-      lists.push({ name: item.name, genes: item.genes.filter((g: unknown) => typeof g === 'string' && g) })
+  for (const item of rawSets) {
+    if (!item || typeof item !== 'object') continue
+    const obj = item as { name?: unknown; genes?: unknown }
+    if (typeof obj.name !== 'string' || !Array.isArray(obj.genes)) continue
+    const genes = (obj.genes as unknown[])
+      .map((g) => {
+        if (typeof g === 'string') return g
+        if (g && typeof g === 'object' && typeof (g as { symbol?: unknown }).symbol === 'string') {
+          return (g as { symbol: string }).symbol
+        }
+        return ''
+      })
+      .filter((s) => s.length > 0)
+    if (genes.length > 0) {
+      lists.push({ name: obj.name, genes })
     }
   }
   return lists

@@ -7,6 +7,7 @@ import {
   labelCells,
   useDataActions,
   useObsSummaries,
+  refreshSchema,
 } from '../hooks/useData'
 
 // ---------------------------------------------------------------------------
@@ -528,6 +529,8 @@ export default function SelectByExpressionModal() {
       await addLabelToAnnotation(name, lowLabelTrimmed)
       if (high.length > 0) await labelCells(name, highLabelTrimmed, high)
       if (low.length > 0) await labelCells(name, lowLabelTrimmed, low)
+      // Refresh schema so Compare Cells / Heatmap dropdowns see the new column.
+      await refreshSchema()
       setApplyStatus({
         kind: 'success',
         highCount: high.length,

@@ -416,14 +416,30 @@ export default function ScatterPlot({
       }))
     }
 
-    // If no mask or showing masked cells, return all data
-    if (!activeCellMask || showMaskedCells) {
-      return allData
+    // Filter out masked (inactive) cells unless we're showing them
+    if (activeCellMask && !showMaskedCells) {
+      allData = allData.filter((d) => activeCellMask[d.index])
     }
 
-    // Filter out masked (inactive) cells
-    return allData.filter((d) => activeCellMask[d.index])
-  }, [embedding, activeCellMask, showMaskedCells, cellSortOrder, cellSortVersion])
+    // Highlight overlay: stable-sort ascending by highlight weight so
+    // highlighted cells end up at the END of the array — deck.gl draws array
+    // order, so end = top of the stack and the highlight is never occluded.
+    // Cells with equal (e.g. zero) weight keep their prior order, preserving
+    // any expression/bivariate sort already applied.
+    if (highlightData) {
+      const { values, min, max, intensity } = highlightData
+      const range = max - min || 1
+      const weightAt = (i: number): number => {
+        const v = values[i]
+        if (v === null || v === undefined) return 0
+        const w = ((v - min) / range) * intensity
+        return w < 0 ? 0 : w > 1 ? 1 : w
+      }
+      allData.sort((a, b) => weightAt(a.index) - weightAt(b.index))
+    }
+
+    return allData
+  }, [embedding, activeCellMask, showMaskedCells, cellSortOrder, cellSortVersion, highlightData])
 
   // Compute color function separately (so it can change without affecting view state)
   const getColor = useMemo(() => {

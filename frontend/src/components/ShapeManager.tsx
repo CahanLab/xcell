@@ -269,11 +269,15 @@ function LineToolsModal({
   }, [scanpyActionHistory])
 
   const getCellIndices = useCallback(() => {
-    // If this line has projected cells, use those
+    // If this line has projected cells, use those — but intersect with the
+    // active cell mask, otherwise masked cells silently end up in analyses.
     if (line.projections && line.projections.length > 0) {
-      return line.projections.map((p) => p.cellIndex)
+      const projected = line.projections.map((p) => p.cellIndex)
+      if (!activeCellMask) return projected
+      return projected.filter((idx) => activeCellMask[idx])
     }
-    // Otherwise fall back to active cell mask
+    // No projections: fall back to all active cells, or undefined to mean
+    // "all cells" on the backend when there's no mask either.
     if (!activeCellMask) return undefined
     return activeCellMask
       .map((visible, idx) => (visible ? idx : -1))
@@ -661,7 +665,7 @@ function MultiLineToolsModal({
   lines: ReturnType<typeof useStore.getState>['drawnLines']
   onClose: () => void
 }) {
-  const { scanpyActionHistory } = useStore()
+  const { scanpyActionHistory, activeCellMask } = useStore()
   const { runMultiAssociation, isLineAssociationLoading } = useLineAssociation()
   const activeTaskId = useStore((state) => state.activeTaskId)
 
@@ -700,10 +704,15 @@ function MultiLineToolsModal({
         geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
       }
 
+      // Intersect projections with the active cell mask so masked cells
+      // never end up in the pooled regression.
+      const filterByMask = (indices: number[]): number[] =>
+        activeCellMask ? indices.filter((i) => activeCellMask[i]) : indices
+
       await runMultiAssociation({
         lines: lines.map((l) => ({
           name: l.name,
-          cellIndices: l.projections.map((p) => p.cellIndex),
+          cellIndices: filterByMask(l.projections.map((p) => p.cellIndex)),
           reversed: !!reversals[l.id],
         })),
         geneSubset,
@@ -720,7 +729,7 @@ function MultiLineToolsModal({
         setAssociationError(message)
       }
     }
-  }, [runMultiAssociation, lines, reversals, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes, onClose])
+  }, [runMultiAssociation, lines, reversals, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes, activeCellMask, onClose])
 
   const handleCancelAssociation = useCallback(async () => {
     if (activeTaskId) {

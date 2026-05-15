@@ -18,6 +18,7 @@ export default function ClusterGeneSetModal() {
   const source = useStore((s) => s.clusterModalSourceSet)
   const setSource = useStore((s) => s.setClusterModalSourceSet)
   const selectedCellIndices = useStore((s) => s.selectedCellIndices)
+  const activeCellMask = useStore((s) => s.activeCellMask)
   const addFolderToCategory = useStore((s) => s.addFolderToCategory)
   const { summaries } = useObsSummaries()
 
@@ -119,13 +120,33 @@ export default function ClusterGeneSetModal() {
     setIsRunning(true)
     setError(null)
     try {
+      // Intersect cell context with the active cell mask so masked cells
+      // never end up in the cell-axis context for gene clustering.
+      // 'all' + mask is converted to 'selection' with the unmasked indices;
+      // 'selection' filters the user's selection by the mask;
+      // 'annotation' is resolved server-side and is a known gap when a mask
+      // is also active — flagged in CLAUDE.md.
+      let effectiveContext: CellContext = cellContext
+      let effectiveIndices = cellContext === 'selection' ? selectedCellIndices : []
+      if (activeCellMask) {
+        if (cellContext === 'selection') {
+          effectiveIndices = selectedCellIndices.filter((i) => activeCellMask[i])
+        } else if (cellContext === 'all') {
+          effectiveContext = 'selection'
+          effectiveIndices = []
+          for (let i = 0; i < activeCellMask.length; i++) {
+            if (activeCellMask[i]) effectiveIndices.push(i)
+          }
+        }
+      }
+
       const payload = {
         geneNames: source.genes,
         method,
         ...(method === 'dbscan' ? { eps, minSamples } : { k }),
-        cellContext,
-        ...(cellContext === 'selection' ? { cellIndices: selectedCellIndices } : {}),
-        ...(cellContext === 'annotation' ? { annotationColumn, annotationValues: Array.from(annotationValues) } : {}),
+        cellContext: effectiveContext,
+        ...(effectiveContext === 'selection' ? { cellIndices: effectiveIndices } : {}),
+        ...(effectiveContext === 'annotation' ? { annotationColumn, annotationValues: Array.from(annotationValues) } : {}),
         ...(layer && layer !== 'X' ? { layer } : {}),
       }
       const { clusters } = await runClusterGeneSet(payload)

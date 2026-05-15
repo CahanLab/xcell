@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- **Masked cells were silently included in line-association and gene-cluster analyses.** When a line had projections (the typical workflow), `Find Associated Genes` and the multi-line equivalent sent every projected cell to the backend regardless of the active cell mask. Same problem in `Cluster gene set`: `cellContext='selection'` didn't intersect with the mask, and `'all'` ignored the mask entirely. Now all three paths filter projected/selected indices through `activeCellMask` before sending; `'all' + mask` is converted to `'selection'` with the mask-derived indices. Diff exp and scanpy ops already honored the mask. Known gaps that remain (out of scope for this fix): **marker genes** and **heatmap** group by `obs_column` and don't pass a cell-index list, so honoring the mask there needs a new backend param.
+
 ### Changed
 - **Highlight overlay now supports multiple layers, threshold gating, and cell-set sources.** The single-color, gradient-weighted overlay has been replaced with a stack of independent layers, each with its own color, intensity, and gating rule. Three ways to add a layer: (1) **Gene set** — pick a set, threshold via mode (`≥`, `≤`, between) + a draggable histogram cutoff (same UX as Select-by-Expression). Cells passing the threshold get full intensity; others get 0. (2) **Selection** — snapshot the current cell selection as a frozen mask. (3) **Category value** — pick a categorical `.obs` column + value; all cells with that value light up. The Cells panel also has a small color-dot button next to each category value for one-click highlighting. Layers stack in creation order; overlapping cells get color-mixed. The plot still draws highlighted cells on top via a stable sort by max layer weight. Replaces the previous single-overlay UI (one gene set, normalized gradient).
 

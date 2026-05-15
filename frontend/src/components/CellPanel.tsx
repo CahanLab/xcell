@@ -439,6 +439,7 @@ interface CategoryColumnProps {
   isActive: boolean
   onColorBy: () => void
   onSelectCells: (categoryValue: string) => void
+  onHighlightCells: (categoryValue: string) => void
   checkedCategories: Set<string>
   onToggleCategory: (category: string) => void
   onHide: () => void
@@ -454,11 +455,12 @@ interface CategoryRowProps {
   checked: boolean
   onToggle: () => void
   onSelectCells: () => void
+  onHighlightCells: () => void
   onRenameLabel: (newLabel: string) => Promise<void> | void
   isHighlighted: boolean
 }
 
-function CategoryRow({ cat, totalCount, checked, onToggle, onSelectCells, onRenameLabel, isHighlighted }: CategoryRowProps) {
+function CategoryRow({ cat, totalCount, checked, onToggle, onSelectCells, onHighlightCells, onRenameLabel, isHighlighted }: CategoryRowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(cat.value)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -549,11 +551,26 @@ function CategoryRow({ cat, totalCount, checked, onToggle, onSelectCells, onRena
       <span style={styles.categoryCount}>
         {cat.count.toLocaleString()} ({((cat.count / totalCount) * 100).toFixed(1)}%)
       </span>
+      <button
+        onClick={(e) => { e.stopPropagation(); onHighlightCells() }}
+        style={{
+          marginLeft: '4px',
+          padding: 0,
+          width: '14px',
+          height: '14px',
+          borderRadius: '50%',
+          background: 'linear-gradient(135deg, #22c55e, #06b6d4)',
+          border: '1px solid #1a1a2e',
+          cursor: 'pointer',
+          flexShrink: 0,
+        }}
+        title="Add as Highlight overlay layer (visible in Genes panel)"
+      />
     </div>
   )
 }
 
-function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, checkedCategories, onToggleCategory, onHide, onRename, onRenameLabel, onMergeLabels, selectedCategorySource }: CategoryColumnProps) {
+function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, onHighlightCells, checkedCategories, onToggleCategory, onHide, onRename, onRenameLabel, onMergeLabels, selectedCategorySource }: CategoryColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -677,6 +694,7 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCel
               checked={checkedCategories.has(cat.value)}
               onToggle={() => onToggleCategory(cat.value)}
               onSelectCells={() => onSelectCells(cat.value)}
+              onHighlightCells={() => onHighlightCells(cat.value)}
               onRenameLabel={(newLabel) => onRenameLabel(cat.value, newLabel)}
               isHighlighted={
                 selectedCategorySource?.column === summary.name &&
@@ -843,8 +861,9 @@ export default function CellPanel() {
     toggleComparisonCategory,
   } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
-  const { selectColorColumn } = useDataActions()
+  const { selectColorColumn, addCellSetHighlight } = useDataActions()
   const { runComparison, isDiffExpLoading } = useDiffExp()
+  const highlightLayers = useStore((s) => s.highlightLayers)
 
   // State for creating new annotation
   const [newAnnotationName, setNewAnnotationName] = useState('')
@@ -957,6 +976,38 @@ export default function CellPanel() {
         })
     },
     [setSelectedCellIndices]
+  )
+
+  // Quick-add a Highlight overlay layer for all cells in a category value.
+  // Fetches the obs column, builds the index list, and snapshots it into a
+  // cellset highlight layer (color cycled from the panel-level palette).
+  const handleHighlightCategory = useCallback(
+    (columnName: string, categoryValue: string) => {
+      fetch(appendDataset(`/api/obs/${encodeURIComponent(columnName)}`))
+        .then((res) => res.json())
+        .then((data) => {
+          const indices: number[] = []
+          const cats: string[] = data.categories ?? []
+          const catIdx = cats.indexOf(categoryValue)
+          if (data.dtype === 'category' && catIdx >= 0) {
+            data.values.forEach((val: number, idx: number) => {
+              if (val === catIdx) indices.push(idx)
+            })
+          } else {
+            data.values.forEach((val: string, idx: number) => {
+              if (val === categoryValue) indices.push(idx)
+            })
+          }
+          if (indices.length === 0) return
+          const palette = ['#22c55e', '#06b6d4', '#f59e0b', '#ec4899', '#a855f7', '#84cc16', '#ef4444', '#0ea5e9']
+          const color = palette[highlightLayers.length % palette.length]
+          addCellSetHighlight(indices, `${columnName}: ${categoryValue}`, { color, intensity: 0.85 })
+        })
+        .catch((err) => {
+          console.error('Failed to add category highlight:', err)
+        })
+    },
+    [addCellSetHighlight, highlightLayers.length]
   )
 
   // Handle checkbox toggle — selecting/deselecting cells by category
@@ -1205,6 +1256,9 @@ export default function CellPanel() {
                   onColorBy={() => handleColorBy(summary.name)}
                   onSelectCells={(categoryValue) =>
                     handleSelectCellsByCategory(summary.name, categoryValue)
+                  }
+                  onHighlightCells={(categoryValue) =>
+                    handleHighlightCategory(summary.name, categoryValue)
                   }
                   checkedCategories={
                     comparisonCheckedColumn === summary.name

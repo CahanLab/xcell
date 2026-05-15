@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **Highlight overlay now supports multiple layers, threshold gating, and cell-set sources.** The single-color, gradient-weighted overlay has been replaced with a stack of independent layers, each with its own color, intensity, and gating rule. Three ways to add a layer: (1) **Gene set** — pick a set, threshold via mode (`≥`, `≤`, between) + a draggable histogram cutoff (same UX as Select-by-Expression). Cells passing the threshold get full intensity; others get 0. (2) **Selection** — snapshot the current cell selection as a frozen mask. (3) **Category value** — pick a categorical `.obs` column + value; all cells with that value light up. The Cells panel also has a small color-dot button next to each category value for one-click highlighting. Layers stack in creation order; overlapping cells get color-mixed. The plot still draws highlighted cells on top via a stable sort by max layer weight. Replaces the previous single-overlay UI (one gene set, normalized gradient).
+
 ### Added
 - **Arrow-key nudge in Quilt mode (transform phase)** — once you've lassoed a cell subset, press the arrow keys to translate the selection. Step is ~0.2% of the embedding's spatial range per press; **Shift+arrow** is 10× larger (matches Figma / Illustrator convention). Up/Down move along the data y-axis (math y-up). The handler is no-op when typing in inputs/textareas.
 

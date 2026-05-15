@@ -495,7 +495,7 @@ export default function App() {
     colorMode,
     expressionData,
     bivariateData,
-    highlightData,
+    highlightLayers,
     selectedGenes,
     selectedGeneSetName,
     interactionMode,
@@ -1632,7 +1632,7 @@ export default function App() {
                             colorBy={datasets.primary.colorBy}
                             expressionData={datasets.primary.expressionData}
                             bivariateData={datasets.primary.bivariateData}
-                            highlightData={datasets.primary.highlightData}
+                            highlightLayers={datasets.primary.highlightLayers}
                             colorMode={datasets.primary.colorMode}
                             interactionMode={interactionMode}
                             selectedCellIndices={datasets.primary.selectedCellIndices}
@@ -1721,7 +1721,7 @@ export default function App() {
                             colorBy={datasets.secondary.colorBy}
                             expressionData={datasets.secondary.expressionData}
                             bivariateData={datasets.secondary.bivariateData}
-                            highlightData={datasets.secondary.highlightData}
+                            highlightLayers={datasets.secondary.highlightLayers}
                             colorMode={datasets.secondary.colorMode}
                             interactionMode={interactionMode}
                             selectedCellIndices={datasets.secondary.selectedCellIndices}
@@ -1801,7 +1801,7 @@ export default function App() {
                           colorBy={colorBy}
                           expressionData={expressionData}
                           bivariateData={bivariateData}
-                          highlightData={highlightData}
+                          highlightLayers={highlightLayers}
                           colorMode={colorMode}
                           interactionMode={interactionMode}
                           selectedCellIndices={selectedCellIndices}

@@ -10,7 +10,7 @@ interface ScatterPlotProps {
   colorBy: ObsColumnData | null
   expressionData: ExpressionData | null
   bivariateData: BivariateExpressionData | null
-  highlightData: import('../store').HighlightData | null
+  highlightLayers: import('../store').HighlightLayer[]
   colorMode: ColorMode
   interactionMode: InteractionMode
   selectedCellIndices: number[]
@@ -287,6 +287,35 @@ function interpolateColor(t: number): [number, number, number] {
   return [r, 50, b]
 }
 
+// Build a per-cell weight function for a highlight layer. Hard gate: in-range
+// cells get full intensity; out-of-range get 0. Cellset layers consult their
+// mask directly.
+function layerWeightFn(layer: import('../store').HighlightLayer): (i: number) => number {
+  const src = layer.source
+  const intensity = layer.intensity
+  if (src.kind === 'cellset') {
+    const mask = src.mask
+    return (i: number) => (mask[i] ? intensity : 0)
+  }
+  const { values, thresholdMode, lo, hi } = src
+  if (thresholdMode === 'above') {
+    return (i: number) => {
+      const v = values[i]
+      return v != null && v >= lo ? intensity : 0
+    }
+  }
+  if (thresholdMode === 'below') {
+    return (i: number) => {
+      const v = values[i]
+      return v != null && v <= lo ? intensity : 0
+    }
+  }
+  return (i: number) => {
+    const v = values[i]
+    return v != null && v >= lo && v <= hi ? intensity : 0
+  }
+}
+
 // Point-in-polygon using ray casting algorithm
 function pointInPolygon(x: number, y: number, polygon: [number, number][]): boolean {
   let inside = false
@@ -306,7 +335,7 @@ export default function ScatterPlot({
   colorBy,
   expressionData,
   bivariateData,
-  highlightData,
+  highlightLayers,
   colorMode,
   interactionMode,
   selectedCellIndices,
@@ -421,25 +450,25 @@ export default function ScatterPlot({
       allData = allData.filter((d) => activeCellMask[d.index])
     }
 
-    // Highlight overlay: stable-sort ascending by highlight weight so
-    // highlighted cells end up at the END of the array — deck.gl draws array
-    // order, so end = top of the stack and the highlight is never occluded.
-    // Cells with equal (e.g. zero) weight keep their prior order, preserving
-    // any expression/bivariate sort already applied.
-    if (highlightData) {
-      const { values, min, max, intensity } = highlightData
-      const range = max - min || 1
+    // Highlight overlay: stable-sort ascending by max highlight weight across
+    // all layers so highlighted cells end up at the END of the array — deck.gl
+    // draws array order, so end = top of the stack. Cells with equal weight
+    // keep their prior order, preserving any expression/bivariate sort.
+    if (highlightLayers.length > 0) {
+      const weighters = highlightLayers.map(layerWeightFn)
       const weightAt = (i: number): number => {
-        const v = values[i]
-        if (v === null || v === undefined) return 0
-        const w = ((v - min) / range) * intensity
-        return w < 0 ? 0 : w > 1 ? 1 : w
+        let m = 0
+        for (let k = 0; k < weighters.length; k++) {
+          const w = weighters[k](i)
+          if (w > m) m = w
+        }
+        return m
       }
       allData.sort((a, b) => weightAt(a.index) - weightAt(b.index))
     }
 
     return allData
-  }, [embedding, activeCellMask, showMaskedCells, cellSortOrder, cellSortVersion, highlightData])
+  }, [embedding, activeCellMask, showMaskedCells, cellSortOrder, cellSortVersion, highlightLayers])
 
   // Compute color function separately (so it can change without affecting view state)
   const getColor = useMemo(() => {
@@ -539,34 +568,36 @@ export default function ScatterPlot({
       }
     }
 
-    // Highlight overlay: blend a single user-picked color over the base color,
-    // weighted per cell by an independent gene/gene-set score. Skipped for
-    // selected and masked cells so their visual cues stay intact.
-    if (highlightData) {
-      const { values: hVals, min: hMin, max: hMax, color: hHex, intensity } = highlightData
-      const range = hMax - hMin || 1
-      const rgb = hexToRgb(hHex) ?? [34, 197, 94]
+    // Highlight overlay: blend each layer's color over the running base color,
+    // in creation order. Weight per cell per layer is a hard gate
+    // (in-threshold = full intensity, otherwise 0) for geneset layers and a
+    // mask lookup for cellset layers. Skipped for selected and masked cells.
+    if (highlightLayers.length > 0) {
+      const compiled = highlightLayers.map((layer) => ({
+        rgb: hexToRgb(layer.color) ?? [34, 197, 94] as [number, number, number],
+        weight: layerWeightFn(layer),
+      }))
       const fn = baseColorFn
       return (d: { index: number }): [number, number, number, number] => {
         const base = fn(d)
         if (isMasked(d.index)) return base
         if (selectedSet.size > 0 && selectedSet.has(d.index)) return base
-        const v = hVals[d.index]
-        if (v === null || v === undefined) return base
-        let w = ((v - hMin) / range) * intensity
-        if (w <= 0) return base
-        if (w > 1) w = 1
-        return [
-          Math.round(base[0] * (1 - w) + rgb[0] * w),
-          Math.round(base[1] * (1 - w) + rgb[1] * w),
-          Math.round(base[2] * (1 - w) + rgb[2] * w),
-          base[3],
-        ] as [number, number, number, number]
+        let r = base[0], g = base[1], b = base[2]
+        for (let k = 0; k < compiled.length; k++) {
+          const w = compiled[k].weight(d.index)
+          if (w <= 0) continue
+          const ww = w > 1 ? 1 : w
+          const lr = compiled[k].rgb
+          r = r * (1 - ww) + lr[0] * ww
+          g = g * (1 - ww) + lr[1] * ww
+          b = b * (1 - ww) + lr[2] * ww
+        }
+        return [Math.round(r), Math.round(g), Math.round(b), base[3]]
       }
     }
 
     return baseColorFn
-  }, [colorBy, expressionData, bivariateData, highlightData, colorMode, selectedSet, displayPreferences, activeCellMask])
+  }, [colorBy, expressionData, bivariateData, highlightLayers, colorMode, selectedSet, displayPreferences, activeCellMask])
 
   // Initialize view state when bounds change
   useEffect(() => {
@@ -1099,7 +1130,7 @@ export default function ScatterPlot({
       radiusMaxPixels: 20,
       pickable: true,
       updateTriggers: {
-        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.bivariateColormap, displayPreferences.pointOpacity, activeCellMask, highlightData?.source, highlightData?.color, highlightData?.intensity],
+        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.bivariateColormap, displayPreferences.pointOpacity, activeCellMask, highlightLayers],
         getRadius: [selectedCellIndices, displayPreferences.pointSize, activeCellMask],
       },
     }),

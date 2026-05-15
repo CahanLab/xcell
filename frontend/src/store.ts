@@ -42,18 +42,36 @@ export interface BivariateExpressionData {
   transform?: string
 }
 
-// A "highlight" overlay — a single color blended on top of whatever color mode
-// is active, weighted per cell by an independent gene or gene-set score. Lets
-// the user demarcate a feature (e.g. epithelium in green) while keeping
-// expression/bivariate/metadata coloring active for the rest of the data.
-export interface HighlightData {
-  source: string         // gene name or gene-set name (display label)
-  isGeneSet: boolean
-  values: (number | null)[]  // raw per-cell scores (length n_cells)
-  min: number
-  max: number
-  color: string          // hex string, e.g. "#22c55e"
-  intensity: number      // 0..1 multiplier on the per-cell weight
+// A "highlight" overlay — one or more colors blended on top of whatever color
+// mode is active. Each layer gates per-cell weight by either a gene/gene-set
+// expression threshold (hard gate: in-range cells get full intensity) or by an
+// explicit cell mask (selection, category value, etc.). Layers stack in
+// creation order; overlapping cells get color-mixed.
+export type HighlightThresholdMode = 'above' | 'below' | 'between'
+
+export type HighlightSource =
+  | {
+      kind: 'geneset'
+      label: string                 // display label (gene name or set name)
+      genes: string[]               // gene symbols feeding the score
+      values: (number | null)[]     // per-cell aggregated score (length n_cells)
+      min: number
+      max: number
+      thresholdMode: HighlightThresholdMode
+      lo: number
+      hi: number                    // only used for 'between'
+    }
+  | {
+      kind: 'cellset'
+      label: string                 // e.g. "Selection (1,204 cells)" or "louvain: 3"
+      mask: Uint8Array              // 1 = highlight this cell, length n_cells
+    }
+
+export interface HighlightLayer {
+  id: string
+  color: string       // hex
+  intensity: number   // 0..1 multiplier
+  source: HighlightSource
 }
 
 export interface GeneSet {
@@ -371,7 +389,7 @@ export interface DatasetState {
   colorBy: ObsColumnData | null
   expressionData: ExpressionData | null
   bivariateData: BivariateExpressionData | null
-  highlightData: HighlightData | null
+  highlightLayers: HighlightLayer[]
   selectedGenes: string[]
   selectedGeneSetName: string | null
   selectedEmbedding: string | null
@@ -462,7 +480,7 @@ export function createDefaultDatasetState(
     colorBy: null,
     expressionData: null,
     bivariateData: null,
-    highlightData: null,
+    highlightLayers: [],
     selectedGenes: [],
     selectedGeneSetName: null,
     selectedEmbedding: null,
@@ -499,7 +517,7 @@ interface AppState {
   bivariateData: BivariateExpressionData | null
 
   // Highlight overlay (single color blended on top of any base color mode)
-  highlightData: HighlightData | null
+  highlightLayers: HighlightLayer[]
 
   // Gene management (hierarchical)
   geneSetCategories: Record<GeneSetCategoryType, GeneSetCategory>
@@ -625,8 +643,10 @@ interface AppState {
   setExpressionData: (data: ExpressionData | null) => void
   setBivariateData: (data: BivariateExpressionData | null) => void
   clearBivariateMode: () => void
-  setHighlightData: (data: HighlightData | null) => void
-  clearHighlight: () => void
+  addHighlightLayer: (layer: HighlightLayer) => void
+  removeHighlightLayer: (id: string) => void
+  updateHighlightLayer: (id: string, patch: Partial<Omit<HighlightLayer, 'id' | 'source'>> & { source?: Partial<HighlightSource> }) => void
+  clearAllHighlights: () => void
   setSelectedEmbedding: (name: string) => void
   setSelectedColorColumn: (name: string | null) => void
   setColorMode: (mode: ColorMode) => void
@@ -828,7 +848,7 @@ export const useStore = create<AppState>((set, get) => {
       colorBy: ds.colorBy,
       expressionData: ds.expressionData,
       bivariateData: ds.bivariateData,
-      highlightData: ds.highlightData,
+      highlightLayers: ds.highlightLayers,
       selectedGenes: ds.selectedGenes,
       selectedGeneSetName: ds.selectedGeneSetName,
       selectedEmbedding: ds.selectedEmbedding,
@@ -861,7 +881,7 @@ export const useStore = create<AppState>((set, get) => {
     colorBy: null,
     expressionData: null,
     bivariateData: null,
-    highlightData: null,
+    highlightLayers: [],
     geneSetCategories: createDefaultCategories(),
     geneSets: [],  // Legacy, kept for backward compatibility
     selectedGenes: [],
@@ -985,8 +1005,27 @@ export const useStore = create<AppState>((set, get) => {
       })),
 
     clearBivariateMode: () => set(dsUpdate({ bivariateData: null, colorMode: 'none', cellSortOrder: null, cellSortVersion: 0 })),
-    setHighlightData: (data) => set(dsUpdate({ highlightData: data })),
-    clearHighlight: () => set(dsUpdate({ highlightData: null })),
+
+    addHighlightLayer: (layer) =>
+      set(dsUpdateFn((state) => ({ highlightLayers: [...state.highlightLayers, layer] }))),
+
+    removeHighlightLayer: (id) =>
+      set(dsUpdateFn((state) => ({ highlightLayers: state.highlightLayers.filter((l) => l.id !== id) }))),
+
+    updateHighlightLayer: (id, patch) =>
+      set(dsUpdateFn((state) => ({
+        highlightLayers: state.highlightLayers.map((l) => {
+          if (l.id !== id) return l
+          const next: HighlightLayer = { ...l, ...patch, source: l.source }
+          if (patch.source) {
+            // Merge into existing source preserving discriminant.
+            next.source = { ...l.source, ...patch.source } as HighlightSource
+          }
+          return next
+        }),
+      }))),
+
+    clearAllHighlights: () => set(dsUpdate({ highlightLayers: [] })),
     setSelectedEmbedding: (name) => set(dsUpdate({ selectedEmbedding: name })),
     setSelectedColorColumn: (name) => set(dsUpdate({ selectedColorColumn: name })),
     setColorMode: (mode) => set(dsUpdate({ colorMode: mode })),

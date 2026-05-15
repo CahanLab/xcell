@@ -1,6 +1,13 @@
 import { useEffect, useCallback, useState } from 'react'
-import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary } from '../store'
+import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
+import { defaultThresholds } from '../utils/histogram'
 import { MESSAGES } from '../messages'
+
+let _highlightIdSeq = 0
+function nextHighlightId(): string {
+  _highlightIdSeq += 1
+  return `hl_${Date.now().toString(36)}_${_highlightIdSeq}`
+}
 
 const API_BASE = '/api'
 
@@ -436,8 +443,10 @@ export function useDataActions() {
     setColorMode,
     setExpressionData,
     setBivariateData,
-    setHighlightData,
-    clearHighlight,
+    addHighlightLayer,
+    removeHighlightLayer,
+    updateHighlightLayer,
+    clearAllHighlights,
     setSelectedGenes,
     setSelectedGeneSetName,
     clearSelectedGenes,
@@ -659,14 +668,17 @@ export function useDataActions() {
     }
   }, [clearBivariateMode, layoutMode, activeSlot, patchSlotState])
 
-  // Set the Highlight overlay from a gene-set score (or single gene). Reuses
-  // /api/expression/multi (which already runs the per-gene-norm + aggregation
-  // pipeline used by gene-set coloring). The result is stored as `highlightData`
-  // and rendered as a color blend on top of any active color mode — it does NOT
-  // change `colorMode` or other state.
-  const colorByHighlightSet = useCallback(
-    async (genes: string[], setName: string, color: string, intensity: number) => {
-      if (!genes.length) return
+  // Add a highlight layer driven by gene-set (or single-gene) expression score.
+  // Fetches the aggregated score via /api/expression/multi, seeds a sensible
+  // default threshold, and appends a new layer. Does NOT change `colorMode` or
+  // any other state — the layer composes on top of the active base coloring.
+  const addGeneSetHighlight = useCallback(
+    async (
+      genes: string[],
+      label: string,
+      opts: { color: string; intensity: number; thresholdMode?: HighlightThresholdMode }
+    ): Promise<string | null> => {
+      if (!genes.length) return null
       const layer = displayLayer && displayLayer !== 'X' ? displayLayer : undefined
       try {
         const body: Record<string, unknown> = {
@@ -683,25 +695,63 @@ export function useDataActions() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         })
-        setHighlightData({
-          source: setName,
-          isGeneSet: genes.length > 1,
-          values: data.values,
-          min: data.min,
-          max: data.max,
-          color,
-          intensity,
-        })
+        const mode = opts.thresholdMode ?? 'above'
+        const { lo, hi } = defaultThresholds(data.values, mode, data.min, data.max)
+        const id = nextHighlightId()
+        const newLayer: HighlightLayer = {
+          id,
+          color: opts.color,
+          intensity: opts.intensity,
+          source: {
+            kind: 'geneset',
+            label,
+            genes,
+            values: data.values,
+            min: data.min,
+            max: data.max,
+            thresholdMode: mode,
+            lo,
+            hi,
+          },
+        }
+        addHighlightLayer(newLayer)
+        return id
       } catch (err) {
         setError((err as Error).message)
+        return null
       }
     },
-    [activeSlot, displayLayer, displayPreferences.expressionTransform, displayPreferences.geneSetPerGeneNorm, displayPreferences.geneSetPerGeneClip, displayPreferences.geneSetAggregation, displayPreferences.clipPercentile, setHighlightData, setError]
+    [activeSlot, displayLayer, displayPreferences.expressionTransform, displayPreferences.geneSetPerGeneNorm, displayPreferences.geneSetPerGeneClip, displayPreferences.geneSetAggregation, displayPreferences.clipPercentile, addHighlightLayer, setError]
+  )
+
+  // Add a highlight layer driven by an explicit set of cell indices (e.g.
+  // current selection, all cells of a category value). The mask is snapshotted
+  // — subsequent selection or annotation changes don't update this layer.
+  const addCellSetHighlight = useCallback(
+    (indices: number[], label: string, opts: { color: string; intensity: number }): string | null => {
+      const schema = useStore.getState().schema
+      if (!schema || indices.length === 0) return null
+      const mask = new Uint8Array(schema.n_cells)
+      for (let i = 0; i < indices.length; i++) {
+        const idx = indices[i]
+        if (idx >= 0 && idx < schema.n_cells) mask[idx] = 1
+      }
+      const id = nextHighlightId()
+      const layer: HighlightLayer = {
+        id,
+        color: opts.color,
+        intensity: opts.intensity,
+        source: { kind: 'cellset', label, mask },
+      }
+      addHighlightLayer(layer)
+      return id
+    },
+    [addHighlightLayer]
   )
 
   const clearHighlightOverlay = useCallback(() => {
-    clearHighlight()
-  }, [clearHighlight])
+    clearAllHighlights()
+  }, [clearAllHighlights])
 
   return {
     selectEmbedding,
@@ -711,7 +761,10 @@ export function useDataActions() {
     clearExpressionColor,
     colorByBivariate,
     clearBivariateColor,
-    colorByHighlightSet,
+    addGeneSetHighlight,
+    addCellSetHighlight,
+    removeHighlightLayer,
+    updateHighlightLayer,
     clearHighlightOverlay,
   }
 }

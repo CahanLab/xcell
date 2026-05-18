@@ -861,7 +861,7 @@ export default function CellPanel() {
     toggleComparisonCategory,
   } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
-  const { selectColorColumn, addCellSetHighlight } = useDataActions()
+  const { selectColorColumn, addCellSetHighlight, colorByGene, colorByGenes } = useDataActions()
   const { runComparison, isDiffExpLoading } = useDiffExp()
   const highlightLayers = useStore((s) => s.highlightLayers)
 
@@ -1150,6 +1150,11 @@ export default function CellPanel() {
     if (selectedCellIndices.length === 0) return
     setIsDeleting(true)
     try {
+      // Capture current display state BEFORE clearing — we'll re-apply it
+      // after the data refresh so the user doesn't see their coloring + zoom
+      // reset every time they delete a few cells.
+      const { colorMode: priorColorMode, selectedGenes: priorGenes, selectedGeneSetName: priorSetName } = useStore.getState()
+
       const response = await fetch(appendDataset(`${API_BASE}/cells/delete`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1164,7 +1169,10 @@ export default function CellPanel() {
       if (schemaRes.ok) {
         setSchema(await schemaRes.json())
       }
-      // Clear cached data so hooks re-fetch with new cell set
+      // Clear cached data so hooks re-fetch with new cell set. useEmbedding
+      // and useColorBy auto-refetch when these go null with a non-null
+      // `selectedEmbedding` / `selectedColorColumn`. Expression has no such
+      // auto-refetch hook — we re-trigger manually below.
       setEmbedding(null)
       setColorBy(null)
       setExpressionData(null)
@@ -1174,6 +1182,16 @@ export default function CellPanel() {
       resetActiveCells()
       clearSelection()
       refresh()
+
+      // Re-apply expression coloring with the new (smaller) cell count.
+      // selectedGenes survives the delete; we just need to fetch fresh values.
+      if (priorColorMode === 'expression' && priorGenes.length > 0) {
+        if (priorGenes.length === 1) {
+          await colorByGene(priorGenes[0])
+        } else {
+          await colorByGenes(priorGenes, undefined, priorSetName ?? undefined)
+        }
+      }
     } catch (err) {
       console.error('Failed to delete cells:', err)
       alert(`Failed to delete cells: ${(err as Error).message}`)
@@ -1181,7 +1199,7 @@ export default function CellPanel() {
       setIsDeleting(false)
       setShowDeleteConfirm(false)
     }
-  }, [selectedCellIndices, setSchema, setEmbedding, setColorBy, setExpressionData, setInteractionMode, resetActiveCells, clearSelection, refresh])
+  }, [selectedCellIndices, setSchema, setEmbedding, setColorBy, setExpressionData, setInteractionMode, resetActiveCells, clearSelection, refresh, colorByGene, colorByGenes])
 
   if (isLoading) {
     return (

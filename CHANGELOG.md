@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **Center-panel tab renamed: "Scatter Plot" → "Embedding"** — more accurate label for what the view actually shows.
+- **Highlight overlay panel: collapsible + more compact.** The whole section now collapses behind a chevron with an "N active" badge. Per-layer rows are denser: dropped the redundant `GENE`/`CELLS` kind label, moved the threshold-mode dropdown into the header row, combined the threshold value and intensity slider into a single row alongside the histogram. About ~30% less vertical space per layer.
+
+### Fixed
+- **Embedding view preserves zoom/pan across data refreshes.** Previously, any op that re-fetched the embedding (cell delete, filter, normalize) reset the camera to default because the viewState `useEffect` ran on every bounds change. Now the camera only re-centers when the user explicitly switches embeddings (e.g. spatial → UMAP); in-place data updates keep the user's current view. As a related fix, the cell-delete handler now also re-applies expression coloring (re-fetches with the new cell indices) so the active gene/gene-set coloring stays in place across delete.
+- **Highlight overlay no longer scrambles after analyses that change cell count.** A `useHighlightSync` hook watches `schema.n_cells` and rebuilds layers when it changes: geneset layers auto-refetch their per-cell scores in place (preserving color, intensity, threshold mode; clamping `lo`/`hi` into the new range), and cellset layers (selection / category masks) are dropped with a toast since their masks were bound to old cell indices. Previously, ops like `filter_cells` and `delete_cells` would shift cell indices and the cached highlight values would point to the wrong cells — the user had to manually remove and re-add each layer.
+
 ### Fixed
 - **Masked cells were silently included in line-association and gene-cluster analyses.** When a line had projections (the typical workflow), `Find Associated Genes` and the multi-line equivalent sent every projected cell to the backend regardless of the active cell mask. Same problem in `Cluster gene set`: `cellContext='selection'` didn't intersect with the mask, and `'all'` ignored the mask entirely. Now all three paths filter projected/selected indices through `activeCellMask` before sending; `'all' + mask` is converted to `'selection'` with the mask-derived indices. Diff exp and scanpy ops already honored the mask. Known gaps that remain (out of scope for this fix): **marker genes** and **heatmap** group by `obs_column` and don't pass a cell-index list, so honoring the mask there needs a new backend param.
 

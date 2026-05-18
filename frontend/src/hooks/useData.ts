@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from 'react'
+import { useEffect, useCallback, useState, useRef } from 'react'
 import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
 import { MESSAGES } from '../messages'
@@ -749,6 +749,52 @@ export function useDataActions() {
     [addHighlightLayer]
   )
 
+  // Re-fetch a geneset highlight layer's values in place (preserves id,
+  // color, intensity, thresholdMode; clamps lo/hi into the new range).
+  // Used by `useHighlightSync` when n_cells changes (e.g. filter_cells,
+  // delete_cells) — the layer's cached values array is now misaligned with
+  // the current cell indices, so re-fetching restores correct alignment.
+  const rebuildHighlightLayer = useCallback(
+    async (id: string): Promise<boolean> => {
+      const layer = useStore.getState().highlightLayers.find((l) => l.id === id)
+      if (!layer || layer.source.kind !== 'geneset') return false
+      const { genes } = layer.source
+      const layerArg = displayLayer && displayLayer !== 'X' ? displayLayer : undefined
+      try {
+        const body: Record<string, unknown> = {
+          genes,
+          transform: displayPreferences.expressionTransform,
+          per_gene_norm: displayPreferences.geneSetPerGeneNorm,
+          per_gene_clip: displayPreferences.geneSetPerGeneClip,
+          aggregation: displayPreferences.geneSetAggregation,
+          clip_percentile: displayPreferences.clipPercentile,
+        }
+        if (layerArg) body.layer = layerArg
+        const data = await fetchJson<ExpressionData>(appendDataset(`${API_BASE}/expression/multi`, activeSlot), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const clamp = (v: number) => Math.max(data.min, Math.min(data.max, v))
+        updateHighlightLayer(id, {
+          source: {
+            values: data.values,
+            min: data.min,
+            max: data.max,
+            lo: clamp(layer.source.lo),
+            hi: clamp(layer.source.hi),
+          },
+        })
+        return true
+      } catch {
+        // Genes no longer exist (e.g. after filter_genes) — drop the layer.
+        removeHighlightLayer(id)
+        return false
+      }
+    },
+    [activeSlot, displayLayer, displayPreferences.expressionTransform, displayPreferences.geneSetPerGeneNorm, displayPreferences.geneSetPerGeneClip, displayPreferences.geneSetAggregation, displayPreferences.clipPercentile, updateHighlightLayer, removeHighlightLayer]
+  )
+
   const clearHighlightOverlay = useCallback(() => {
     clearAllHighlights()
   }, [clearAllHighlights])
@@ -765,8 +811,49 @@ export function useDataActions() {
     addCellSetHighlight,
     removeHighlightLayer,
     updateHighlightLayer,
+    rebuildHighlightLayer,
     clearHighlightOverlay,
   }
+}
+
+// Keep highlight layers consistent across ops that change cell count.
+// Geneset layers have their cached `values` re-fetched in place; cellset
+// layers are dropped (their masks were bound to the old cell indices and
+// can't be regenerated without re-selecting). Mounted globally in App.tsx.
+export function useHighlightSync() {
+  const schema = useStore((s) => s.schema)
+  const highlightLayers = useStore((s) => s.highlightLayers)
+  const { rebuildHighlightLayer, removeHighlightLayer } = useDataActions()
+  const setError = useStore((s) => s.setError)
+  const lastNCells = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!schema) {
+      lastNCells.current = null
+      return
+    }
+    const n = schema.n_cells
+    if (lastNCells.current === null) {
+      lastNCells.current = n
+      return
+    }
+    if (n === lastNCells.current) return
+    lastNCells.current = n
+    if (highlightLayers.length === 0) return
+
+    let droppedCellsets = 0
+    for (const layer of highlightLayers) {
+      if (layer.source.kind === 'geneset') {
+        rebuildHighlightLayer(layer.id)
+      } else {
+        removeHighlightLayer(layer.id)
+        droppedCellsets += 1
+      }
+    }
+    if (droppedCellsets > 0) {
+      setError(`Cleared ${droppedCellsets} cell-mask highlight layer(s) — cell count changed (${droppedCellsets === 1 ? 'mask was' : 'masks were'} bound to old indices).`)
+    }
+  }, [schema, highlightLayers, rebuildHighlightLayer, removeHighlightLayer, setError])
 }
 
 // Hook for gene search

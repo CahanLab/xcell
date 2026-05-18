@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, DatasetSlot } from './store'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, appendDataset, fetchGeneMask } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, appendDataset, fetchGeneMask } from './hooks/useData'
 import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor, resolveCategoryPalette } from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
@@ -568,6 +568,7 @@ export default function App() {
   // Re-fetch expression data when transform setting changes
   useExpressionTransformEffect()
   useBivariateTransformEffect()
+  useHighlightSync()
 
   // Auto-dismiss errors after 5 seconds
   useEffect(() => {
@@ -1586,8 +1587,9 @@ export default function App() {
             <button
               style={{ ...styles.tab, ...(centerPanelView === 'scatter' ? styles.tabActive : {}) }}
               onClick={() => setCenterPanelView('scatter')}
+              title="Embedding view (scatter plot of cells in 2D)"
             >
-              Scatter Plot
+              Embedding
             </button>
             <button
               style={{ ...styles.tab, ...(centerPanelView === 'heatmap' ? styles.tabActive : {}) }}

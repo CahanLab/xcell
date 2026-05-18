@@ -599,8 +599,17 @@ export default function ScatterPlot({
     return baseColorFn
   }, [colorBy, expressionData, bivariateData, highlightLayers, colorMode, selectedSet, displayPreferences, activeCellMask])
 
-  // Initialize view state when bounds change
+  // Initialize view state when the embedding *identity* changes (user switches
+  // to a different embedding, or first load). In-place data updates (cell
+  // delete, filter, normalize) keep the same embedding name and should NOT
+  // reset the camera — otherwise zoom/pan/center jumps back to default every
+  // time the user runs an op.
+  const lastEmbeddingRef = useRef<string | null>(null)
   useEffect(() => {
+    if (lastEmbeddingRef.current === embedding.name && viewState !== null) {
+      return
+    }
+    lastEmbeddingRef.current = embedding.name
     const width = bounds.maxX - bounds.minX
     const height = bounds.maxY - bounds.minY
     const centerX = (bounds.minX + bounds.maxX) / 2
@@ -613,7 +622,7 @@ export default function ScatterPlot({
       minZoom: -10,
       maxZoom: 10,
     } as OrthographicViewState)
-  }, [bounds])
+  }, [embedding.name, bounds, viewState])
 
   const view = useMemo(() => {
     return new OrthographicView({ id: 'main' })

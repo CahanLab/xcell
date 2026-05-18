@@ -52,6 +52,8 @@ export default function HighlightOverlayPanel({
   const [pickColumn, setPickColumn] = useState<string>('')
   const [pickValue, setPickValue] = useState<string>('')
   const [adding, setAdding] = useState(false)
+  // Whole-section collapse — defaults to expanded. Local state, not persisted.
+  const [expanded, setExpanded] = useState<boolean>(true)
 
   const usableGeneSets = useMemo(
     () => allGeneSets.filter((gs) => gs.genes.length > 0),
@@ -134,13 +136,23 @@ export default function HighlightOverlayPanel({
 
   return (
     <div style={{ marginBottom: '10px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-        <span style={{ fontSize: '12px', fontWeight: 600, color: '#aaa', textTransform: 'uppercase' }}>
-          Highlight (overlay)
+      <div
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px', cursor: 'pointer', userSelect: 'none' }}
+        onClick={() => setExpanded((v) => !v)}
+        title={expanded ? 'Collapse Highlight panel' : 'Expand Highlight panel'}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style={{ fontSize: '10px', color: '#888', width: '10px' }}>{expanded ? '▼' : '▶'}</span>
+          <span style={{ fontSize: '12px', fontWeight: 600, color: '#aaa', textTransform: 'uppercase' }}>
+            Highlight (overlay)
+          </span>
+          {highlightLayers.length > 0 && (
+            <span style={{ fontSize: '10px', color: '#888' }}>· {highlightLayers.length} active</span>
+          )}
         </span>
-        {highlightLayers.length > 0 && (
+        {expanded && highlightLayers.length > 0 && (
           <button
-            onClick={clearHighlightOverlay}
+            onClick={(e) => { e.stopPropagation(); clearHighlightOverlay() }}
             style={{ padding: '2px 8px', fontSize: '11px', backgroundColor: 'transparent', color: '#888', border: '1px solid #444', borderRadius: '3px', cursor: 'pointer' }}
             title="Remove all highlight layers"
           >
@@ -149,6 +161,7 @@ export default function HighlightOverlayPanel({
         )}
       </div>
 
+      {expanded && (
       <div style={{ backgroundColor: '#0f3460', borderRadius: '4px', padding: '8px' }}>
         {highlightLayers.length === 0 && (
           <div style={{ fontSize: '10px', color: '#888', padding: '4px 6px 8px' }}>
@@ -267,6 +280,7 @@ export default function HighlightOverlayPanel({
           </div>
         )}
       </div>
+      )}
     </div>
   )
 }
@@ -293,74 +307,76 @@ function LayerRow({
     onUpdate({ source: { thresholdMode: mode, lo: d.lo, hi: d.hi } })
   }
 
+  const isGeneset = src.kind === 'geneset'
+  const hasHistogram = isGeneset && histogram && !histogram.zeroVariance
+
   return (
     <div style={layerRowStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+      {/* Row 1 — color | label | (mode dropdown if geneset) | × */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
         <input
           type="color"
           value={layer.color}
           onChange={(e) => onUpdate({ color: e.target.value })}
-          style={{ width: '22px', height: '20px', padding: 0, border: '1px solid #444', borderRadius: '3px', backgroundColor: '#1a1a2e', cursor: 'pointer', flexShrink: 0 }}
+          style={{ width: '20px', height: '18px', padding: 0, border: '1px solid #444', borderRadius: '3px', backgroundColor: '#1a1a2e', cursor: 'pointer', flexShrink: 0 }}
           title="Layer color"
         />
         <span style={{ fontSize: '12px', color: '#eee', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={src.label}>
           {src.label}
         </span>
-        <span style={{ fontSize: '10px', color: '#666', textTransform: 'uppercase', flexShrink: 0 }}>
-          {src.kind === 'geneset' ? 'gene' : 'cells'}
-        </span>
+        {hasHistogram && (
+          <select
+            value={src.thresholdMode}
+            onChange={(e) => handleModeChange(e.target.value as HighlightThresholdMode)}
+            style={{ padding: '1px 2px', fontSize: '11px', backgroundColor: '#1a1a2e', color: '#eee', border: '1px solid #0f3460', borderRadius: '3px', cursor: 'pointer' }}
+            title="Threshold mode"
+          >
+            <option value="above">≥</option>
+            <option value="below">≤</option>
+            <option value="between">⇔</option>
+          </select>
+        )}
         <button
           onClick={onRemove}
-          style={{ padding: '0 6px', fontSize: '14px', backgroundColor: 'transparent', color: '#888', border: 'none', cursor: 'pointer', lineHeight: 1 }}
+          style={{ padding: '0 4px', fontSize: '14px', backgroundColor: 'transparent', color: '#888', border: 'none', cursor: 'pointer', lineHeight: 1 }}
           title="Remove this layer"
         >
           ×
         </button>
       </div>
 
-      {src.kind === 'geneset' && histogram && !histogram.zeroVariance && (
-        <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-            <span style={labelStyle}>Mode</span>
-            <select
-              value={src.thresholdMode}
-              onChange={(e) => handleModeChange(e.target.value as HighlightThresholdMode)}
-              style={{ ...inputStyle, width: 'auto', padding: '2px 4px', fontSize: '11px' }}
-            >
-              <option value="above">≥</option>
-              <option value="below">≤</option>
-              <option value="between">between</option>
-            </select>
-            <span style={{ ...labelStyle, marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>
-              {src.thresholdMode === 'between'
-                ? `${src.lo.toFixed(2)}–${src.hi.toFixed(2)}`
-                : src.lo.toFixed(2)}
-            </span>
-          </div>
-          <div style={{ marginBottom: '4px' }}>
-            <HistogramChart
-              histogram={histogram}
-              mode={src.thresholdMode}
-              lo={src.lo}
-              hi={src.hi}
-              onChangeLo={(v) => onUpdate({ source: { lo: v } })}
-              onChangeHi={(v) => onUpdate({ source: { hi: v } })}
-              width={252}
-              height={60}
-              barColor={layer.color}
-            />
-          </div>
-        </>
+      {/* Row 2 (geneset only) — full-width histogram with draggable cutoff */}
+      {hasHistogram && (
+        <div style={{ marginTop: '4px' }}>
+          <HistogramChart
+            histogram={histogram}
+            mode={src.thresholdMode}
+            lo={src.lo}
+            hi={src.hi}
+            onChangeLo={(v) => onUpdate({ source: { lo: v } })}
+            onChangeHi={(v) => onUpdate({ source: { hi: v } })}
+            width={252}
+            height={44}
+            barColor={layer.color}
+          />
+        </div>
       )}
 
-      {src.kind === 'geneset' && histogram && histogram.zeroVariance && (
-        <div style={{ fontSize: '10px', color: '#888', marginBottom: '4px' }}>
+      {isGeneset && histogram && histogram.zeroVariance && (
+        <div style={{ fontSize: '10px', color: '#888', marginTop: '4px' }}>
           (no variance in this score — nothing to threshold)
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-        <span style={labelStyle}>Intensity</span>
+      {/* Row 3 — combined threshold-value (geneset) + intensity slider */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+        {hasHistogram && (
+          <span style={{ ...labelStyle, fontVariantNumeric: 'tabular-nums', minWidth: src.thresholdMode === 'between' ? '70px' : '40px' }}>
+            {src.thresholdMode === 'between'
+              ? `${src.lo.toFixed(2)}–${src.hi.toFixed(2)}`
+              : src.lo.toFixed(2)}
+          </span>
+        )}
         <input
           type="range"
           min={0}
@@ -369,8 +385,9 @@ function LayerRow({
           value={layer.intensity}
           onChange={(e) => onUpdate({ intensity: parseFloat(e.target.value) })}
           style={{ flex: 1 }}
+          title="Intensity"
         />
-        <span style={{ fontSize: '10px', color: '#888', width: '32px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+        <span style={{ fontSize: '10px', color: '#888', width: '30px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
           {Math.round(layer.intensity * 100)}%
         </span>
       </div>

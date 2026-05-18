@@ -54,11 +54,12 @@ XCELL_DATA_PATH=/path/to/your/data.h5ad uvicorn xcell.main:app --reload  # also 
 
 The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcriptomics dataset for exploring XCell's features. Here's a step-by-step walkthrough:
 
-### 1. Explore the Scatter Plot
+### 1. Explore the Embedding
 
+- The center panel shows cells as points at their embedding coordinates (spatial, UMAP, PCA, …). The tab is labeled **Embedding**; if multiple embeddings are available, switch via the in-plot **Embedding** dropdown.
 - Pan by clicking and dragging
 - Zoom with scroll wheel
-- Cells are rendered as points at their spatial coordinates
+- Zoom/pan are preserved across in-place data changes (cell delete, filter, normalize, etc.). The camera only re-centers when you explicitly switch embeddings.
 
 ### 2. Color by Metadata
 
@@ -314,6 +315,7 @@ Most changes you make in a session survive on the backend process: deleted cells
 - **Trajectory analysis** — draw lines and associate genes with spatial trajectories
 - **Quilt mode** — lasso and rearrange tissue pieces: drag to translate, shift+drag to rotate, flip to reflect selected cell subsets
 - **Display settings** — adjust point size, opacity, colormaps, bivariate coloring
+- **Highlight overlay** — stack one or more colored layers on top of the active coloring without replacing it. Each layer is either a gene-set expression threshold (above / below / between, with a draggable histogram cutoff) or a frozen cell-set mask (current selection or category value). Useful for marking e.g. epithelium in green while keeping bivariate coloring on the rest.
 - **Multi-dataset support** — load two datasets (h5ad, h5, rds, 10x matrix folders, or prefixed 10x file trios from GEO), switch between them, or view side by side in split mode
 - **Export** — download annotations and analysis results
 

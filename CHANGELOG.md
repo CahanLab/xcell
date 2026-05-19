@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **Figure builder — multi-panel publication-quality figures.** A new **Figure** tab next to Embedding/Heatmap. Click **Create figure** at the bottom of the Cells panel: if cells are selected, those are the figure's cell set; otherwise it falls back to the full dataset. Cell positions are snapshotted at creation, so subsequent filtering / deletion / analysis won't corrupt the figure. The builder shows a grid of panels (1×1 through 3×3 presets) — each panel renders the same cells with its own settings: color by a single gene name, a gene set, or a metadata column; per-panel color scale (viridis / plasma / magma / inferno / cividis / coolwarm / blues / reds), expression transform (none / log1p), point size, opacity, background, border, and title. Pan/zoom is shared across all panels so they stay aligned. Export to PNG at 1×–4× DPI scale (filename auto-timestamped, e.g. `figure_2026-05-19_1937.png`). Designed for the typical "compare gene A vs gene B side-by-side over the same tissue section" workflow, eliminating the need to save individual views and stitch them in another program.
+
 ### Changed
 - **Center-panel tab renamed: "Scatter Plot" → "Embedding"** — more accurate label for what the view actually shows.
 - **Highlight overlay panel: collapsible + more compact.** The whole section now collapses behind a chevron with an "N active" badge. Per-layer rows are denser: dropped the redundant `GENE`/`CELLS` kind label, moved the threshold-mode dropdown into the header row, combined the threshold value and intensity slider into a single row alongside the histogram. About ~30% less vertical space per layer.

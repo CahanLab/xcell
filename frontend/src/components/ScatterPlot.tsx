@@ -223,7 +223,7 @@ const COLOR_SCALES: Record<ColorScale, { pos: number; color: [number, number, nu
   ],
 }
 
-function getColorFromScale(t: number, scale: ColorScale): [number, number, number] {
+export function getColorFromScale(t: number, scale: ColorScale): [number, number, number] {
   return interpolateStops(t, COLOR_SCALES[scale])
 }
 

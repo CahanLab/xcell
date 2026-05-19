@@ -10,6 +10,7 @@ import LineAssociationModal from './components/LineAssociationModal'
 import ScanpyModal from './components/ScanpyModal'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
+import FigureBuilder from './components/FigureBuilder'
 import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import SelectByExpressionModal from './components/SelectByExpressionModal'
@@ -1597,6 +1598,13 @@ export default function App() {
             >
               Heatmap
             </button>
+            <button
+              style={{ ...styles.tab, ...(centerPanelView === 'figure' ? styles.tabActive : {}) }}
+              onClick={() => setCenterPanelView('figure')}
+              title="Multi-panel publication figure builder"
+            >
+              Figure
+            </button>
           </div>
 
           <div style={styles.vizContent}>
@@ -1938,6 +1946,10 @@ export default function App() {
 
             {centerPanelView === 'heatmap' && (
               <HeatmapView />
+            )}
+
+            {centerPanelView === 'figure' && (
+              <FigureBuilder />
             )}
           </div>
         </main>

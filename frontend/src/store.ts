@@ -297,7 +297,50 @@ export interface LineAssociationResult {
 }
 
 // Center panel view mode
-export type CenterPanelView = 'scatter' | 'heatmap'
+export type CenterPanelView = 'scatter' | 'heatmap' | 'figure'
+
+// Figure builder — multi-panel publication-quality compositor. A figure
+// freezes a snapshot of cell indices at creation time; each panel renders
+// the same cells with its own color mode + styling. Shared zoom/pan across
+// all panels in v1. Export via /utils/exportFigure.ts.
+export type FigureColorMode = 'none' | 'expression' | 'metadata' | 'bivariate'
+
+export interface FigurePanel {
+  id: string
+  title: string                          // user-editable panel label (e.g. "Prrx1")
+  colorMode: FigureColorMode
+  selectedGenes: string[]                // gene(s) for expression coloring
+  selectedGeneSetName: string | null     // gene-set display name (null = single-gene)
+  selectedColorColumn: string | null     // obs column name for metadata coloring
+  bivariateSet1: string | null           // gene-set name for bivariate red axis
+  bivariateSet2: string | null           // gene-set name for bivariate blue axis
+  colorScale: ColorScale
+  bivariateColormap: BivariateColormap
+  expressionTransform: ExpressionTransform
+  pointSize: number
+  pointOpacity: number
+  background: string                     // hex; per-panel background override
+  showBorder: boolean
+}
+
+export interface Figure {
+  // Snapshotted at figure creation — selection / embedding changes afterward
+  // don't update the figure. Color data is fetched live per panel and looked
+  // up by `cellIndices[i]`; out-of-range indices (post-filter_cells) skip.
+  cellIndices: number[]
+  coordinates: [number, number][]        // length == cellIndices.length
+  embeddingName: string                  // for display only
+  panels: FigurePanel[]
+  rows: number
+  cols: number
+  title: string
+  background: string
+  // Shared viewState across all panels (computed lazily from coordinates on
+  // first render; subsequent pan/zoom in any panel updates these).
+  sharedZoom: number | null
+  sharedTargetX: number | null
+  sharedTargetY: number | null
+}
 
 // Layout mode for scatter view
 export type LayoutMode = 'single' | 'dual'
@@ -625,6 +668,9 @@ interface AppState {
   centerPanelView: CenterPanelView
   heatmapConfig: HeatmapConfig | null
 
+  // Figure builder state — null until the user creates a figure
+  activeFigure: Figure | null
+
   // Layout mode (single vs side-by-side dual scatter)
   layoutMode: LayoutMode
 
@@ -802,6 +848,13 @@ interface AppState {
   setCenterPanelView: (view: CenterPanelView) => void
   setHeatmapConfig: (config: HeatmapConfig | null) => void
 
+  // Figure builder actions
+  createFigure: (cellIndices: number[], coordinates: [number, number][], embeddingName: string, rows?: number, cols?: number) => void
+  updateFigure: (patch: Partial<Omit<Figure, 'panels'>>) => void
+  updateFigurePanel: (panelId: string, patch: Partial<Omit<FigurePanel, 'id'>>) => void
+  setFigureLayout: (rows: number, cols: number) => void
+  closeFigure: () => void
+
   // Layout mode actions
   setLayoutMode: (mode: LayoutMode) => void
 
@@ -941,6 +994,7 @@ export const useStore = create<AppState>((set, get) => {
     comparisonCheckedCategories: new Set<string>(),
     centerPanelView: 'scatter',
     heatmapConfig: null,
+    activeFigure: null,
 
     // Layout mode
     layoutMode: 'single' as LayoutMode,
@@ -2018,6 +2072,103 @@ export const useStore = create<AppState>((set, get) => {
     // Heatmap tab actions (global)
     setCenterPanelView: (view) => set({ centerPanelView: view }),
     setHeatmapConfig: (config) => set({ heatmapConfig: config }),
+
+    createFigure: (cellIndices, coordinates, embeddingName, rows = 2, cols = 2) => {
+      const total = rows * cols
+      const defaults = defaultDisplayPreferences()
+      const panels: FigurePanel[] = []
+      for (let i = 0; i < total; i++) {
+        panels.push({
+          id: `panel_${Date.now().toString(36)}_${i}`,
+          title: `Panel ${i + 1}`,
+          colorMode: 'none',
+          selectedGenes: [],
+          selectedGeneSetName: null,
+          selectedColorColumn: null,
+          bivariateSet1: null,
+          bivariateSet2: null,
+          colorScale: defaults.colorScale,
+          bivariateColormap: defaults.bivariateColormap,
+          expressionTransform: defaults.expressionTransform,
+          pointSize: defaults.pointSize,
+          pointOpacity: defaults.pointOpacity,
+          background: defaults.backgroundColor,
+          showBorder: true,
+        })
+      }
+      set({
+        activeFigure: {
+          cellIndices: [...cellIndices],
+          coordinates: coordinates.map((c) => [c[0], c[1]] as [number, number]),
+          embeddingName,
+          panels,
+          rows,
+          cols,
+          title: '',
+          background: defaults.backgroundColor,
+          sharedZoom: null,
+          sharedTargetX: null,
+          sharedTargetY: null,
+        },
+      })
+    },
+
+    updateFigure: (patch) =>
+      set((state) => {
+        if (!state.activeFigure) return {}
+        return { activeFigure: { ...state.activeFigure, ...patch } }
+      }),
+
+    updateFigurePanel: (panelId, patch) =>
+      set((state) => {
+        if (!state.activeFigure) return {}
+        return {
+          activeFigure: {
+            ...state.activeFigure,
+            panels: state.activeFigure.panels.map((p) =>
+              p.id === panelId ? { ...p, ...patch } : p
+            ),
+          },
+        }
+      }),
+
+    setFigureLayout: (rows, cols) =>
+      set((state) => {
+        if (!state.activeFigure) return {}
+        const total = rows * cols
+        const current = state.activeFigure.panels
+        const defaults = defaultDisplayPreferences()
+        let panels = current
+        if (current.length < total) {
+          // Add blank panels
+          panels = [...current]
+          for (let i = current.length; i < total; i++) {
+            panels.push({
+              id: `panel_${Date.now().toString(36)}_${i}`,
+              title: `Panel ${i + 1}`,
+              colorMode: 'none',
+              selectedGenes: [],
+              selectedGeneSetName: null,
+              selectedColorColumn: null,
+              bivariateSet1: null,
+              bivariateSet2: null,
+              colorScale: defaults.colorScale,
+              bivariateColormap: defaults.bivariateColormap,
+              expressionTransform: defaults.expressionTransform,
+              pointSize: defaults.pointSize,
+              pointOpacity: defaults.pointOpacity,
+              background: defaults.backgroundColor,
+              showBorder: true,
+            })
+          }
+        } else if (current.length > total) {
+          // Trim from the end — user can re-create if they want different panels back
+          panels = current.slice(0, total)
+        }
+        return { activeFigure: { ...state.activeFigure, rows, cols, panels } }
+      }),
+
+    closeFigure: () => set({ activeFigure: null }),
 
     // Layout mode actions
     setLayoutMode: (mode) => set({ layoutMode: mode }),

@@ -1647,7 +1647,7 @@ function GeneSetCategoryComponent({
 }
 
 // Helper to flatten all gene sets from hierarchical categories
-function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetCategory>): GeneSet[] {
+export function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetCategory>): GeneSet[] {
   const allSets: GeneSet[] = []
   for (const catType of CATEGORY_ORDER) {
     const cat = categories[catType]

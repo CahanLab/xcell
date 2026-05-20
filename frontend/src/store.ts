@@ -319,6 +319,7 @@ export interface FigurePanel {
   expressionTransform: ExpressionTransform
   background: string                     // hex; per-panel background override
   showBorder: boolean
+  showHighlightOverlay: boolean          // if on, blend dataset's highlightLayers over base color
 }
 
 export interface Figure {
@@ -338,6 +339,13 @@ export interface Figure {
   // cells under different colorings, where varying point size would distract.
   pointSize: number
   pointOpacity: number
+  // Grid overlay (one config across all panels). When `showGrid` is on, each
+  // panel renders a screen-fixed N×N grid as a visual reference. Drawn as
+  // SVG in the live preview and as ctx.stroke lines in PNG export.
+  showGrid: boolean
+  gridColor: string
+  gridLineWidth: number
+  gridDivisions: number
   // Shared viewState across all panels (computed lazily from coordinates on
   // first render; subsequent pan/zoom in any panel updates these).
   sharedZoom: number | null
@@ -2095,6 +2103,7 @@ export const useStore = create<AppState>((set, get) => {
           expressionTransform: defaults.expressionTransform,
           background: defaults.backgroundColor,
           showBorder: true,
+          showHighlightOverlay: false,
         })
       }
       set({
@@ -2109,6 +2118,10 @@ export const useStore = create<AppState>((set, get) => {
           background: defaults.backgroundColor,
           pointSize: defaults.pointSize,
           pointOpacity: defaults.pointOpacity,
+          showGrid: false,
+          gridColor: '#888888',
+          gridLineWidth: 0.5,
+          gridDivisions: 8,
           sharedZoom: null,
           sharedTargetX: null,
           sharedTargetY: null,
@@ -2160,6 +2173,7 @@ export const useStore = create<AppState>((set, get) => {
               expressionTransform: defaults.expressionTransform,
               background: defaults.backgroundColor,
               showBorder: true,
+              showHighlightOverlay: false,
             })
           }
         } else if (current.length > total) {

@@ -2,14 +2,45 @@ import { useEffect, useMemo, useState, useRef, useCallback } from 'react'
 import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
-import { Figure, FigurePanel as PanelType, useStore } from '../store'
+import { Figure, FigurePanel as PanelType, HighlightLayer, HighlightSource, useStore } from '../store'
 import { appendDataset } from '../hooks/useData'
-import { getColorFromScale, resolveCategoryPalette } from './ScatterPlot'
+import { getColorFromScale, getBivariateColor, resolveCategoryPalette, hexToRgb } from './ScatterPlot'
+
+// Build a per-cell weight function for a HighlightLayer. Mirrors the
+// `layerWeightFn` in ScatterPlot.tsx (kept inline here to avoid leaking
+// internals; small enough that duplication is fine).
+function layerWeightFn(layer: HighlightLayer): (i: number) => number {
+  const src: HighlightSource = layer.source
+  const intensity = layer.intensity
+  if (src.kind === 'cellset') {
+    const mask = src.mask
+    return (i: number) => (mask[i] ? intensity : 0)
+  }
+  const { values, thresholdMode, lo, hi } = src
+  if (thresholdMode === 'above') {
+    return (i: number) => {
+      const v = values[i]
+      return v != null && v >= lo ? intensity : 0
+    }
+  }
+  if (thresholdMode === 'below') {
+    return (i: number) => {
+      const v = values[i]
+      return v != null && v <= lo ? intensity : 0
+    }
+  }
+  return (i: number) => {
+    const v = values[i]
+    return v != null && v >= lo && v <= hi ? intensity : 0
+  }
+}
 
 // Per-panel color data — fetched lazily based on the panel's color mode.
 interface PanelColorData {
-  kind: 'expression' | 'metadata-numeric' | 'metadata-category' | 'none'
+  kind: 'expression' | 'metadata-numeric' | 'metadata-category' | 'bivariate' | 'none'
   values?: (number | null)[]                    // length = current n_cells
+  values1?: number[]                            // bivariate: gene-set 1 score (normalized [0,1])
+  values2?: number[]                            // bivariate: gene-set 2 score (normalized [0,1])
   min?: number
   max?: number
   categories?: string[]
@@ -18,8 +49,42 @@ interface PanelColorData {
 
 const API_BASE = '/api'
 
+// Resolve a gene-set name to its gene list via the global store (gene sets
+// are global, not per-dataset). Returns [] if unknown.
+function lookupGeneSet(name: string | null): string[] {
+  if (!name) return []
+  const cats = useStore.getState().geneSetCategories
+  for (const k of Object.keys(cats) as (keyof typeof cats)[]) {
+    const cat = cats[k]
+    for (const gs of cat.geneSets) {
+      if (gs.name === name) return gs.genes
+    }
+    for (const folder of cat.folders) {
+      for (const gs of folder.geneSets) {
+        if (gs.name === name) return gs.genes
+      }
+    }
+  }
+  return []
+}
+
 async function fetchPanelData(panel: PanelType): Promise<PanelColorData> {
   if (panel.colorMode === 'none') return { kind: 'none' }
+
+  if (panel.colorMode === 'bivariate') {
+    const genes1 = lookupGeneSet(panel.bivariateSet1)
+    const genes2 = lookupGeneSet(panel.bivariateSet2)
+    if (genes1.length === 0 || genes2.length === 0) return { kind: 'none' }
+    const transform = panel.expressionTransform === 'log1p' ? 'log1p' : null
+    const res = await fetch(appendDataset(`${API_BASE}/expression/bivariate`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ genes1, genes2, transform }),
+    })
+    if (!res.ok) throw new Error('bivariate fetch failed')
+    const data = await res.json()
+    return { kind: 'bivariate', values1: data.values1, values2: data.values2 }
+  }
 
   if (panel.colorMode === 'expression') {
     if (panel.selectedGenes.length === 0) return { kind: 'none' }
@@ -72,6 +137,7 @@ interface Props {
 
 export default function FigurePanel({ figure, panel, staticView = false }: Props) {
   const updateFigure = useStore((s) => s.updateFigure)
+  const highlightLayers = useStore((s) => s.highlightLayers)
   const [colorData, setColorData] = useState<PanelColorData>({ kind: 'none' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -95,7 +161,7 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
     return () => {
       cancelled = true
     }
-  }, [panel.colorMode, panel.selectedGenes, panel.selectedColorColumn, panel.expressionTransform])
+  }, [panel.colorMode, panel.selectedGenes, panel.selectedColorColumn, panel.expressionTransform, panel.bivariateSet1, panel.bivariateSet2])
 
   // Bounds from the snapshotted coordinates — used for default viewState.
   const bounds = useMemo(() => {
@@ -135,49 +201,104 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
       })
       return arr
     }
+    if (colorData.kind === 'bivariate' && colorData.values1 && colorData.values2) {
+      // Sort by sum of normalized scores — matches the main ScatterPlot's
+      // bivariate stacking so high-expression cells stay on top.
+      const v1 = colorData.values1
+      const v2 = colorData.values2
+      const arr = [...base]
+      arr.sort((a, b) => {
+        const sa = (v1[a.adataIndex] ?? 0) + (v2[a.adataIndex] ?? 0)
+        const sb = (v1[b.adataIndex] ?? 0) + (v2[b.adataIndex] ?? 0)
+        return sa - sb
+      })
+      return arr
+    }
     return base
   }, [figure.coordinates, figure.cellIndices, colorData])
 
   // Color function — closed over the panel's settings + fetched data.
+  // When `showHighlightOverlay` is on, the dataset's `highlightLayers`
+  // are blended on top of the base color in creation order (same hard-gate
+  // blend formula used by the main ScatterPlot).
   const getColor = useMemo(() => {
     const opacity = Math.round(figure.pointOpacity * 255)
     const fallback: [number, number, number, number] = [100, 149, 237, opacity]
+
+    // Compute baseColorFn first.
+    let baseColorFn: (d: { adataIndex: number }) => [number, number, number, number]
 
     if (colorData.kind === 'expression' && colorData.values && colorData.min !== undefined && colorData.max !== undefined) {
       const { values, min, max } = colorData
       const range = max - min || 1
       const scale = panel.colorScale
-      return (d: { adataIndex: number }): [number, number, number, number] => {
+      baseColorFn = (d: { adataIndex: number }): [number, number, number, number] => {
         const v = values[d.adataIndex]
         if (v == null) return [128, 128, 128, Math.round(opacity * 0.5)]
         const t = (v - min) / range
         const rgb = getColorFromScale(t, scale)
         return [rgb[0], rgb[1], rgb[2], opacity]
       }
-    }
-    if (colorData.kind === 'metadata-numeric' && colorData.values && colorData.min !== undefined && colorData.max !== undefined) {
+    } else if (colorData.kind === 'metadata-numeric' && colorData.values && colorData.min !== undefined && colorData.max !== undefined) {
       const { values, min, max } = colorData
       const range = max - min || 1
       const scale = panel.colorScale
-      return (d: { adataIndex: number }): [number, number, number, number] => {
+      baseColorFn = (d: { adataIndex: number }): [number, number, number, number] => {
         const v = values[d.adataIndex]
         if (v == null) return [128, 128, 128, Math.round(opacity * 0.5)]
         const t = ((v as number) - min) / range
         const rgb = getColorFromScale(t, scale)
         return [rgb[0], rgb[1], rgb[2], opacity]
       }
-    }
-    if (colorData.kind === 'metadata-category' && colorData.values && colorData.categories) {
+    } else if (colorData.kind === 'metadata-category' && colorData.values && colorData.categories) {
       const palette = resolveCategoryPalette(colorData.categories.length, colorData.categoryColors)
       const values = colorData.values
-      return (d: { adataIndex: number }): [number, number, number, number] => {
+      baseColorFn = (d: { adataIndex: number }): [number, number, number, number] => {
         const v = values[d.adataIndex] as number
         const rgb = palette[v] ?? palette[0] ?? [128, 128, 128]
         return [rgb[0], rgb[1], rgb[2], opacity]
       }
+    } else if (colorData.kind === 'bivariate' && colorData.values1 && colorData.values2) {
+      const v1 = colorData.values1
+      const v2 = colorData.values2
+      const colormap = panel.bivariateColormap
+      baseColorFn = (d: { adataIndex: number }): [number, number, number, number] => {
+        const u = v1[d.adataIndex] ?? 0
+        const w = v2[d.adataIndex] ?? 0
+        const rgb = getBivariateColor(u, w, colormap)
+        return [rgb[0], rgb[1], rgb[2], opacity]
+      }
+    } else {
+      baseColorFn = (_d: { adataIndex: number }) => fallback
     }
-    return (_d: { adataIndex: number }) => fallback
-  }, [colorData, panel.colorScale, figure.pointOpacity])
+
+    // Highlight overlay: blend each layer's color over the base color in
+    // creation order. Per-cell weight is hard-gated (in-threshold = intensity,
+    // else 0) for geneset layers and a mask lookup for cellset layers.
+    if (panel.showHighlightOverlay && highlightLayers.length > 0) {
+      const compiled = highlightLayers.map((layer) => ({
+        rgb: hexToRgb(layer.color) ?? [34, 197, 94] as [number, number, number],
+        weight: layerWeightFn(layer),
+      }))
+      const fn = baseColorFn
+      return (d: { adataIndex: number }): [number, number, number, number] => {
+        const base = fn(d)
+        let r = base[0], g = base[1], b = base[2]
+        for (let k = 0; k < compiled.length; k++) {
+          const w = compiled[k].weight(d.adataIndex)
+          if (w <= 0) continue
+          const ww = w > 1 ? 1 : w
+          const lr = compiled[k].rgb
+          r = r * (1 - ww) + lr[0] * ww
+          g = g * (1 - ww) + lr[1] * ww
+          b = b * (1 - ww) + lr[2] * ww
+        }
+        return [Math.round(r), Math.round(g), Math.round(b), base[3]]
+      }
+    }
+
+    return baseColorFn
+  }, [colorData, panel.colorScale, panel.bivariateColormap, panel.showHighlightOverlay, highlightLayers, figure.pointOpacity])
 
   // Shared viewState: read from figure, write back when user pans/zooms.
   const viewState: OrthographicViewState = useMemo(() => {
@@ -242,7 +363,7 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
       stroked: false,
       filled: true,
       updateTriggers: {
-        getFillColor: [colorData, panel.colorScale, figure.pointOpacity],
+        getFillColor: [colorData, panel.colorScale, panel.bivariateColormap, panel.showHighlightOverlay, highlightLayers, figure.pointOpacity],
         getRadius: figure.pointSize,
       },
     }),
@@ -272,6 +393,13 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
         onViewStateChange={staticView ? undefined : handleViewStateChange}
         style={{ width: '100%', height: '100%' }}
       />
+      {figure.showGrid && (
+        <GridOverlay
+          divisions={figure.gridDivisions}
+          color={figure.gridColor}
+          lineWidth={figure.gridLineWidth}
+        />
+      )}
       {panel.title && (
         <div
           style={{
@@ -317,6 +445,37 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
         <div style={{ ...loadingOverlayStyle, color: '#e94560' }}>{error}</div>
       )}
     </div>
+  )
+}
+
+// Screen-fixed N×N grid overlay (the same N lines regardless of zoom/pan).
+// Drawn as an absolutely-positioned SVG that sits on top of the deck.gl
+// canvas but ignores pointer events so pan/zoom still work.
+function GridOverlay({ divisions, color, lineWidth }: { divisions: number; color: string; lineWidth: number }) {
+  const lines: React.ReactElement[] = []
+  for (let i = 1; i < divisions; i++) {
+    const p = (i / divisions) * 100
+    lines.push(
+      <line key={`v${i}`} x1={`${p}%`} x2={`${p}%`} y1="0" y2="100%" stroke={color} strokeWidth={lineWidth} />
+    )
+    lines.push(
+      <line key={`h${i}`} x1="0" x2="100%" y1={`${p}%`} y2={`${p}%`} stroke={color} strokeWidth={lineWidth} />
+    )
+  }
+  return (
+    <svg
+      style={{
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none',
+        shapeRendering: 'crispEdges',
+        opacity: 0.6,
+      }}
+    >
+      {lines}
+    </svg>
   )
 }
 

@@ -80,6 +80,28 @@ export async function exportFigureAsPng(figure: Figure, scale: number = 1): Prom
       }
     }
 
+    // Grid overlay — N×N evenly-spaced lines, screen-fixed (matches the
+    // live SVG GridOverlay). Drawn after the canvas so it sits on top.
+    if (figure.showGrid) {
+      ctx.save()
+      ctx.globalAlpha = 0.6
+      ctx.strokeStyle = figure.gridColor
+      ctx.lineWidth = figure.gridLineWidth * outScale
+      for (let i = 1; i < figure.gridDivisions; i++) {
+        const fx = x + (i / figure.gridDivisions) * w
+        const fy = y + (i / figure.gridDivisions) * h
+        ctx.beginPath()
+        ctx.moveTo(fx, y)
+        ctx.lineTo(fx, y + h)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(x, fy)
+        ctx.lineTo(x + w, fy)
+        ctx.stroke()
+      }
+      ctx.restore()
+    }
+
     // Border
     if (panel?.showBorder) {
       ctx.strokeStyle = '#444'

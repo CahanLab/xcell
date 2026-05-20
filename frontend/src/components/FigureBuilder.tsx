@@ -124,6 +124,34 @@ export default function FigureBuilder() {
           title="Point opacity (shared across all panels)"
         />
         <span style={{ ...labelStyle, fontVariantNumeric: 'tabular-nums', width: '30px' }}>{Math.round(figure.pointOpacity * 100)}%</span>
+        <span style={{ ...labelStyle, marginLeft: '12px' }}>Grid</span>
+        <input
+          type="checkbox"
+          checked={figure.showGrid}
+          onChange={(e) => updateFigure({ showGrid: e.target.checked })}
+          title="Toggle N×N grid overlay on all panels"
+        />
+        {figure.showGrid && (
+          <>
+            <input
+              type="color"
+              value={figure.gridColor}
+              onChange={(e) => updateFigure({ gridColor: e.target.value })}
+              style={colorInputStyle}
+              title="Grid line color"
+            />
+            <input
+              type="range"
+              min={0.25}
+              max={3}
+              step={0.25}
+              value={figure.gridLineWidth}
+              onChange={(e) => updateFigure({ gridLineWidth: parseFloat(e.target.value) })}
+              style={{ width: '60px' }}
+              title="Grid line width (px)"
+            />
+          </>
+        )}
         <div style={{ flex: 1 }} />
         <span style={labelStyle}>Export DPI</span>
         <select value={exportScale} onChange={(e) => setExportScale(Number(e.target.value))} style={selectStyle}>
@@ -237,6 +265,8 @@ function PanelControls({
       selectedGenes: [],
       selectedGeneSetName: null,
       selectedColorColumn: null,
+      bivariateSet1: null,
+      bivariateSet2: null,
     })
     setCustomGene('')
   }
@@ -260,6 +290,7 @@ function PanelControls({
         <select value={panel.colorMode} onChange={(e) => handleColorModeChange(e.target.value as FigureColorMode)} style={inputStyle}>
           <option value="none">none</option>
           <option value="expression">gene / gene set</option>
+          <option value="bivariate">bivariate (2 gene sets)</option>
           <option value="metadata">metadata</option>
         </select>
       </ControlRow>
@@ -325,6 +356,53 @@ function PanelControls({
         </>
       )}
 
+      {panel.colorMode === 'bivariate' && (
+        <>
+          <ControlRow label="Set 1 (red)">
+            <select
+              value={panel.bivariateSet1 ?? ''}
+              onChange={(e) => onUpdate({ bivariateSet1: e.target.value || null })}
+              style={inputStyle}
+            >
+              <option value="">— pick set —</option>
+              {allGeneSets.map((gs) => (
+                <option key={gs.id} value={gs.name}>{gs.name} ({gs.genes.length})</option>
+              ))}
+            </select>
+          </ControlRow>
+          <ControlRow label="Set 2 (blue)">
+            <select
+              value={panel.bivariateSet2 ?? ''}
+              onChange={(e) => onUpdate({ bivariateSet2: e.target.value || null })}
+              style={inputStyle}
+            >
+              <option value="">— pick set —</option>
+              {allGeneSets.map((gs) => (
+                <option key={gs.id} value={gs.name}>{gs.name} ({gs.genes.length})</option>
+              ))}
+            </select>
+          </ControlRow>
+          <ControlRow label="Colormap">
+            <select
+              value={panel.bivariateColormap}
+              onChange={(e) => onUpdate({ bivariateColormap: e.target.value as PanelType['bivariateColormap'] })}
+              style={inputStyle}
+            >
+              <option value="default">default (red / blue)</option>
+              <option value="pinkgreen">pink / green</option>
+              <option value="orangepurple">orange / purple</option>
+              <option value="custom">custom</option>
+            </select>
+          </ControlRow>
+          <ControlRow label="Transform">
+            <select value={panel.expressionTransform} onChange={(e) => onUpdate({ expressionTransform: e.target.value as 'none' | 'log1p' })} style={inputStyle}>
+              <option value="none">none</option>
+              <option value="log1p">log1p</option>
+            </select>
+          </ControlRow>
+        </>
+      )}
+
       {panel.colorMode === 'metadata' && (
         <>
           <ControlRow label="Column">
@@ -364,6 +442,15 @@ function PanelControls({
           checked={panel.showBorder}
           onChange={(e) => onUpdate({ showBorder: e.target.checked })}
         />
+      </ControlRow>
+      <ControlRow label="Overlay">
+        <input
+          type="checkbox"
+          checked={panel.showHighlightOverlay}
+          onChange={(e) => onUpdate({ showHighlightOverlay: e.target.checked })}
+          title="Blend the dataset's current Highlight layers (set up in the Embedding tab's Genes panel) over this panel's coloring"
+        />
+        <span style={{ ...labelStyle, marginLeft: '4px' }}>show highlight layers</span>
       </ControlRow>
     </div>
   )

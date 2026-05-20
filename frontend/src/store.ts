@@ -317,8 +317,6 @@ export interface FigurePanel {
   colorScale: ColorScale
   bivariateColormap: BivariateColormap
   expressionTransform: ExpressionTransform
-  pointSize: number
-  pointOpacity: number
   background: string                     // hex; per-panel background override
   showBorder: boolean
 }
@@ -335,6 +333,11 @@ export interface Figure {
   cols: number
   title: string
   background: string
+  // Point size and opacity are figure-level (shared across panels) so panels
+  // stay visually consistent — the typical use case is comparing the same
+  // cells under different colorings, where varying point size would distract.
+  pointSize: number
+  pointOpacity: number
   // Shared viewState across all panels (computed lazily from coordinates on
   // first render; subsequent pan/zoom in any panel updates these).
   sharedZoom: number | null
@@ -2090,8 +2093,6 @@ export const useStore = create<AppState>((set, get) => {
           colorScale: defaults.colorScale,
           bivariateColormap: defaults.bivariateColormap,
           expressionTransform: defaults.expressionTransform,
-          pointSize: defaults.pointSize,
-          pointOpacity: defaults.pointOpacity,
           background: defaults.backgroundColor,
           showBorder: true,
         })
@@ -2106,6 +2107,8 @@ export const useStore = create<AppState>((set, get) => {
           cols,
           title: '',
           background: defaults.backgroundColor,
+          pointSize: defaults.pointSize,
+          pointOpacity: defaults.pointOpacity,
           sharedZoom: null,
           sharedTargetX: null,
           sharedTargetY: null,
@@ -2155,8 +2158,6 @@ export const useStore = create<AppState>((set, get) => {
               colorScale: defaults.colorScale,
               bivariateColormap: defaults.bivariateColormap,
               expressionTransform: defaults.expressionTransform,
-              pointSize: defaults.pointSize,
-              pointOpacity: defaults.pointOpacity,
               background: defaults.backgroundColor,
               showBorder: true,
             })

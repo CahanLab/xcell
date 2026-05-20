@@ -100,6 +100,30 @@ export default function FigureBuilder() {
           onChange={(e) => updateFigure({ background: e.target.value })}
           style={colorInputStyle}
         />
+        <span style={{ ...labelStyle, marginLeft: '12px' }}>Point size</span>
+        <input
+          type="range"
+          min={1}
+          max={10}
+          step={0.5}
+          value={figure.pointSize}
+          onChange={(e) => updateFigure({ pointSize: parseFloat(e.target.value) })}
+          style={{ width: '90px' }}
+          title="Point radius in CSS pixels (shared across all panels)"
+        />
+        <span style={{ ...labelStyle, fontVariantNumeric: 'tabular-nums', width: '24px' }}>{figure.pointSize.toFixed(1)}</span>
+        <span style={{ ...labelStyle, marginLeft: '8px' }}>Opacity</span>
+        <input
+          type="range"
+          min={0.1}
+          max={1}
+          step={0.05}
+          value={figure.pointOpacity}
+          onChange={(e) => updateFigure({ pointOpacity: parseFloat(e.target.value) })}
+          style={{ width: '90px' }}
+          title="Point opacity (shared across all panels)"
+        />
+        <span style={{ ...labelStyle, fontVariantNumeric: 'tabular-nums', width: '30px' }}>{Math.round(figure.pointOpacity * 100)}%</span>
         <div style={{ flex: 1 }} />
         <span style={labelStyle}>Export DPI</span>
         <select value={exportScale} onChange={(e) => setExportScale(Number(e.target.value))} style={selectStyle}>
@@ -326,30 +350,6 @@ function PanelControls({
 
       <div style={{ height: '1px', backgroundColor: '#333', margin: '12px 0' }} />
 
-      <ControlRow label="Point size">
-        <input
-          type="range"
-          min={1}
-          max={10}
-          step={0.5}
-          value={panel.pointSize}
-          onChange={(e) => onUpdate({ pointSize: parseFloat(e.target.value) })}
-          style={{ flex: 1 }}
-        />
-        <span style={valueStyle}>{panel.pointSize.toFixed(1)}</span>
-      </ControlRow>
-      <ControlRow label="Opacity">
-        <input
-          type="range"
-          min={0.1}
-          max={1}
-          step={0.05}
-          value={panel.pointOpacity}
-          onChange={(e) => onUpdate({ pointOpacity: parseFloat(e.target.value) })}
-          style={{ flex: 1 }}
-        />
-        <span style={valueStyle}>{Math.round(panel.pointOpacity * 100)}%</span>
-      </ControlRow>
       <ControlRow label="Background">
         <input
           type="color"
@@ -431,7 +431,6 @@ const emptyStyle = {
 }
 
 const labelStyle = { fontSize: '11px', color: '#888' }
-const valueStyle = { fontSize: '10px', color: '#888', width: '36px', textAlign: 'right' as const, fontVariantNumeric: 'tabular-nums' as const }
 const hintStyle = { fontSize: '10px', color: '#888', marginBottom: '6px', marginLeft: '76px' }
 
 const inputStyle = {

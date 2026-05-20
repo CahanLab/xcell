@@ -114,17 +114,33 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
   }, [figure.coordinates])
 
   // Build deck.gl data — each entry is a renderable cell with position + the
-  // ORIGINAL adata cell index (for color lookup) preserved.
+  // ORIGINAL adata cell index (for color lookup) preserved. When the panel has
+  // a continuous color source (expression or numeric metadata), stable-sort
+  // ascending by the cell's score so high-value cells render LAST (= on top
+  // in deck.gl draw order), matching the main ScatterPlot's behavior. This
+  // keeps high-expression markers from being occluded by overlapping
+  // low-expression cells.
   const data = useMemo(() => {
-    return figure.coordinates.map((coord, i) => ({
+    const base = figure.coordinates.map((coord, i) => ({
       position: coord,
       adataIndex: figure.cellIndices[i],
     }))
-  }, [figure.coordinates, figure.cellIndices])
+    if ((colorData.kind === 'expression' || colorData.kind === 'metadata-numeric') && colorData.values) {
+      const values = colorData.values
+      const arr = [...base]
+      arr.sort((a, b) => {
+        const va = values[a.adataIndex] ?? -Infinity
+        const vb = values[b.adataIndex] ?? -Infinity
+        return (va as number) - (vb as number)
+      })
+      return arr
+    }
+    return base
+  }, [figure.coordinates, figure.cellIndices, colorData])
 
   // Color function — closed over the panel's settings + fetched data.
   const getColor = useMemo(() => {
-    const opacity = Math.round(panel.pointOpacity * 255)
+    const opacity = Math.round(figure.pointOpacity * 255)
     const fallback: [number, number, number, number] = [100, 149, 237, opacity]
 
     if (colorData.kind === 'expression' && colorData.values && colorData.min !== undefined && colorData.max !== undefined) {
@@ -161,7 +177,7 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
       }
     }
     return (_d: { adataIndex: number }) => fallback
-  }, [colorData, panel.colorScale, panel.pointOpacity])
+  }, [colorData, panel.colorScale, figure.pointOpacity])
 
   // Shared viewState: read from figure, write back when user pans/zooms.
   const viewState: OrthographicViewState = useMemo(() => {
@@ -212,7 +228,7 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
     [updateFigure]
   )
 
-  const radius = panel.pointSize / 2
+  const radius = figure.pointSize / 2
 
   const deckLayers = [
     new ScatterplotLayer({
@@ -226,8 +242,8 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
       stroked: false,
       filled: true,
       updateTriggers: {
-        getFillColor: [colorData, panel.colorScale, panel.pointOpacity],
-        getRadius: panel.pointSize,
+        getFillColor: [colorData, panel.colorScale, figure.pointOpacity],
+        getRadius: figure.pointSize,
       },
     }),
   ]

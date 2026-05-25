@@ -316,6 +316,159 @@ function layerWeightFn(layer: import('../store').HighlightLayer): (i: number) =>
   }
 }
 
+// Compute "nice" tick values for an axis spanning [min, max] aiming for ~target ticks.
+// Snaps to 1/2/5 × 10^k step sizes so labels read cleanly.
+function niceTicks(min: number, max: number, target: number = 8): number[] {
+  if (!isFinite(min) || !isFinite(max) || max <= min) return []
+  const range = max - min
+  const rawStep = range / target
+  const pow = Math.pow(10, Math.floor(Math.log10(rawStep)))
+  const norm = rawStep / pow
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * pow
+  const first = Math.ceil(min / step) * step
+  const ticks: number[] = []
+  for (let v = first; v <= max + step * 1e-9; v += step) ticks.push(v)
+  return ticks
+}
+
+// Format a tick label, picking decimals that match the step magnitude.
+function formatTick(v: number, step: number): string {
+  if (step >= 1) return v.toFixed(0)
+  const decimals = Math.max(0, -Math.floor(Math.log10(step)))
+  return v.toFixed(decimals)
+}
+
+// Screen-aligned grid overlay with data-coordinate tick labels. Re-derives the
+// visible data range from viewState + canvas size, then draws gridlines at
+// "nice" data values (1/2/5 × 10^k spacing).
+function CoordinateGrid({
+  viewState,
+  containerRect,
+}: {
+  viewState: OrthographicViewState
+  containerRect: DOMRect
+}) {
+  const target = viewState.target as [number, number, number]
+  const zoomValue = viewState.zoom
+  const zoom = typeof zoomValue === 'number' ? zoomValue : (zoomValue?.[0] ?? 0)
+  const scale = Math.pow(2, zoom)
+  const w = containerRect.width
+  const h = containerRect.height
+
+  // Visible data range. deck.gl OrthographicView uses Y_DOWN by default
+  // (matches CSS pixel coords): increasing data Y → increasing screen Y.
+  const dataMinX = target[0] - w / (2 * scale)
+  const dataMaxX = target[0] + w / (2 * scale)
+  const dataMinY = target[1] - h / (2 * scale)
+  const dataMaxY = target[1] + h / (2 * scale)
+
+  const xTicks = niceTicks(dataMinX, dataMaxX, 10)
+  const yTicks = niceTicks(dataMinY, dataMaxY, 8)
+  const xStep = xTicks.length > 1 ? xTicks[1] - xTicks[0] : 1
+  const yStep = yTicks.length > 1 ? yTicks[1] - yTicks[0] : 1
+
+  const dataToScreenX = (x: number) => (x - target[0]) * scale + w / 2
+  const dataToScreenY = (y: number) => (y - target[1]) * scale + h / 2
+
+  const lineColor = 'rgba(255, 255, 255, 0.12)'
+  const axisColor = 'rgba(255, 255, 255, 0.35)'
+  const labelColor = 'rgba(255, 255, 255, 0.65)'
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10,
+    fontVariantNumeric: 'tabular-nums',
+    fontFamily: 'monospace',
+    fill: labelColor,
+  }
+
+  const x0 = dataToScreenX(0)
+  const y0 = dataToScreenY(0)
+  const showAxisX = x0 >= 0 && x0 <= w
+  const showAxisY = y0 >= 0 && y0 <= h
+
+  return (
+    <svg
+      style={{
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none',
+        shapeRendering: 'crispEdges',
+      }}
+    >
+      {/* Vertical gridlines (constant X) */}
+      {xTicks.map((tx) => {
+        const sx = dataToScreenX(tx)
+        return (
+          <line
+            key={`vx-${tx}`}
+            x1={sx}
+            x2={sx}
+            y1={0}
+            y2={h}
+            stroke={lineColor}
+            strokeWidth={1}
+          />
+        )
+      })}
+      {/* Horizontal gridlines (constant Y) */}
+      {yTicks.map((ty) => {
+        const sy = dataToScreenY(ty)
+        return (
+          <line
+            key={`hy-${ty}`}
+            x1={0}
+            x2={w}
+            y1={sy}
+            y2={sy}
+            stroke={lineColor}
+            strokeWidth={1}
+          />
+        )
+      })}
+      {/* Axes (data 0) — slightly brighter so origin is easy to spot */}
+      {showAxisX && (
+        <line x1={x0} x2={x0} y1={0} y2={h} stroke={axisColor} strokeWidth={1} />
+      )}
+      {showAxisY && (
+        <line x1={0} x2={w} y1={y0} y2={y0} stroke={axisColor} strokeWidth={1} />
+      )}
+      {/* X tick labels along bottom */}
+      {xTicks.map((tx) => {
+        const sx = dataToScreenX(tx)
+        if (sx < 18 || sx > w - 18) return null
+        return (
+          <text
+            key={`xl-${tx}`}
+            x={sx + 2}
+            y={h - 4}
+            style={labelStyle}
+            textAnchor="start"
+          >
+            {formatTick(tx, xStep)}
+          </text>
+        )
+      })}
+      {/* Y tick labels along left */}
+      {yTicks.map((ty) => {
+        const sy = dataToScreenY(ty)
+        if (sy < 12 || sy > h - 6) return null
+        return (
+          <text
+            key={`yl-${ty}`}
+            x={4}
+            y={sy - 2}
+            style={labelStyle}
+            textAnchor="start"
+          >
+            {formatTick(ty, yStep)}
+          </text>
+        )
+      })}
+    </svg>
+  )
+}
+
 // Point-in-polygon using ray casting algorithm
 function pointInPolygon(x: number, y: number, polygon: [number, number][]): boolean {
   let inside = false
@@ -437,8 +590,14 @@ export default function ScatterPlot({
       index,
     }))
 
-    // Apply sort order if set (reorder so high-expression cells render on top)
-    if (cellSortOrder) {
+    // Apply sort order if set (reorder so high-expression cells render on top).
+    // Guard against a stale cellSortOrder: if its length doesn't match the
+    // current embedding's cell count (dataset reloaded/filtered to a different
+    // size), the sorted indices would map to undefined coordinates — deck.gl
+    // renders those at NaN (invisible), and since high-expression cells sort
+    // last they silently drop out, leaving regions reading as empty/black.
+    // Fall back to identity order until the next color action rebuilds it.
+    if (cellSortOrder && cellSortOrder.length === coords.length) {
       allData = cellSortOrder.map((originalIndex) => ({
         position: coords[originalIndex],
         index: originalIndex,
@@ -585,7 +744,10 @@ export default function ScatterPlot({
         let r = base[0], g = base[1], b = base[2]
         for (let k = 0; k < compiled.length; k++) {
           const w = compiled[k].weight(d.index)
-          if (w <= 0) continue
+          // `!(w > 0)` also rejects NaN (NaN > 0 is false). The old `w <= 0`
+          // let a NaN weight through, and a NaN weight poisons the blend ->
+          // NaN color components -> the cell renders black.
+          if (!(w > 0)) continue
           const ww = w > 1 ? 1 : w
           const lr = compiled[k].rgb
           r = r * (1 - ww) + lr[0] * ww
@@ -1127,19 +1289,47 @@ export default function ScatterPlot({
     return baseRadius
   }
 
+  // Pack positions into a flat Float32Array and feed deck.gl through its binary
+  // attribute API. Workaround for a stride bug in deck.gl 9.2.6's per-cell
+  // accessor path: at N ≳ 44k, the default getPosition accessor produces a
+  // phantom vertical line at X=0 with Y values that match other cells' X
+  // values (see frontend/repro.html for a minimal reproducer). Binary
+  // attributes bypass the affected code path entirely.
+  const positionsBuf = useMemo(() => {
+    const buf = new Float32Array(data.length * 2)
+    for (let i = 0; i < data.length; i++) {
+      const p = data[i].position
+      buf[i * 2] = p[0]
+      buf[i * 2 + 1] = p[1]
+    }
+    return buf
+  }, [data])
+
   const layers = [
     new ScatterplotLayer({
       id: 'scatterplot',
-      data,
-      getPosition: (d) => d.position,
-      getRadius,
-      getFillColor: getColor,
+      data: {
+        length: data.length,
+        attributes: {
+          getPosition: { value: positionsBuf, size: 2 },
+        },
+      },
+      // With binary `data`, accessors are called as (undefined, {index, ...}).
+      // Look the cell back up in our `data` closure so the existing
+      // index-keyed color / radius logic keeps working.
+      getRadius: (_obj: unknown, info: { index: number }) => getRadius(data[info.index]),
+      getFillColor: (_obj: unknown, info: { index: number }) => getColor(data[info.index]),
       radiusUnits: 'pixels',
       radiusMinPixels: 1,
       radiusMaxPixels: 20,
       pickable: true,
       updateTriggers: {
-        getFillColor: [colorMode, colorBy?.name, expressionData?.gene, expressionData?.genes, selectedCellIndices, displayPreferences.colorScale, displayPreferences.bivariateColormap, displayPreferences.pointOpacity, activeCellMask, highlightLayers],
+        // Mirror the getColor useMemo deps exactly, so deck.gl rebuilds the GPU
+        // color buffer whenever the color function itself changes. Keying on
+        // derived values (e.g. expressionData?.gene) missed same-gene value
+        // changes — log1p/clip toggles, data ops — leaving stale colors on the
+        // GPU. The Figure Builder keys on the whole data object and was fine.
+        getFillColor: [colorBy, expressionData, bivariateData, highlightLayers, colorMode, selectedSet, displayPreferences, activeCellMask],
         getRadius: [selectedCellIndices, displayPreferences.pointSize, activeCellMask],
       },
     }),
@@ -1163,6 +1353,13 @@ export default function ScatterPlot({
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
     >
+      {/* Coordinate grid (behind deck.gl). Toggled via Display → Coordinate Grid. */}
+      {displayPreferences.showGrid && containerRef.current && (
+        <CoordinateGrid
+          viewState={viewState}
+          containerRect={containerRef.current.getBoundingClientRect()}
+        />
+      )}
       <DeckGL
         views={view}
         viewState={viewState}

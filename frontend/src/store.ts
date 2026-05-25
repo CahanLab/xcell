@@ -423,6 +423,7 @@ export interface DisplayPreferences {
   pointOpacity: number  // 0-1
   expressionTransform: ExpressionTransform  // Transformation for expression values
   clipPercentile: number  // Symmetric percentile clip for color-ramp anchors (0 = off)
+  showGrid: boolean  // When true, ScatterPlot draws a screen-aligned grid with data-coord tick labels
 }
 
 // Scanpy action history entry
@@ -485,6 +486,7 @@ export function defaultDisplayPreferences(): DisplayPreferences {
     pointOpacity: 0.85,
     expressionTransform: 'none',
     clipPercentile: 1.0,
+    showGrid: false,
   }
 }
 
@@ -1032,13 +1034,19 @@ export const useStore = create<AppState>((set, get) => {
         if (!data || !state.schema) {
           return { expressionData: data, cellSortOrder: null, cellSortVersion: 0 }
         }
-        // Auto-sort by expression (ascending, so high values render last/on top)
+        // Auto-sort by expression (ascending, so high values render last/on top).
+        // Build the order over the values array's OWN length, not schema.n_cells:
+        // a stale schema would otherwise inject out-of-range indices. The
+        // comparator never returns NaN — a NaN from an Array.sort comparator
+        // silently corrupts the whole order (= scrambled stacking).
         const values = data.values
-        const indices = Array.from({ length: state.schema.n_cells }, (_, i) => i)
+        const indices = Array.from({ length: values.length }, (_, i) => i)
         indices.sort((a, b) => {
-          const va = values[a] ?? -Infinity
-          const vb = values[b] ?? -Infinity
-          return va - vb
+          const va = values[a] == null ? -Infinity : (values[a] as number)
+          const vb = values[b] == null ? -Infinity : (values[b] as number)
+          if (va < vb) return -1
+          if (va > vb) return 1
+          return 0
         })
         return {
           expressionData: data,
@@ -2239,4 +2247,10 @@ export const useStore = create<AppState>((set, get) => {
 /** Convenience hook: returns the DatasetState for the active slot. */
 export function useActiveDataset(): DatasetState {
   return useStore((state) => state.datasets[state.activeSlot])
+}
+
+// Dev-only debug hook: exposes the store on window so the running app's state
+// can be inspected from the browser console (`xcellStore.getState()`).
+if (typeof window !== 'undefined' && import.meta.env?.DEV) {
+  ;(window as { xcellStore?: typeof useStore }).xcellStore = useStore
 }

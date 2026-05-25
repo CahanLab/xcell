@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>deck.gl 47k stride bug repro</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; font-family: monospace; background: #1a1a2e; color: #eee; }
+    #controls { padding: 8px 12px; background: #16213e; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    button { background: #0f3460; color: #fff; border: 1px solid #2a4a7f; padding: 6px 10px; cursor: pointer; font-family: monospace; }
+    button.active { background: #e94560; }
+    label { display: flex; align-items: center; gap: 6px; }
+    #plot { position: relative; height: calc(100vh - 60px); }
+    #status { font-size: 11px; color: #aaa; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <label>N: <input id="n-input" type="number" value="47107" style="width:80px" /></label>
+    <label>Distribution:
+      <select id="dist">
+        <option value="heavy" selected>PC1-like heavy tail</option>
+        <option value="uniform">Uniform</option>
+        <option value="y0">All Y = 0 (X varies)</option>
+      </select>
+    </label>
+    <label><input id="fp64" type="checkbox" checked /> fp64</label>
+    <label><input id="size3" type="checkbox" checked /> position size=3</label>
+    <label><input id="binary" type="checkbox" /> binary attribute</label>
+    <label><input id="grid" type="checkbox" checked /> grid</label>
+    <button id="apply">Apply</button>
+    <span id="status"></span>
+  </div>
+  <div id="plot"></div>
+  <script type="module">
+    import { Deck, OrthographicView } from '@deck.gl/core';
+    import { ScatterplotLayer as BaseScatterplotLayer } from '@deck.gl/layers';
+
+    // Subclass to force fp64=false on instancePositions. The default
+    // ScatterplotLayer uses fp64 doubles for positions which is where we
+    // suspect the stride bug lives at N >~ 44k.
+    class Fp32ScatterplotLayer extends BaseScatterplotLayer {
+      use64bitPositions() { return false; }
+    }
+    const ScatterplotLayer = window.location.hash.includes('fp32') ? Fp32ScatterplotLayer : BaseScatterplotLayer;
+
+    const plotEl = document.getElementById('plot');
+    const statusEl = document.getElementById('status');
+
+    function genData(n, dist) {
+      // Match xcell PC1/PC2 distribution where 65% of cells crowd narrow X band.
+      const coords = new Array(n);
+      const rng = mulberry32(42);
+      const heavy = () => {
+        // 65% of cells in narrow band ~ N(0, 1), rest spread along a diagonal arm.
+        if (rng() < 0.65) {
+          return [gauss(rng) * 1.2, gauss(rng) * 4];
+        }
+        // Long tail along a slope ~ -0.5 (mimics matplotlib PCA)
+        const t = rng();
+        const x = 3 + t * 40;          // 3..43
+        const y = -1.5 - t * 22 + gauss(rng) * 1.5; // -1.5..-23.5 roughly
+        return [x, y];
+      };
+      for (let i = 0; i < n; i++) {
+        if (dist === 'heavy') coords[i] = heavy();
+        else if (dist === 'uniform') coords[i] = [rng()*40 - 10, rng()*30 - 20];
+        else if (dist === 'y0') coords[i] = [rng()*40 - 10, 0];
+      }
+      return coords;
+    }
+    function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
+    function gauss(rng){const u=1-rng(),v=rng();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+
+    let deck = null;
+
+    function rebuild() {
+      const n = parseInt(document.getElementById('n-input').value, 10);
+      const dist = document.getElementById('dist').value;
+      const fp64 = document.getElementById('fp64').checked;
+      const size3 = document.getElementById('size3').checked;
+      const showGrid = document.getElementById('grid').checked;
+
+      const binary = document.getElementById('binary').checked;
+      const t0 = performance.now();
+      const coords = genData(n, dist);
+      // Build data items the same way ScatterPlot.tsx does.
+      let data;
+      if (binary) {
+        // Pre-build Float32Array buffer with stride 2 (no z component).
+        const posBuf = new Float32Array(n * 2);
+        for (let i = 0; i < n; i++) {
+          posBuf[i*2] = coords[i][0];
+          posBuf[i*2+1] = coords[i][1];
+        }
+        data = {
+          length: n,
+          attributes: {
+            getPosition: { value: posBuf, size: 2 },
+          },
+        };
+      } else {
+        data = coords.map((c, i) => ({
+          position: size3 ? [c[0], c[1], 0] : c,
+          index: i,
+        }));
+      }
+      let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+      for (const [x,y] of coords) {
+        if (x<minX) minX=x; if (x>maxX) maxX=x;
+        if (y<minY) minY=y; if (y>maxY) maxY=y;
+      }
+      const padX = (maxX-minX)*0.05, padY = (maxY-minY)*0.05||1;
+      const cx = (minX+maxX)/2, cy = (minY+maxY)/2;
+      const w = plotEl.clientWidth, h = plotEl.clientHeight;
+      const zoom = Math.log2(Math.min(800/((maxX-minX)+2*padX), 600/((maxY-minY)+2*padY))) - 1;
+
+      if (deck) deck.finalize();
+      deck = new Deck({
+        parent: plotEl,
+        views: new OrthographicView({ id: 'main', flipY: false }),
+        initialViewState: {
+          target: [cx, cy, 0],
+          zoom,
+          minZoom: -10, maxZoom: 10,
+        },
+        controller: true,
+        layers: [
+          new ScatterplotLayer({
+            id: 'scatterplot',
+            data,
+            getPosition: (d) => d.position,
+            getRadius: 2,
+            getFillColor: [100, 149, 237, 200],
+            radiusUnits: 'pixels',
+            radiusMinPixels: 1,
+            radiusMaxPixels: 20,
+            // The line below is a knob: when fp64 is off we override via parameters
+            // (ScatterplotLayer doesn't have a direct prop for it — fp64 is implied
+            // by coordinateSystem). We can force float32 positions via the layer
+            // 'use64bitPositions()' returning false via a custom coordinate system.
+          }),
+        ],
+      });
+
+      // Overlay coordinate grid (so we can see misalignment without xcell).
+      const old = plotEl.querySelector('svg.grid');
+      if (old) old.remove();
+      if (showGrid) drawGrid(cx, cy, zoom, w, h);
+
+      statusEl.textContent = `n=${n}, dist=${dist}, fp64=${fp64}, size3=${size3}, gen+layer ${(performance.now()-t0).toFixed(0)}ms`;
+    }
+
+    function niceTicks(min, max, target=10){
+      if (!isFinite(min)||!isFinite(max)||max<=min) return [];
+      const range = max-min, rawStep = range/target;
+      const pow = Math.pow(10, Math.floor(Math.log10(rawStep)));
+      const norm = rawStep/pow;
+      const step = (norm<1.5?1: norm<3?2: norm<7?5:10)*pow;
+      const first = Math.ceil(min/step)*step;
+      const ticks = [];
+      for (let v=first; v<=max+step*1e-9; v+=step) ticks.push(v);
+      return ticks;
+    }
+
+    function drawGrid(cx, cy, zoom, w, h){
+      const scale = Math.pow(2, zoom);
+      const minX = cx - w/(2*scale), maxX = cx + w/(2*scale);
+      const minY = cy - h/(2*scale), maxY = cy + h/(2*scale);
+      const xs = niceTicks(minX, maxX, 10);
+      const ys = niceTicks(minY, maxY, 8);
+      const ns = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(ns, 'svg');
+      svg.classList.add('grid');
+      svg.setAttribute('style', `position:absolute;inset:0;width:100%;height:100%;pointer-events:none;`);
+      function d2sx(x){return (x-cx)*scale + w/2}
+      function d2sy(y){return (y-cy)*scale + h/2}
+      for (const x of xs) {
+        const sx = d2sx(x);
+        const l = document.createElementNS(ns,'line');
+        l.setAttribute('x1',sx); l.setAttribute('x2',sx); l.setAttribute('y1',0); l.setAttribute('y2',h);
+        l.setAttribute('stroke','rgba(255,255,255,0.15)');
+        svg.appendChild(l);
+        const t = document.createElementNS(ns,'text');
+        t.setAttribute('x',sx+2); t.setAttribute('y',h-4);
+        t.setAttribute('fill','rgba(255,255,255,0.6)'); t.setAttribute('font-size','10');
+        t.textContent = x.toFixed(0);
+        svg.appendChild(t);
+      }
+      for (const y of ys) {
+        const sy = d2sy(y);
+        const l = document.createElementNS(ns,'line');
+        l.setAttribute('x1',0); l.setAttribute('x2',w); l.setAttribute('y1',sy); l.setAttribute('y2',sy);
+        l.setAttribute('stroke','rgba(255,255,255,0.15)');
+        svg.appendChild(l);
+        const t = document.createElementNS(ns,'text');
+        t.setAttribute('x',4); t.setAttribute('y',sy-2);
+        t.setAttribute('fill','rgba(255,255,255,0.6)'); t.setAttribute('font-size','10');
+        t.textContent = y.toFixed(0);
+        svg.appendChild(t);
+      }
+      plotEl.appendChild(svg);
+    }
+
+    document.getElementById('apply').addEventListener('click', rebuild);
+    rebuild();
+  </script>
+</body>
+</html>

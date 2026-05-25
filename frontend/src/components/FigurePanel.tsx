@@ -351,13 +351,30 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
 
   const radius = figure.pointSize / 2
 
+  // Pack positions into a Float32Array binary attribute. See ScatterPlot.tsx
+  // for the rationale — deck.gl 9.2.6's per-cell accessor path has a stride
+  // bug at N ≳ 44k that produces a phantom vertical line at X=0.
+  const positionsBuf = useMemo(() => {
+    const buf = new Float32Array(data.length * 2)
+    for (let i = 0; i < data.length; i++) {
+      const p = data[i].position
+      buf[i * 2] = p[0]
+      buf[i * 2 + 1] = p[1]
+    }
+    return buf
+  }, [data])
+
   const deckLayers = [
     new ScatterplotLayer({
       id: `panel-${panel.id}`,
-      data,
-      getPosition: (d) => d.position,
+      data: {
+        length: data.length,
+        attributes: {
+          getPosition: { value: positionsBuf, size: 2 },
+        },
+      },
       getRadius: radius,
-      getFillColor: getColor,
+      getFillColor: (_obj: unknown, info: { index: number }) => getColor(data[info.index]),
       radiusUnits: 'pixels',
       radiusMinPixels: 1,
       stroked: false,

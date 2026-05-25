@@ -6,40 +6,36 @@ Interactive web application for exploring and analyzing scRNA-seq and spatial tr
 
 ## Quick Start
 
-### Prerequisites
+XCell uses [pixi](https://pixi.sh) to manage its environment. A single
+`pixi install` provisions the exact Python *and* Node versions plus every
+dependency — no manual venv, no Node-version juggling, no version troubleshooting.
 
-- Python 3.9+
-- Node.js 18+
-- R with Seurat and SeuratDisk packages (optional, required for loading `.rds` files)
-
-### Backend Setup
+### 1. Install pixi (once per machine)
 
 ```bash
-cd xcell/backend
-
-# Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install in editable mode
-pip install -e .
+curl -fsSL https://pixi.sh/install.sh | bash      # macOS / Linux
+# Windows (PowerShell):  iwr -useb https://pixi.sh/install.ps1 | iex
 ```
 
-### Frontend Setup
+pixi is a single self-contained binary. It does not require — or conflict with —
+an existing conda installation. Restart your shell afterward so `pixi` is on `PATH`.
+
+### 2. Set up the project
 
 ```bash
-cd xcell/frontend
-npm install
+cd xcell
+pixi install      # creates ./.pixi/ with Python, Node, and all dependencies
 ```
 
-### Launch
+This reads `pixi.lock`, so every platform gets identical, reproducible versions.
+
+### 3. Launch
+
+Run the backend and frontend in two terminals:
 
 ```bash
-# Terminal 1: Start the backend (from xcell/backend/)
-uvicorn xcell.main:app --reload
-
-# Terminal 2: Start the frontend (from xcell/frontend/)
-npm run dev
+pixi run backend  # Terminal 1 — FastAPI on :8000
+pixi run dev      # Terminal 2 — Vite dev server on :5173 (installs frontend deps on first run)
 ```
 
 Open http://localhost:5173 in your browser.
@@ -47,8 +43,15 @@ Open http://localhost:5173 in your browser.
 A bundled toy dataset (`toy_spatial.h5ad`) loads automatically if no data path is specified. To load your own data, set the `XCELL_DATA_PATH` environment variable:
 
 ```bash
-XCELL_DATA_PATH=/path/to/your/data.h5ad uvicorn xcell.main:app --reload  # also supports .h5 and .rds
+XCELL_DATA_PATH=/path/to/your/data.h5ad pixi run backend  # also supports .h5 and .rds
 ```
+
+> **Loading `.rds` files** is optional and needs R with the Seurat and SeuratDisk
+> packages installed separately — SeuratDisk is not available as a conda package.
+>
+> **Not using pixi?** XCell still installs the classic way (`pip install -e backend`
+> in a Python 3.10+ venv, `npm install` in `frontend/` on Node 18+). pixi just
+> removes the version-matching guesswork.
 
 ## Getting Started with Toy Data
 
@@ -314,7 +317,7 @@ Most changes you make in a session survive on the backend process: deleted cells
 - **Scanpy integration** — run preprocessing, cell analysis (PCA, Neighbors, UMAP, Leiden), gene analysis, spatial analysis (contourize), and differential expression directly in the browser. Long-running operations (gene neighbors, spatial neighbors, spatial autocorrelation, contourize, line gene association) can be cancelled mid-run without corrupting session data.
 - **Trajectory analysis** — draw lines and associate genes with spatial trajectories
 - **Quilt mode** — lasso and rearrange tissue pieces: drag to translate, shift+drag to rotate, flip to reflect selected cell subsets
-- **Display settings** — adjust point size, opacity, colormaps, bivariate coloring
+- **Display settings** — adjust point size, opacity, colormaps, bivariate coloring, and an optional coordinate grid behind the plot (with data-coordinate tick labels along the bottom/left axes for visual reference and troubleshooting)
 - **Highlight overlay** — stack one or more colored layers on top of the active coloring without replacing it. Each layer is either a gene-set expression threshold (above / below / between, with a draggable histogram cutoff) or a frozen cell-set mask (current selection or category value). Useful for marking e.g. epithelium in green while keeping bivariate coloring on the rest.
 - **Figure builder** — compose multi-panel publication figures from a cell selection (or the full dataset). Each panel renders the same cells colored independently (single gene, gene set, bivariate two-gene-set, or metadata column), with its own color scale and title. Per-figure point size, opacity, background, and optional N×N grid overlay are shared so panels stay visually consistent. Per-panel "show highlight layers" toggle blends the dataset's current Highlight overlays into the panel. Shared pan/zoom keeps panels aligned. Export to PNG at 1×–4× DPI from the new **Figure** tab.
 - **Multi-dataset support** — load two datasets (h5ad, h5, rds, 10x matrix folders, or prefixed 10x file trios from GEO), switch between them, or view side by side in split mode

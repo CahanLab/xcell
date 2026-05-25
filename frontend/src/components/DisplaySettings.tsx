@@ -564,6 +564,32 @@ export default function DisplaySettings() {
                   </div>
                 </div>
               </div>
+
+              {/* Grid overlay */}
+              <div style={styles.settingGroup}>
+                <div style={styles.toggleContainer}>
+                  <div>
+                    <span style={styles.toggleLabel}>Coordinate Grid</span>
+                    <div style={styles.toggleDescription}>
+                      Overlay a grid with data-coordinate tick labels (troubleshooting aid)
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      ...styles.toggle,
+                      ...(displayPreferences.showGrid ? styles.toggleActive : {}),
+                    }}
+                    onClick={() => setDisplayPreferences({ showGrid: !displayPreferences.showGrid })}
+                  >
+                    <div
+                      style={{
+                        ...styles.toggleKnob,
+                        ...(displayPreferences.showGrid ? styles.toggleKnobActive : {}),
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </>

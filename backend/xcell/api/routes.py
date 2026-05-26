@@ -131,8 +131,13 @@ def browse_filesystem(path: str | None = None):
             if item.name.startswith('.'):
                 continue
             if item.is_dir():
-                # Check if this is a 10x CellRanger matrix folder
-                children = {c.name for c in item.iterdir()} if item.is_dir() else set()
+                # Check if this is a 10x CellRanger matrix folder. A child dir we
+                # can't read (e.g. macOS TCC-protected ~/Documents) must not abort
+                # the whole listing — treat it as a plain directory instead.
+                try:
+                    children = {c.name for c in item.iterdir()}
+                except (PermissionError, OSError):
+                    children = set()
                 has_matrix = bool(children & {'matrix.mtx', 'matrix.mtx.gz'})
                 has_barcodes = bool(children & {'barcodes.tsv', 'barcodes.tsv.gz'})
                 has_features = bool(children & {'features.tsv', 'features.tsv.gz', 'genes.tsv', 'genes.tsv.gz'})

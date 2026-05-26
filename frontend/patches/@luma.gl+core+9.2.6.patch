@@ -1,0 +1,17 @@
+diff --git a/node_modules/@luma.gl/core/dist/adapter/canvas-context.js b/node_modules/@luma.gl/core/dist/adapter/canvas-context.js
+index d4436e1..8dc0339 100644
+--- a/node_modules/@luma.gl/core/dist/adapter/canvas-context.js
++++ b/node_modules/@luma.gl/core/dist/adapter/canvas-context.js
+@@ -166,7 +166,11 @@ export class CanvasContext {
+     }
+     /** Returns the biggest allowed framebuffer size. @todo Allow the application to limit this? */
+     getMaxDrawingBufferSize() {
+-        const maxTextureDimension = this.device.limits.maxTextureDimension2D;
++        // xcell patch: the ResizeObserver registered in the constructor can fire
++        // before the WebGL device finishes initializing (slow on machines with
++        // no GPU acceleration), so device.limits is still undefined here.
++        // Guard with a fallback; the next resize uses the real limit.
++        const maxTextureDimension = this.device?.limits?.maxTextureDimension2D ?? 8192;
+         return [maxTextureDimension, maxTextureDimension];
+     }
+     /** Update the canvas drawing buffer size. Called automatically if props.autoResize is true. */

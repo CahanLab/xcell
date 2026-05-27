@@ -4,13 +4,58 @@ Interactive web application for exploring and analyzing scRNA-seq and spatial tr
 
  ![Screenshot](docs/images/xcell_screenshot.jpg)   
 
-## Quick Start
+## Installation
 
 XCell uses [pixi](https://pixi.sh) to manage its environment. A single
 `pixi install` provisions the exact Python *and* Node versions plus every
 dependency — no manual venv, no Node-version juggling, no version troubleshooting.
 
-### 1. Install pixi (once per machine)
+If you've never installed software from GitHub before, follow every step below
+in order. Anything in a code block is meant to be pasted into a terminal:
+
+- **macOS** — open the **Terminal** app (⌘+Space, type "Terminal", press Enter).
+- **Linux** — open your terminal emulator (GNOME Terminal, Konsole, etc.).
+- **Windows** — open **PowerShell** (Start menu → type "PowerShell" → Enter).
+
+### 1. Install Git (once per machine)
+
+Git is the tool that downloads the source code from GitHub.
+
+- **macOS** — run `git --version`. If Git isn't installed, macOS will prompt you
+  to install the Command Line Tools; click **Install** and wait for it to finish.
+- **Linux (Debian/Ubuntu)** — `sudo apt-get install git`
+- **Linux (Fedora)** — `sudo dnf install git`
+- **Windows** — download and run the installer from <https://git-scm.com/download/win>,
+  accepting the defaults.
+
+Verify with:
+
+```bash
+git --version
+```
+
+> **Prefer not to use Git?** You can also click the green **Code** button at
+> <https://github.com/cahanlab/xcell>, choose **Download ZIP**, then unzip it
+> anywhere on your machine. Skip ahead to step 3.
+
+### 2. Download XCell from GitHub
+
+Pick a folder where you'd like XCell to live (your home directory is fine) and
+clone the repository into it:
+
+```bash
+cd ~                                              # or wherever you want the xcell/ folder created
+git clone https://github.com/cahanlab/xcell.git
+cd xcell
+```
+
+This creates an `xcell/` directory containing the source code. The final
+`cd xcell` puts your terminal *inside* that directory — every command from here
+on must be run from there.
+
+### 3. Install pixi (once per machine)
+
+pixi is what installs Python, Node, and every project dependency in one shot.
 
 ```bash
 curl -fsSL https://pixi.sh/install.sh | bash      # macOS / Linux
@@ -18,33 +63,64 @@ curl -fsSL https://pixi.sh/install.sh | bash      # macOS / Linux
 ```
 
 pixi is a single self-contained binary. It does not require — or conflict with —
-an existing conda installation. Restart your shell afterward so `pixi` is on `PATH`.
-
-### 2. Set up the project
+an existing conda installation. **Close and reopen your terminal** after the
+install so `pixi` is on `PATH`, then `cd xcell` again. Verify with:
 
 ```bash
-cd xcell
+pixi --version
+```
+
+### 4. Set up the project
+
+From inside the `xcell/` directory:
+
+```bash
 pixi install      # creates ./.pixi/ with Python, Node, and all dependencies
 ```
 
 This reads `pixi.lock`, so every platform gets identical, reproducible versions.
+The first run downloads several hundred MB and can take a few minutes — that's
+normal. You only do this once (or after pulling updates).
 
-### 3. Launch
+### 5. Launch
 
-Run the backend and frontend in two terminals:
+XCell runs as two processes: a Python backend and a JavaScript frontend. You'll
+need **two terminal windows**, both `cd`'d into the `xcell/` directory.
+
+In the **first** terminal:
 
 ```bash
-pixi run backend  # Terminal 1 — FastAPI on :8000
-pixi run dev      # Terminal 2 — Vite dev server on :5173 (installs frontend deps on first run)
+pixi run backend  # FastAPI on http://localhost:8000
 ```
 
-Open http://localhost:5173 in your browser.
+In the **second** terminal:
 
-A bundled toy dataset (`toy_spatial.h5ad`) loads automatically if no data path is specified. To load your own data, set the `XCELL_DATA_PATH` environment variable:
+```bash
+pixi run dev      # Vite dev server on http://localhost:5173 (installs frontend deps on first run)
+```
+
+Wait until the second terminal prints something like `Local: http://localhost:5173/`,
+then open <http://localhost:5173> in your browser. Leave both terminals running
+while you use XCell; press **Ctrl+C** in each one to stop the servers when done.
+
+### 6. (Optional) Load your own data
+
+A bundled toy dataset (`toy_spatial.h5ad`) loads automatically if no data path is specified. To load your own data, set the `XCELL_DATA_PATH` environment variable when starting the backend:
 
 ```bash
 XCELL_DATA_PATH=/path/to/your/data.h5ad pixi run backend  # also supports .h5 and .rds
 ```
+
+### Updating to the latest version
+
+From inside the `xcell/` directory:
+
+```bash
+git pull          # fetch the latest code
+pixi install      # refresh dependencies if they changed
+```
+
+Then restart the two `pixi run` commands.
 
 > **Loading `.rds` files** is optional and needs R with the Seurat and SeuratDisk
 > packages installed separately — SeuratDisk is not available as a conda package.

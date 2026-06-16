@@ -5,6 +5,9 @@ CHANGELOG.md
 # OS
 .DS_Store
 
+# Visium HD feature_slice conversion cache (written next to source data)
+*.xcell.square_*.h5ad
+
 # Python
 __pycache__/
 *.pyc

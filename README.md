@@ -1,6 +1,6 @@
 # XCell
 
-Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad, 10x Genomics h5, Seurat .rds file, 10x CellRanger matrix folder, or prefixed 10x file trio from GEO, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
+Interactive web application for exploring and analyzing scRNA-seq and spatial transcriptomics data. Load an h5ad, 10x Genomics h5, 10x Visium HD `feature_slice.h5`, Seurat .rds file, 10x CellRanger matrix folder, or prefixed 10x file trio from GEO, visualize cells on a scatter plot, run Scanpy analysis pipelines, and explore results — all from your browser.
 
  ![Screenshot](docs/images/xcell_screenshot.jpg)   
 
@@ -124,6 +124,14 @@ Then restart the two `pixi run` commands.
 
 > **Loading `.rds` files** is optional and needs R with the Seurat and SeuratDisk
 > packages installed separately — SeuratDisk is not available as a conda package.
+>
+> **Loading a 10x Visium HD `feature_slice.h5`** works directly — point
+> `XCELL_DATA_PATH` (or the file browser) at the `*_feature_slice.h5`. XCell
+> rebins the 2 µm expression to 8 µm tissue bins, attaches spatial coordinates,
+> and imports the precomputed graph/k-means clusters as colorable metadata.
+> First load takes ~1–2 minutes; the result is cached as a `.h5ad` next to the
+> source file (can be ~1 GB — delete it to reclaim space), so later loads are
+> instant.
 >
 > **Not using pixi?** XCell still installs the classic way (`pip install -e backend`
 > in a Python 3.10+ venv, `npm install` in `frontend/` on Node 18+). pixi just

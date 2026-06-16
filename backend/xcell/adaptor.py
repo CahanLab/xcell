@@ -154,7 +154,13 @@ class DataAdaptor:
             elif trio is not None:
                 self._load_10x_mtx_trio(*trio)
             elif self.filepath.suffix == '.h5':
-                self.adata = sc.read_10x_h5(self.filepath)
+                from xcell.visium_hd import is_feature_slice, load_feature_slice_cached
+                if is_feature_slice(self.filepath):
+                    # 10x Visium HD feature_slice.h5 — not a feature-barcode
+                    # matrix; rebin to 8 um and attach spatial coords/clusters.
+                    self.adata = load_feature_slice_cached(self.filepath, bin_size=8)
+                else:
+                    self.adata = sc.read_10x_h5(self.filepath)
                 self.adata.var_names_make_unique()
             else:
                 self.adata = anndata.read_h5ad(self.filepath)

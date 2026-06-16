@@ -2311,6 +2311,23 @@ class ContourizeRequest(BaseModel):
     annotation_key: str | None = None
 
 
+class MultiContourPrepareRequest(BaseModel):
+    gene_sets: dict[str, list[str]]
+    contour_levels: int = 3
+    log_transform: bool = True
+    grid_res: int | None = None
+    smooth_sigma: float | None = None
+
+
+class MultiContourFinalizeRequest(BaseModel):
+    token: str
+    cutoffs: dict[str, float]
+    profile_k: int = 15
+    out_name: str = "tissue"
+    save_qc: bool = False
+    params: dict | None = None
+
+
 @router.get("/scanpy/has_spatial")
 def check_has_spatial(dataset: str | None = Query(None)):
     """Check if spatial coordinates are available.
@@ -2420,6 +2437,55 @@ def run_contourize(request: ContourizeRequest, dataset: str | None = Query(None)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scanpy/multicontour/prepare", status_code=202)
+def multicontour_prepare(request: MultiContourPrepareRequest, dataset: str | None = Query(None)):
+    """Phase 1 of multi-contour: score each gene-set module (cancellable task).
+
+    Validates prerequisites synchronously (X_pca, spatial coords, >=2 gene sets)
+    so failures return 400 immediately; the heavy scoring runs in the background.
+
+    Returns:
+        Task ID + status. Poll /tasks/{id}; the result holds token + modules + params.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        adaptor.check_multicontour_prereqs(request.gene_sets)
+
+        def compute_fn():
+            return adaptor.prepare_multicontour(
+                gene_sets=request.gene_sets,
+                contour_levels=request.contour_levels,
+                log_transform=request.log_transform,
+                grid_res=request.grid_res,
+                smooth_sigma=request.smooth_sigma,
+            )
+
+        def apply_fn(result):
+            return result  # scores already cached on the adaptor in compute_fn
+
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/multicontour/finalize")
+def multicontour_finalize(request: MultiContourFinalizeRequest, dataset: str | None = Query(None)):
+    """Phase 2 of multi-contour: binarize, assign, resolve conflicts, write column."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.finalize_multicontour(
+            token=request.token,
+            cutoffs=request.cutoffs,
+            profile_k=request.profile_k,
+            out_name=request.out_name,
+            save_qc=request.save_qc,
+            params=request.params,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # =========================================================================

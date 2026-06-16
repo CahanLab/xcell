@@ -2788,6 +2788,7 @@ class DataAdaptor:
             'spatial_neighbors': ['has_spatial'],
             'spatial_autocorr': ['spatial_neighbors'],
             'contourize': ['has_spatial'],
+            'multicontour': ['has_spatial'],  # X_pca additionally checked in prepare
         }
 
         required = prereqs.get(action, [])
@@ -6035,6 +6036,23 @@ class DataAdaptor:
         }, result)
         return result
 
+    def check_multicontour_prereqs(self, gene_sets: dict[str, list[str]]) -> None:
+        """Cheap up-front validation for multi-contour (raises ValueError).
+
+        Called synchronously by the route so prerequisite failures surface as a
+        400 immediately, and again inside :meth:`prepare_multicontour`.
+        """
+        if 'X_pca' not in self.adata.obsm:
+            raise ValueError("Multi-contour requires X_pca — run PCA first.")
+        if self._get_spatial_key() is None:
+            raise ValueError("No spatial coordinates found")
+        if len(gene_sets) < 2:
+            raise ValueError("Select at least 2 gene sets for multi-contour")
+        for name, genes in gene_sets.items():
+            missing = [g for g in genes if g not in self.adata.var_names]
+            if missing:
+                raise ValueError(f"Gene set '{name}' has genes not in data: {missing}")
+
     def prepare_multicontour(
         self,
         gene_sets: dict[str, list[str]],
@@ -6069,17 +6087,8 @@ class DataAdaptor:
         import uuid
         from xcell import multicontour as mc
 
-        if 'X_pca' not in self.adata.obsm:
-            raise ValueError("Multi-contour requires X_pca — run PCA first.")
+        self.check_multicontour_prereqs(gene_sets)
         spatial_key = self._get_spatial_key()
-        if spatial_key is None:
-            raise ValueError("No spatial coordinates found")
-        if len(gene_sets) < 2:
-            raise ValueError("Select at least 2 gene sets for multi-contour")
-        for name, genes in gene_sets.items():
-            missing = [g for g in genes if g not in self.adata.var_names]
-            if missing:
-                raise ValueError(f"Gene set '{name}' has genes not in data: {missing}")
 
         if grid_res is None:
             grid_res = mc.suggest_grid_res(self.adata.n_obs)
@@ -6111,6 +6120,9 @@ class DataAdaptor:
             'smooth_sigma': smooth_sigma,
         }
         token = uuid.uuid4().hex
+        # Cap the cache (band arrays are sizable); evict oldest beyond a few.
+        while len(self._multicontour_cache) >= 4:
+            self._multicontour_cache.pop(next(iter(self._multicontour_cache)))
         self._multicontour_cache[token] = {'scores': scores, 'params': params}
         return {'token': token, 'modules': modules, 'params': params}
 

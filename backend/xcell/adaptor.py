@@ -119,6 +119,52 @@ def combine_spatial_h5ads(
     return combined
 
 
+def _contour_score_field(coords, gene_expr, log_transform, clip_percentiles,
+                         grid_res, smooth_sigma):
+    """Continuous per-spot contour score (the value before banding).
+
+    Shared by single contourize and multi-contour module scoring.
+
+    Args:
+        coords: (n, 2) spatial coordinates.
+        gene_expr: dict mapping gene -> (n,) expression vector.
+        log_transform: apply log1p before normalizing each gene.
+        clip_percentiles: (lo, hi) percentile clip range per gene.
+        grid_res: interpolation grid size per axis.
+        smooth_sigma: Gaussian smoothing strength (grid-pixel units).
+
+    Returns:
+        (score, vmax): score is an (n,) float array in [0, vmax]; vmax is the
+        max of the smoothed grid.
+    """
+    from scipy.interpolate import griddata
+    from scipy.ndimage import gaussian_filter
+
+    coords = np.asarray(coords)
+    x, y = coords[:, 0], coords[:, 1]
+
+    normed = []
+    for vals in gene_expr.values():
+        v = np.asarray(vals, dtype=float).copy()
+        if log_transform:
+            v = np.log1p(v)
+        lo, hi = np.percentile(v, clip_percentiles)
+        clipped = np.clip(v, lo, hi)
+        normed.append((clipped - lo) / (hi - lo) if hi > lo else np.zeros_like(clipped))
+    summary = np.mean(np.column_stack(normed), axis=1)
+
+    xi = np.linspace(x.min(), x.max(), grid_res)
+    yi = np.linspace(y.min(), y.max(), grid_res)
+    Xi, Yi = np.meshgrid(xi, yi)
+    Zi = griddata((x, y), summary, (Xi, Yi), method='cubic', fill_value=0.0)
+    Zi_s = gaussian_filter(Zi, sigma=smooth_sigma, mode='nearest')
+    vmax = float(np.nanmax(Zi_s))
+
+    pts = np.vstack((Xi.ravel(), Yi.ravel())).T
+    cell_vals = griddata(pts, Zi_s.ravel(), (x, y), method='nearest')
+    return np.asarray(cell_vals, dtype=float), vmax
+
+
 class DataAdaptor:
     """Wraps an AnnData object and provides accessor methods.
 
@@ -5844,44 +5890,14 @@ class DataAdaptor:
         snap_n_cells = self.adata.n_obs
 
         def compute_fn() -> dict[str, Any]:
-            from scipy.interpolate import griddata
-            from scipy.ndimage import gaussian_filter
+            # 1-6) Continuous per-cell contour score via the shared core
+            gene_expr = {g: gene_expression_snap[g] for g in snap_genes}
+            cell_vals, vmax = _contour_score_field(
+                coords_snap, gene_expr, snap_log_transform,
+                snap_clip_percentiles, snap_grid_res, snap_smooth_sigma)
 
-            x, y = coords_snap[:, 0], coords_snap[:, 1]
-
-            # 1) Preprocess and normalize each gene
-            normed = []
-            for g in snap_genes:
-                vals = gene_expression_snap[g].copy()
-                if snap_log_transform:
-                    vals = np.log1p(vals)
-                lo, hi = np.percentile(vals, snap_clip_percentiles)
-                clipped = np.clip(vals, lo, hi)
-                normalized = (clipped - lo) / (hi - lo) if hi > lo else np.zeros_like(clipped)
-                normed.append(normalized)
-
-            # 2) Average across genes per cell
-            M = np.column_stack(normed)
-            summary = np.mean(M, axis=1)
-
-            # 3) Interpolate onto grid
-            xi = np.linspace(x.min(), x.max(), snap_grid_res)
-            yi = np.linspace(y.min(), y.max(), snap_grid_res)
-            Xi, Yi = np.meshgrid(xi, yi)
-            Zi = griddata((x, y), summary, (Xi, Yi), method='cubic', fill_value=0.0)
-
-            # 4) Gaussian smooth
-            Zi_s = gaussian_filter(Zi, sigma=snap_smooth_sigma, mode='nearest')
-            vmax = np.nanmax(Zi_s)
-
-            # 5) Compute thresholds
             N = snap_contour_levels
             thresholds = np.linspace(0, vmax, N + 2)[1:-1]
-
-            # 6) Sample smoothed grid at cell positions (nearest)
-            pts = np.vstack((Xi.ravel(), Yi.ravel())).T
-            val_grid = Zi_s.ravel()
-            cell_vals = griddata(pts, val_grid, (x, y), method='nearest')
 
             # 7) Assign each cell the highest threshold it meets
             annotation = np.zeros(snap_n_cells, dtype=float)
@@ -5960,9 +5976,6 @@ class DataAdaptor:
         Returns:
             Dict with status, annotation_key, n_genes, genes, contour_levels, n_cells
         """
-        from scipy.interpolate import griddata
-        from scipy.ndimage import gaussian_filter
-
         # Validate genes
         missing = [g for g in genes if g not in self.adata.var_names]
         if missing:
@@ -5973,46 +5986,19 @@ class DataAdaptor:
         if spatial_key is None:
             raise ValueError("No spatial coordinates found")
         coords = self.adata.obsm[spatial_key]
-        x, y = coords[:, 0], coords[:, 1]
-        n_cells = x.shape[0]
+        n_cells = coords.shape[0]
 
         # Helper for sparse arrays
         def _get_array(xmat):
             return xmat.toarray().flatten() if hasattr(xmat, 'toarray') else xmat.flatten()
 
-        # 1) Preprocess and normalize each gene
-        normed = []
-        for g in genes:
-            vals = _get_array(self.adata[:, g].X)
-            if log_transform:
-                vals = np.log1p(vals)
-            lo, hi = np.percentile(vals, clip_percentiles)
-            clipped = np.clip(vals, lo, hi)
-            normalized = (clipped - lo) / (hi - lo) if hi > lo else np.zeros_like(clipped)
-            normed.append(normalized)
+        # 1-6) Continuous per-cell contour score via the shared core
+        gene_expr = {g: _get_array(self.adata[:, g].X) for g in genes}
+        cell_vals, vmax = _contour_score_field(
+            coords, gene_expr, log_transform, clip_percentiles, grid_res, smooth_sigma)
 
-        # 2) Average across genes per cell
-        M = np.column_stack(normed)
-        summary = np.mean(M, axis=1)
-
-        # 3) Interpolate onto grid
-        xi = np.linspace(x.min(), x.max(), grid_res)
-        yi = np.linspace(y.min(), y.max(), grid_res)
-        Xi, Yi = np.meshgrid(xi, yi)
-        Zi = griddata((x, y), summary, (Xi, Yi), method='cubic', fill_value=0.0)
-
-        # 4) Gaussian smooth
-        Zi_s = gaussian_filter(Zi, sigma=smooth_sigma, mode='nearest')
-        vmax = np.nanmax(Zi_s)
-
-        # 5) Compute thresholds
         N = contour_levels
         thresholds = np.linspace(0, vmax, N + 2)[1:-1]
-
-        # 6) Sample smoothed grid at cell positions (nearest)
-        pts = np.vstack((Xi.ravel(), Yi.ravel())).T
-        val_grid = Zi_s.ravel()
-        cell_vals = griddata(pts, val_grid, (x, y), method='nearest')
 
         # 7) Assign each cell the highest threshold it meets
         annotation = np.zeros(n_cells, dtype=float)

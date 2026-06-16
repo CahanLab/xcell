@@ -8,6 +8,7 @@ import DisplaySettings from './components/DisplaySettings'
 import DiffExpModal from './components/DiffExpModal'
 import LineAssociationModal from './components/LineAssociationModal'
 import ScanpyModal from './components/ScanpyModal'
+import MultiContourModal from './components/MultiContourModal'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
 import FigureBuilder from './components/FigureBuilder'
@@ -517,6 +518,7 @@ export default function App() {
     selectionTool,
     setSelectionTool,
     setScanpyModalOpen,
+    setMultiContourModalOpen,
     centerPanelView,
     setCenterPanelView,
     setEmbedding,
@@ -1489,6 +1491,14 @@ export default function App() {
                 Analyze
               </button>
 
+              <button
+                style={styles.toolButton}
+                onClick={() => setMultiContourModalOpen(true)}
+                title="Multi-contour: fuse several gene-set contours into one tissue annotation"
+              >
+                Multi-contour
+              </button>
+
               <DisplaySettings />
             </>
           )}
@@ -2013,6 +2023,7 @@ export default function App() {
       <DiffExpModal />
       <LineAssociationModal />
       <ScanpyModal />
+      <MultiContourModal />
       <MarkerGenesModal />
       <ClusterGeneSetModal />
       <SelectByExpressionModal />

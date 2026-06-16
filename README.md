@@ -331,6 +331,28 @@ Typical workflow for "find DEGs by expression state in a region": lasso a region
 - Click **Run** — a new categorical column appears in the Cell Panel
 - Color cells by the contour column to visualize spatial expression zones
 
+Each contour parameter has a tooltip explaining what raising or lowering it does
+(smoothing vs. detail, band count, etc.), so it's easier to dial in good values.
+
+### Multi-contour tissue annotation
+
+Annotate a whole section by fusing several gene-set contours into one tissue
+column. Click **Multi-contour** in the toolbar (requires `X_pca` — run PCA first):
+
+- **Select gene sets** — pick ≥2 modules (e.g. cartilage, muscle, tendon,
+  interzone, skin, dermis). Set the contour level count (2–3 works well); grid
+  resolution and smoothing default to data-aware suggestions if left blank.
+- **Compute** — each module is contourized independently.
+- **Review & bin** — for each module, a histogram shows how spots spread across
+  bands; choose the cutoff at/above which a spot counts as "high" (auto-default
+  is the top band).
+- **Finalize** — every spot is labeled with the module it's high in. Spots high
+  in exactly one module get that tissue; spots high in several are resolved by a
+  vote among their spatial neighbors, ranked by expression-profile (`X_pca`)
+  similarity; spots high in none stay `unassigned`. Optionally save QC columns
+  (`<name>_status`, per-module `<set>_high`).
+- The result is one categorical `.obs` column (default `tissue`) you can color by.
+
 ### Combining Spatial Sections
 
 To compare the same tissue across timepoints (or any cross-sample analysis), you can load 2+ spatial-transcriptomics h5ads into one dataset:

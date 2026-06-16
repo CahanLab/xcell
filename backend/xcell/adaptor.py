@@ -218,6 +218,9 @@ class DataAdaptor:
         # See get_gene_mask / set_gene_mask / clear_gene_mask.
         self._gene_mask_config: dict[str, Any] | None = None
         self._visible_gene_mask: np.ndarray | None = None  # bool array, shape (n_genes,)
+        # Multi-contour: cache of per-module scores between prepare and finalize,
+        # keyed by an opaque token. See prepare_multicontour / finalize_multicontour.
+        self._multicontour_cache: dict[str, dict[str, Any]] = {}
 
         # Defensively preserve raw counts: if .X looks like integer counts and
         # a "counts" layer isn't already present, snapshot .X into
@@ -6030,6 +6033,159 @@ class DataAdaptor:
             'grid_res': grid_res,
             'annotation_key': annotation_key,
         }, result)
+        return result
+
+    def prepare_multicontour(
+        self,
+        gene_sets: dict[str, list[str]],
+        contour_levels: int = 3,
+        log_transform: bool = True,
+        clip_percentiles: tuple = (1, 99),
+        grid_res: int | None = None,
+        smooth_sigma: float | None = None,
+    ) -> dict[str, Any]:
+        """Phase 1 of multi-contour: score each module, cache scores, return review.
+
+        Computes a continuous spatial score and threshold bands for each gene-set
+        module and returns a per-module review payload (histograms, auto cutoff)
+        without writing anything to ``.obs``. The per-module band assignments are
+        cached under an opaque token consumed by :meth:`finalize_multicontour`.
+
+        Args:
+            gene_sets: Mapping of tissue label -> list of gene names.
+            contour_levels: Number of contour thresholds per module.
+            log_transform: Apply log1p before contouring.
+            clip_percentiles: Percentile clip range per gene.
+            grid_res: Interpolation grid size; auto-suggested from spot count if None.
+            smooth_sigma: Gaussian smoothing; auto-suggested from spacing if None.
+
+        Returns:
+            Dict with token, modules (list of review dicts), and params.
+
+        Raises:
+            ValueError: if X_pca is missing, fewer than 2 gene sets are given,
+                        spatial coords are missing, or a gene set has unknown genes.
+        """
+        import uuid
+        from xcell import multicontour as mc
+
+        if 'X_pca' not in self.adata.obsm:
+            raise ValueError("Multi-contour requires X_pca — run PCA first.")
+        spatial_key = self._get_spatial_key()
+        if spatial_key is None:
+            raise ValueError("No spatial coordinates found")
+        if len(gene_sets) < 2:
+            raise ValueError("Select at least 2 gene sets for multi-contour")
+        for name, genes in gene_sets.items():
+            missing = [g for g in genes if g not in self.adata.var_names]
+            if missing:
+                raise ValueError(f"Gene set '{name}' has genes not in data: {missing}")
+
+        if grid_res is None:
+            grid_res = mc.suggest_grid_res(self.adata.n_obs)
+        if smooth_sigma is None:
+            smooth_sigma = mc.suggest_smooth_sigma(
+                self.adata.obsm[spatial_key], grid_res)
+
+        modules: list[dict[str, Any]] = []
+        scores: dict[str, dict[str, Any]] = {}
+        for name, genes in gene_sets.items():
+            r = mc.score_module(self.adata, genes, contour_levels, log_transform,
+                                tuple(clip_percentiles), grid_res, smooth_sigma)
+            scores[name] = {'bands': r['bands'], 'thresholds': r['thresholds']}
+            modules.append({
+                'name': name,
+                'n_genes': len(genes),
+                'thresholds': [float(t) for t in r['thresholds']],
+                'band_values': [float(v) for v in r['band_values']],
+                'histogram': r['histogram'],
+                'auto_cutoff': float(r['auto_cutoff']),
+            })
+
+        params = {
+            'gene_sets': gene_sets,
+            'contour_levels': contour_levels,
+            'log_transform': log_transform,
+            'clip_percentiles': list(clip_percentiles),
+            'grid_res': grid_res,
+            'smooth_sigma': smooth_sigma,
+        }
+        token = uuid.uuid4().hex
+        self._multicontour_cache[token] = {'scores': scores, 'params': params}
+        return {'token': token, 'modules': modules, 'params': params}
+
+    def finalize_multicontour(
+        self,
+        token: str,
+        cutoffs: dict[str, float],
+        profile_k: int = 15,
+        out_name: str = "tissue",
+        save_qc: bool = False,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Phase 2 of multi-contour: binarize, assign, resolve, write column(s).
+
+        Args:
+            token: Token returned by :meth:`prepare_multicontour`.
+            cutoffs: Mapping module name -> high cutoff (band value).
+            profile_k: Nearest unambiguous spatial neighbors to vote over.
+            out_name: Name of the result ``.obs`` categorical column.
+            save_qc: Also write ``<out_name>_status`` and per-module ``<name>_high``.
+            params: Fallback params to recompute scores if the token cache is gone.
+
+        Returns:
+            Dict with status, annotation_key, categories, counts, n_resolved.
+        """
+        from xcell import multicontour as mc
+
+        cached = self._multicontour_cache.get(token)
+        if cached is None:
+            if params is None:
+                raise ValueError("Score cache expired; resubmit with params to recompute")
+            scores = {}
+            for name, genes in params['gene_sets'].items():
+                r = mc.score_module(
+                    self.adata, genes, params['contour_levels'],
+                    params['log_transform'], tuple(params['clip_percentiles']),
+                    params['grid_res'], params['smooth_sigma'])
+                scores[name] = {'bands': r['bands'], 'thresholds': r['thresholds']}
+        else:
+            scores = cached['scores']
+            params = cached['params']
+
+        highs = {name: mc.binarize(scores[name]['bands'], cutoffs[name]) for name in scores}
+
+        spatial_conn = self.adata.obsp.get('spatial_connectivities')
+        coords = np.asarray(self.adata.obsm[self._get_spatial_key()])
+        pca = np.asarray(self.adata.obsm['X_pca'])
+        labels, status = mc.assign_tissue(highs, self.adata, profile_k, spatial_conn, pca, coords)
+
+        categories = list(scores.keys()) + ['unassigned']
+        self.adata.obs[out_name] = pd.Categorical(labels, categories=categories, ordered=False)
+        if save_qc:
+            self.adata.obs[f'{out_name}_status'] = pd.Categorical(
+                status, categories=['single', 'resolved', 'unassigned'], ordered=False)
+            for name in scores:
+                self.adata.obs[f'{name}_high'] = pd.Categorical(
+                    np.where(highs[name], 'high', 'low'), categories=['low', 'high'], ordered=True)
+
+        counts = {c: int(np.sum(labels == c)) for c in categories}
+        result = {
+            'status': 'completed',
+            'annotation_key': out_name,
+            'categories': categories,
+            'counts': counts,
+            'n_resolved': int(np.sum(status == 'resolved')),
+        }
+        self._log_action('multicontour', {
+            'gene_sets': dict(params['gene_sets']),
+            'cutoffs': cutoffs,
+            'profile_k': profile_k,
+            'out_name': out_name,
+            'save_qc': save_qc,
+            'params': {k: v for k, v in params.items() if k != 'gene_sets'},
+        }, result)
+        self._multicontour_cache.pop(token, None)
         return result
 
     def get_spatially_variable_genes(

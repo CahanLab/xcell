@@ -60,6 +60,67 @@ def test_prepare_then_finalize_writes_column():
     assert "A_high" in a.adata.obs and "B_high" in a.adata.obs
 
 
+def _two_section_adata():
+    cells, secs = [], []
+    for i in range(10):
+        for j in range(10):
+            cells.append((float(i), float(j)))
+            secs.append("A" if i < 5 else "B")
+    coords = np.array(cells)
+    n = coords.shape[0]
+    sections = np.array(secs)
+    X = np.zeros((n, 2), dtype=np.float32)
+    X[sections == "A", 0] = 10.0
+    X[sections == "B", 1] = 10.0
+    ad = anndata.AnnData(X=csr_matrix(X))
+    ad.var_names = ["mA", "mB"]
+    ad.obsm["spatial"] = coords
+    ad.obsm["X_pca"] = coords.copy()
+    ad.obs["section"] = sections
+    return ad
+
+
+# smooth_sigma chosen so global processing bleeds gene mA across the A/B
+# boundary far enough to cross a contour band in section B; section-awareness
+# must prevent that.
+_BLEED_SIGMA = 6.0
+
+
+def test_run_contourize_section_col_no_bleed():
+    import numpy as _np
+    a = DataAdaptor("x.h5ad", adata=_two_section_adata())
+    # gene mA high in section A only
+    a.run_contourize(["mA"], contour_levels=2, log_transform=False, grid_res=40,
+                     smooth_sigma=_BLEED_SIGMA, annotation_key="c_sec", section_col="section")
+    bands = _np.asarray(a.adata.obs["c_sec"].astype(float))
+    sec = a.adata.obs["section"].values
+    # section B should stay at the zero band (no bleed from A)
+    assert bands[sec == "B"].max() == 0.0
+
+
+def test_run_contourize_bleeds_without_section_col():
+    import numpy as _np
+    a = DataAdaptor("x.h5ad", adata=_two_section_adata())
+    a.run_contourize(["mA"], contour_levels=2, log_transform=False, grid_res=40,
+                     smooth_sigma=_BLEED_SIGMA, annotation_key="c_glob")
+    bands = _np.asarray(a.adata.obs["c_glob"].astype(float))
+    sec = a.adata.obs["section"].values
+    assert bands[sec == "B"].max() > 0.0  # global processing bleeds into B
+
+
+def test_prepare_multicontour_section_col_in_params():
+    a = DataAdaptor("x.h5ad", adata=_two_section_adata())
+    prep = a.prepare_multicontour(
+        {"A": ["mA"], "B": ["mB"]}, contour_levels=2, grid_res=40,
+        smooth_sigma=2.0, log_transform=False, section_col="section")
+    assert prep["params"]["section_col"] == "section"
+    cutoffs = {m["name"]: m["auto_cutoff"] for m in prep["modules"]}
+    res = a.finalize_multicontour(token=prep["token"], cutoffs=cutoffs,
+                                  out_name="tissue", params=prep["params"])
+    assert res["annotation_key"] == "tissue"
+    assert "tissue" in a.adata.obs
+
+
 def test_suggest_contour_params():
     a = DataAdaptor("x.h5ad", adata=_adata())
     s = a.suggest_contour_params()

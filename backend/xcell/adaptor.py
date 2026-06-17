@@ -2893,6 +2893,18 @@ class DataAdaptor:
                     return key
         return None
 
+    def _resolve_sections(self, section_col: str | None) -> np.ndarray | None:
+        """Resolve a section obs-column name to a per-cell label array.
+
+        Returns None when ``section_col`` is None (single-tissue behavior).
+        Raises ValueError if the column is missing.
+        """
+        if section_col is None:
+            return None
+        if section_col not in self.adata.obs.columns:
+            raise ValueError(f"Section column '{section_col}' not found in .obs")
+        return np.asarray(self.adata.obs[section_col].astype(str).values)
+
     def _column_to_bool_array(self, col_name: str) -> np.ndarray:
         """Convert a .var column to a boolean numpy array.
 
@@ -5892,6 +5904,7 @@ class DataAdaptor:
         grid_res: int = 200,
         clip_percentiles: tuple = (1, 99),
         annotation_key: str | None = None,
+        section_col: str | None = None,
     ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
         """Prepare spatial expression contouring (cancellable).
 
@@ -5927,6 +5940,7 @@ class DataAdaptor:
 
         # Snapshot spatial coordinates and gene expression data
         coords_snap = self.adata.obsm[spatial_key].copy()
+        sections_snap = self._resolve_sections(section_col)
         gene_expression_snap = {}
         for g in genes:
             xmat = self.adata[:, g].X
@@ -5950,7 +5964,8 @@ class DataAdaptor:
             gene_expr = {g: gene_expression_snap[g] for g in snap_genes}
             cell_vals, vmax = _contour_score_field(
                 coords_snap, gene_expr, snap_log_transform,
-                snap_clip_percentiles, snap_grid_res, snap_smooth_sigma)
+                snap_clip_percentiles, snap_grid_res, snap_smooth_sigma,
+                sections=sections_snap)
 
             N = snap_contour_levels
             thresholds = np.linspace(0, vmax, N + 2)[1:-1]
@@ -6011,6 +6026,7 @@ class DataAdaptor:
         grid_res: int = 200,
         clip_percentiles: tuple = (1, 99),
         annotation_key: str | None = None,
+        section_col: str | None = None,
     ) -> dict[str, Any]:
         """Compute spatial expression contours from a gene set and assign each cell a contour level.
 
@@ -6028,6 +6044,8 @@ class DataAdaptor:
             grid_res: Interpolation grid size per axis
             clip_percentiles: Percentile clipping range
             annotation_key: Name for the result .obs column (auto-generated if None)
+            section_col: Optional .obs column; when set, interpolate per section so
+                expression never bleeds across the gap between sections.
 
         Returns:
             Dict with status, annotation_key, n_genes, genes, contour_levels, n_cells
@@ -6043,6 +6061,7 @@ class DataAdaptor:
             raise ValueError("No spatial coordinates found")
         coords = self.adata.obsm[spatial_key]
         n_cells = coords.shape[0]
+        sections = self._resolve_sections(section_col)
 
         # Helper for sparse arrays
         def _get_array(xmat):
@@ -6051,7 +6070,8 @@ class DataAdaptor:
         # 1-6) Continuous per-cell contour score via the shared core
         gene_expr = {g: _get_array(self.adata[:, g].X) for g in genes}
         cell_vals, vmax = _contour_score_field(
-            coords, gene_expr, log_transform, clip_percentiles, grid_res, smooth_sigma)
+            coords, gene_expr, log_transform, clip_percentiles, grid_res, smooth_sigma,
+            sections=sections)
 
         N = contour_levels
         thresholds = np.linspace(0, vmax, N + 2)[1:-1]
@@ -6132,6 +6152,7 @@ class DataAdaptor:
         clip_percentiles: tuple = (1, 99),
         grid_res: int | None = None,
         smooth_sigma: float | None = None,
+        section_col: str | None = None,
     ) -> dict[str, Any]:
         """Phase 1 of multi-contour: score each module, cache scores, return review.
 
@@ -6160,6 +6181,7 @@ class DataAdaptor:
 
         self.check_multicontour_prereqs(gene_sets)
         spatial_key = self._get_spatial_key()
+        sections = self._resolve_sections(section_col)
 
         if grid_res is None:
             grid_res = mc.suggest_grid_res(self.adata.n_obs)
@@ -6171,7 +6193,8 @@ class DataAdaptor:
         scores: dict[str, dict[str, Any]] = {}
         for name, genes in gene_sets.items():
             r = mc.score_module(self.adata, genes, contour_levels, log_transform,
-                                tuple(clip_percentiles), grid_res, smooth_sigma)
+                                tuple(clip_percentiles), grid_res, smooth_sigma,
+                                sections=sections)
             scores[name] = {'bands': r['bands'], 'thresholds': r['thresholds']}
             modules.append({
                 'name': name,
@@ -6189,6 +6212,7 @@ class DataAdaptor:
             'clip_percentiles': list(clip_percentiles),
             'grid_res': grid_res,
             'smooth_sigma': smooth_sigma,
+            'section_col': section_col,
         }
         token = uuid.uuid4().hex
         # Cap the cache (band arrays are sizable); evict oldest beyond a few.
@@ -6226,11 +6250,12 @@ class DataAdaptor:
             if params is None:
                 raise ValueError("Score cache expired; resubmit with params to recompute")
             scores = {}
+            sections = self._resolve_sections(params.get('section_col'))
             for name, genes in params['gene_sets'].items():
                 r = mc.score_module(
                     self.adata, genes, params['contour_levels'],
                     params['log_transform'], tuple(params['clip_percentiles']),
-                    params['grid_res'], params['smooth_sigma'])
+                    params['grid_res'], params['smooth_sigma'], sections=sections)
                 scores[name] = {'bands': r['bands'], 'thresholds': r['thresholds']}
         else:
             scores = cached['scores']
@@ -6241,7 +6266,9 @@ class DataAdaptor:
         spatial_conn = self.adata.obsp.get('spatial_connectivities')
         coords = np.asarray(self.adata.obsm[self._get_spatial_key()])
         pca = np.asarray(self.adata.obsm['X_pca'])
-        labels, status = mc.assign_tissue(highs, self.adata, profile_k, spatial_conn, pca, coords)
+        sections = self._resolve_sections(params.get('section_col'))
+        labels, status = mc.assign_tissue(
+            highs, self.adata, profile_k, spatial_conn, pca, coords, sections=sections)
 
         categories = list(scores.keys()) + ['unassigned']
         self.adata.obs[out_name] = pd.Categorical(labels, categories=categories, ordered=False)

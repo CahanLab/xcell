@@ -2312,6 +2312,7 @@ class ContourizeRequest(BaseModel):
     smooth_sigma: float = 2.0
     grid_res: int = 200
     annotation_key: str | None = None
+    section_col: str | None = None
 
 
 class MultiContourPrepareRequest(BaseModel):
@@ -2320,6 +2321,7 @@ class MultiContourPrepareRequest(BaseModel):
     log_transform: bool = True
     grid_res: int | None = None
     smooth_sigma: float | None = None
+    section_col: str | None = None
 
 
 class MultiContourFinalizeRequest(BaseModel):
@@ -2433,6 +2435,7 @@ def run_contourize(request: ContourizeRequest, dataset: str | None = Query(None)
             smooth_sigma=request.smooth_sigma,
             grid_res=request.grid_res,
             annotation_key=request.annotation_key,
+            section_col=request.section_col,
         )
         task_id = task_manager.submit(compute_fn, apply_fn)
         return {"task_id": task_id, "status": "running"}
@@ -2474,6 +2477,7 @@ def multicontour_prepare(request: MultiContourPrepareRequest, dataset: str | Non
                 log_transform=request.log_transform,
                 grid_res=request.grid_res,
                 smooth_sigma=request.smooth_sigma,
+                section_col=request.section_col,
             )
 
         def apply_fn(result):

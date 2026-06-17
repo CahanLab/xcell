@@ -119,11 +119,52 @@ def combine_spatial_h5ads(
     return combined
 
 
+def _interp_smooth_subset(coords, summary, grid_res, smooth_sigma):
+    """Grid-interpolate + Gaussian-smooth ``summary`` over ``coords`` and sample
+    back at each point. Returns (cell_vals, grid_vmax).
+
+    Degenerate inputs (fewer than 4 points, or collinear) can't be cubic-gridded,
+    so the raw ``summary`` is returned unchanged — this is the per-section
+    small-section guard.
+    """
+    from scipy.interpolate import griddata
+    from scipy.ndimage import gaussian_filter
+
+    coords = np.asarray(coords)
+    summary = np.asarray(summary, dtype=float)
+    n = summary.shape[0]
+    if n == 0:
+        return summary.copy(), 0.0
+    if n < 4 or np.ptp(coords[:, 0]) == 0 or np.ptp(coords[:, 1]) == 0:
+        return summary.copy(), float(summary.max())
+
+    x, y = coords[:, 0], coords[:, 1]
+    xi = np.linspace(x.min(), x.max(), grid_res)
+    yi = np.linspace(y.min(), y.max(), grid_res)
+    Xi, Yi = np.meshgrid(xi, yi)
+    try:
+        Zi = griddata((x, y), summary, (Xi, Yi), method='cubic', fill_value=0.0)
+    except Exception:
+        Zi = griddata((x, y), summary, (Xi, Yi), method='linear', fill_value=0.0)
+    Zi_s = gaussian_filter(Zi, sigma=smooth_sigma, mode='nearest')
+    vmax = float(np.nanmax(Zi_s))
+
+    pts = np.vstack((Xi.ravel(), Yi.ravel())).T
+    cell_vals = griddata(pts, Zi_s.ravel(), (x, y), method='nearest')
+    return np.asarray(cell_vals, dtype=float), vmax
+
+
 def _contour_score_field(coords, gene_expr, log_transform, clip_percentiles,
-                         grid_res, smooth_sigma):
+                         grid_res, smooth_sigma, sections=None):
     """Continuous per-spot contour score (the value before banding).
 
     Shared by single contourize and multi-contour module scoring.
+
+    Gene normalization and the averaged ``summary`` are computed globally (so a
+    "high" expresser means the same thing everywhere). The spatial interpolation
+    + smoothing run per ``sections`` group when given, so expression never bleeds
+    across the gap between sections; ``vmax`` is the max grid value across groups
+    (global) so band thresholds stay comparable.
 
     Args:
         coords: (n, 2) spatial coordinates.
@@ -132,16 +173,12 @@ def _contour_score_field(coords, gene_expr, log_transform, clip_percentiles,
         clip_percentiles: (lo, hi) percentile clip range per gene.
         grid_res: interpolation grid size per axis.
         smooth_sigma: Gaussian smoothing strength (grid-pixel units).
+        sections: optional (n,) array of section labels; None → one global grid.
 
     Returns:
-        (score, vmax): score is an (n,) float array in [0, vmax]; vmax is the
-        max of the smoothed grid.
+        (score, vmax): score is an (n,) float array in [0, vmax].
     """
-    from scipy.interpolate import griddata
-    from scipy.ndimage import gaussian_filter
-
     coords = np.asarray(coords)
-    x, y = coords[:, 0], coords[:, 1]
 
     normed = []
     for vals in gene_expr.values():
@@ -153,16 +190,20 @@ def _contour_score_field(coords, gene_expr, log_transform, clip_percentiles,
         normed.append((clipped - lo) / (hi - lo) if hi > lo else np.zeros_like(clipped))
     summary = np.mean(np.column_stack(normed), axis=1)
 
-    xi = np.linspace(x.min(), x.max(), grid_res)
-    yi = np.linspace(y.min(), y.max(), grid_res)
-    Xi, Yi = np.meshgrid(xi, yi)
-    Zi = griddata((x, y), summary, (Xi, Yi), method='cubic', fill_value=0.0)
-    Zi_s = gaussian_filter(Zi, sigma=smooth_sigma, mode='nearest')
-    vmax = float(np.nanmax(Zi_s))
+    if sections is None:
+        return _interp_smooth_subset(coords, summary, grid_res, smooth_sigma)
 
-    pts = np.vstack((Xi.ravel(), Yi.ravel())).T
-    cell_vals = griddata(pts, Zi_s.ravel(), (x, y), method='nearest')
-    return np.asarray(cell_vals, dtype=float), vmax
+    sections = np.asarray(sections)
+    n = summary.shape[0]
+    cell_vals = np.zeros(n, dtype=float)
+    vmax = 0.0
+    for s in np.unique(sections):
+        idx = np.where(sections == s)[0]
+        sub_vals, sub_vmax = _interp_smooth_subset(
+            coords[idx], summary[idx], grid_res, smooth_sigma)
+        cell_vals[idx] = sub_vals
+        vmax = max(vmax, sub_vmax)
+    return cell_vals, vmax
 
 
 class DataAdaptor:

@@ -6036,6 +6036,25 @@ class DataAdaptor:
         }, result)
         return result
 
+    def suggest_contour_params(self) -> dict[str, Any]:
+        """Data-aware suggested contour parameters for the current dataset.
+
+        Returns a dict with ``grid_res`` (≈√n_spots) and ``smooth_sigma`` (from
+        the median spot spacing). Used to prefill the contour UI for both single-
+        and multi-gene-set contouring.
+
+        Raises:
+            ValueError: if no spatial coordinates are present.
+        """
+        from xcell import multicontour as mc
+
+        spatial_key = self._get_spatial_key()
+        if spatial_key is None:
+            raise ValueError("No spatial coordinates found")
+        grid_res = mc.suggest_grid_res(self.adata.n_obs)
+        smooth_sigma = mc.suggest_smooth_sigma(self.adata.obsm[spatial_key], grid_res)
+        return {'grid_res': grid_res, 'smooth_sigma': round(float(smooth_sigma), 2)}
+
     def check_multicontour_prereqs(self, gene_sets: dict[str, list[str]]) -> None:
         """Cheap up-front validation for multi-contour (raises ValueError).
 

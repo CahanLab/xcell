@@ -58,6 +58,15 @@ def test_prepare_and_finalize_roundtrip():
     assert "unassigned" in fr.json()["categories"]
 
 
+def test_contour_suggest():
+    _install_adaptor()
+    c = TestClient(app)
+    r = c.get("/api/scanpy/contour_suggest")
+    assert r.status_code == 200
+    body = r.json()
+    assert "grid_res" in body and "smooth_sigma" in body
+
+
 def test_prepare_missing_pca_returns_400():
     coords = np.array([[float(i), float(j)] for i in range(4) for j in range(4)])
     ad = anndata.AnnData(X=csr_matrix(np.ones((coords.shape[0], 2), dtype=np.float32)))

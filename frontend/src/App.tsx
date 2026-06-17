@@ -518,7 +518,6 @@ export default function App() {
     selectionTool,
     setSelectionTool,
     setScanpyModalOpen,
-    setMultiContourModalOpen,
     centerPanelView,
     setCenterPanelView,
     setEmbedding,
@@ -1489,14 +1488,6 @@ export default function App() {
                 title="Run scanpy analysis functions"
               >
                 Analyze
-              </button>
-
-              <button
-                style={styles.toolButton}
-                onClick={() => setMultiContourModalOpen(true)}
-                title="Multi-contour: fuse several gene-set contours into one tissue annotation"
-              >
-                Multi-contour
               </button>
 
               <DisplaySettings />

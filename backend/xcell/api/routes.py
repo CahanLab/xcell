@@ -2439,6 +2439,17 @@ def run_contourize(request: ContourizeRequest, dataset: str | None = Query(None)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/scanpy/contour_suggest")
+def contour_suggest(dataset: str | None = Query(None)):
+    """Data-aware suggested contour params (grid_res, smooth_sigma) for prefilling
+    the contour UI. Works for both single- and multi-gene-set contouring."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.suggest_contour_params()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/scanpy/multicontour/prepare", status_code=202)
 def multicontour_prepare(request: MultiContourPrepareRequest, dataset: str | None = Query(None)):
     """Phase 1 of multi-contour: score each gene-set module (cancellable task).

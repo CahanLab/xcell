@@ -60,6 +60,24 @@ def test_prepare_then_finalize_writes_column():
     assert "A_high" in a.adata.obs and "B_high" in a.adata.obs
 
 
+def test_suggest_contour_params():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    s = a.suggest_contour_params()
+    assert s["grid_res"] >= 50 and s["grid_res"] <= 600
+    assert s["smooth_sigma"] > 0
+
+
+def test_suggest_contour_params_requires_spatial():
+    ad = _adata()
+    del ad.obsm["spatial"]
+    a = DataAdaptor("x.h5ad", adata=ad)
+    try:
+        a.suggest_contour_params()
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "spatial" in str(e).lower()
+
+
 def test_finalize_recomputes_on_cache_miss():
     a = DataAdaptor("x.h5ad", adata=_adata())
     prep = a.prepare_multicontour(

@@ -404,6 +404,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         custom: true,
         params: [],
       },
+      define_sections: {
+        label: 'Define Sections',
+        description: 'Manually define tissue sections by polygon-selecting regions on the spatial plot and naming them. Creates a categorical .obs column you can use as the "Section column" in Contour and Spatial Neighbors. Opens a floating panel.',
+        prerequisites: ['has_spatial'],
+        custom: true,
+        params: [],
+      },
     },
   },
 }
@@ -617,7 +624,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2144,6 +2151,13 @@ export default function ScanpyModal() {
               onClick={() => { setMultiContourModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Contour tool…
+            </button>
+          ) : selectedFunction === 'define_sections' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setDefineSectionsOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Define Sections…
             </button>
           ) : (
             <button

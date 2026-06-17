@@ -9,6 +9,7 @@ import DiffExpModal from './components/DiffExpModal'
 import LineAssociationModal from './components/LineAssociationModal'
 import ScanpyModal from './components/ScanpyModal'
 import MultiContourModal from './components/MultiContourModal'
+import DefineSectionsPanel from './components/DefineSectionsPanel'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
 import FigureBuilder from './components/FigureBuilder'
@@ -2015,6 +2016,7 @@ export default function App() {
       <LineAssociationModal />
       <ScanpyModal />
       <MultiContourModal />
+      <DefineSectionsPanel />
       <MarkerGenesModal />
       <ClusterGeneSetModal />
       <SelectByExpressionModal />

@@ -41,8 +41,13 @@ def auto_cutoff(thresholds):
 
 
 def score_module(adata, genes, contour_levels=3, log_transform=True,
-                 clip_percentiles=(1, 99), grid_res=200, smooth_sigma=2.0):
+                 clip_percentiles=(1, 99), grid_res=200, smooth_sigma=2.0,
+                 sections=None):
     """Score one gene-set module: continuous score, threshold bands, histogram.
+
+    When ``sections`` (an (n,) array of section labels) is given, the spatial
+    interpolation runs per section so expression does not bleed across the gap
+    between sections.
 
     Returns a dict with: score (n,), bands (n,), thresholds, band_values,
     histogram (count per band value), and auto_cutoff (top band).
@@ -50,7 +55,7 @@ def score_module(adata, genes, contour_levels=3, log_transform=True,
     coords = np.asarray(adata.obsm[_spatial_key(adata)])
     score, vmax = _contour_score_field(
         coords, _expr_dict(adata, genes), log_transform,
-        tuple(clip_percentiles), grid_res, smooth_sigma)
+        tuple(clip_percentiles), grid_res, smooth_sigma, sections=sections)
 
     thresholds = np.linspace(0, vmax, contour_levels + 2)[1:-1]
     band_values = np.unique(np.concatenate(([0.0], thresholds)))
@@ -98,7 +103,7 @@ def _neighbor_lists(spatial_conn, coords, n, k_fallback=15):
     return [[int(j) for j in row if j != i] for i, row in enumerate(idx)]
 
 
-def assign_tissue(highs, adata, profile_k, spatial_conn, pca, coords):
+def assign_tissue(highs, adata, profile_k, spatial_conn, pca, coords, sections=None):
     """Fuse per-module high masks into a single tissue label per spot.
 
     Args:
@@ -108,6 +113,8 @@ def assign_tissue(highs, adata, profile_k, spatial_conn, pca, coords):
         spatial_conn: spatial adjacency (sparse/dense) or None to build from coords.
         pca: (n, d) profile coordinates used to rank neighbors (e.g. X_pca).
         coords: (n, 2) spatial coordinates (used only for the kNN fallback).
+        sections: optional (n,) section labels; conflict resolution then only
+            votes with neighbors from the same section.
 
     Returns:
         (labels, status): object arrays of length n. status is one of
@@ -131,9 +138,13 @@ def assign_tissue(highs, adata, profile_k, spatial_conn, pca, coords):
     conflict_ids = np.where(counts >= 2)[0]
     if conflict_ids.size:
         pca = np.asarray(pca)
+        sections = np.asarray(sections) if sections is not None else None
         neigh = _neighbor_lists(spatial_conn, coords, n)
         for s in conflict_ids:
-            cands = [j for j in neigh[s] if single[j]]
+            cands = [
+                j for j in neigh[s]
+                if single[j] and (sections is None or sections[j] == sections[s])
+            ]
             if not cands:
                 continue
             d = np.linalg.norm(pca[cands] - pca[s], axis=1)

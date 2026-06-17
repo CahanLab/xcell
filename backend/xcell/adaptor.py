@@ -119,11 +119,70 @@ def combine_spatial_h5ads(
     return combined
 
 
+def _drop_cross_section_edges(adata, sections):
+    """Zero out edges between cells in different sections in the spatial graph.
+
+    Makes ``obsp['spatial_connectivities']`` / ``['spatial_distances']``
+    block-diagonal so no neighborhood spans the gap between sections.
+    """
+    from scipy.sparse import csr_matrix
+
+    sections = np.asarray(sections)
+    for key in ('spatial_connectivities', 'spatial_distances'):
+        if key not in adata.obsp:
+            continue
+        m = adata.obsp[key].tocoo()
+        keep = sections[m.row] == sections[m.col]
+        adata.obsp[key] = csr_matrix(
+            (m.data[keep], (m.row[keep], m.col[keep])), shape=m.shape)
+
+
+def _interp_smooth_subset(coords, summary, grid_res, smooth_sigma):
+    """Grid-interpolate + Gaussian-smooth ``summary`` over ``coords`` and sample
+    back at each point. Returns (cell_vals, grid_vmax).
+
+    Degenerate inputs (fewer than 4 points, or collinear) can't be cubic-gridded,
+    so the raw ``summary`` is returned unchanged — this is the per-section
+    small-section guard.
+    """
+    from scipy.interpolate import griddata
+    from scipy.ndimage import gaussian_filter
+
+    coords = np.asarray(coords)
+    summary = np.asarray(summary, dtype=float)
+    n = summary.shape[0]
+    if n == 0:
+        return summary.copy(), 0.0
+    if n < 4 or np.ptp(coords[:, 0]) == 0 or np.ptp(coords[:, 1]) == 0:
+        return summary.copy(), float(summary.max())
+
+    x, y = coords[:, 0], coords[:, 1]
+    xi = np.linspace(x.min(), x.max(), grid_res)
+    yi = np.linspace(y.min(), y.max(), grid_res)
+    Xi, Yi = np.meshgrid(xi, yi)
+    try:
+        Zi = griddata((x, y), summary, (Xi, Yi), method='cubic', fill_value=0.0)
+    except Exception:
+        Zi = griddata((x, y), summary, (Xi, Yi), method='linear', fill_value=0.0)
+    Zi_s = gaussian_filter(Zi, sigma=smooth_sigma, mode='nearest')
+    vmax = float(np.nanmax(Zi_s))
+
+    pts = np.vstack((Xi.ravel(), Yi.ravel())).T
+    cell_vals = griddata(pts, Zi_s.ravel(), (x, y), method='nearest')
+    return np.asarray(cell_vals, dtype=float), vmax
+
+
 def _contour_score_field(coords, gene_expr, log_transform, clip_percentiles,
-                         grid_res, smooth_sigma):
+                         grid_res, smooth_sigma, sections=None):
     """Continuous per-spot contour score (the value before banding).
 
     Shared by single contourize and multi-contour module scoring.
+
+    Gene normalization and the averaged ``summary`` are computed globally (so a
+    "high" expresser means the same thing everywhere). The spatial interpolation
+    + smoothing run per ``sections`` group when given, so expression never bleeds
+    across the gap between sections; ``vmax`` is the max grid value across groups
+    (global) so band thresholds stay comparable.
 
     Args:
         coords: (n, 2) spatial coordinates.
@@ -132,16 +191,12 @@ def _contour_score_field(coords, gene_expr, log_transform, clip_percentiles,
         clip_percentiles: (lo, hi) percentile clip range per gene.
         grid_res: interpolation grid size per axis.
         smooth_sigma: Gaussian smoothing strength (grid-pixel units).
+        sections: optional (n,) array of section labels; None → one global grid.
 
     Returns:
-        (score, vmax): score is an (n,) float array in [0, vmax]; vmax is the
-        max of the smoothed grid.
+        (score, vmax): score is an (n,) float array in [0, vmax].
     """
-    from scipy.interpolate import griddata
-    from scipy.ndimage import gaussian_filter
-
     coords = np.asarray(coords)
-    x, y = coords[:, 0], coords[:, 1]
 
     normed = []
     for vals in gene_expr.values():
@@ -153,16 +208,20 @@ def _contour_score_field(coords, gene_expr, log_transform, clip_percentiles,
         normed.append((clipped - lo) / (hi - lo) if hi > lo else np.zeros_like(clipped))
     summary = np.mean(np.column_stack(normed), axis=1)
 
-    xi = np.linspace(x.min(), x.max(), grid_res)
-    yi = np.linspace(y.min(), y.max(), grid_res)
-    Xi, Yi = np.meshgrid(xi, yi)
-    Zi = griddata((x, y), summary, (Xi, Yi), method='cubic', fill_value=0.0)
-    Zi_s = gaussian_filter(Zi, sigma=smooth_sigma, mode='nearest')
-    vmax = float(np.nanmax(Zi_s))
+    if sections is None:
+        return _interp_smooth_subset(coords, summary, grid_res, smooth_sigma)
 
-    pts = np.vstack((Xi.ravel(), Yi.ravel())).T
-    cell_vals = griddata(pts, Zi_s.ravel(), (x, y), method='nearest')
-    return np.asarray(cell_vals, dtype=float), vmax
+    sections = np.asarray(sections)
+    n = summary.shape[0]
+    cell_vals = np.zeros(n, dtype=float)
+    vmax = 0.0
+    for s in np.unique(sections):
+        idx = np.where(sections == s)[0]
+        sub_vals, sub_vmax = _interp_smooth_subset(
+            coords[idx], summary[idx], grid_res, smooth_sigma)
+        cell_vals[idx] = sub_vals
+        vmax = max(vmax, sub_vmax)
+    return cell_vals, vmax
 
 
 class DataAdaptor:
@@ -2852,6 +2911,18 @@ class DataAdaptor:
                     return key
         return None
 
+    def _resolve_sections(self, section_col: str | None) -> np.ndarray | None:
+        """Resolve a section obs-column name to a per-cell label array.
+
+        Returns None when ``section_col`` is None (single-tissue behavior).
+        Raises ValueError if the column is missing.
+        """
+        if section_col is None:
+            return None
+        if section_col not in self.adata.obs.columns:
+            raise ValueError(f"Section column '{section_col}' not found in .obs")
+        return np.asarray(self.adata.obs[section_col].astype(str).values)
+
     def _column_to_bool_array(self, col_name: str) -> np.ndarray:
         """Convert a .var column to a boolean numpy array.
 
@@ -5402,6 +5473,7 @@ class DataAdaptor:
         delaunay: bool = False,
         n_rings: int = 1,
         radius: float | None = None,
+        section_col: str | None = None,
     ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
         """Prepare spatial neighborhood graph computation (cancellable).
 
@@ -5441,6 +5513,7 @@ class DataAdaptor:
         snap_delaunay = delaunay
         snap_n_rings = n_rings
         snap_radius = radius
+        snap_sections = self._resolve_sections(section_col)
 
         def compute_fn() -> dict[str, Any]:
             import squidpy as sq
@@ -5454,6 +5527,10 @@ class DataAdaptor:
                 n_rings=snap_n_rings,
                 radius=snap_radius,
             )
+
+            # Optionally make the graph block-diagonal across sections.
+            if snap_sections is not None:
+                _drop_cross_section_edges(adata_copy, snap_sections)
 
             return {
                 'spatial_connectivities': adata_copy.obsp['spatial_connectivities'],
@@ -5497,6 +5574,7 @@ class DataAdaptor:
         delaunay: bool = False,
         n_rings: int = 1,
         radius: float | None = None,
+        section_col: str | None = None,
     ) -> dict[str, Any]:
         """Compute spatial neighborhood graph using Squidpy.
 
@@ -5537,6 +5615,11 @@ class DataAdaptor:
             n_rings=n_rings,
             radius=radius,
         )
+
+        # Optionally make the graph block-diagonal across sections.
+        sections = self._resolve_sections(section_col)
+        if sections is not None:
+            _drop_cross_section_edges(self.adata, sections)
 
         # Get graph stats
         n_edges = self.adata.obsp['spatial_connectivities'].nnz
@@ -5851,6 +5934,7 @@ class DataAdaptor:
         grid_res: int = 200,
         clip_percentiles: tuple = (1, 99),
         annotation_key: str | None = None,
+        section_col: str | None = None,
     ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
         """Prepare spatial expression contouring (cancellable).
 
@@ -5886,6 +5970,7 @@ class DataAdaptor:
 
         # Snapshot spatial coordinates and gene expression data
         coords_snap = self.adata.obsm[spatial_key].copy()
+        sections_snap = self._resolve_sections(section_col)
         gene_expression_snap = {}
         for g in genes:
             xmat = self.adata[:, g].X
@@ -5909,7 +5994,8 @@ class DataAdaptor:
             gene_expr = {g: gene_expression_snap[g] for g in snap_genes}
             cell_vals, vmax = _contour_score_field(
                 coords_snap, gene_expr, snap_log_transform,
-                snap_clip_percentiles, snap_grid_res, snap_smooth_sigma)
+                snap_clip_percentiles, snap_grid_res, snap_smooth_sigma,
+                sections=sections_snap)
 
             N = snap_contour_levels
             thresholds = np.linspace(0, vmax, N + 2)[1:-1]
@@ -5970,6 +6056,7 @@ class DataAdaptor:
         grid_res: int = 200,
         clip_percentiles: tuple = (1, 99),
         annotation_key: str | None = None,
+        section_col: str | None = None,
     ) -> dict[str, Any]:
         """Compute spatial expression contours from a gene set and assign each cell a contour level.
 
@@ -5987,6 +6074,8 @@ class DataAdaptor:
             grid_res: Interpolation grid size per axis
             clip_percentiles: Percentile clipping range
             annotation_key: Name for the result .obs column (auto-generated if None)
+            section_col: Optional .obs column; when set, interpolate per section so
+                expression never bleeds across the gap between sections.
 
         Returns:
             Dict with status, annotation_key, n_genes, genes, contour_levels, n_cells
@@ -6002,6 +6091,7 @@ class DataAdaptor:
             raise ValueError("No spatial coordinates found")
         coords = self.adata.obsm[spatial_key]
         n_cells = coords.shape[0]
+        sections = self._resolve_sections(section_col)
 
         # Helper for sparse arrays
         def _get_array(xmat):
@@ -6010,7 +6100,8 @@ class DataAdaptor:
         # 1-6) Continuous per-cell contour score via the shared core
         gene_expr = {g: _get_array(self.adata[:, g].X) for g in genes}
         cell_vals, vmax = _contour_score_field(
-            coords, gene_expr, log_transform, clip_percentiles, grid_res, smooth_sigma)
+            coords, gene_expr, log_transform, clip_percentiles, grid_res, smooth_sigma,
+            sections=sections)
 
         N = contour_levels
         thresholds = np.linspace(0, vmax, N + 2)[1:-1]
@@ -6091,6 +6182,7 @@ class DataAdaptor:
         clip_percentiles: tuple = (1, 99),
         grid_res: int | None = None,
         smooth_sigma: float | None = None,
+        section_col: str | None = None,
     ) -> dict[str, Any]:
         """Phase 1 of multi-contour: score each module, cache scores, return review.
 
@@ -6119,6 +6211,7 @@ class DataAdaptor:
 
         self.check_multicontour_prereqs(gene_sets)
         spatial_key = self._get_spatial_key()
+        sections = self._resolve_sections(section_col)
 
         if grid_res is None:
             grid_res = mc.suggest_grid_res(self.adata.n_obs)
@@ -6130,7 +6223,8 @@ class DataAdaptor:
         scores: dict[str, dict[str, Any]] = {}
         for name, genes in gene_sets.items():
             r = mc.score_module(self.adata, genes, contour_levels, log_transform,
-                                tuple(clip_percentiles), grid_res, smooth_sigma)
+                                tuple(clip_percentiles), grid_res, smooth_sigma,
+                                sections=sections)
             scores[name] = {'bands': r['bands'], 'thresholds': r['thresholds']}
             modules.append({
                 'name': name,
@@ -6148,6 +6242,7 @@ class DataAdaptor:
             'clip_percentiles': list(clip_percentiles),
             'grid_res': grid_res,
             'smooth_sigma': smooth_sigma,
+            'section_col': section_col,
         }
         token = uuid.uuid4().hex
         # Cap the cache (band arrays are sizable); evict oldest beyond a few.
@@ -6185,11 +6280,12 @@ class DataAdaptor:
             if params is None:
                 raise ValueError("Score cache expired; resubmit with params to recompute")
             scores = {}
+            sections = self._resolve_sections(params.get('section_col'))
             for name, genes in params['gene_sets'].items():
                 r = mc.score_module(
                     self.adata, genes, params['contour_levels'],
                     params['log_transform'], tuple(params['clip_percentiles']),
-                    params['grid_res'], params['smooth_sigma'])
+                    params['grid_res'], params['smooth_sigma'], sections=sections)
                 scores[name] = {'bands': r['bands'], 'thresholds': r['thresholds']}
         else:
             scores = cached['scores']
@@ -6200,7 +6296,9 @@ class DataAdaptor:
         spatial_conn = self.adata.obsp.get('spatial_connectivities')
         coords = np.asarray(self.adata.obsm[self._get_spatial_key()])
         pca = np.asarray(self.adata.obsm['X_pca'])
-        labels, status = mc.assign_tissue(highs, self.adata, profile_k, spatial_conn, pca, coords)
+        sections = self._resolve_sections(params.get('section_col'))
+        labels, status = mc.assign_tissue(
+            highs, self.adata, profile_k, spatial_conn, pca, coords, sections=sections)
 
         categories = list(scores.keys()) + ['unassigned']
         self.adata.obs[out_name] = pd.Categorical(labels, categories=categories, ordered=False)

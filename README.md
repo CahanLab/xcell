@@ -355,6 +355,43 @@ dermis) and click **Compute**:
   (`<name>_status`, per-module `<set>_high`).
 - The result is one categorical `.obs` column (default `tissue`) you can color by.
 
+Both paths have a **Section column** dropdown. If your dataset holds several
+distinct sections in one coordinate space (see *Define Sections* and *Working
+with multi-section data* below), pick the section column so each section is
+contoured independently — expression won't bleed across the gaps between
+sections. It auto-detects a `section` or `sample` column.
+
+### Define Sections
+
+When several tissue sections share one coordinate space, label them so spatial
+analyses can treat them independently. Open the **Analyze** modal → **Spatial** →
+**Define Sections** → **Open Define Sections…**. A small floating panel appears
+(it doesn't block the plot):
+
+1. Name the section column (default `section`) and click **Start defining** — the
+   view switches to the spatial embedding and the polygon tool is armed.
+2. Click points on the plot to enclose a section, type its name, and click **Add
+   region**. Repeat for each section.
+3. Click **Finish** — the new categorical `.obs` column is created and colored.
+
+Use that column as the **Section column** in Contour and Spatial Neighbors.
+
+### Working with multi-section data
+
+Euclidean distance *between* cells on different sections is not meaningful, so
+spatial analyses that treat the whole plane as one tissue can couple sections
+across the gaps. Two analyses are **section-aware** via a Section column:
+
+- **Contour** — interpolates and smooths per section (above).
+- **Spatial Neighbors** — set the **Section column** to build a per-section
+  (block-diagonal) graph, so neighborhoods never span a gap. This also fixes the
+  downstream steps that consume that graph (Spatial Autocorrelation, Smooth,
+  Combine Neighbors).
+
+Expression-based analyses (PCA, Neighbors, UMAP, Leiden, differential expression,
+gene clustering) use expression rather than geometry, so they are not affected by
+the gaps (batch effects across sections are a separate concern).
+
 ### Combining Spatial Sections
 
 To compare the same tissue across timepoints (or any cross-sample analysis), you can load 2+ spatial-transcriptomics h5ads into one dataset:

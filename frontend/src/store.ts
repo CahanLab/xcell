@@ -651,6 +651,7 @@ interface AppState {
   // Scanpy modal state
   isScanpyModalOpen: boolean
   isMultiContourModalOpen: boolean
+  isDefineSectionsOpen: boolean
   scanpyActionHistory: ScanpyActionRecord[]
 
   // Observable summaries refresh trigger
@@ -840,6 +841,7 @@ interface AppState {
   // Scanpy modal actions
   setScanpyModalOpen: (open: boolean) => void
   setMultiContourModalOpen: (open: boolean) => void
+  setDefineSectionsOpen: (open: boolean) => void
   setScanpyActionHistory: (history: ScanpyActionRecord[]) => void
   addScanpyAction: (action: ScanpyActionRecord) => void
 
@@ -1000,6 +1002,7 @@ export const useStore = create<AppState>((set, get) => {
     userConfig: {},
     isScanpyModalOpen: false,
     isMultiContourModalOpen: false,
+    isDefineSectionsOpen: false,
     scanpyActionHistory: [],
     obsSummariesVersion: 0,
     varIdentifierColumns: [],
@@ -2013,6 +2016,7 @@ export const useStore = create<AppState>((set, get) => {
     // Scanpy modal actions
     setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),  // global
     setMultiContourModalOpen: (open) => set({ isMultiContourModalOpen: open }),  // global
+    setDefineSectionsOpen: (open) => set({ isDefineSectionsOpen: open }),  // global
     setScanpyActionHistory: (history) => set(dsUpdate({ scanpyActionHistory: history })),  // per-dataset
     addScanpyAction: (action) =>
       set(dsUpdateFn((state) => ({

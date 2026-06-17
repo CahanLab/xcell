@@ -1062,6 +1062,9 @@ class ClusterGeneSetRequest(BaseModel):
     # set to a layer name, that layer is read directly without renormalization
     # — pass the output of run_smooth here to cluster on smoothed expression.
     layer: str | None = None
+    # When True, restrict the clustered genes to those visible under the active
+    # .var gene mask (no-op if no mask is active).
+    use_gene_mask: bool = False
 
 
 class MarkerGeneEntry(BaseModel):
@@ -2590,6 +2593,7 @@ def cluster_gene_set_route(req: ClusterGeneSetRequest, dataset: str | None = Que
             eps=req.eps,
             min_samples=req.min_samples,
             layer=req.layer,
+            use_gene_mask=req.use_gene_mask,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -19,6 +19,7 @@ export default function ClusterGeneSetModal() {
   const setSource = useStore((s) => s.setClusterModalSourceSet)
   const selectedCellIndices = useStore((s) => s.selectedCellIndices)
   const activeCellMask = useStore((s) => s.activeCellMask)
+  const geneMaskConfig = useStore((s) => s.geneMaskConfig)
   const addFolderToCategory = useStore((s) => s.addFolderToCategory)
   const { summaries } = useObsSummaries()
 
@@ -27,6 +28,7 @@ export default function ClusterGeneSetModal() {
   const [eps, setEps] = useState(0.3)
   const [minSamples, setMinSamples] = useState(3)
   const [cellContext, setCellContext] = useState<CellContext>('all')
+  const [useGeneMask, setUseGeneMask] = useState(false)
   const [layer, setLayer] = useState<string>('X')
   const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
   const [annotationColumn, setAnnotationColumn] = useState<string>('')
@@ -50,6 +52,7 @@ export default function ClusterGeneSetModal() {
     setEps(0.3)
     setMinSamples(3)
     setCellContext('all')
+    setUseGeneMask(false)
     setLayer('X')
     setAnnotationValues(new Set())
     setError(null)
@@ -148,6 +151,7 @@ export default function ClusterGeneSetModal() {
         ...(effectiveContext === 'selection' ? { cellIndices: effectiveIndices } : {}),
         ...(effectiveContext === 'annotation' ? { annotationColumn, annotationValues: Array.from(annotationValues) } : {}),
         ...(layer && layer !== 'X' ? { layer } : {}),
+        useGeneMask,
       }
       const { clusters } = await runClusterGeneSet(payload)
       const now = new Date()
@@ -201,9 +205,42 @@ export default function ClusterGeneSetModal() {
         <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '12px' }}>
           Cluster genes
         </div>
-        <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '16px' }}>
+        <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '12px' }}>
           Clustering: <span style={{ color: '#eee' }}>{source.name}</span> ({source.genes.length} genes)
         </div>
+
+        {(() => {
+          const maskActive = !!geneMaskConfig?.active
+          const visible = geneMaskConfig?.visibleGeneNames
+          const nPass = maskActive && visible
+            ? source.genes.filter((g) => visible.includes(g)).length
+            : source.genes.length
+          return (
+            <label
+              title={maskActive
+                ? 'Cluster only the genes in this set that are visible under the active gene mask'
+                : 'No gene mask is active — set one via the Gene Mask tool to enable this'}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px',
+                marginBottom: '16px', color: maskActive ? '#ddd' : '#666',
+                cursor: maskActive ? 'pointer' : 'default',
+              }}
+            >
+              <input
+                type="checkbox"
+                disabled={!maskActive}
+                checked={useGeneMask && maskActive}
+                onChange={(e) => setUseGeneMask(e.target.checked)}
+              />
+              Restrict to active gene mask
+              {maskActive && (
+                <span style={{ color: '#888' }}>
+                  ({nPass} of {source.genes.length} genes pass)
+                </span>
+              )}
+            </label>
+          )
+        })()}
 
         <div style={{ marginBottom: '12px' }}>
           <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>

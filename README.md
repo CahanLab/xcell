@@ -105,7 +105,7 @@ while you use XCell; press **Ctrl+C** in each one to stop the servers when done.
 
 ### 6. (Optional) Load your own data
 
-A bundled toy dataset (`toy_spatial.h5ad`) loads automatically if no data path is specified. To load your own data, set the `XCELL_DATA_PATH` environment variable when starting the backend:
+A bundled toy dataset (`toy_spatial.h5ad`) loads automatically if no data path is specified. A second bundled dataset, `toy_spatial_3sections.h5ad` (three separated sections of the same tissue, with an `obs['section']` label), is handy for testing spatial workflows — like (multi)contour — where distances between spots on different sections aren't meaningful; point `XCELL_DATA_PATH` at it to use it. To load your own data, set the `XCELL_DATA_PATH` environment variable when starting the backend:
 
 ```bash
 XCELL_DATA_PATH=/path/to/your/data.h5ad pixi run backend  # also supports .h5 and .rds
@@ -261,6 +261,10 @@ values in a `.obs` column). Clicking Run creates a new folder in
 `Gene Clusters` named after the source set, containing one gene set per
 cluster. Re-running with different K or a different cell context appends
 another folder so you can compare runs side by side.
+
+When a gene mask is active, a **Restrict to active gene mask** checkbox appears
+(showing how many of the set's genes pass the mask). Enable it to cluster only
+the genes visible under the current `.var` mask.
 
 ### Selecting cells by expression threshold
 

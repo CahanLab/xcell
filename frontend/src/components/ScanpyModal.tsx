@@ -396,17 +396,12 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'gene_subset', label: 'Gene Subset', type: 'gene_subset', default: 'highly_variable', description: 'Filter to specific genes using boolean columns from .var' },
         ],
       },
-      contourize: {
-        label: 'Contourize',
-        description: 'Assign cells to spatial expression contour levels based on selected genes. Select genes in the Gene Panel first.',
+      contour: {
+        label: 'Contour',
+        description: 'Contour spatial expression from one or more gene sets, with data-aware parameter suggestions. One set → a banded expression column; multiple sets → a fused tissue annotation (overlaps resolved via spatial + PCA neighbors). Opens the Contour tool.',
         prerequisites: ['has_spatial'],
-        params: [
-          { name: 'contour_levels', label: 'Contour levels', type: 'number', default: 6, description: 'Number of expression bands. Fewer = coarser zones; more = finer gradient. For tissue calling, 2–3 is usually enough.' },
-          { name: 'smooth_sigma', label: 'Smoothing sigma', type: 'number', default: 2.0, description: 'Gaussian smoothing in grid pixels. Higher = smoother, larger merged zones; too high blurs distinct regions together. Its real-world radius scales with grid resolution.' },
-          { name: 'grid_res', label: 'Grid resolution', type: 'number', default: 200, description: 'Interpolation grid size per axis. Higher = finer spatial detail but slower; should grow with cell count (≈√N is a good start).' },
-          { name: 'log_transform', label: 'Log transform', type: 'select', default: 'true', options: ['true', 'false'], description: 'log1p before contouring — recommended for raw counts; turn off for already-normalized data.' },
-          { name: 'annotation_key', label: 'Column name', type: 'text', default: null, description: 'Name for result column (auto-generated if empty)' },
-        ],
+        custom: true,
+        params: [],
       },
     },
   },
@@ -621,7 +616,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2107,6 +2102,13 @@ export default function ScanpyModal() {
             </button>
           ) : selectedFunction === 'pca_loadings' ? (
             null /* Create button rendered inline in the PCA Loadings custom block */
+          ) : selectedFunction === 'contour' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setMultiContourModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Contour tool…
+            </button>
           ) : (
             <button
               style={{

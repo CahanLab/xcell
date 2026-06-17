@@ -187,35 +187,49 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
   // keeps high-expression markers from being occluded by overlapping
   // low-expression cells.
   const data = useMemo(() => {
-    const base = figure.coordinates.map((coord, i) => ({
+    let arr = figure.coordinates.map((coord, i) => ({
       position: coord,
       adataIndex: figure.cellIndices[i],
     }))
     if ((colorData.kind === 'expression' || colorData.kind === 'metadata-numeric') && colorData.values) {
       const values = colorData.values
-      const arr = [...base]
-      arr.sort((a, b) => {
+      arr = [...arr].sort((a, b) => {
         const va = values[a.adataIndex] ?? -Infinity
         const vb = values[b.adataIndex] ?? -Infinity
         return (va as number) - (vb as number)
       })
-      return arr
-    }
-    if (colorData.kind === 'bivariate' && colorData.values1 && colorData.values2) {
+    } else if (colorData.kind === 'bivariate' && colorData.values1 && colorData.values2) {
       // Sort by sum of normalized scores — matches the main ScatterPlot's
       // bivariate stacking so high-expression cells stay on top.
       const v1 = colorData.values1
       const v2 = colorData.values2
-      const arr = [...base]
-      arr.sort((a, b) => {
+      arr = [...arr].sort((a, b) => {
         const sa = (v1[a.adataIndex] ?? 0) + (v2[a.adataIndex] ?? 0)
         const sb = (v1[b.adataIndex] ?? 0) + (v2[b.adataIndex] ?? 0)
         return sa - sb
       })
-      return arr
     }
-    return base
-  }, [figure.coordinates, figure.cellIndices, colorData])
+
+    // Highlight overlay: after any expression/bivariate stacking, stable-sort
+    // ascending by max highlight weight so highlighted cells end up LAST (= on
+    // top in deck.gl draw order). Without this, an overlapping non-highlighted
+    // low/zero-expression cell can be drawn over a highlighted cell and obscure
+    // its color. Mirrors the main ScatterPlot's highlight stacking. The sort is
+    // stable, so high-expression-on-top is preserved among equal-weight cells.
+    if (panel.showHighlightOverlay && highlightLayers.length > 0) {
+      const weighters = highlightLayers.map(layerWeightFn)
+      const weightAt = (i: number): number => {
+        let m = 0
+        for (let k = 0; k < weighters.length; k++) {
+          const w = weighters[k](i)
+          if (w > m) m = w
+        }
+        return m
+      }
+      arr = [...arr].sort((a, b) => weightAt(a.adataIndex) - weightAt(b.adataIndex))
+    }
+    return arr
+  }, [figure.coordinates, figure.cellIndices, colorData, panel.showHighlightOverlay, highlightLayers])
 
   // Color function — closed over the panel's settings + fetched data.
   // When `showHighlightOverlay` is on, the dataset's `highlightLayers`

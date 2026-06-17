@@ -5199,6 +5199,7 @@ class DataAdaptor:
         eps: float = 0.3,
         min_samples: int = 3,
         layer: str | None = None,
+        use_gene_mask: bool = False,
     ) -> list[list[str]]:
         """Cluster a set of genes by expression pattern across cells.
 
@@ -5247,12 +5248,22 @@ class DataAdaptor:
                 )
 
         var_names = self.adata.var_names
+        # When requested, restrict to genes visible under the active .var gene
+        # mask (no-op if no mask is active).
+        active_mask = (
+            self._visible_gene_mask
+            if (use_gene_mask and self._visible_gene_mask is not None)
+            else None
+        )
         found_genes: list[str] = []
         gene_idx: list[int] = []
         for name in gene_names:
             if name in var_names:
+                loc = int(var_names.get_loc(name))
+                if active_mask is not None and not active_mask[loc]:
+                    continue
                 found_genes.append(name)
-                gene_idx.append(int(var_names.get_loc(name)))
+                gene_idx.append(loc)
         # Hierarchical / kmeans need at least k genes; DBSCAN needs at least
         # min_samples genes to seed any cluster.
         min_required = k if method != 'dbscan' else min_samples

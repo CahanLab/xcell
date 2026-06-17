@@ -1794,6 +1794,8 @@ export async function runClusterGeneSet(
     minSamples?: number
     /** Source matrix to read expression from. Undefined / 'X' → adata.X. */
     layer?: string
+    /** Restrict clustered genes to those visible under the active .var mask. */
+    useGeneMask?: boolean
   },
   slot?: DatasetSlot,
 ): Promise<{ clusters: string[][] }> {
@@ -1811,6 +1813,7 @@ export async function runClusterGeneSet(
       eps: params.eps,
       min_samples: params.minSamples,
       layer: params.layer,
+      use_gene_mask: params.useGeneMask ?? false,
     }),
   })
   if (!response.ok) {

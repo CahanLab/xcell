@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **Cluster Gene Set — honor the active gene mask.** The "Cluster genes" dialog (Genes → gene set → ⋯ → Cluster genes…) gains a **Restrict to active gene mask** checkbox (enabled only when a `.var` gene mask is active, and showing how many of the set's genes pass). When on, only mask-visible genes are clustered. Backend: `cluster_gene_set(..., use_gene_mask=True)` + `use_gene_mask` on the `/cluster_gene_set` route.
+- **Second bundled toy dataset: `toy_spatial_3sections.h5ad`.** Three separated sections of the same limb-bud-like tissue (900 cells × 76 genes, reusing the `toy_spatial` gene panel) with an `obs['section']` label, laid out left-to-right with gaps. For testing (multi)contour and spatial analyses where cross-section spot distances are not meaningful. Deterministic generator at `backend/xcell/data/generate_toy_3sections.py`.
+
 ### Changed
 - **Unified Contour tool under Analyze → Spatial.** Single contourize and multi-contour are now one interface (**Spatial → Contour → Open Contour tool…**); the standalone "Multi-contour" toolbar button is gone. Pick sources from a gene-set picker popup (any saved gene set, or the current Gene Panel selection): **one** source produces a banded expression column, **two or more** produce a fused tissue annotation. Grid resolution and smoothing sigma are prefilled with data-aware suggestions (new `GET /scanpy/contour_suggest`) for both paths, and `log_transform` now defaults to **off**.
 - **Analyze modal renamed.** Title `Scanpy Analysis` → **Analyze**; category tabs `Preprocessing` → **Preprocess**, `Cell Analysis` → **Cells**, `Gene Analysis` → **Genes**, `Spatial Analysis` → **Spatial**.

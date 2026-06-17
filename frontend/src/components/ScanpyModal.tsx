@@ -170,7 +170,7 @@ interface CategoryDef {
 // Scanpy function definitions organized by category
 const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
   preprocessing: {
-    label: 'Preprocessing',
+    label: 'Preprocess',
     functions: {
       exclude_genes: {
         label: 'Exclude Genes',
@@ -244,7 +244,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
     },
   },
   cell_analysis: {
-    label: 'Cell Analysis',
+    label: 'Cells',
     functions: {
       pca: {
         label: 'PCA',
@@ -310,7 +310,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
     },
   },
   gene_analysis: {
-    label: 'Gene Analysis',
+    label: 'Genes',
     functions: {
       build_gene_graph: {
         label: 'Build Gene Graph',
@@ -372,7 +372,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
     },
   },
   spatial_analysis: {
-    label: 'Spatial Analysis',
+    label: 'Spatial',
     functions: {
       spatial_neighbors: {
         label: 'Spatial Neighbors',
@@ -1298,7 +1298,7 @@ export default function ScanpyModal() {
     <div style={styles.overlay} onClick={() => setScanpyModalOpen(false)}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
-          <div style={styles.title}>Scanpy Analysis</div>
+          <div style={styles.title}>Analyze</div>
           <button style={styles.closeButton} onClick={() => setScanpyModalOpen(false)}>
             &times;
           </button>

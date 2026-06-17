@@ -325,24 +325,22 @@ Typical workflow for "find DEGs by expression state in a region": lasso a region
 
 ### 12. Spatial Contouring
 
-- Select genes in the **Gene Panel** (click individual genes or use a gene set)
-- Open the **Scanpy** modal, go to **Spatial Analysis** > **Contourize**
-- Adjust smoothing sigma, contour levels, and grid resolution as needed
-- Click **Run** — a new categorical column appears in the Cell Panel
-- Color cells by the contour column to visualize spatial expression zones
+Open the **Analyze** modal → **Spatial** → **Contour** → **Open Contour tool…**.
+The Contour tool handles both single- and multi-gene-set contouring; grid
+resolution and smoothing sigma are prefilled with data-aware suggestions (you can
+override), and each parameter has a tooltip explaining the effect of raising or
+lowering it. Click **Choose gene sets…** to pick sources — any saved gene set, or
+the current Gene Panel selection.
 
-Each contour parameter has a tooltip explaining what raising or lowering it does
-(smoothing vs. detail, band count, etc.), so it's easier to dial in good values.
+**One gene set → a banded expression column.** Pick a single source, optionally
+name the output column, and click **Run contour**. A new ordered-categorical
+column appears in the Cell Panel; color cells by it to see spatial expression
+zones.
 
-### Multi-contour tissue annotation
+**Two or more gene sets → a fused tissue annotation** (requires `X_pca` — run PCA
+first). Pick several modules (e.g. cartilage, muscle, tendon, interzone, skin,
+dermis) and click **Compute**:
 
-Annotate a whole section by fusing several gene-set contours into one tissue
-column. Click **Multi-contour** in the toolbar (requires `X_pca` — run PCA first):
-
-- **Select gene sets** — pick ≥2 modules (e.g. cartilage, muscle, tendon,
-  interzone, skin, dermis). Set the contour level count (2–3 works well); grid
-  resolution and smoothing default to data-aware suggestions if left blank.
-- **Compute** — each module is contourized independently.
 - **Review & bin** — for each module, a histogram shows how spots spread across
   bands; choose the cutoff at/above which a spot counts as "high" (auto-default
   is the top band).

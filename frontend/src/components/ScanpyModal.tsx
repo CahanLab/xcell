@@ -147,7 +147,7 @@ function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData
 interface ParamDef {
   name: string
   label: string
-  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select' | 'layer_select' | 'graph_select'
+  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select' | 'layer_select' | 'graph_select' | 'obs_column_select'
   default: string | number | null
   description: string
   options?: string[]
@@ -382,6 +382,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'n_neighs', label: 'Neighbors', type: 'number', default: 6, description: 'Number of spatial neighbors' },
           { name: 'coord_type', label: 'Coord Type', type: 'select', default: '', options: ['', 'grid', 'generic'], description: 'Coordinate type (empty = auto-detect)' },
           { name: 'delaunay', label: 'Delaunay', type: 'select', default: 'false', options: ['true', 'false'], description: 'Use Delaunay triangulation' },
+          { name: 'section_col', label: 'Section column', type: 'obs_column_select', default: '', description: 'Optional categorical .obs column of section labels. When set, the graph is built per section (block-diagonal) so neighborhoods never span the gap between sections. Use Define Sections to create one.' },
         ],
       },
       spatial_autocorr: {
@@ -670,6 +671,7 @@ export default function ScanpyModal() {
   type LayerInfo = { name: string; nnz: number; density: number; is_default?: boolean }
   const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
   const [availableGraphs, setAvailableGraphs] = useState<NeighborGraphInfo[]>([])
+  const [availableObsColumns, setAvailableObsColumns] = useState<string[]>([])
   const activeSlot = useStore((s) => s.activeSlot)
   const pcaSubsetsFromStore: PCASubsetSummary[] =
     useStore((s) => s.datasets[s.activeSlot]?.pcaSubsets || [])
@@ -733,6 +735,21 @@ export default function ScanpyModal() {
       fetchPcaSubsets().catch(() => { /* ignore; dropdown falls back to X_pca */ })
     }
   }, [selectedFunction, activeSlot])
+
+  // Load categorical obs columns for any function exposing an obs_column_select.
+  useEffect(() => {
+    const needsObsColumns = (functionDef?.params || []).some((p) => p.type === 'obs_column_select')
+    if (!needsObsColumns) return
+    fetch(appendDataset(`${API_BASE}/obs/summaries`))
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+      .then((data) => {
+        const cols = (data.summaries || data || [])
+          .filter((s: { dtype?: string }) => s.dtype === 'category')
+          .map((s: { name: string }) => s.name)
+        setAvailableObsColumns(cols)
+      })
+      .catch(() => setAvailableObsColumns([]))
+  }, [selectedFunction, functionDef, activeSlot, scanpyActionHistory])
 
   // Load layer + graph lists when any function that consumes them is selected.
   useEffect(() => {
@@ -1007,6 +1024,14 @@ export default function ScanpyModal() {
           requestParams[key] = false
         } else {
           requestParams[key] = value
+        }
+      }
+
+      // obs_column_select params: empty string means "none" — omit so the
+      // backend uses its default (null) rather than looking up a '' column.
+      for (const p of functionDef.params) {
+        if (p.type === 'obs_column_select' && !requestParams[p.name]) {
+          delete requestParams[p.name]
         }
       }
 
@@ -2006,6 +2031,17 @@ export default function ScanpyModal() {
                               ))}
                             </>
                           )}
+                        </select>
+                      ) : param.type === 'obs_column_select' ? (
+                        <select
+                          style={styles.paramInput}
+                          value={paramValues[param.name] ?? ''}
+                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                        >
+                          <option value="">— treat as one tissue —</option>
+                          {availableObsColumns.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
                         </select>
                       ) : param.type === 'select' ? (
                         <select

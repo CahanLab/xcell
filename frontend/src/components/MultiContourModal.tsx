@@ -105,6 +105,29 @@ export default function MultiContourModal() {
   const [saveQc, setSaveQc] = useState(false)
   const [doneResult, setDoneResult] = useState<DoneResult | null>(null)
 
+  const [obsColumns, setObsColumns] = useState<string[]>([])
+  const [sectionCol, setSectionCol] = useState<string>('')
+
+  // Load categorical obs columns; auto-detect a section column.
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    fetch(appendDataset(`${API_BASE}/obs/summaries`))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return
+        const cols: string[] = (d.summaries || d || [])
+          .filter((s: { dtype?: string }) => s.dtype === 'category')
+          .map((s: { name: string }) => s.name)
+        setObsColumns(cols)
+        const detected = cols.find((c) => c.toLowerCase() === 'section')
+          || cols.find((c) => c.toLowerCase() === 'sample')
+        if (detected) setSectionCol((prev) => (prev ? prev : detected))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [isOpen])
+
   // Prefill data-aware suggestions when the modal opens.
   useEffect(() => {
     if (!isOpen) return
@@ -138,6 +161,7 @@ export default function MultiContourModal() {
     const body: Record<string, unknown> = { contour_levels: contourLevels, log_transform: logTransform }
     if (gridRes.trim()) body.grid_res = parseInt(gridRes, 10)
     if (smoothSigma.trim()) body.smooth_sigma = parseFloat(smoothSigma)
+    if (sectionCol) body.section_col = sectionCol
     return body
   }
 
@@ -273,6 +297,12 @@ export default function MultiContourModal() {
               </Param>
               <Param label="Log transform" tip="log1p before contouring. Off by default; turn on for raw counts.">
                 <input type="checkbox" checked={logTransform} onChange={(e) => setLogTransform(e.target.checked)} />
+              </Param>
+              <Param label="Section column" tip="Optional categorical .obs column of section labels. When set, each section is contoured independently so expression never bleeds across the gap between sections. Use Define Sections to create one.">
+                <select value={sectionCol} onChange={(e) => setSectionCol(e.target.value)} style={styles.input}>
+                  <option value="">— treat as one tissue —</option>
+                  {obsColumns.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
               </Param>
               {nSources === 1 && (
                 <Param label="Column name" tip="Name for the resulting banded .obs column (blank = auto).">

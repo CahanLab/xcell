@@ -119,6 +119,24 @@ def combine_spatial_h5ads(
     return combined
 
 
+def _drop_cross_section_edges(adata, sections):
+    """Zero out edges between cells in different sections in the spatial graph.
+
+    Makes ``obsp['spatial_connectivities']`` / ``['spatial_distances']``
+    block-diagonal so no neighborhood spans the gap between sections.
+    """
+    from scipy.sparse import csr_matrix
+
+    sections = np.asarray(sections)
+    for key in ('spatial_connectivities', 'spatial_distances'):
+        if key not in adata.obsp:
+            continue
+        m = adata.obsp[key].tocoo()
+        keep = sections[m.row] == sections[m.col]
+        adata.obsp[key] = csr_matrix(
+            (m.data[keep], (m.row[keep], m.col[keep])), shape=m.shape)
+
+
 def _interp_smooth_subset(coords, summary, grid_res, smooth_sigma):
     """Grid-interpolate + Gaussian-smooth ``summary`` over ``coords`` and sample
     back at each point. Returns (cell_vals, grid_vmax).
@@ -5455,6 +5473,7 @@ class DataAdaptor:
         delaunay: bool = False,
         n_rings: int = 1,
         radius: float | None = None,
+        section_col: str | None = None,
     ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
         """Prepare spatial neighborhood graph computation (cancellable).
 
@@ -5494,6 +5513,7 @@ class DataAdaptor:
         snap_delaunay = delaunay
         snap_n_rings = n_rings
         snap_radius = radius
+        snap_sections = self._resolve_sections(section_col)
 
         def compute_fn() -> dict[str, Any]:
             import squidpy as sq
@@ -5507,6 +5527,10 @@ class DataAdaptor:
                 n_rings=snap_n_rings,
                 radius=snap_radius,
             )
+
+            # Optionally make the graph block-diagonal across sections.
+            if snap_sections is not None:
+                _drop_cross_section_edges(adata_copy, snap_sections)
 
             return {
                 'spatial_connectivities': adata_copy.obsp['spatial_connectivities'],
@@ -5550,6 +5574,7 @@ class DataAdaptor:
         delaunay: bool = False,
         n_rings: int = 1,
         radius: float | None = None,
+        section_col: str | None = None,
     ) -> dict[str, Any]:
         """Compute spatial neighborhood graph using Squidpy.
 
@@ -5590,6 +5615,11 @@ class DataAdaptor:
             n_rings=n_rings,
             radius=radius,
         )
+
+        # Optionally make the graph block-diagonal across sections.
+        sections = self._resolve_sections(section_col)
+        if sections is not None:
+            _drop_cross_section_edges(self.adata, sections)
 
         # Get graph stats
         n_edges = self.adata.obsp['spatial_connectivities'].nnz

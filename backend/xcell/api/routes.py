@@ -2288,6 +2288,7 @@ class SpatialNeighborsRequest(BaseModel):
     delaunay: bool = False
     n_rings: int = 1
     radius: float | None = None
+    section_col: str | None = None
 
 
 class SpatialAutocorrRequest(BaseModel):
@@ -2361,6 +2362,7 @@ def run_spatial_neighbors(request: SpatialNeighborsRequest, dataset: str | None 
             delaunay=request.delaunay,
             n_rings=request.n_rings,
             radius=request.radius,
+            section_col=request.section_col,
         )
         task_id = task_manager.submit(compute_fn, apply_fn)
         return {"task_id": task_id, "status": "running"}

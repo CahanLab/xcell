@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Multi-section awareness for spatial analyses.** Datasets that hold several distinct tissue sections in one coordinate space (e.g. via Combine Spatial Sections, or the `toy_spatial_3sections.h5ad` dataset) can now tell spatial analyses to respect section boundaries via an optional **Section column** (`section_col`), auto-detected from a `section` or `sample` `.obs` column.
+  - **Contour / Multi-contour** interpolate and smooth *per section* (normalization and band thresholds stay global), so expression never bleeds across the gap between sections; multi-contour conflict resolution only votes with same-section neighbors. Section column dropdown added to the Contour tool.
+  - **Spatial Neighbors** can build a per-section block-diagonal graph (`section_col`), dropping cross-section edges — which also corrects the downstream Spatial Autocorrelation, Smooth, and Combine Neighbors steps that consume the graph. Exposed via a new `obs_column_select` parameter type in the Analyze modal.
+- **Define Sections (Analyze → Spatial).** A floating, non-blocking panel to semi-manually define sections: name a new categorical `.obs` column, then polygon-select each section on the spatial plot and name it; the cells are labeled via the annotation API. The resulting column feeds the Section column controls above.
+
+### Added
 - **Cluster Gene Set — honor the active gene mask.** The "Cluster genes" dialog (Genes → gene set → ⋯ → Cluster genes…) gains a **Restrict to active gene mask** checkbox (enabled only when a `.var` gene mask is active, and showing how many of the set's genes pass). When on, only mask-visible genes are clustered. Backend: `cluster_gene_set(..., use_gene_mask=True)` + `use_gene_mask` on the `/cluster_gene_set` route.
 - **Second bundled toy dataset: `toy_spatial_3sections.h5ad`.** Three separated sections of the same limb-bud-like tissue (900 cells × 76 genes, reusing the `toy_spatial` gene panel) with an `obs['section']` label, laid out left-to-right with gaps. For testing (multi)contour and spatial analyses where cross-section spot distances are not meaningful. Deterministic generator at `backend/xcell/data/generate_toy_3sections.py`.
 

@@ -60,10 +60,12 @@ interface PrepareResult {
   token: string
   modules: ModuleReview[]
   params: Record<string, unknown>
+  missing_genes?: Record<string, string[]>  // per-module genes dropped (not in dataset)
 }
 
 interface DoneResult {
   annotation_key: string
+  missing_genes?: string[]  // single-contour genes dropped (not in dataset)
   // multi
   categories?: string[]
   counts?: Record<string, number>
@@ -333,6 +335,14 @@ export default function MultiContourModal() {
               Spots high in exactly one module get that tissue; multi-high spots are resolved by
               spatial + PCA-profile neighbors; the rest stay <code>unassigned</code>.
             </div>
+            {prep.missing_genes && Object.keys(prep.missing_genes).length > 0 && (
+              <div style={styles.warn}>
+                Some genes weren't found in this dataset and were skipped:
+                {Object.entries(prep.missing_genes).map(([name, genes]) => (
+                  <div key={name}><strong>{name}</strong>: {genes.join(', ')}</div>
+                ))}
+              </div>
+            )}
             {prep.modules.map((m) => (
               <div key={m.name} style={styles.moduleRow}>
                 <div style={styles.moduleHead}>
@@ -385,6 +395,11 @@ export default function MultiContourModal() {
                 ? ` (${doneResult.n_resolved ?? 0} conflicts resolved).`
                 : ` — banded column, ${doneResult.contour_levels} levels from ${doneResult.n_genes} gene${doneResult.n_genes === 1 ? '' : 's'}.`}
             </div>
+            {doneResult.missing_genes && doneResult.missing_genes.length > 0 && (
+              <div style={styles.warn}>
+                Skipped genes not found in this dataset: {doneResult.missing_genes.join(', ')}
+              </div>
+            )}
             {doneResult.categories && (
               <div style={styles.setList}>
                 {doneResult.categories.map((c) => (
@@ -473,6 +488,7 @@ const styles: Record<string, React.CSSProperties> = {
   close: { background: 'none', border: 'none', color: '#aaa', fontSize: 22, cursor: 'pointer', lineHeight: 1 },
   error: { backgroundColor: 'rgba(233,69,96,0.15)', color: '#ff7a90', padding: '8px 10px', borderRadius: 4, marginBottom: 12, fontSize: 13 },
   note: { fontSize: 12.5, color: '#bbb', backgroundColor: 'rgba(78,205,196,0.08)', padding: 10, borderRadius: 4, borderLeft: '3px solid #4ecdc4', marginBottom: 14, lineHeight: 1.5 },
+  warn: { fontSize: 12, color: '#ffcf6a', backgroundColor: 'rgba(255,207,106,0.10)', padding: 10, borderRadius: 4, borderLeft: '3px solid #ffcf6a', marginBottom: 14, lineHeight: 1.5 },
   chips: { display: 'flex', flexWrap: 'wrap', gap: 6, margin: '10px 0 14px' },
   chip: { display: 'inline-flex', alignItems: 'center', gap: 4, backgroundColor: '#0f3460', borderRadius: 12, padding: '3px 8px', fontSize: 12 },
   chipX: { background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 },

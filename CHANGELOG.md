@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Changed
+- **Contour tolerates genes missing from the dataset.** Previously, contouring a gene set that contained genes absent from the active dataset (common with imported sets) failed with an error. Now the contour paths drop the missing genes, run on the genes that are present, and report the dropped ones — shown as an amber warning in the Contour tool (per module in the multi-contour review step; in the done view for single contour). It still errors only if a gene set has *no* present genes. Backend `run/prepare_contourize` and `prepare_multicontour` return `missing_genes`.
 - **Bivariate coloring accepts single genes, not just gene sets.** Each bivariate axis now has a **Gene set | Gene** toggle: "Gene" reveals a gene-search autocomplete, "Gene set" keeps the existing dropdown. So you can color spots by e.g. `Sox9 × Scx`, by `cartilage × tendon`, or a mix (`Sox9 × tendon`). Available in both the Embedding view (Gene Panel → Bivariate Coloring) and the Figure builder's per-panel bivariate config (new optional `bivariateGene1/2` panel fields, backward compatible). The backend already accepted arbitrary gene lists per axis, so no API change.
 
 ### Fixed

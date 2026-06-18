@@ -121,6 +121,45 @@ def test_prepare_multicontour_section_col_in_params():
     assert "tissue" in a.adata.obs
 
 
+def test_run_contourize_drops_missing_genes_and_reports():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    res = a.run_contourize(["a0", "ghost"], contour_levels=2, log_transform=False,
+                           grid_res=20, annotation_key="c")
+    assert res["missing_genes"] == ["ghost"]
+    assert res["genes"] == ["a0"]  # proceeded with present genes
+    assert "c" in a.adata.obs
+
+
+def test_run_contourize_all_missing_raises():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    try:
+        a.run_contourize(["ghost1", "ghost2"], contour_levels=2, grid_res=20)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "present" in str(e).lower()
+
+
+def test_prepare_multicontour_reports_and_filters_missing():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    prep = a.prepare_multicontour(
+        {"A": ["a0", "ghost"], "B": ["b0", "b1"]}, contour_levels=2, grid_res=20)
+    assert prep["missing_genes"] == {"A": ["ghost"]}
+    assert prep["params"]["gene_sets"]["A"] == ["a0"]  # filtered to present
+    cut = {m["name"]: m["auto_cutoff"] for m in prep["modules"]}
+    res = a.finalize_multicontour(token=prep["token"], cutoffs=cut, out_name="t",
+                                  params=prep["params"])
+    assert res["annotation_key"] == "t"
+
+
+def test_prepare_multicontour_set_all_missing_raises():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    try:
+        a.prepare_multicontour({"A": ["ghost"], "B": ["b0", "b1"]}, contour_levels=2)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "A" in str(e)
+
+
 def test_suggest_contour_params():
     a = DataAdaptor("x.h5ad", adata=_adata())
     s = a.suggest_contour_params()

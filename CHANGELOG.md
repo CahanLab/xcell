@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- **Figure builder: highlighted cells no longer obscured by overlapping low-expression cells.** When a figure panel colored cells by expression (or a numeric/bivariate source) *and* the highlight overlay was on, an overlapping non-highlighted zero/low-expression cell could be drawn over a highlighted cell and hide its color — visible when zoomed out (e.g. purple min-expression spots covering brown cartilage-highlighted spots). `FigurePanel` ordered cells by expression value only; it now applies a second stable sort by max highlight weight (matching the main Embedding view), so highlighted cells render on top. Applies to the PNG export too.
+
 ### Added
 - **Multi-section awareness for spatial analyses.** Datasets that hold several distinct tissue sections in one coordinate space (e.g. via Combine Spatial Sections, or the `toy_spatial_3sections.h5ad` dataset) can now tell spatial analyses to respect section boundaries via an optional **Section column** (`section_col`), auto-detected from a `section` or `sample` `.obs` column.
   - **Contour / Multi-contour** interpolate and smooth *per section* (normalization and band thresholds stay global), so expression never bleeds across the gap between sections; multi-contour conflict resolution only votes with same-section neighbors. Section column dropdown added to the Contour tool.

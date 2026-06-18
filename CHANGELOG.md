@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **Bivariate coloring accepts single genes, not just gene sets.** Each bivariate axis now has a **Gene set | Gene** toggle: "Gene" reveals a gene-search autocomplete, "Gene set" keeps the existing dropdown. So you can color spots by e.g. `Sox9 × Scx`, by `cartilage × tendon`, or a mix (`Sox9 × tendon`). Available in both the Embedding view (Gene Panel → Bivariate Coloring) and the Figure builder's per-panel bivariate config (new optional `bivariateGene1/2` panel fields, backward compatible). The backend already accepted arbitrary gene lists per axis, so no API change.
+
 ### Fixed
 - **Figure builder: highlighted cells no longer obscured by overlapping low-expression cells.** When a figure panel colored cells by expression (or a numeric/bivariate source) *and* the highlight overlay was on, an overlapping non-highlighted zero/low-expression cell could be drawn over a highlighted cell and hide its color — visible when zoomed out (e.g. purple min-expression spots covering brown cartilage-highlighted spots). `FigurePanel` ordered cells by expression value only; it now applies a second stable sort by max highlight weight (matching the main Embedding view), so highlighted cells render on top. Applies to the PNG export too.
 

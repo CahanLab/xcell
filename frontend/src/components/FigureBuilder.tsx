@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { useStore, FigurePanel as PanelType, FigureColorMode, ColorScale } from '../store'
 import { useObsSummaries } from '../hooks/useData'
 import { flattenGeneSets } from './GenePanel'
+import BivariateAxisPicker from './BivariateAxisPicker'
 import FigurePanel from './FigurePanel'
 import { exportFigureAsPng } from '../utils/exportFigure'
 
@@ -258,6 +259,13 @@ function PanelControls({
 }) {
   const [customGene, setCustomGene] = useState<string>('')
 
+  // Figure-builder bivariate axes are keyed by gene-set NAME (see lookupGeneSet
+  // in FigurePanel); present the picker with name-as-id so its value matches.
+  const bivAxisSets = useMemo(
+    () => allGeneSets.map((gs) => ({ id: gs.name, name: gs.name, genes: gs.genes })),
+    [allGeneSets],
+  )
+
   const handleColorModeChange = (mode: FigureColorMode) => {
     // Reset source fields when switching modes
     onUpdate({
@@ -267,6 +275,8 @@ function PanelControls({
       selectedColorColumn: null,
       bivariateSet1: null,
       bivariateSet2: null,
+      bivariateGene1: null,
+      bivariateGene2: null,
     })
     setCustomGene('')
   }
@@ -290,7 +300,7 @@ function PanelControls({
         <select value={panel.colorMode} onChange={(e) => handleColorModeChange(e.target.value as FigureColorMode)} style={inputStyle}>
           <option value="none">none</option>
           <option value="expression">gene / gene set</option>
-          <option value="bivariate">bivariate (2 gene sets)</option>
+          <option value="bivariate">bivariate (genes / sets)</option>
           <option value="metadata">metadata</option>
         </select>
       </ControlRow>
@@ -358,29 +368,31 @@ function PanelControls({
 
       {panel.colorMode === 'bivariate' && (
         <>
-          <ControlRow label="Set 1 (red)">
-            <select
-              value={panel.bivariateSet1 ?? ''}
-              onChange={(e) => onUpdate({ bivariateSet1: e.target.value || null })}
-              style={inputStyle}
-            >
-              <option value="">— pick set —</option>
-              {allGeneSets.map((gs) => (
-                <option key={gs.id} value={gs.name}>{gs.name} ({gs.genes.length})</option>
-              ))}
-            </select>
+          <ControlRow label="Axis 1 (red)">
+            <BivariateAxisPicker
+              kind={panel.bivariateGene1 ? 'gene' : 'set'}
+              value={panel.bivariateGene1 ?? panel.bivariateSet1 ?? null}
+              geneSets={bivAxisSets}
+              excludeSetId={panel.bivariateSet2 ?? null}
+              onChange={(kind, value) => onUpdate(
+                kind === 'gene'
+                  ? { bivariateGene1: value, bivariateSet1: null }
+                  : { bivariateSet1: value, bivariateGene1: null }
+              )}
+            />
           </ControlRow>
-          <ControlRow label="Set 2 (blue)">
-            <select
-              value={panel.bivariateSet2 ?? ''}
-              onChange={(e) => onUpdate({ bivariateSet2: e.target.value || null })}
-              style={inputStyle}
-            >
-              <option value="">— pick set —</option>
-              {allGeneSets.map((gs) => (
-                <option key={gs.id} value={gs.name}>{gs.name} ({gs.genes.length})</option>
-              ))}
-            </select>
+          <ControlRow label="Axis 2 (blue)">
+            <BivariateAxisPicker
+              kind={panel.bivariateGene2 ? 'gene' : 'set'}
+              value={panel.bivariateGene2 ?? panel.bivariateSet2 ?? null}
+              geneSets={bivAxisSets}
+              excludeSetId={panel.bivariateSet1 ?? null}
+              onChange={(kind, value) => onUpdate(
+                kind === 'gene'
+                  ? { bivariateGene2: value, bivariateSet2: null }
+                  : { bivariateSet2: value, bivariateGene2: null }
+              )}
+            />
           </ControlRow>
           <ControlRow label="Colormap">
             <select

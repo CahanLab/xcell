@@ -314,6 +314,8 @@ export interface FigurePanel {
   selectedColorColumn: string | null     // obs column name for metadata coloring
   bivariateSet1: string | null           // gene-set name for bivariate red axis
   bivariateSet2: string | null           // gene-set name for bivariate blue axis
+  bivariateGene1?: string | null         // single gene for red axis (overrides bivariateSet1 when set)
+  bivariateGene2?: string | null         // single gene for blue axis (overrides bivariateSet2 when set)
   colorScale: ColorScale
   bivariateColormap: BivariateColormap
   expressionTransform: ExpressionTransform

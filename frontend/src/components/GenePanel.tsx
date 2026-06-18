@@ -3,6 +3,7 @@ import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType 
 import { useGeneSearch, useGeneBrowse, useDataActions, useObsSummaries, appendDataset, fetchVarIdentifierColumns, swapVarIndex } from '../hooks/useData'
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
 import HighlightOverlayPanel from './HighlightOverlayPanel'
+import BivariateAxisPicker, { AxisKind, resolveBivariateAxis } from './BivariateAxisPicker'
 import ImportModal from './ImportModal'
 import { MESSAGES } from '../messages'
 
@@ -1678,8 +1679,9 @@ export default function GenePanel() {
   const [newFolderName, setNewFolderName] = useState('')
   const [showNewFolderInput, setShowNewFolderInput] = useState(false)
   const [selectedSearchGenes, setSelectedSearchGenes] = useState<Set<string>>(new Set())
-  const [bivariateSet1, setBivariateSet1] = useState<string | null>(null)
-  const [bivariateSet2, setBivariateSet2] = useState<string | null>(null)
+  // Bivariate axes: each can be a saved gene set or a single gene.
+  const [bivAxis1, setBivAxis1] = useState<{ kind: AxisKind; value: string | null }>({ kind: 'set', value: null })
+  const [bivAxis2, setBivAxis2] = useState<{ kind: AxisKind; value: string | null }>({ kind: 'set', value: null })
 
   // Find Similar Genes state
   const [hasGeneNeighbors, setHasGeneNeighbors] = useState(false)
@@ -1903,7 +1905,9 @@ export default function GenePanel() {
       {colorMode === 'bivariate' && bivariateData && (
         <div style={styles.selectedGenesBar}>
           <span style={styles.selectedGenesText}>
-            Bivariate: {bivariateData.genes1.length} × {bivariateData.genes2.length} genes
+            Bivariate: {bivariateData.genes1.length === 1 ? bivariateData.genes1[0] : `${bivariateData.genes1.length} genes`}
+            {' × '}
+            {bivariateData.genes2.length === 1 ? bivariateData.genes2[0] : `${bivariateData.genes2.length} genes`}
           </span>
           <button style={styles.clearButton} onClick={clearBivariateColor}>
             Clear
@@ -2059,7 +2063,11 @@ export default function GenePanel() {
         )}
 
         {/* Bivariate Mode Section */}
-        {allGeneSets.filter(gs => gs.genes.length > 0).length >= 2 && (
+        {(() => {
+          const r1 = resolveBivariateAxis(bivAxis1.kind, bivAxis1.value, allGeneSets)
+          const r2 = resolveBivariateAxis(bivAxis2.kind, bivAxis2.value, allGeneSets)
+          const ready = r1.genes.length > 0 && r2.genes.length > 0
+          return (
           <div style={styles.section}>
             <div style={styles.sectionHeader}>
               <span style={styles.sectionTitle}>Bivariate Coloring</span>
@@ -2071,85 +2079,52 @@ export default function GenePanel() {
             }}>
               <div style={{ marginBottom: '8px' }}>
                 <label style={{ fontSize: '11px', color: '#888', display: 'block', marginBottom: '4px' }}>
-                  Set 1 <span style={{ color: '#e31a1c' }}>(→ Red)</span>
+                  Axis 1 <span style={{ color: '#e31a1c' }}>(→ Red)</span>
                 </label>
-                <select
-                  value={bivariateSet1 || ''}
-                  onChange={(e) => setBivariateSet1(e.target.value || null)}
-                  style={{
-                    width: '100%',
-                    padding: '6px 8px',
-                    fontSize: '12px',
-                    backgroundColor: '#1a1a2e',
-                    color: '#eee',
-                    border: '1px solid #0f3460',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <option value="">Select gene set...</option>
-                  {allGeneSets.filter(gs => gs.genes.length > 0 && gs.id !== bivariateSet2).map((gs) => (
-                    <option key={gs.id} value={gs.id}>
-                      {gs.name} ({gs.genes.length} genes)
-                    </option>
-                  ))}
-                </select>
+                <BivariateAxisPicker
+                  kind={bivAxis1.kind}
+                  value={bivAxis1.value}
+                  geneSets={allGeneSets}
+                  excludeSetId={bivAxis2.kind === 'set' ? bivAxis2.value : null}
+                  onChange={(kind, value) => setBivAxis1({ kind, value })}
+                />
               </div>
               <div style={{ marginBottom: '12px' }}>
                 <label style={{ fontSize: '11px', color: '#888', display: 'block', marginBottom: '4px' }}>
-                  Set 2 <span style={{ color: '#1f78b4' }}>(↑ Blue)</span>
+                  Axis 2 <span style={{ color: '#1f78b4' }}>(↑ Blue)</span>
                 </label>
-                <select
-                  value={bivariateSet2 || ''}
-                  onChange={(e) => setBivariateSet2(e.target.value || null)}
-                  style={{
-                    width: '100%',
-                    padding: '6px 8px',
-                    fontSize: '12px',
-                    backgroundColor: '#1a1a2e',
-                    color: '#eee',
-                    border: '1px solid #0f3460',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <option value="">Select gene set...</option>
-                  {allGeneSets.filter(gs => gs.genes.length > 0 && gs.id !== bivariateSet1).map((gs) => (
-                    <option key={gs.id} value={gs.id}>
-                      {gs.name} ({gs.genes.length} genes)
-                    </option>
-                  ))}
-                </select>
+                <BivariateAxisPicker
+                  kind={bivAxis2.kind}
+                  value={bivAxis2.value}
+                  geneSets={allGeneSets}
+                  excludeSetId={bivAxis1.kind === 'set' ? bivAxis1.value : null}
+                  onChange={(kind, value) => setBivAxis2({ kind, value })}
+                />
               </div>
               <button
-                onClick={() => {
-                  const set1 = allGeneSets.find(gs => gs.id === bivariateSet1)
-                  const set2 = allGeneSets.find(gs => gs.id === bivariateSet2)
-                  if (set1 && set2) {
-                    colorByBivariate(set1.genes, set2.genes)
-                  }
-                }}
-                disabled={!bivariateSet1 || !bivariateSet2}
+                onClick={() => { if (ready) colorByBivariate(r1.genes, r2.genes) }}
+                disabled={!ready}
                 style={{
                   width: '100%',
                   padding: '8px',
                   fontSize: '12px',
                   fontWeight: 500,
-                  backgroundColor: bivariateSet1 && bivariateSet2 ? '#4ecdc4' : '#1a1a2e',
-                  color: bivariateSet1 && bivariateSet2 ? '#000' : '#666',
+                  backgroundColor: ready ? '#4ecdc4' : '#1a1a2e',
+                  color: ready ? '#000' : '#666',
                   border: 'none',
                   borderRadius: '4px',
-                  cursor: bivariateSet1 && bivariateSet2 ? 'pointer' : 'not-allowed',
+                  cursor: ready ? 'pointer' : 'not-allowed',
                 }}
               >
                 Apply Bivariate Coloring
               </button>
               <div style={{ fontSize: '10px', color: '#666', marginTop: '8px', textAlign: 'center' }}>
-                Colors cells by expression of both gene sets simultaneously
+                Colors cells by two genes or gene sets simultaneously (e.g. Sox9 × Scx)
               </div>
             </div>
           </div>
-        )}
+          )
+        })()}
 
         {/* Highlight overlay — stack of layers blended on top of the active
             base coloring. Each layer is gated by gene-set expression threshold

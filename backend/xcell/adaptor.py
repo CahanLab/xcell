@@ -2911,6 +2911,19 @@ class DataAdaptor:
                     return key
         return None
 
+    def _split_present_genes(self, genes: list[str]) -> tuple[list[str], list[str]]:
+        """Partition gene names into (present in .var_names, missing).
+
+        Used by the contour paths so an imported gene set with a few genes not in
+        the active dataset still runs on the genes that are present, reporting the
+        dropped ones rather than failing outright.
+        """
+        var_names = self.adata.var_names
+        present, missing = [], []
+        for g in genes:
+            (present if g in var_names else missing).append(g)
+        return present, missing
+
     def _resolve_sections(self, section_col: str | None) -> np.ndarray | None:
         """Resolve a section obs-column name to a per-cell label array.
 
@@ -5959,10 +5972,12 @@ class DataAdaptor:
         if spatial_key is None:
             raise ValueError("No spatial coordinates found")
 
-        # Validate genes (fail fast)
-        missing = [g for g in genes if g not in self.adata.var_names]
-        if missing:
-            raise ValueError(f"Genes not found: {missing}")
+        # Drop genes not in the dataset; proceed with present ones (fail fast
+        # only if none remain).
+        genes, missing_genes = self._split_present_genes(genes)
+        if not genes:
+            raise ValueError(
+                f"None of the selected genes are present in the data: {missing_genes}")
 
         # Auto-generate annotation_key if None
         if annotation_key is None:
@@ -5988,6 +6003,7 @@ class DataAdaptor:
         snap_clip_percentiles = clip_percentiles
         snap_annotation_key = annotation_key
         snap_n_cells = self.adata.n_obs
+        snap_missing_genes = missing_genes
 
         def compute_fn() -> dict[str, Any]:
             # 1-6) Continuous per-cell contour score via the shared core
@@ -6032,6 +6048,7 @@ class DataAdaptor:
                 'annotation_key': result['annotation_key'],
                 'n_genes': result['n_genes'],
                 'genes': result['genes'],
+                'missing_genes': snap_missing_genes,
                 'contour_levels': result['contour_levels'],
                 'n_cells': result['n_cells'],
             }
@@ -6078,12 +6095,15 @@ class DataAdaptor:
                 expression never bleeds across the gap between sections.
 
         Returns:
-            Dict with status, annotation_key, n_genes, genes, contour_levels, n_cells
+            Dict with status, annotation_key, n_genes, genes, missing_genes,
+            contour_levels, n_cells
         """
-        # Validate genes
-        missing = [g for g in genes if g not in self.adata.var_names]
-        if missing:
-            raise ValueError(f"Genes not found: {missing}")
+        # Drop genes not in the dataset (e.g. from an imported gene set) and
+        # proceed with the present ones; only fail if none remain.
+        genes, missing_genes = self._split_present_genes(genes)
+        if not genes:
+            raise ValueError(
+                f"None of the selected genes are present in the data: {missing_genes}")
 
         # Get spatial coordinates
         spatial_key = self._get_spatial_key()
@@ -6125,6 +6145,7 @@ class DataAdaptor:
             'annotation_key': annotation_key,
             'n_genes': len(genes),
             'genes': genes,
+            'missing_genes': missing_genes,
             'contour_levels': contour_levels,
             'n_cells': n_cells,
         }
@@ -6169,10 +6190,12 @@ class DataAdaptor:
             raise ValueError("No spatial coordinates found")
         if len(gene_sets) < 2:
             raise ValueError("Select at least 2 gene sets for multi-contour")
+        # A set with SOME genes missing still runs (on the present ones); only a
+        # set with NO present genes is a hard error.
         for name, genes in gene_sets.items():
-            missing = [g for g in genes if g not in self.adata.var_names]
-            if missing:
-                raise ValueError(f"Gene set '{name}' has genes not in data: {missing}")
+            present, _ = self._split_present_genes(genes)
+            if not present:
+                raise ValueError(f"Gene set '{name}' has no genes present in the data")
 
     def prepare_multicontour(
         self,
@@ -6221,14 +6244,20 @@ class DataAdaptor:
 
         modules: list[dict[str, Any]] = []
         scores: dict[str, dict[str, Any]] = {}
+        filtered_gene_sets: dict[str, list[str]] = {}
+        missing_genes: dict[str, list[str]] = {}
         for name, genes in gene_sets.items():
-            r = mc.score_module(self.adata, genes, contour_levels, log_transform,
+            present, missing = self._split_present_genes(genes)
+            filtered_gene_sets[name] = present  # prereqs guarantee present is non-empty
+            if missing:
+                missing_genes[name] = missing
+            r = mc.score_module(self.adata, present, contour_levels, log_transform,
                                 tuple(clip_percentiles), grid_res, smooth_sigma,
                                 sections=sections)
             scores[name] = {'bands': r['bands'], 'thresholds': r['thresholds']}
             modules.append({
                 'name': name,
-                'n_genes': len(genes),
+                'n_genes': len(present),
                 'thresholds': [float(t) for t in r['thresholds']],
                 'band_values': [float(v) for v in r['band_values']],
                 'histogram': r['histogram'],
@@ -6236,7 +6265,7 @@ class DataAdaptor:
             })
 
         params = {
-            'gene_sets': gene_sets,
+            'gene_sets': filtered_gene_sets,  # present-only, so finalize re-score is safe
             'contour_levels': contour_levels,
             'log_transform': log_transform,
             'clip_percentiles': list(clip_percentiles),
@@ -6249,7 +6278,7 @@ class DataAdaptor:
         while len(self._multicontour_cache) >= 4:
             self._multicontour_cache.pop(next(iter(self._multicontour_cache)))
         self._multicontour_cache[token] = {'scores': scores, 'params': params}
-        return {'token': token, 'modules': modules, 'params': params}
+        return {'token': token, 'modules': modules, 'params': params, 'missing_genes': missing_genes}
 
     def finalize_multicontour(
         self,

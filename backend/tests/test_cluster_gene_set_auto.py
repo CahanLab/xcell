@@ -61,3 +61,22 @@ def test_auto_does_not_require_k():
     # no k passed at all
     clusters = a.cluster_gene_set(names, method="auto", layer="raw")
     assert len(clusters) >= 1
+
+
+def test_auto_min_module_corr_gates_uncorrelated_genes():
+    """A high min_module_corr should route the uncorrelated noise genes
+    (N0..N3) to the trailing unassigned group, not into a module."""
+    ad, names = _adata_with_modules()
+    a = DataAdaptor("x.h5ad", adata=ad)
+    clusters = a.cluster_gene_set(
+        names, method="auto", metric="pearson", min_genes=4,
+        layer="raw", min_module_corr=0.3,
+    )
+    # the noise genes correlate with nothing -> none should sit in an A/B module
+    a_cluster = next((c for c in clusters if "A0" in c), [])
+    b_cluster = next((c for c in clusters if "B0" in c), [])
+    assert not any(g.startswith("N") for g in a_cluster)
+    assert not any(g.startswith("N") for g in b_cluster)
+    # partition preserved
+    flat = [g for c in clusters for g in c]
+    assert sorted(flat) == sorted(names)

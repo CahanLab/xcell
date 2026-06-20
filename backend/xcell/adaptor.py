@@ -5455,6 +5455,7 @@ class DataAdaptor:
         merge_threshold: float = 0.8,
         purity_threshold: float = 0.5,
         max_split_depth: int = 2,
+        min_module_corr: float = 0.2,
     ) -> list[list[str]]:
         """Cluster a set of genes by expression pattern across cells.
 
@@ -5568,6 +5569,7 @@ class DataAdaptor:
                 merge_threshold=merge_threshold,
                 purity_threshold=purity_threshold,
                 max_split_depth=max_split_depth,
+                min_module_corr=min_module_corr,
             )
 
         if method == 'hierarchical':

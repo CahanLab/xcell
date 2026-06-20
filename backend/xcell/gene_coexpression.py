@@ -72,3 +72,37 @@ def distance_matrix(X: np.ndarray, metric: str = "bicor") -> np.ndarray:
     np.clip(D, 0.0, 2.0, out=D)
     np.fill_diagonal(D, 0.0)
     return D
+
+
+def _module_coherence(profiles: np.ndarray) -> float:
+    """Fraction of variance the top PC (eigengene) explains for a module.
+
+    ``profiles`` are standardized rows (``profiles @ profiles.T`` is the
+    correlation matrix with unit diagonal, so its trace is the gene count).
+    Returns 1.0 for a single-gene module.
+    """
+    g = profiles.shape[0]
+    if g <= 1:
+        return 1.0
+    C = profiles @ profiles.T
+    w = np.linalg.eigvalsh(C)  # ascending
+    return float(w[-1] / g)
+
+
+def _module_eigengene(profiles: np.ndarray) -> np.ndarray:
+    """Module eigengene: top PC over cells, sign-aligned, centered, unit norm."""
+    g = profiles.shape[0]
+    if g == 1:
+        eg = profiles[0].astype(float).copy()
+    else:
+        C = profiles @ profiles.T
+        _, V = np.linalg.eigh(C)
+        eg = profiles.T @ V[:, -1]  # length n_cells
+    mean_prof = profiles.mean(axis=0)
+    if float(eg @ mean_prof) < 0:
+        eg = -eg
+    eg = eg - eg.mean()
+    norm = np.linalg.norm(eg)
+    if norm > 0:
+        eg = eg / norm
+    return eg

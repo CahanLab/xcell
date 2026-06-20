@@ -76,3 +76,37 @@ def test_spearman_handles_monotone_nonlinear():
     X = np.vstack([base, np.exp(base)])  # monotone but nonlinear
     sp = gc.corr_matrix(X, metric="spearman")[0, 1]
     assert sp > 0.95
+
+
+def test_coherence_high_for_single_factor_module():
+    rng = np.random.default_rng(10)
+    X, _ = _profiles_from_factors(rng, [(rng.standard_normal(200), 10)], noise=0.1)
+    Z = gc._standardize_profiles(X, "pearson")
+    assert gc._module_coherence(Z) > 0.85
+
+
+def test_coherence_low_for_two_factor_glued_module():
+    rng = np.random.default_rng(11)
+    f1 = rng.standard_normal(200)
+    f2 = rng.standard_normal(200)  # independent of f1
+    X, _ = _profiles_from_factors(rng, [(f1, 6), (f2, 6)], noise=0.1)
+    Z = gc._standardize_profiles(X, "pearson")
+    assert gc._module_coherence(Z) < 0.7
+
+
+def test_single_gene_module_is_perfectly_coherent():
+    rng = np.random.default_rng(12)
+    Z = gc._standardize_profiles(rng.standard_normal((1, 200)), "pearson")
+    assert gc._module_coherence(Z) == 1.0
+
+
+def test_eigengene_tracks_underlying_factor():
+    rng = np.random.default_rng(13)
+    f = rng.standard_normal(200)
+    X, _ = _profiles_from_factors(rng, [(f, 8)], noise=0.1)
+    Z = gc._standardize_profiles(X, "pearson")
+    eg = gc._module_eigengene(Z)
+    assert eg.shape == (200,)
+    fc = (f - f.mean()) / np.linalg.norm(f - f.mean())
+    assert abs(float(eg @ fc)) > 0.9
+    assert np.linalg.norm(eg) == pytest.approx(1.0, abs=1e-8)

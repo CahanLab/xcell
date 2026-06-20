@@ -5450,6 +5450,11 @@ class DataAdaptor:
         min_samples: int = 3,
         layer: str | None = None,
         use_gene_mask: bool = False,
+        metric: str = 'bicor',
+        min_genes: int = 5,
+        merge_threshold: float = 0.8,
+        purity_threshold: float = 0.5,
+        max_split_depth: int = 2,
     ) -> list[list[str]]:
         """Cluster a set of genes by expression pattern across cells.
 
@@ -5459,6 +5464,11 @@ class DataAdaptor:
         Args:
             gene_names: Gene symbols to cluster. Unknown names are dropped.
             method: One of:
+                * 'auto' — robust co-expression modules: a robust correlation
+                  metric (``metric``), an automatic cluster count, then a
+                  refinement pass that splits impure modules, merges
+                  near-duplicates, and prunes modules below ``min_genes`` into a
+                  trailing "unassigned" group. No K required.
                 * 'hierarchical' — Ward linkage on correlation distance, cut
                   at K.
                 * 'kmeans' — K-means on raw gene expression vectors.
@@ -5484,7 +5494,7 @@ class DataAdaptor:
             groups (and an additional noise group at the end if any genes
             were unassigned). The UI handles all of these.
         """
-        if method not in ('hierarchical', 'kmeans', 'dbscan'):
+        if method not in ('hierarchical', 'kmeans', 'dbscan', 'auto'):
             raise ValueError(f"Unknown method: {method}")
         if method in ('hierarchical', 'kmeans'):
             if k is None or k < 2:
@@ -5515,8 +5525,13 @@ class DataAdaptor:
                 found_genes.append(name)
                 gene_idx.append(loc)
         # Hierarchical / kmeans need at least k genes; DBSCAN needs at least
-        # min_samples genes to seed any cluster.
-        min_required = k if method != 'dbscan' else min_samples
+        # min_samples genes to seed any cluster; auto needs at least 2.
+        if method == 'auto':
+            min_required = 2
+        elif method == 'dbscan':
+            min_required = min_samples
+        else:
+            min_required = k
         if len(found_genes) < min_required:
             raise ValueError(
                 f"cluster_gene_set: need at least {min_required} known genes, "
@@ -5544,6 +5559,16 @@ class DataAdaptor:
         # Shape here is (n_cells_subset, n_genes_found). Transpose so
         # each row is one gene's profile across the selected cells.
         X_genes = X.T
+
+        if method == 'auto':
+            from .gene_coexpression import auto_coexpression_modules
+            return auto_coexpression_modules(
+                X_genes, found_genes,
+                metric=metric, min_genes=min_genes,
+                merge_threshold=merge_threshold,
+                purity_threshold=purity_threshold,
+                max_split_depth=max_split_depth,
+            )
 
         if method == 'hierarchical':
             from scipy.spatial.distance import pdist

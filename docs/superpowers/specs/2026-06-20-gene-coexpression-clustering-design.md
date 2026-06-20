@@ -42,8 +42,8 @@ Desired (from the user):
 - Existing related-but-separate path (NOT touched): `run_cluster_genes`
   (Leiden on a gene–gene graph stored in `.var`) — different entry point.
 
-Environment (verified): `sklearn 1.8` (`sklearn.cluster.HDBSCAN` present),
-`scipy 1.17`, `leidenalg`/`igraph`, `silhouette_score`. **No new dependencies.**
+Environment (verified): `sklearn 1.8` (`silhouette_score`), `scipy 1.17`
+(`linkage`/`fcluster`/`squareform`), `numpy 2.4`. **No new dependencies.**
 
 ## 3. Design — new `method='auto'` (co-expression modules)
 
@@ -67,11 +67,19 @@ branches are left intact for power users. Pipeline:
   dropped up front with a clear error only if too few remain.
 
 ### 3.2 Auto-K base clustering
-- `sklearn.cluster.HDBSCAN(metric='precomputed', min_cluster_size=min_genes)`
-  on the distance matrix (`min_samples` left at sklearn's default = `None`,
-  which ties it to `min_cluster_size`). Discovers cluster count; emits noise
-  (label `-1`). `min_cluster_size` *is* the user's "minimum genes per cluster."
-  No K, no eps.
+- **Average-linkage hierarchical clustering with a silhouette-selected cut.**
+  Build `linkage(squareform(D), method='average')`, then sweep `K = 2..K_max`
+  (`K_max = min(20, g-1)`), cut with `fcluster(criterion='maxclust')`, and keep
+  the `K` with the best `silhouette_score(D, labels, metric='precomputed')`.
+  No K to specify by the user. Deterministic, always yields a partition (every
+  gene assigned), so the merge/prune steps always have module eigengenes to
+  reassign against.
+- *Why not HDBSCAN:* considered, but on small/weakly-structured gene sets it can
+  label everything as noise (no surviving modules → nothing to reassign to). The
+  silhouette cut may under- or over-segment, but that is exactly what the
+  refinement pass (split / merge) is designed to correct — so a base that always
+  partitions is the robust choice. Tiny clusters are removed by **prune**, which
+  is one of the user's explicit refinement asks anyway.
 
 ### 3.3 Refinement pass (independently testable pure functions)
 Applied in order: **split → merge → prune**.
@@ -100,7 +108,7 @@ bucket last (if any). **Unchanged return contract.**
 | Param | Default | Meaning |
 |---|---|---|
 | `metric` | `bicor` | `bicor` \| `pearson` \| `spearman` |
-| `min_genes` | `5` | min genes per module (HDBSCAN `min_cluster_size` + prune floor) |
+| `min_genes` | `5` | min genes per surviving module (prune floor) |
 | `merge_threshold` | `0.8` | eigengene-corr above which modules merge |
 | `purity_threshold` | `0.5` | eigengene PVE below which a module is split |
 | `max_split_depth` | `2` | recursion cap on splitting |

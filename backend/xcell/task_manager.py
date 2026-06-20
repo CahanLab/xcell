@@ -1,5 +1,6 @@
 """Background task manager for cancellable analysis operations."""
 
+import inspect
 import threading
 import time
 import uuid
@@ -17,6 +18,8 @@ class TaskEntry:
     result: dict[str, Any] | None = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
+    progress: float | None = None  # 0..1 fraction, if the task reports it
+    message: str | None = None  # human-readable progress message
 
 
 class TaskManager:
@@ -36,7 +39,7 @@ class TaskManager:
 
     def submit(
         self,
-        compute_fn: Callable[[], dict[str, Any]],
+        compute_fn: Callable[..., dict[str, Any]],
         apply_fn: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> str:
         """Submit a cancellable task.
@@ -44,7 +47,8 @@ class TaskManager:
         Args:
             compute_fn: Runs in background thread on copied data.
                 Returns a result dict. Must have no side effects on
-                the real adata.
+                the real adata. If it accepts one argument, it is passed a
+                ``report(frac, message=None)`` callable for progress updates.
             apply_fn: Called with compute_fn's result if not cancelled.
                 Writes results into the real adata. Runs in the
                 background thread -- must be fast. Returns a
@@ -60,9 +64,20 @@ class TaskManager:
             self._cleanup_expired()
             self._tasks[task_id] = entry
 
+        def report(frac: float | None, message: str | None = None) -> None:
+            entry.progress = None if frac is None else max(0.0, min(1.0, float(frac)))
+            if message is not None:
+                entry.message = message
+
+        # Pass the progress reporter only if compute_fn opts in by taking an arg.
+        try:
+            wants_report = len(inspect.signature(compute_fn).parameters) >= 1
+        except (TypeError, ValueError):
+            wants_report = False
+
         def _run():
             try:
-                result = compute_fn()
+                result = compute_fn(report) if wants_report else compute_fn()
                 if entry.cancelled.is_set():
                     entry.status = 'cancelled'
                 else:

@@ -543,6 +543,39 @@ def merge_obs_labels(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class TransferObsLabelsRequest(BaseModel):
+    target_column: str
+    source_column: str
+    out_column: str
+    rename_mode: str = "replace"
+    sep: str = "."
+    prefix: str = ""
+    unassigned_values: list[str] | None = None
+
+
+@router.post("/obs/transfer_labels")
+def transfer_obs_labels(
+    request: TransferObsLabelsRequest,
+    dataset: str | None = Query(None),
+):
+    """Fold labels from a (partial) source column into a parent target column."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.transfer_obs_labels(
+            target_column=request.target_column,
+            source_column=request.source_column,
+            out_column=request.out_column,
+            rename_mode=request.rename_mode,
+            sep=request.sep,
+            prefix=request.prefix,
+            unassigned_values=request.unassigned_values,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/gene_sets")
 def get_gene_sets_state():
     """Return the currently-persisted gene-set state (opaque JSON blob).
@@ -2509,6 +2542,98 @@ def multicontour_finalize(request: MultiContourFinalizeRequest, dataset: str | N
 
 
 # =========================================================================
+# Ligand-receptor spatial signaling (CytoSignal-style)
+# =========================================================================
+class LigRecPrepareRequest(BaseModel):
+    radius: float | None = None
+    sigma: float | None = None
+    n_perm: int = 100
+    min_cells: int = 10
+    p_thresh: float = 0.05
+    recep_smooth: bool = False
+    smooth: bool = True
+    types: list[str] | None = None
+    section_col: str | None = None
+    max_pairs: int = 400
+    gene_subset: str | None = None
+
+
+class LigRecFinalizeRequest(BaseModel):
+    interactions: list[str]
+    write_significance: bool = False
+
+
+@router.get("/scanpy/ligrec/suggest")
+def ligrec_suggest(dataset: str | None = Query(None)):
+    """Data-driven default parameters (radius, n_perm, min_cells) for the LR tool."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.suggest_ligrec_params()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/scanpy/ligrec/result")
+def ligrec_result(dataset: str | None = Query(None)):
+    """Return a previously-computed ligand-receptor result (for re-selection),
+    or null if none has been run on this dataset."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.get_ligrec_result()
+
+
+@router.post("/scanpy/ligrec/prepare", status_code=202)
+def ligrec_prepare(request: LigRecPrepareRequest, dataset: str | None = Query(None)):
+    """Phase 1 of ligand-receptor scoring: score + test every usable pair.
+
+    Validates spatial coordinates synchronously (400 on failure); the heavy
+    scoring + permutation test runs in the background and reports progress. Poll
+    /tasks/{id}; the result holds the ranked summary + params, and the full score
+    matrices are persisted to the dataset.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        # Fail fast if there are no spatial coordinates.
+        adaptor._ligrec_spatial_coords()
+
+        def compute_fn(report):
+            return adaptor.prepare_ligrec(
+                radius=request.radius,
+                sigma=request.sigma,
+                n_perm=request.n_perm,
+                min_cells=request.min_cells,
+                p_thresh=request.p_thresh,
+                recep_smooth=request.recep_smooth,
+                smooth=request.smooth,
+                types=request.types,
+                section_col=request.section_col,
+                max_pairs=request.max_pairs,
+                gene_subset=request.gene_subset,
+                progress_callback=report,
+            )
+
+        def apply_fn(result):
+            return result  # score matrices persisted to the adata in compute_fn
+
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scanpy/ligrec/finalize")
+def ligrec_finalize(request: LigRecFinalizeRequest, dataset: str | None = Query(None)):
+    """Phase 2 of ligand-receptor scoring: write selected score columns to .obs."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.finalize_ligrec(
+            interactions=request.interactions,
+            write_significance=request.write_significance,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
 # Export endpoints
 # =========================================================================
 
@@ -2567,6 +2692,10 @@ def get_task_status(task_id: str):
         response["result"] = entry.result
     if entry.error is not None:
         response["error"] = entry.error
+    if entry.progress is not None:
+        response["progress"] = entry.progress
+    if entry.message is not None:
+        response["message"] = entry.message
     return response
 
 

@@ -208,6 +208,26 @@ const COLOR_SCALES: { value: ColorScale; label: string; gradient: string }[] = [
     label: 'Reds',
     gradient: 'linear-gradient(to right, #fff5f0, #fb6a4a, #67000d)',
   },
+  {
+    value: 'sunset',
+    label: 'Sunset',
+    gradient: 'linear-gradient(to right, #280b56, #db4b6d, #ffde87)',
+  },
+  {
+    value: 'ocean',
+    label: 'Ocean',
+    gradient: 'linear-gradient(to right, #021133, #1c7796, #78ffd6)',
+  },
+  {
+    value: 'grape',
+    label: 'Grape',
+    gradient: 'linear-gradient(to right, #1c1b5c, #7b1fa2, #e040fb)',
+  },
+  {
+    value: 'mint',
+    label: 'Mint',
+    gradient: 'linear-gradient(to right, #04283f, #009688, #adff60)',
+  },
 ]
 
 const BIVARIATE_COLORMAP_OPTIONS: { value: BivariateColormap; label: string }[] = [
@@ -379,9 +399,10 @@ export default function DisplaySettings() {
                 </div>
               </div>
 
-              {/* Color Scale */}
+              {/* Color Scale — applies to expression and continuous .obs
+                  coloring (e.g. ligand-receptor scores). */}
               <div style={styles.settingGroup}>
-                <label style={styles.label}>Expression Color Scale</label>
+                <label style={styles.label}>Continuous Color Scale</label>
                 <select
                   value={displayPreferences.colorScale}
                   onChange={handleColorScaleChange}

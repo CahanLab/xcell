@@ -391,7 +391,7 @@ export interface PCASubsetSummary {
 export type InteractionMode = 'pan' | 'lasso' | 'draw' | 'adjust' | 'quilt'
 
 // Color scale options for expression data
-export type ColorScale = 'viridis' | 'plasma' | 'magma' | 'inferno' | 'cividis' | 'coolwarm' | 'blues' | 'reds'
+export type ColorScale = 'viridis' | 'plasma' | 'magma' | 'inferno' | 'cividis' | 'coolwarm' | 'blues' | 'reds' | 'sunset' | 'ocean' | 'grape' | 'mint'
 
 // Bivariate colormap options (corner colors: [lowLow, highLow, lowHigh, highHigh])
 export type BivariateColormap = 'default' | 'pinkgreen' | 'orangepurple' | 'custom'
@@ -564,6 +564,13 @@ export function createDefaultDatasetState(
   }
 }
 
+// UI state for a movable/minimizable floating legend panel.
+export interface LegendPanelState {
+  x?: number
+  y?: number
+  minimized: boolean
+}
+
 interface AppState {
   // Data (flat per-dataset fields — backward compat)
   schema: Schema | null
@@ -654,6 +661,7 @@ interface AppState {
   isScanpyModalOpen: boolean
   isMultiContourModalOpen: boolean
   isDefineSectionsOpen: boolean
+  isLigRecModalOpen: boolean
   scanpyActionHistory: ScanpyActionRecord[]
 
   // Observable summaries refresh trigger
@@ -698,6 +706,15 @@ interface AppState {
   // Multi-dataset support
   datasets: Record<DatasetSlot, DatasetState>
   activeSlot: DatasetSlot
+
+  // Movable/minimizable floating legend panels, keyed by panel id. Absent x/y
+  // means the panel sits at its default corner; finite x/y means user-dragged.
+  legendPanels: Record<string, LegendPanelState>
+
+  // Categorical .obs column whose category names are overlaid at cluster
+  // centroids on the embedding (null = no labels). Labels render on whichever
+  // plot is colored by this column.
+  embeddingLabelColumn: string | null
 
   // Actions
   setSchema: (schema: Schema) => void
@@ -844,6 +861,7 @@ interface AppState {
   setScanpyModalOpen: (open: boolean) => void
   setMultiContourModalOpen: (open: boolean) => void
   setDefineSectionsOpen: (open: boolean) => void
+  setLigRecModalOpen: (open: boolean) => void
   setScanpyActionHistory: (history: ScanpyActionRecord[]) => void
   addScanpyAction: (action: ScanpyActionRecord) => void
 
@@ -879,6 +897,13 @@ interface AppState {
 
   // Multi-dataset actions
   setActiveSlot: (slot: DatasetSlot) => void
+
+  // Floating legend panel actions
+  setLegendPanelPos: (id: string, x: number, y: number) => void
+  toggleLegendPanelMinimized: (id: string) => void
+
+  // Embedding categorical-label overlay
+  setEmbeddingLabelColumn: (column: string | null) => void
   loadDatasetIntoSlot: (slot: DatasetSlot, schema: Schema) => void
   patchSlotState: (slot: DatasetSlot, patch: Partial<DatasetState>) => void
 }
@@ -1005,6 +1030,7 @@ export const useStore = create<AppState>((set, get) => {
     isScanpyModalOpen: false,
     isMultiContourModalOpen: false,
     isDefineSectionsOpen: false,
+    isLigRecModalOpen: false,
     scanpyActionHistory: [],
     obsSummariesVersion: 0,
     varIdentifierColumns: [],
@@ -1030,6 +1056,8 @@ export const useStore = create<AppState>((set, get) => {
       secondary: createDefaultDatasetState(),
     },
     activeSlot: 'primary' as DatasetSlot,
+    legendPanels: {},
+    embeddingLabelColumn: null,
 
     // === Per-dataset actions (dual-write) ===
 
@@ -1623,6 +1651,27 @@ export const useStore = create<AppState>((set, get) => {
         return { selectedCellIndices: inverted }
       })),
 
+    // Floating legend panels (global-only)
+    setLegendPanelPos: (id, x, y) =>
+      set((s) => ({
+        legendPanels: {
+          ...s.legendPanels,
+          [id]: { x, y, minimized: s.legendPanels[id]?.minimized ?? false },
+        },
+      })),
+    toggleLegendPanelMinimized: (id) =>
+      set((s) => ({
+        legendPanels: {
+          ...s.legendPanels,
+          [id]: {
+            ...s.legendPanels[id],
+            minimized: !(s.legendPanels[id]?.minimized ?? false),
+          },
+        },
+      })),
+
+    setEmbeddingLabelColumn: (column) => set({ embeddingLabelColumn: column }),
+
     // Global-only
     setInteractionMode: (mode) => set({ interactionMode: mode, quiltPhase: 'lasso', quiltUndoDepth: 0 }),
     setQuiltPhase: (phase) => set({ quiltPhase: phase }),
@@ -2019,6 +2068,7 @@ export const useStore = create<AppState>((set, get) => {
     setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),  // global
     setMultiContourModalOpen: (open) => set({ isMultiContourModalOpen: open }),  // global
     setDefineSectionsOpen: (open) => set({ isDefineSectionsOpen: open }),  // global
+    setLigRecModalOpen: (open) => set({ isLigRecModalOpen: open }),  // global
     setScanpyActionHistory: (history) => set(dsUpdate({ scanpyActionHistory: history })),  // per-dataset
     addScanpyAction: (action) =>
       set(dsUpdateFn((state) => ({

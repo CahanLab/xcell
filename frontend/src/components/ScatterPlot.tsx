@@ -221,6 +221,27 @@ const COLOR_SCALES: Record<ColorScale, { pos: number; color: [number, number, nu
     { pos: 0.5, color: [251, 106, 74] },
     { pos: 1, color: [103, 0, 13] },
   ],
+  // Modern sequential gradients (learnui.design-style smooth multi-stops).
+  sunset: [
+    { pos: 0, color: [40, 11, 86] },
+    { pos: 0.5, color: [219, 75, 109] },
+    { pos: 1, color: [255, 222, 135] },
+  ],
+  ocean: [
+    { pos: 0, color: [2, 17, 51] },
+    { pos: 0.5, color: [28, 119, 150] },
+    { pos: 1, color: [120, 255, 214] },
+  ],
+  grape: [
+    { pos: 0, color: [28, 27, 92] },
+    { pos: 0.5, color: [123, 31, 162] },
+    { pos: 1, color: [224, 64, 251] },
+  ],
+  mint: [
+    { pos: 0, color: [4, 40, 63] },
+    { pos: 0.5, color: [0, 150, 136] },
+    { pos: 1, color: [173, 255, 96] },
+  ],
 }
 
 export function getColorFromScale(t: number, scale: ColorScale): [number, number, number] {
@@ -278,13 +299,6 @@ export function getBivariateColor(
     Math.round(c00[1] * (1 - u) * (1 - v) + c10[1] * u * (1 - v) + c01[1] * (1 - u) * v + c11[1] * u * v),
     Math.round(c00[2] * (1 - u) * (1 - v) + c10[2] * u * (1 - v) + c01[2] * (1 - u) * v + c11[2] * u * v),
   ]
-}
-
-// For continuous metadata (not expression)
-function interpolateColor(t: number): [number, number, number] {
-  const r = Math.round(255 * t)
-  const b = Math.round(255 * (1 - t))
-  return [r, 50, b]
 }
 
 // Build a per-cell weight function for a highlight layer. Hard gate: in-range
@@ -551,6 +565,7 @@ export default function ScatterPlot({
   const activeLineId = useStore((state) => state.activeLineId) // stays global
   const drawTool = useStore((state) => state.drawTool) as DrawTool
   const selectionTool = useStore((state) => state.selectionTool) as SelectionTool
+  const embeddingLabelColumn = useStore((state) => state.embeddingLabelColumn)
 
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
@@ -700,6 +715,7 @@ export default function ScatterPlot({
       const min = Math.min(...values)
       const max = Math.max(...values)
       const range = max - min || 1
+      const colorScale = displayPreferences.colorScale
 
       baseColorFn = (d: { index: number }): [number, number, number, number] => {
         if (isMasked(d.index)) {
@@ -711,7 +727,9 @@ export default function ScatterPlot({
         const value = colorBy.values[d.index]
         if (value === null) return [128, 128, 128, Math.round(opacity * 0.5)]
         const t = ((value as number) - min) / range
-        const color = interpolateColor(t)
+        // Continuous .obs (e.g. LR scores) honors the chosen color scale, like
+        // expression coloring does.
+        const color = getColorFromScale(t, colorScale)
         return [...color, opacity] as [number, number, number, number]
       }
     } else {
@@ -1272,6 +1290,51 @@ export default function ScatterPlot({
       })
   }, [drawnLines, activeLineId, dataToScreen, embedding.name])
 
+  // Categorical text labels overlaid at cluster centroids. Active when this
+  // plot is colored by the column the user chose to label. Centroids use the
+  // median (robust to outliers/stragglers) in data space.
+  const showCategoryLabels =
+    colorMode === 'metadata' &&
+    !!colorBy &&
+    colorBy.dtype === 'category' &&
+    colorBy.name === embeddingLabelColumn
+
+  const categoryLabelData = useMemo(() => {
+    if (!showCategoryLabels || !colorBy?.categories) return [] as { label: string; data: [number, number] }[]
+    const coords = embedding.coordinates
+    const values = colorBy.values
+    const cats = colorBy.categories
+    const xs: Record<string, number[]> = {}
+    const ys: Record<string, number[]> = {}
+    const n = Math.min(coords.length, values.length)
+    for (let i = 0; i < n; i++) {
+      const v = values[i]
+      if (v === null || v === undefined) continue
+      // Categorical .obs values arrive as numeric codes indexing `categories`.
+      const name = typeof v === 'number' ? (cats[v] ?? String(v)) : String(v)
+      if (name === 'unassigned' || name === 'nan' || name === 'NaN') continue
+      ;(xs[name] ||= []).push(coords[i][0])
+      ;(ys[name] ||= []).push(coords[i][1])
+    }
+    const median = (arr: number[]) => {
+      const s = [...arr].sort((a, b) => a - b)
+      const m = Math.floor(s.length / 2)
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+    }
+    return Object.keys(xs)
+      .filter((k) => xs[k].length > 0)
+      .map((k) => ({ label: k, data: [median(xs[k]), median(ys[k])] as [number, number] }))
+  }, [showCategoryLabels, colorBy, embedding])
+
+  const categoryLabelScreen = useMemo(() => {
+    if (categoryLabelData.length === 0) return [] as { label: string; x: number; y: number }[]
+    const screen = dataToScreen(categoryLabelData.map((c) => c.data))
+    return categoryLabelData.map((c, i) => {
+      const [sx, sy] = (screen[i] ?? '0,0').split(',').map(Number)
+      return { label: c.label, x: sx, y: sy }
+    })
+  }, [categoryLabelData, dataToScreen])
+
   const baseRadius = displayPreferences.pointSize
   const selectedRadius = baseRadius + 2
   const maskedRadius = Math.max(1, baseRadius / 3) // 1/3 size for masked cells
@@ -1507,6 +1570,29 @@ export default function ScatterPlot({
             </g>
           )
         })()}
+
+        {/* Categorical labels at cluster centroids (toggled per column from the
+            Cells panel "..." menu). White text with a dark halo for legibility. */}
+        {categoryLabelScreen.map((c) => (
+          <text
+            key={c.label}
+            x={c.x}
+            y={c.y}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            style={{
+              fontSize: 13,
+              fontWeight: 700,
+              fill: '#fff',
+              stroke: '#000',
+              strokeWidth: 3.5,
+              paintOrder: 'stroke',
+              pointerEvents: 'none',
+            } as React.CSSProperties}
+          >
+            {c.label}
+          </text>
+        ))}
       </svg>
 
       {/* Live rotation badge — anchored just above-right of the pivot ring. */}

@@ -11,10 +11,12 @@ import {
   appendDataset,
   renameObsLabel,
   mergeObsLabels,
+  transferObsLabels,
   refreshSchema,
 } from '../hooks/useData'
 import { OverflowMenu } from './GenePanel'
 import MergeLabelsModal from './MergeLabelsModal'
+import TransferLabelsModal from './TransferLabelsModal'
 
 const API_BASE = '/api'
 
@@ -446,6 +448,9 @@ interface CategoryColumnProps {
   onRename: (newName: string) => void
   onRenameLabel: (oldLabel: string, newLabel: string) => Promise<void> | void
   onMergeLabels: () => void
+  onTransferLabels: () => void
+  labelsShown: boolean
+  onToggleLabels: () => void
   selectedCategorySource: { column: string; value: string } | null
 }
 
@@ -570,7 +575,7 @@ function CategoryRow({ cat, totalCount, checked, onToggle, onSelectCells, onHigh
   )
 }
 
-function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, onHighlightCells, checkedCategories, onToggleCategory, onHide, onRename, onRenameLabel, onMergeLabels, selectedCategorySource }: CategoryColumnProps) {
+function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, onHighlightCells, checkedCategories, onToggleCategory, onHide, onRename, onRenameLabel, onMergeLabels, onTransferLabels, labelsShown, onToggleLabels, selectedCategorySource }: CategoryColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -679,6 +684,16 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCel
                 disabled: categories.length < 2,
                 tooltip: categories.length < 2 ? 'Need at least 2 labels to merge' : undefined,
                 onClick: onMergeLabels,
+              },
+              {
+                label: 'Refine with subcluster labels…',
+                tooltip: 'Fold a subcluster column into this category, keeping unassigned cells',
+                onClick: onTransferLabels,
+              },
+              {
+                label: labelsShown ? 'Hide labels on plot' : 'Show labels on plot',
+                tooltip: 'Overlay category names at cluster centroids on the embedding',
+                onClick: onToggleLabels,
               },
             ]}
           />
@@ -890,6 +905,12 @@ export default function CellPanel() {
 
   // Merge-labels modal state
   const [mergeModalColumn, setMergeModalColumn] = useState<string | null>(null)
+  // Transfer/refine-labels modal state (target column the menu was opened on)
+  const [transferModalColumn, setTransferModalColumn] = useState<string | null>(null)
+
+  // Embedding categorical-label overlay
+  const embeddingLabelColumn = useStore((s) => s.embeddingLabelColumn)
+  const setEmbeddingLabelColumn = useStore((s) => s.setEmbeddingLabelColumn)
 
   const setError = useStore((s) => s.setError)
 
@@ -1097,6 +1118,30 @@ export default function CellPanel() {
         // a global toast.
         throw err
       }
+    },
+    [refresh]
+  )
+
+  // Toggle category-name labels on the embedding for a column. Turning labels
+  // on also colors by that column so the labels sit on matching clusters.
+  const handleToggleLabels = useCallback(
+    (columnName: string) => {
+      if (embeddingLabelColumn === columnName) {
+        setEmbeddingLabelColumn(null)
+      } else {
+        selectColorColumn(columnName)
+        setEmbeddingLabelColumn(columnName)
+      }
+    },
+    [embeddingLabelColumn, setEmbeddingLabelColumn, selectColorColumn]
+  )
+
+  // Refine a parent category with subcluster labels — modal calls this on Apply.
+  const handleTransferLabels = useCallback(
+    async (params: Parameters<typeof transferObsLabels>[0]) => {
+      const result = await transferObsLabels(params)
+      refresh()
+      return result
     },
     [refresh]
   )
@@ -1311,6 +1356,9 @@ export default function CellPanel() {
                     handleRenameLabel(summary.name, oldLabel, newLabel)
                   }
                   onMergeLabels={() => setMergeModalColumn(summary.name)}
+                  onTransferLabels={() => setTransferModalColumn(summary.name)}
+                  labelsShown={embeddingLabelColumn === summary.name}
+                  onToggleLabels={() => handleToggleLabels(summary.name)}
                   selectedCategorySource={selectedCategorySource}
                 />
               ))}
@@ -1608,6 +1656,15 @@ export default function CellPanel() {
           onMerge={(labels, newLabel) =>
             handleMergeLabels(mergeModalColumn, labels, newLabel)
           }
+        />
+      )}
+      {transferModalColumn && (
+        <TransferLabelsModal
+          targetColumnDefault={transferModalColumn}
+          summaries={summaries}
+          onClose={() => setTransferModalColumn(null)}
+          onApply={handleTransferLabels}
+          onColorBy={(column) => selectColorColumn(column)}
         />
       )}
 

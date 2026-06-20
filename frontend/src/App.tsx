@@ -9,6 +9,7 @@ import DiffExpModal from './components/DiffExpModal'
 import LineAssociationModal from './components/LineAssociationModal'
 import ScanpyModal from './components/ScanpyModal'
 import MultiContourModal from './components/MultiContourModal'
+import LigRecModal from './components/LigRecModal'
 import DefineSectionsPanel from './components/DefineSectionsPanel'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
@@ -337,7 +338,136 @@ function RotateToolbar({ onRotate }: { onRotate: (deg: number) => void }) {
   )
 }
 
-function CategoryLegend({ colorBy }: { colorBy: { name: string; categories?: string[]; colors?: string[]; dtype: string } }) {
+// A draggable + minimizable floating panel used for all plot legends. Position
+// and minimized state persist in the store keyed by `id`, so they survive
+// color-mode switches and re-renders. Until dragged, the panel sits at its
+// default bottom-right corner.
+function FloatingPanel({
+  id,
+  title,
+  titleExtra,
+  defaultCorner,
+  children,
+}: {
+  id: string
+  title: string
+  titleExtra?: React.ReactNode
+  defaultCorner?: React.CSSProperties
+  children: React.ReactNode
+}) {
+  const panel = useStore((s) => s.legendPanels[id])
+  const setPos = useStore((s) => s.setLegendPanelPos)
+  const toggleMin = useStore((s) => s.toggleLegendPanelMinimized)
+  const ref = useRef<HTMLDivElement>(null)
+  const drag = useRef<{ mouseX: number; mouseY: number; startX: number; startY: number } | null>(null)
+
+  const moved = !!panel && panel.x != null && panel.y != null
+  const minimized = panel?.minimized ?? false
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    const el = ref.current
+    if (!el) return
+    e.preventDefault()
+    // Start from the stored position, or the element's current corner offset
+    // the first time it's dragged.
+    const startX = moved ? (panel!.x as number) : el.offsetLeft
+    const startY = moved ? (panel!.y as number) : el.offsetTop
+    drag.current = { mouseX: e.clientX, mouseY: e.clientY, startX, startY }
+    const onMove = (ev: MouseEvent) => {
+      if (!drag.current || !ref.current) return
+      let nx = drag.current.startX + (ev.clientX - drag.current.mouseX)
+      let ny = drag.current.startY + (ev.clientY - drag.current.mouseY)
+      const parent = ref.current.offsetParent as HTMLElement | null
+      if (parent) {
+        const maxX = Math.max(0, parent.clientWidth - ref.current.offsetWidth)
+        const maxY = Math.max(0, parent.clientHeight - ref.current.offsetHeight)
+        nx = Math.max(0, Math.min(nx, maxX))
+        ny = Math.max(0, Math.min(ny, maxY))
+      }
+      setPos(id, nx, ny)
+    }
+    const onUp = () => {
+      drag.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  const positionStyle: React.CSSProperties = moved
+    ? { left: panel!.x, top: panel!.y, right: 'auto', bottom: 'auto' }
+    : (defaultCorner ?? { bottom: 20, right: 20 })
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: 'absolute',
+        ...positionStyle,
+        backgroundColor: 'rgba(22, 33, 62, 0.92)',
+        borderRadius: 8,
+        overflow: 'hidden',
+        zIndex: 12,
+        boxShadow: '0 2px 10px rgba(0,0,0,0.35)',
+      }}
+    >
+      <div
+        onMouseDown={onMouseDown}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          padding: '5px 6px 5px 10px',
+          cursor: 'move',
+          userSelect: 'none',
+          borderBottom: minimized ? 'none' : '1px solid rgba(255,255,255,0.08)',
+        }}
+        title="Drag to move"
+      >
+        <span
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            color: '#aaa',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            maxWidth: 200,
+          }}
+        >
+          {title}
+          {titleExtra}
+        </span>
+        <button
+          onClick={(e) => { e.stopPropagation(); toggleMin(id) }}
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: '#888',
+            cursor: 'pointer',
+            fontSize: 14,
+            lineHeight: 1,
+            padding: '0 2px',
+          }}
+          title={minimized ? 'Expand' : 'Minimize'}
+        >
+          {minimized ? '▢' : '–'}
+        </button>
+      </div>
+      {!minimized && (
+        <div style={{ padding: '8px 12px 12px', maxHeight: '40vh', overflowY: 'auto' }}>
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CategoryLegend({ colorBy, panelId }: { colorBy: { name: string; categories?: string[]; colors?: string[]; dtype: string }; panelId: string }) {
   if (colorBy.dtype !== 'category' || !colorBy.categories) {
     return null
   }
@@ -345,8 +475,7 @@ function CategoryLegend({ colorBy }: { colorBy: { name: string; categories?: str
   const palette = resolveCategoryPalette(colorBy.categories.length, colorBy.colors)
 
   return (
-    <div style={styles.legend}>
-      <div style={styles.legendTitle}>{colorBy.name}</div>
+    <FloatingPanel id={panelId} title={colorBy.name}>
       {colorBy.categories.map((cat, i) => {
         const [r, g, b] = palette[i] ?? palette[0]
         return (
@@ -361,7 +490,7 @@ function CategoryLegend({ colorBy }: { colorBy: { name: string; categories?: str
           </div>
         )
       })}
-    </div>
+    </FloatingPanel>
   )
 }
 
@@ -374,23 +503,62 @@ const COLOR_SCALE_GRADIENTS: Record<string, string> = {
   coolwarm: 'linear-gradient(to right, rgb(59,76,192), rgb(112,146,208), rgb(197,197,197), rgb(230,128,103), rgb(180,4,38))',
   blues: 'linear-gradient(to right, rgb(247,251,255), rgb(107,174,214), rgb(8,48,107))',
   reds: 'linear-gradient(to right, rgb(255,245,240), rgb(251,106,74), rgb(103,0,13))',
+  sunset: 'linear-gradient(to right, rgb(40,11,86), rgb(219,75,109), rgb(255,222,135))',
+  ocean: 'linear-gradient(to right, rgb(2,17,51), rgb(28,119,150), rgb(120,255,214))',
+  grape: 'linear-gradient(to right, rgb(28,27,92), rgb(123,31,162), rgb(224,64,251))',
+  mint: 'linear-gradient(to right, rgb(4,40,63), rgb(0,150,136), rgb(173,255,96))',
 }
 
-function ContinuousLegend({ name, min, max }: { name: string; min: number; max: number }) {
+function ContinuousLegend({ name, min, max, panelId, colorScale }: { name: string; min: number; max: number; panelId: string; colorScale: string }) {
   return (
-    <div style={styles.expressionLegend}>
-      <div style={styles.legendTitle}>{name}</div>
+    <FloatingPanel id={panelId} title={name}>
       <div
         style={{
           ...styles.colorBar,
-          background: 'linear-gradient(to right, rgb(0,50,255), rgb(255,50,0))',
+          background: COLOR_SCALE_GRADIENTS[colorScale] || COLOR_SCALE_GRADIENTS.viridis,
         }}
       />
       <div style={styles.colorBarLabels}>
         <span>{min.toFixed(2)}</span>
         <span>{max.toFixed(2)}</span>
       </div>
-    </div>
+    </FloatingPanel>
+  )
+}
+
+// Continuous colorbar for gene/gene-set expression coloring (honors the chosen
+// color scale). Extracted so it can live in a movable/minimizable FloatingPanel.
+function ExpressionLegend({
+  panelId,
+  title,
+  transform,
+  min,
+  max,
+  colorScale,
+}: {
+  panelId: string
+  title: string
+  transform?: string
+  min: number
+  max: number
+  colorScale: string
+}) {
+  return (
+    <FloatingPanel
+      id={panelId}
+      title={title}
+      titleExtra={
+        transform === 'log1p' ? (
+          <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>(log1p)</span>
+        ) : undefined
+      }
+    >
+      <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
+      <div style={styles.colorBarLabels}>
+        <span>{min.toFixed(2)}</span>
+        <span>{max.toFixed(2)}</span>
+      </div>
+    </FloatingPanel>
   )
 }
 
@@ -400,11 +568,13 @@ function BivariateLegend({
   colormap,
   sortReversed,
   onToggleSort,
+  panelId,
 }: {
   bivariateData: { genes1: string[]; genes2: string[]; transform?: string }
   colormap: import('./store').BivariateColormap
   sortReversed: boolean
   onToggleSort: () => void
+  panelId: string
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const size = 80
@@ -441,15 +611,15 @@ function BivariateLegend({
   const color2 = `rgb(${corners.c01.join(',')})`  // High gene2 color
 
   return (
-    <div style={styles.expressionLegend}>
-      <div style={styles.legendTitle}>
-        Bivariate Expression
-        {bivariateData.transform === 'log1p' && (
-          <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
-            (log1p)
-          </span>
-        )}
-      </div>
+    <FloatingPanel
+      id={panelId}
+      title="Bivariate Expression"
+      titleExtra={
+        bivariateData.transform === 'log1p' ? (
+          <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>(log1p)</span>
+        ) : undefined
+      }
+    >
       <canvas
         ref={canvasRef}
         width={size}
@@ -486,7 +656,7 @@ function BivariateLegend({
       >
         {sortReversed ? '↓ Low on Top' : '↑ High on Top'}
       </button>
-    </div>
+    </FloatingPanel>
   )
 }
 
@@ -1673,32 +1843,30 @@ export default function App() {
                           )}
                           {/* Per-plot legend */}
                           {datasets.primary.colorMode === 'metadata' && datasets.primary.colorBy?.dtype === 'category' && (
-                            <CategoryLegend colorBy={datasets.primary.colorBy} />
+                            <CategoryLegend colorBy={datasets.primary.colorBy} panelId="primary-category" />
                           )}
                           {datasets.primary.colorMode === 'metadata' && datasets.primary.colorBy?.dtype === 'numeric' && (
                             <ContinuousLegend
+                              panelId="primary-continuous"
+                              colorScale={datasets.primary.displayPreferences.colorScale}
                               name={datasets.primary.colorBy.name}
                               min={Math.min(...(datasets.primary.colorBy.values.filter((v) => v !== null) as number[]))}
                               max={Math.max(...(datasets.primary.colorBy.values.filter((v) => v !== null) as number[]))}
                             />
                           )}
                           {datasets.primary.colorMode === 'expression' && datasets.primary.expressionData && (
-                            <div style={styles.expressionLegend}>
-                              <div style={styles.legendTitle}>
-                                {datasets.primary.selectedGenes.length === 1 ? datasets.primary.selectedGenes[0] : datasets.primary.selectedGeneSetName ? `${datasets.primary.selectedGeneSetName} (${datasets.primary.selectedGenes.length})` : `${datasets.primary.selectedGenes.length} genes`}
-                                {datasets.primary.expressionData.transform === 'log1p' && (
-                                  <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>(log1p)</span>
-                                )}
-                              </div>
-                              <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[datasets.primary.displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
-                              <div style={styles.colorBarLabels}>
-                                <span>{datasets.primary.expressionData.min.toFixed(2)}</span>
-                                <span>{datasets.primary.expressionData.max.toFixed(2)}</span>
-                              </div>
-                            </div>
+                            <ExpressionLegend
+                              panelId="primary-expression"
+                              title={datasets.primary.selectedGenes.length === 1 ? datasets.primary.selectedGenes[0] : datasets.primary.selectedGeneSetName ? `${datasets.primary.selectedGeneSetName} (${datasets.primary.selectedGenes.length})` : `${datasets.primary.selectedGenes.length} genes`}
+                              transform={datasets.primary.expressionData.transform}
+                              min={datasets.primary.expressionData.min}
+                              max={datasets.primary.expressionData.max}
+                              colorScale={datasets.primary.displayPreferences.colorScale}
+                            />
                           )}
                           {datasets.primary.colorMode === 'bivariate' && datasets.primary.bivariateData && (
                             <BivariateLegend
+                              panelId="primary-bivariate"
                               bivariateData={datasets.primary.bivariateData}
                               colormap={datasets.primary.displayPreferences.bivariateColormap}
                               sortReversed={datasets.primary.bivariateSortReversed}
@@ -1762,32 +1930,30 @@ export default function App() {
                           )}
                           {/* Per-plot legend */}
                           {datasets.secondary.colorMode === 'metadata' && datasets.secondary.colorBy?.dtype === 'category' && (
-                            <CategoryLegend colorBy={datasets.secondary.colorBy} />
+                            <CategoryLegend colorBy={datasets.secondary.colorBy} panelId="secondary-category" />
                           )}
                           {datasets.secondary.colorMode === 'metadata' && datasets.secondary.colorBy?.dtype === 'numeric' && (
                             <ContinuousLegend
+                              panelId="secondary-continuous"
+                              colorScale={datasets.secondary.displayPreferences.colorScale}
                               name={datasets.secondary.colorBy.name}
                               min={Math.min(...(datasets.secondary.colorBy.values.filter((v) => v !== null) as number[]))}
                               max={Math.max(...(datasets.secondary.colorBy.values.filter((v) => v !== null) as number[]))}
                             />
                           )}
                           {datasets.secondary.colorMode === 'expression' && datasets.secondary.expressionData && (
-                            <div style={styles.expressionLegend}>
-                              <div style={styles.legendTitle}>
-                                {datasets.secondary.selectedGenes.length === 1 ? datasets.secondary.selectedGenes[0] : datasets.secondary.selectedGeneSetName ? `${datasets.secondary.selectedGeneSetName} (${datasets.secondary.selectedGenes.length})` : `${datasets.secondary.selectedGenes.length} genes`}
-                                {datasets.secondary.expressionData.transform === 'log1p' && (
-                                  <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>(log1p)</span>
-                                )}
-                              </div>
-                              <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[datasets.secondary.displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
-                              <div style={styles.colorBarLabels}>
-                                <span>{datasets.secondary.expressionData.min.toFixed(2)}</span>
-                                <span>{datasets.secondary.expressionData.max.toFixed(2)}</span>
-                              </div>
-                            </div>
+                            <ExpressionLegend
+                              panelId="secondary-expression"
+                              title={datasets.secondary.selectedGenes.length === 1 ? datasets.secondary.selectedGenes[0] : datasets.secondary.selectedGeneSetName ? `${datasets.secondary.selectedGeneSetName} (${datasets.secondary.selectedGenes.length})` : `${datasets.secondary.selectedGenes.length} genes`}
+                              transform={datasets.secondary.expressionData.transform}
+                              min={datasets.secondary.expressionData.min}
+                              max={datasets.secondary.expressionData.max}
+                              colorScale={datasets.secondary.displayPreferences.colorScale}
+                            />
                           )}
                           {datasets.secondary.colorMode === 'bivariate' && datasets.secondary.bivariateData && (
                             <BivariateLegend
+                              panelId="secondary-bivariate"
                               bivariateData={datasets.secondary.bivariateData}
                               colormap={datasets.secondary.displayPreferences.bivariateColormap}
                               sortReversed={datasets.secondary.bivariateSortReversed}
@@ -1827,7 +1993,8 @@ export default function App() {
                             Source matrix appears whenever the dataset has any
                             non-X layer to choose from (e.g. after Smooth). */}
                         {schema && (schema.embeddings.length > 1 || availableLayers.length > 1 || interactionMode === 'adjust' || interactionMode === 'quilt') && (
-                          <div style={{ ...styles.embeddingSelector, flexDirection: 'column' as const, alignItems: 'flex-start', gap: '6px' }}>
+                          <FloatingPanel id="view-controls" title="View" defaultCorner={{ bottom: 20, left: 20 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column' as const, alignItems: 'flex-start', gap: '6px' }}>
                             {availableLayers.length > 1 && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 <span style={styles.embeddingLabel}>Source:</span>
@@ -1895,38 +2062,35 @@ export default function App() {
                                 </button>
                               </div>
                             )}
-                          </div>
+                            </div>
+                          </FloatingPanel>
                         )}
-                        {/* Legends - bottom right */}
+                        {/* Legends - bottom right (movable/minimizable) */}
                         {colorMode === 'metadata' && colorBy && colorBy.dtype === 'category' && (
-                          <CategoryLegend colorBy={colorBy} />
+                          <CategoryLegend colorBy={colorBy} panelId="single-category" />
                         )}
                         {colorMode === 'metadata' && colorBy && colorBy.dtype === 'numeric' && (
                           <ContinuousLegend
+                            panelId="single-continuous"
+                            colorScale={displayPreferences.colorScale}
                             name={colorBy.name}
                             min={Math.min(...(colorBy.values.filter((v) => v !== null) as number[]))}
                             max={Math.max(...(colorBy.values.filter((v) => v !== null) as number[]))}
                           />
                         )}
                         {colorMode === 'expression' && expressionData && (
-                          <div style={styles.expressionLegend}>
-                            <div style={styles.legendTitle}>
-                              {selectedGenes.length === 1 ? selectedGenes[0] : selectedGeneSetName ? `${selectedGeneSetName} (${selectedGenes.length})` : `${selectedGenes.length} genes`}
-                              {expressionData.transform === 'log1p' && (
-                                <span style={{ fontSize: '9px', color: '#4ecdc4', marginLeft: '6px' }}>
-                                  (log1p)
-                                </span>
-                              )}
-                            </div>
-                            <div style={{ ...styles.colorBar, background: COLOR_SCALE_GRADIENTS[displayPreferences.colorScale] || COLOR_SCALE_GRADIENTS.viridis }} />
-                            <div style={styles.colorBarLabels}>
-                              <span>{expressionData.min.toFixed(2)}</span>
-                              <span>{expressionData.max.toFixed(2)}</span>
-                            </div>
-                          </div>
+                          <ExpressionLegend
+                            panelId="single-expression"
+                            title={selectedGenes.length === 1 ? selectedGenes[0] : selectedGeneSetName ? `${selectedGeneSetName} (${selectedGenes.length})` : `${selectedGenes.length} genes`}
+                            transform={expressionData.transform}
+                            min={expressionData.min}
+                            max={expressionData.max}
+                            colorScale={displayPreferences.colorScale}
+                          />
                         )}
                         {colorMode === 'bivariate' && bivariateData && (
                           <BivariateLegend
+                            panelId="single-bivariate"
                             bivariateData={bivariateData}
                             colormap={displayPreferences.bivariateColormap}
                             sortReversed={bivariateSortReversed}
@@ -2016,6 +2180,7 @@ export default function App() {
       <LineAssociationModal />
       <ScanpyModal />
       <MultiContourModal />
+      <LigRecModal />
       <DefineSectionsPanel />
       <MarkerGenesModal />
       <ClusterGeneSetModal />

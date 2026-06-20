@@ -281,6 +281,7 @@ class DataAdaptor:
         # keyed by an opaque token. See prepare_multicontour / finalize_multicontour.
         self._multicontour_cache: dict[str, dict[str, Any]] = {}
 
+
         # Defensively preserve raw counts: if .X looks like integer counts and
         # a "counts" layer isn't already present, snapshot .X into
         # adata.layers["counts"] so downstream tooling that wants raw counts
@@ -1613,6 +1614,171 @@ class DataAdaptor:
             "new_label": new_label,
             "n_cells_merged": n_cells,
         }
+
+    def transfer_obs_labels(
+        self,
+        target_column: str,
+        source_column: str,
+        out_column: str,
+        rename_mode: str = "replace",
+        sep: str = ".",
+        prefix: str = "",
+        unassigned_values: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Fold labels from a (partial) source column into a parent target column.
+
+        For every cell that carries a "real" label in ``source_column`` (a value
+        that is neither NaN nor one of ``unassigned_values``), the result takes
+        that source label -- optionally renamed -- so it overrides the parent
+        label. Cells the source did not touch keep their ``target_column`` value.
+
+        This is the common "subcluster a masked subset, then refine the parent
+        annotation" workflow: subclustering leaves masked-out cells as
+        "unassigned", and those cells should retain their original parent label.
+
+        Args:
+            target_column: Parent categorical/string .obs column to refine.
+            source_column: Column holding the new (e.g. subcluster) labels, with
+                unassigned cells marked NaN or one of ``unassigned_values``.
+            out_column: Where to write the result. May equal ``target_column`` to
+                refine in place, or a name not already in .obs (creates a new one).
+            rename_mode: How to name incoming source labels:
+                - "replace": use the source label verbatim.
+                - "parent_prefix": f"{parent_label}{sep}{source_label}" -- keeps
+                  provenance and avoids collisions from bare "0"/"1" labels.
+                - "custom_prefix": f"{prefix}{source_label}".
+            sep: Separator for "parent_prefix" mode.
+            prefix: Prefix string for "custom_prefix" mode.
+            unassigned_values: Source values treated as "no new label" (cell keeps
+                its parent label). Defaults to ["unassigned"]. NaN is always so.
+
+        Returns:
+            Dict with out_column, n_overridden, n_kept, n_new_labels, categories.
+
+        Raises:
+            KeyError: If target or source column not found.
+            ValueError: On bad rename_mode, empty out_column, or an out_column
+                that collides with an unrelated existing column.
+        """
+        if rename_mode not in ("replace", "parent_prefix", "custom_prefix"):
+            raise ValueError(f"Unknown rename_mode '{rename_mode}'")
+        if target_column not in self.adata.obs.columns:
+            raise KeyError(f"Target column '{target_column}' not found")
+        if source_column not in self.adata.obs.columns:
+            raise KeyError(f"Source column '{source_column}' not found")
+        out_column = (out_column or "").strip()
+        if not out_column:
+            raise ValueError("out_column cannot be empty")
+        if out_column in self.adata.obs.columns and out_column != target_column:
+            raise ValueError(
+                f"Column '{out_column}' already exists. Choose a new name or set "
+                f"it to the target column '{target_column}' to refine in place."
+            )
+
+        if unassigned_values is None:
+            unassigned_values = ["unassigned"]
+        unassigned_set = {str(v) for v in unassigned_values}
+
+        target = self.adata.obs[target_column]
+        source = self.adata.obs[source_column]
+        target_str = target.astype(str)
+        source_str = source.astype(str)
+
+        # A source value overrides the parent when it is not NaN and not a sentinel.
+        source_isna = source.isna().to_numpy()
+        has_new = (~source_isna) & (~source_str.isin(unassigned_set).to_numpy())
+
+        parent_str = target_str.to_numpy().astype(object)
+        src = source_str.to_numpy().astype(object)
+        if rename_mode == "replace":
+            renamed = src
+        elif rename_mode == "parent_prefix":
+            renamed = np.array(
+                [f"{p}{sep}{s}" for p, s in zip(parent_str, src)], dtype=object
+            )
+        else:  # custom_prefix
+            renamed = np.array([f"{prefix}{s}" for s in src], dtype=object)
+        result = np.where(has_new, renamed, parent_str).astype(object)
+
+        # Category ordering + colors: surviving parent labels keep their original
+        # order/colors; new labels follow in source order, colored from the source.
+        target_is_cat = pd.api.types.is_categorical_dtype(target.dtype)
+        source_is_cat = pd.api.types.is_categorical_dtype(source.dtype)
+        target_colors = self._get_category_colors(target_column)
+        source_colors = self._get_category_colors(source_column)
+        target_color_by = (
+            dict(zip([str(c) for c in target.cat.categories], target_colors))
+            if (target_colors and target_is_cat) else {}
+        )
+        source_color_by = (
+            dict(zip([str(c) for c in source.cat.categories], source_colors))
+            if (source_colors and source_is_cat) else {}
+        )
+
+        result_list = result.tolist()
+        result_set = set(result_list)
+        if target_is_cat:
+            parent_order = [str(c) for c in target.cat.categories]
+        else:
+            parent_order = list(dict.fromkeys(parent_str.tolist()))
+        ordered_cats = [c for c in parent_order if c in result_set]
+
+        # Map each new label back to the source category it came from (for color).
+        new_label_src: dict[str, str] = {}
+        for keep, r, s in zip(has_new.tolist(), result_list, src.tolist()):
+            if keep and r not in ordered_cats and r not in new_label_src:
+                new_label_src[r] = s
+        if source_is_cat:
+            src_order = [str(c) for c in source.cat.categories]
+        else:
+            src_order = list(dict.fromkeys(src.tolist()))
+        new_labels = sorted(
+            new_label_src.keys(),
+            key=lambda lbl: (
+                src_order.index(new_label_src[lbl])
+                if new_label_src[lbl] in src_order else len(src_order),
+                lbl,
+            ),
+        )
+        ordered_cats = ordered_cats + [c for c in new_labels if c not in ordered_cats]
+
+        self.adata.obs[out_column] = pd.Categorical(result, categories=ordered_cats)
+
+        if target_color_by or source_color_by:
+            colors_out: list[str] = []
+            for c in ordered_cats:
+                if c in target_color_by:
+                    colors_out.append(target_color_by[c])
+                elif c in new_label_src and new_label_src[c] in source_color_by:
+                    colors_out.append(source_color_by[new_label_src[c]])
+                else:
+                    colors_out.append("#888888")
+            self.adata.uns[f"{out_column}_colors"] = colors_out
+        elif f"{out_column}_colors" in self.adata.uns:
+            # Stale colors from a prior column of this name would mis-align.
+            del self.adata.uns[f"{out_column}_colors"]
+
+        n_overridden = int(has_new.sum())
+        result_dict = {
+            "out_column": out_column,
+            "target_column": target_column,
+            "source_column": source_column,
+            "n_overridden": n_overridden,
+            "n_kept": int(self.n_cells - n_overridden),
+            "n_new_labels": len(new_labels),
+            "categories": ordered_cats,
+        }
+        self._log_action(
+            "transfer_obs_labels",
+            {
+                "target_column": target_column,
+                "source_column": source_column,
+                "out_column": out_column,
+                "rename_mode": rename_mode,
+            },
+            result_dict,
+        )
+        return result_dict
 
     def get_user_annotations(self) -> list[str]:
         """Get list of user-created annotation columns.
@@ -6355,6 +6521,280 @@ class DataAdaptor:
             'params': {k: v for k, v in params.items() if k != 'gene_sets'},
         }, result)
         self._multicontour_cache.pop(token, None)
+        return result
+
+    # =========================================================================
+    # Ligand-receptor spatial signaling (CytoSignal-style)
+    # =========================================================================
+    def _ligrec_spatial_coords(self) -> np.ndarray:
+        """Return (n_cells, 2) spatial coordinates or raise if absent."""
+        key = self._get_spatial_key()
+        if key is None:
+            raise ValueError("No spatial coordinates found in .obsm (need 'spatial')")
+        return np.asarray(self.adata.obsm[key])[:, :2]
+
+    def suggest_ligrec_params(self) -> dict[str, Any]:
+        """Data-driven default parameters for the ligand-receptor tool."""
+        from xcell import ligrec
+        coords = self._ligrec_spatial_coords()
+        radius = ligrec.suggest_radius(coords)
+        n_cells = self.adata.n_obs
+        # ~100k null draws total; permutations = pool / n_cells, clamped.
+        n_perm = int(min(200, max(20, round(100000 / max(1, n_cells)))))
+        return {
+            "radius": round(float(radius), 3),
+            "n_perm": n_perm,
+            "min_cells": max(3, int(0.005 * n_cells)),
+            "p_thresh": 0.05,
+            "median_nn_distance": round(float(ligrec.median_nn_distance(coords)), 4),
+        }
+
+    @staticmethod
+    def _ligrec_obs_key(ligand: str, receptor: str) -> str:
+        """Stable, readable .obs column name for an interaction's score."""
+        return f"LR_{ligand}_to_{receptor}"
+
+    def prepare_ligrec(
+        self,
+        *,
+        pairs: list[dict[str, Any]] | None = None,
+        radius: float | None = None,
+        sigma: float | None = None,
+        n_perm: int = 100,
+        min_cells: int = 10,
+        p_thresh: float = 0.05,
+        recep_smooth: bool = False,
+        smooth: bool = True,
+        types: list[str] | None = None,
+        section_col: str | None = None,
+        max_pairs: int = 400,
+        db_path: str | None = None,
+        seed: int = 0,
+        progress_callback: Any = None,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Phase 1 of ligand-receptor scoring: score + test every usable pair.
+
+        Loads the ligand-receptor database (or uses ``pairs``), keeps pairs whose
+        every subunit gene is present and expressed in >= ``min_cells`` cells,
+        scores them with a spatial permutation null, and persists the full
+        per-cell score + significance matrices into the AnnData (``.obsm`` +
+        ``.uns['lrscore']``) so any interaction can be visualized later without
+        re-running. Returns a ranked per-interaction summary for review.
+
+        Args:
+            progress_callback: Optional ``report(frac, message)`` for live progress.
+
+        Returns:
+            Dict with summary (ranked), params, n_tested, n_significant,
+            n_dropped_capped, interactions.
+        """
+        from xcell import ligrec as lr
+
+        coords = self._ligrec_spatial_coords()
+        if pairs is None:
+            pairs = lr.load_lr_database(db_path)
+        if types:
+            pairs = [p for p in pairs if p["type"] in set(types)]
+
+        # Keep pairs whose every subunit gene is present and expressed enough.
+        var_names_list = list(self.adata.var_names)
+        var_index = {g: i for i, g in enumerate(var_names_list)}
+        # Case-insensitive gene resolution: the bundled database uses human
+        # UPPERCASE symbols, so match them to the dataset's actual var names
+        # case-insensitively. This makes the human DB work on mouse data
+        # (Pdgfb -> PDGFB), mirroring CytoSignal's uppercase-match. Each pair's
+        # gene lists are rewritten to the dataset's real names for scoring.
+        upper_to_var: dict[str, str] = {}
+        for g in var_names_list:
+            upper_to_var.setdefault(str(g).upper(), str(g))
+
+        def resolve_gene(g: str) -> str | None:
+            if g in var_index:
+                return g
+            return upper_to_var.get(str(g).upper())
+
+        # Optional gene subset (e.g. highly/spatially-variable .var boolean
+        # column, an explicit gene list, or a column-combination spec): restrict
+        # eligible genes so only pairs whose subunits all fall in the subset run.
+        allowed: set[str] | None = None
+        if gene_subset is not None:
+            mask, _subset_type, _ = self._resolve_gene_mask(gene_subset)
+            allowed = {str(g) for g, keep in zip(var_names_list, mask) if keep}
+
+        X = self.adata.X
+        Xcsr = X.tocsr() if hasattr(X, "tocsr") else np.asarray(X)
+        if hasattr(Xcsr, "getnnz"):
+            per_gene_cells = np.asarray((Xcsr > 0).sum(axis=0)).ravel()
+        else:
+            per_gene_cells = (np.asarray(Xcsr) > 0).sum(axis=0)
+
+        def resolve_genes(genes: list[str]) -> list[str] | None:
+            """Resolve subunit genes to actual var names; None if any is missing,
+            not expressed in >= min_cells cells, or excluded by the gene subset."""
+            actual: list[str] = []
+            for g in genes:
+                a = resolve_gene(g)
+                if a is None or per_gene_cells[var_index[a]] < min_cells:
+                    return None
+                if allowed is not None and a not in allowed:
+                    return None
+                actual.append(a)
+            return actual
+
+        kept: list[dict[str, Any]] = []
+        for p in pairs:
+            lig = resolve_genes(p["ligand"])
+            rec = resolve_genes(p["receptor"])
+            if lig is None or rec is None:
+                continue
+            kept.append({**p, "ligand": lig, "receptor": rec})
+        if not kept:
+            raise ValueError(
+                "No ligand-receptor pairs have all genes present and expressed "
+                f"in >= {min_cells} cells. The bundled database uses human "
+                "(UPPERCASE) gene symbols, matched case-insensitively to your "
+                "data; check that your dataset's gene names are standard symbols "
+                "(e.g. Pdgfb / PDGFB) and lower min_cells if your data is sparse."
+            )
+
+        n_dropped_capped = 0
+        if len(kept) > max_pairs:
+            # Prioritize pairs by total expression of their genes (most-expressed
+            # first) so the cap keeps the most informative interactions.
+            def expr_weight(p: dict[str, Any]) -> float:
+                idx = [var_index[g] for g in p["ligand"] + p["receptor"]]
+                return float(per_gene_cells[idx].sum())
+            kept = sorted(kept, key=expr_weight, reverse=True)
+            n_dropped_capped = len(kept) - max_pairs
+            kept = kept[:max_pairs]
+
+        if radius is None:
+            radius = lr.suggest_radius(coords)
+        sections = self._resolve_sections(section_col)
+
+        result = lr.compute_ligrec(
+            Xcsr, list(self.adata.var_names), coords, kept,
+            radius=float(radius), sigma=sigma, recep_smooth=recep_smooth,
+            smooth=smooth, n_perm=n_perm, p_thresh=p_thresh, sections=sections,
+            seed=seed, progress_callback=progress_callback,
+        )
+
+        n_significant = sum(1 for s in result["summary"] if s["n_signif"] > 0)
+        params = {
+            "radius": round(float(radius), 4),
+            "n_perm": n_perm,
+            "min_cells": min_cells,
+            "p_thresh": p_thresh,
+            "recep_smooth": recep_smooth,
+            "smooth": smooth,
+            "section_col": section_col,
+            "gene_subset": gene_subset if isinstance(gene_subset, str) else None,
+        }
+        # Persist the full per-cell score + significance matrices to the AnnData
+        # (cell x interaction) so any interaction can be visualized later without
+        # re-running. .obsm is the right home (N x P); .obsp would be N x N.
+        self.adata.obsm["lrscore"] = np.asarray(result["scores"], dtype=np.float32)
+        self.adata.obsm["lrscore_significant"] = np.asarray(
+            result["significant"], dtype=np.uint8
+        )
+        self.adata.uns["lrscore"] = {
+            "interactions": list(result["interactions"]),
+            "pairs": [
+                {"interaction": p["interaction"], "ligand": p["ligand"],
+                 "receptor": p["receptor"], "type": p["type"]}
+                for p in result["pairs"]
+            ],
+            "summary": result["summary"],
+            "params": params,
+            "n_dropped_capped": n_dropped_capped,
+        }
+        return {
+            "summary": result["summary"],
+            "params": params,
+            "n_tested": len(kept),
+            "n_significant": n_significant,
+            "n_dropped_capped": n_dropped_capped,
+            "interactions": list(result["interactions"]),
+        }
+
+    def get_ligrec_result(self) -> dict[str, Any] | None:
+        """Return the stored ligand-receptor result for re-selection, or None.
+
+        Lets the UI re-open the tool and pick different interactions to visualize
+        without recomputing, as long as scoring parameters are unchanged.
+        """
+        stored = self.adata.uns.get("lrscore")
+        if stored is None or "lrscore" not in self.adata.obsm:
+            return None
+        scores = self.adata.obsm["lrscore"]
+        n_cells = scores.shape[0]
+        summary = list(stored.get("summary", []))
+        return {
+            "summary": summary,
+            "params": dict(stored.get("params", {})),
+            "interactions": list(stored.get("interactions", [])),
+            "n_tested": len(summary),
+            "n_significant": sum(1 for s in summary if s.get("n_signif", 0) > 0),
+            "n_dropped_capped": int(stored.get("n_dropped_capped", 0)),
+            "n_cells": int(n_cells),
+        }
+
+    def finalize_ligrec(
+        self,
+        interactions: list[str],
+        write_significance: bool = False,
+    ) -> dict[str, Any]:
+        """Phase 2: write selected interactions' score columns to .obs.
+
+        Reads from the persisted ``.obsm['lrscore']`` / ``.uns['lrscore']`` so it
+        can be called any number of times after one prepare_ligrec run.
+
+        Args:
+            interactions: Interaction ids to write as .obs columns.
+            write_significance: Also write a categorical significant/ns column.
+
+        Returns:
+            Dict with written column names and annotation_key (first score column).
+        """
+        stored = self.adata.uns.get("lrscore")
+        if stored is None or "lrscore" not in self.adata.obsm:
+            raise ValueError("No ligand-receptor result found; run the analysis first")
+        index = {it: i for i, it in enumerate(stored["interactions"])}
+        pair_by = {p["interaction"]: p for p in stored["pairs"]}
+        scores = self.adata.obsm["lrscore"]
+        signif = self.adata.obsm.get("lrscore_significant")
+
+        written: list[str] = []
+        first_key: str | None = None
+        for it in interactions:
+            if it not in index:
+                continue
+            pr = pair_by[it]
+            key = self._ligrec_obs_key(
+                "_".join(pr["ligand"]), "_".join(pr["receptor"])
+            )
+            self.adata.obs[key] = np.asarray(scores[:, index[it]], dtype=float)
+            written.append(key)
+            if first_key is None:
+                first_key = key
+            if write_significance and signif is not None:
+                sig = np.asarray(signif[:, index[it]]) > 0
+                sig_key = f"{key}_sig"
+                self.adata.obs[sig_key] = pd.Categorical(
+                    np.where(sig, "significant", "ns"),
+                    categories=["ns", "significant"],
+                )
+                written.append(sig_key)
+
+        if first_key is None:
+            raise ValueError("None of the requested interactions are in this result")
+
+        result = {"written": written, "annotation_key": first_key}
+        self._log_action("ligrec", {
+            "interactions": interactions,
+            "write_significance": write_significance,
+        }, result)
         return result
 
     def get_spatially_variable_genes(

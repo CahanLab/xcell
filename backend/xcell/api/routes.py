@@ -1098,6 +1098,12 @@ class ClusterGeneSetRequest(BaseModel):
     # When True, restrict the clustered genes to those visible under the active
     # .var gene mask (no-op if no mask is active).
     use_gene_mask: bool = False
+    # method='auto' (co-expression modules) knobs; ignored by other methods.
+    metric: str = "bicor"            # 'bicor' | 'pearson' | 'spearman'
+    min_genes: int = 5               # min genes per surviving module
+    merge_threshold: float = 0.8     # eigengene-corr above which modules merge
+    purity_threshold: float = 0.5    # eigengene PVE below which a module splits
+    max_split_depth: int = 2         # recursion cap on splitting
 
 
 class MarkerGeneEntry(BaseModel):
@@ -2729,6 +2735,11 @@ def cluster_gene_set_route(req: ClusterGeneSetRequest, dataset: str | None = Que
             min_samples=req.min_samples,
             layer=req.layer,
             use_gene_mask=req.use_gene_mask,
+            metric=req.metric,
+            min_genes=req.min_genes,
+            merge_threshold=req.merge_threshold,
+            purity_threshold=req.purity_threshold,
+            max_split_depth=req.max_split_depth,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

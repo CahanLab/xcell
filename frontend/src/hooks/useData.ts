@@ -35,10 +35,16 @@ export interface TaskStatus {
   status: 'running' | 'completed' | 'cancelled' | 'error'
   result?: Record<string, unknown>
   error?: string
+  progress?: number  // 0..1 fraction, if the task reports it
+  message?: string  // human-readable progress message
 }
 
 /** Poll a background task until it reaches a terminal state. */
-export async function pollTask(taskId: string, slot?: DatasetSlot): Promise<TaskStatus> {
+export async function pollTask(
+  taskId: string,
+  slot?: DatasetSlot,
+  onProgress?: (status: TaskStatus) => void
+): Promise<TaskStatus> {
   const POLL_INTERVAL = 1000
   const MAX_RETRIES = 3
 
@@ -53,6 +59,7 @@ export async function pollTask(taskId: string, slot?: DatasetSlot): Promise<Task
       if (status.status !== 'running') {
         return status
       }
+      onProgress?.(status)
     } catch (err) {
       retries++
       if (retries >= MAX_RETRIES) {
@@ -1412,6 +1419,50 @@ export async function mergeObsLabels(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ labels, new_label: newLabel }),
+    }
+  )
+}
+
+export type TransferRenameMode = 'replace' | 'parent_prefix' | 'custom_prefix'
+
+export interface TransferObsLabelsParams {
+  targetColumn: string
+  sourceColumn: string
+  outColumn: string
+  renameMode: TransferRenameMode
+  sep?: string
+  prefix?: string
+  unassignedValues?: string[]
+}
+
+export interface TransferObsLabelsResult {
+  out_column: string
+  target_column: string
+  source_column: string
+  n_overridden: number
+  n_kept: number
+  n_new_labels: number
+  categories: string[]
+}
+
+export async function transferObsLabels(
+  params: TransferObsLabelsParams,
+  slot?: DatasetSlot
+): Promise<TransferObsLabelsResult> {
+  return fetchJson<TransferObsLabelsResult>(
+    appendDataset(`${API_BASE}/obs/transfer_labels`, slot),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target_column: params.targetColumn,
+        source_column: params.sourceColumn,
+        out_column: params.outColumn,
+        rename_mode: params.renameMode,
+        sep: params.sep ?? '.',
+        prefix: params.prefix ?? '',
+        unassigned_values: params.unassignedValues ?? null,
+      }),
     }
   )
 }

@@ -411,6 +411,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         custom: true,
         params: [],
       },
+      ligrec: {
+        label: 'Ligand-Receptor',
+        description: 'Detect ligand-receptor signaling at cellular resolution (CytoSignal-style). Scores each cell for each L-R interaction from a spatial neighborhood, tests significance with a permutation null, and ranks interactions. Opens the Ligand-Receptor tool.',
+        prerequisites: ['has_spatial'],
+        custom: true,
+        params: [],
+      },
     },
   },
 }
@@ -624,7 +631,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2158,6 +2165,13 @@ export default function ScanpyModal() {
               onClick={() => { setDefineSectionsOpen(true); setScanpyModalOpen(false) }}
             >
               Open Define Sections…
+            </button>
+          ) : selectedFunction === 'ligrec' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setLigRecModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Ligand-Receptor tool…
             </button>
           ) : (
             <button

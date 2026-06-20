@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.stats import rankdata
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import squareform
+from sklearn.metrics import silhouette_score
 
 _METRICS = ("bicor", "pearson", "spearman")
 
@@ -106,3 +109,27 @@ def _module_eigengene(profiles: np.ndarray) -> np.ndarray:
     if norm > 0:
         eg = eg / norm
     return eg
+
+
+def _auto_cut_hierarchical(D: np.ndarray, k_max: int = 20) -> np.ndarray:
+    """Average-linkage clustering, K chosen by max silhouette over the distance.
+
+    Returns an integer label per gene. Always yields a partition (every gene
+    assigned); the refinement pass corrects under-/over-segmentation.
+    """
+    g = D.shape[0]
+    if g <= 2:
+        return np.zeros(g, dtype=int)
+    condensed = squareform(D, checks=False)
+    Z = linkage(condensed, method="average")
+    k_hi = min(k_max, g - 1)
+    best_labels = np.zeros(g, dtype=int)
+    best_score = -np.inf
+    for k in range(2, k_hi + 1):
+        labels = fcluster(Z, t=k, criterion="maxclust")
+        if len(set(labels)) < 2:
+            continue
+        score = silhouette_score(D, labels, metric="precomputed")
+        if score > best_score:
+            best_score, best_labels = score, labels
+    return best_labels

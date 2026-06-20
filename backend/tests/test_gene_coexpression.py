@@ -110,3 +110,28 @@ def test_eigengene_tracks_underlying_factor():
     fc = (f - f.mean()) / np.linalg.norm(f - f.mean())
     assert abs(float(eg @ fc)) > 0.9
     assert np.linalg.norm(eg) == pytest.approx(1.0, abs=1e-8)
+
+
+from sklearn.metrics import adjusted_rand_score
+
+
+def test_base_cut_recovers_separated_modules():
+    rng = np.random.default_rng(20)
+    X, labels = _profiles_from_factors(
+        rng,
+        [(rng.standard_normal(200), 12),
+         (rng.standard_normal(200), 10),
+         (rng.standard_normal(200), 8)],
+        noise=0.12,
+    )
+    D = gc.distance_matrix(X, metric="pearson")
+    found = gc._auto_cut_hierarchical(D)
+    assert len(set(found)) >= 2
+    assert adjusted_rand_score(labels, found) > 0.7
+
+
+def test_base_cut_trivial_for_two_genes():
+    rng = np.random.default_rng(21)
+    D = gc.distance_matrix(rng.standard_normal((2, 50)), metric="pearson")
+    found = gc._auto_cut_hierarchical(D)
+    assert found.shape == (2,)

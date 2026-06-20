@@ -199,3 +199,36 @@ def merge_similar_modules(modules, Z, *, merge_threshold):
         modules = [m for k, m in enumerate(modules) if k not in (bi, bj)]
         modules.append(merged)
     return modules
+
+
+def _unit(vec: np.ndarray) -> np.ndarray:
+    v = vec - vec.mean()
+    n = np.linalg.norm(v)
+    return v / n if n > 0 else v
+
+
+def prune_small_modules(modules, Z, *, min_genes, reassign_floor, extra_orphans=()):
+    """Drop modules smaller than min_genes; reassign their genes (and any
+    extra_orphans, e.g. base-clustering noise / zero-variance genes) to the
+    nearest surviving module whose eigengene correlation >= reassign_floor,
+    else collect them into the returned unassigned list.
+
+    Returns (kept_modules, unassigned_gene_indices).
+    """
+    modules = [np.asarray(m) for m in modules]
+    keep = [m for m in modules if len(m) >= min_genes]
+    orphans = [int(i) for m in modules if len(m) < min_genes for i in m]
+    orphans += [int(i) for i in extra_orphans]
+    if not keep:
+        return [], sorted(set(orphans))
+    egs = [_module_eigengene(Z[m]) for m in keep]
+    unassigned = []
+    for gi in orphans:
+        z = _unit(Z[gi])
+        cors = [float(z @ eg) for eg in egs]
+        best = int(np.argmax(cors))
+        if cors[best] >= reassign_floor:
+            keep[best] = np.append(keep[best], gi)
+        else:
+            unassigned.append(gi)
+    return keep, sorted(set(unassigned))

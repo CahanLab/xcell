@@ -188,3 +188,44 @@ def test_merge_keeps_distinct_modules_apart():
         [np.arange(6), np.arange(6, 12)], Z, merge_threshold=0.8
     )
     assert len(out) == 2
+
+
+def test_prune_sets_aside_uncorrelated_small_module():
+    rng = np.random.default_rng(50)
+    big = (rng.standard_normal(200), 10)
+    X, _ = _profiles_from_factors(rng, [big], noise=0.1)
+    # two extra pure-noise genes, uncorrelated with the big module
+    noise = rng.standard_normal((2, 200))
+    Z = gc._standardize_profiles(np.vstack([X, noise]), "pearson")
+    modules = [np.arange(10), np.array([10, 11])]
+    kept, unassigned = gc.prune_small_modules(
+        modules, Z, min_genes=5, reassign_floor=0.5
+    )
+    assert len(kept) == 1
+    assert sorted(unassigned) == [10, 11]
+
+
+def test_prune_reassigns_correlated_small_module_genes():
+    rng = np.random.default_rng(51)
+    f = rng.standard_normal(200)
+    X, _ = _profiles_from_factors(rng, [(f, 10)], noise=0.1)
+    extra = (f + rng.standard_normal((2, 200)) * 0.1)  # correlated with big mod
+    Z = gc._standardize_profiles(np.vstack([X, extra]), "pearson")
+    modules = [np.arange(10), np.array([10, 11])]
+    kept, unassigned = gc.prune_small_modules(
+        modules, Z, min_genes=5, reassign_floor=0.5
+    )
+    assert len(kept) == 1
+    assert unassigned == []
+    assert sorted(kept[0].tolist()) == list(range(12))
+
+
+def test_prune_extra_orphans_routed_too():
+    rng = np.random.default_rng(52)
+    X, _ = _profiles_from_factors(rng, [(rng.standard_normal(200), 10)], noise=0.1)
+    orphan = rng.standard_normal((1, 200))
+    Z = gc._standardize_profiles(np.vstack([X, orphan]), "pearson")
+    kept, unassigned = gc.prune_small_modules(
+        [np.arange(10)], Z, min_genes=5, reassign_floor=0.5, extra_orphans=[10]
+    )
+    assert unassigned == [10]

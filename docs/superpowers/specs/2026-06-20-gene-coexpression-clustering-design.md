@@ -72,7 +72,32 @@ branches are left intact for power users. Pipeline:
 - Zero-variance / degenerate genes (constant across the chosen cells) are
   dropped up front with a clear error only if too few remain.
 
-### 3.2 Auto-K base clustering
+### 3.1b Connectivity gate (grey module) — added 2026-06-20
+
+*Motivation:* on real data (e.g. NABA COLLAGENS over an E11 limb), most genes in
+a set have **no co-expression partner** — they are not part of any module. The
+silhouette base (3.2) was being *gamed* by these: isolating each orphan into its
+own singleton raises the mean silhouette (a size-1 cluster scores 0, while
+pulling a noise gene out of a real cluster cleans up that cluster), so the sweep
+climbed to absurd K (e.g. K=18 with 14 singletons). The modules were then
+moderately impure and the refinement knobs never engaged.
+
+*Fix:* before base clustering, compute each (valid) gene's **best off-diagonal
+correlation** `r_max`. Genes with `r_max < min_module_corr` co-express with
+nothing → they go straight to the **grey / unassigned** module (folded into the
+prune orphan pool). Only the **connected** genes are passed to base clustering,
+so the silhouette cut reflects real structure and is singleton-free.
+
+- Parameter `min_module_corr` (default **0.2**); `_connected_mask(C, floor)`.
+- If fewer than `max(min_genes, 2)` genes are connected, return everything as a
+  single (unassigned) group — no honest module exists.
+- This is WGCNA's "grey module" idea, and it makes `min_module_corr` the primary
+  purity/coverage lever (raise → purer/fewer modules + more unassigned; lower →
+  cluster more genes). Validated on COLLAGENS: at 0.2 it recovers the fibrillar
+  (Col1/3/5/6/12), cartilage (Col2/9/11) and basement-membrane (Col4a1/2,15,18)
+  programs and sets aside the ~21 non-co-expressed collagens.
+
+### 3.2 Auto-K base clustering (over the *connected* genes)
 - **Average-linkage hierarchical clustering with a silhouette-selected cut.**
   Build `linkage(squareform(D), method='average')`, then sweep `K = 2..K_max`
   (`K_max = min(20, g-1)`), cut with `fcluster(criterion='maxclust')`, and keep

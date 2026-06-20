@@ -290,6 +290,30 @@ def benjamini_hochberg(pvals: np.ndarray) -> np.ndarray:
     return out
 
 
+def section_permutation(
+    n_cells: int,
+    sections: np.ndarray | None,
+    rng: np.random.Generator,
+    groups: list[np.ndarray] | None = None,
+) -> np.ndarray:
+    """A permutation of cell indices for the spatial null.
+
+    With no sections, a plain global shuffle. With ``sections``, each cell maps
+    to a random cell in the SAME section (a section-stratified null), so the
+    permutation never mixes ligand expression across sections. ``groups`` may be
+    precomputed (one index array per section) to avoid recomputing per call.
+    """
+    if sections is None:
+        return rng.permutation(n_cells)
+    if groups is None:
+        sec = np.asarray(sections)
+        groups = [np.where(sec == s)[0] for s in np.unique(sec)]
+    perm = np.arange(n_cells)
+    for idx in groups:
+        perm[idx] = idx[rng.permutation(len(idx))]
+    return perm
+
+
 def _resolve_pair_indices(
     pairs: list[dict[str, Any]], var_index: dict[str, int]
 ) -> tuple[list[dict[str, Any]], list[np.ndarray], list[np.ndarray]]:
@@ -358,11 +382,10 @@ def compute_ligrec(
     if not kept:
         raise ValueError("No ligand-receptor pairs have all genes present in the data")
 
-    # Full library size from ALL genes (counts), then densify the used columns.
+    # Full library size from ALL genes (counts).
     Xcsr = X.tocsr() if sparse.issparse(X) else np.asarray(X, float)
     lib = (np.asarray(Xcsr.sum(axis=1)).ravel() if sparse.issparse(Xcsr)
            else Xcsr.sum(axis=1)).astype(float)
-    Xd = Xcsr.toarray() if sparse.issparse(Xcsr) else np.asarray(Xcsr, float)
 
     if max_radius is None:
         max_radius = radius
@@ -379,31 +402,54 @@ def compute_ligrec(
     G_dt = to_mean_graph(A_dt_bin)
     A_smooth = A_gauss
 
-    # Group pair columns by mode so each block shares one ligand graph.
+    P = len(kept)
     diff_cols = [k for k, pr in enumerate(kept) if pr["type"] == "diffusion"]
     cont_cols = [k for k, pr in enumerate(kept) if pr["type"] == "contact"]
 
-    def _score(perm: np.ndarray | None = None) -> np.ndarray:
-        # The null shuffles the cell axis of the ligand imputation only; each
-        # cell keeps its own receptor (CytoSignal permuteLR). perm=None -> real.
-        if perm is None:
-            Xl, libl = Xd, lib
-        else:
-            Xl, libl = Xd[perm], lib[perm]
-        out = np.zeros((n_cells, len(kept)), dtype=float)
+    # Reduce the dense matrix to just the genes used by the kept pairs and remap
+    # subunit indices into that reduced space. Every imputation matmul then runs
+    # on (cells x used-genes) instead of (cells x all-genes) -- the dominant
+    # speedup for gene panels / whole-transcriptome data. Numerically identical:
+    # A @ X[:, used] == (A @ X)[:, used].
+    used = sorted({int(g) for p in range(P) for g in
+                   list(lig_idx[p]) + list(rec_idx[p])})
+    col_of = {g: j for j, g in enumerate(used)}
+    Xsub = (Xcsr[:, used].toarray() if sparse.issparse(Xcsr)
+            else np.asarray(Xcsr, float)[:, used])
+    lig_r = [np.array([col_of[int(g)] for g in lig_idx[p]], int) for p in range(P)]
+    rec_r = [np.array([col_of[int(g)] for g in rec_idx[p]], int) for p in range(P)]
+
+    # The receptor side is fixed across permutations (each cell keeps its own
+    # receptor), so precompute the per-cell receptor subunit sums once.
+    if recep_smooth:
+        Rbar = np.asarray(G_dt @ normalize_log1p(np.asarray(G_dt @ Xsub),
+                                                 np.asarray(G_dt @ lib)))
+    else:
+        Rbar = np.asarray(G_dt @ normalize_log1p(Xsub, lib))
+    rec_sum = np.empty((n_cells, P), dtype=float)
+    for p in range(P):
+        rec_sum[:, p] = Rbar[:, rec_r[p]].sum(axis=1)
+
+    def _ligand_sums(perm: np.ndarray | None) -> np.ndarray:
+        Xl = Xsub if perm is None else Xsub[perm]
+        libl = lib if perm is None else lib[perm]
+        out = np.zeros((n_cells, P), dtype=float)
         if diff_cols:
-            out[:, diff_cols] = score_block(
-                Xl, libl, A_gauss, G_dt,
-                [lig_idx[k] for k in diff_cols], [rec_idx[k] for k in diff_cols],
-                recep_smooth=recep_smooth, X_rec=Xd, lib_rec=lib,
-            )
+            Lbar = np.asarray(G_dt @ normalize_log1p(
+                np.asarray(A_gauss @ Xl), np.asarray(A_gauss @ libl)))
+            for p in diff_cols:
+                out[:, p] = Lbar[:, lig_r[p]].sum(axis=1)
         if cont_cols:
-            out[:, cont_cols] = score_block(
-                Xl, libl, A_dt_w, G_dt,
-                [lig_idx[k] for k in cont_cols], [rec_idx[k] for k in cont_cols],
-                recep_smooth=recep_smooth, X_rec=Xd, lib_rec=lib,
-            )
+            Lbar = np.asarray(G_dt @ normalize_log1p(
+                np.asarray(A_dt_w @ Xl), np.asarray(A_dt_w @ libl)))
+            for p in cont_cols:
+                out[:, p] = Lbar[:, lig_r[p]].sum(axis=1)
         return out
+
+    def _score(perm: np.ndarray | None = None) -> np.ndarray:
+        # Score = (imputed-ligand subunit sum) x (receptor subunit sum). The null
+        # permutes the ligand neighborhood only; the receptor side is precomputed.
+        return _ligand_sums(perm) * rec_sum
 
     def _smooth(M: np.ndarray) -> np.ndarray:
         return np.asarray(A_smooth @ M) if smooth else M
@@ -416,14 +462,18 @@ def compute_ligrec(
     scores = _smooth(_score())
 
     # Spatial permutation null: shuffle which cells supply ligand to each
-    # neighborhood (positions independent), keep receptors fixed, pool per pair.
+    # neighborhood (within section if sections given), keep receptors fixed.
     rng = np.random.default_rng(seed)
-    P = len(kept)
+    if sections is not None:
+        sec_arr = np.asarray(sections)
+        section_groups = [np.where(sec_arr == s)[0] for s in np.unique(sec_arr)]
+    else:
+        section_groups = None
     n_perm = max(1, n_perm)
     null_pool = [np.empty(0) for _ in range(P)]
     null_cols = [[] for _ in range(P)]
     for t in range(n_perm):
-        perm = rng.permutation(n_cells)
+        perm = section_permutation(n_cells, sections, rng, groups=section_groups)
         ns = _smooth(_score(perm))
         for p in range(P):
             null_cols[p].append(ns[:, p])

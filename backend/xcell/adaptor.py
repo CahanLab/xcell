@@ -6571,6 +6571,7 @@ class DataAdaptor:
         db_path: str | None = None,
         seed: int = 0,
         progress_callback: Any = None,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Phase 1 of ligand-receptor scoring: score + test every usable pair.
 
@@ -6613,6 +6614,14 @@ class DataAdaptor:
                 return g
             return upper_to_var.get(str(g).upper())
 
+        # Optional gene subset (e.g. highly/spatially-variable .var boolean
+        # column, an explicit gene list, or a column-combination spec): restrict
+        # eligible genes so only pairs whose subunits all fall in the subset run.
+        allowed: set[str] | None = None
+        if gene_subset is not None:
+            mask, _subset_type, _ = self._resolve_gene_mask(gene_subset)
+            allowed = {str(g) for g, keep in zip(var_names_list, mask) if keep}
+
         X = self.adata.X
         Xcsr = X.tocsr() if hasattr(X, "tocsr") else np.asarray(X)
         if hasattr(Xcsr, "getnnz"):
@@ -6621,12 +6630,14 @@ class DataAdaptor:
             per_gene_cells = (np.asarray(Xcsr) > 0).sum(axis=0)
 
         def resolve_genes(genes: list[str]) -> list[str] | None:
-            """Resolve subunit genes to actual var names; None if any is missing
-            or not expressed in >= min_cells cells."""
+            """Resolve subunit genes to actual var names; None if any is missing,
+            not expressed in >= min_cells cells, or excluded by the gene subset."""
             actual: list[str] = []
             for g in genes:
                 a = resolve_gene(g)
                 if a is None or per_gene_cells[var_index[a]] < min_cells:
+                    return None
+                if allowed is not None and a not in allowed:
                     return None
                 actual.append(a)
             return actual
@@ -6678,6 +6689,7 @@ class DataAdaptor:
             "recep_smooth": recep_smooth,
             "smooth": smooth,
             "section_col": section_col,
+            "gene_subset": gene_subset if isinstance(gene_subset, str) else None,
         }
         # Persist the full per-cell score + significance matrices to the AnnData
         # (cell x interaction) so any interaction can be visualized later without

@@ -2555,6 +2555,7 @@ class LigRecPrepareRequest(BaseModel):
     types: list[str] | None = None
     section_col: str | None = None
     max_pairs: int = 400
+    gene_subset: str | None = None
 
 
 class LigRecFinalizeRequest(BaseModel):
@@ -2606,6 +2607,7 @@ def ligrec_prepare(request: LigRecPrepareRequest, dataset: str | None = Query(No
                 types=request.types,
                 section_col=request.section_col,
                 max_pairs=request.max_pairs,
+                gene_subset=request.gene_subset,
                 progress_callback=report,
             )
 

@@ -131,6 +131,22 @@ def test_case_insensitive_gene_matching_for_mouse():
     assert "Pdgfb" in fin["annotation_key"]  # dataset gene name, not DB's
 
 
+def test_gene_subset_restricts_eligible_genes():
+    # A .var boolean column marks only some genes as "selected". Pairs needing a
+    # non-selected gene are dropped.
+    ad = _spatial_adata()
+    ad.var["selected"] = [True, True, False, True]  # Rfar (col 2) excluded
+    a = DataAdaptor("x.h5ad", adata=ad)
+    res = a.prepare_ligrec(
+        pairs=_PAIRS, radius=4.0, n_perm=40, min_cells=2, seed=1,
+        gene_subset="selected",
+    )
+    interactions = {s["interaction"] for s in res["summary"]}
+    assert "L->Rnear" in interactions       # L + Rnear both selected
+    assert "L->Rfar" not in interactions    # Rfar not selected -> dropped
+    assert "N->Rnear" in interactions
+
+
 def test_min_cells_filters_unexpressed_pairs():
     # A pair whose gene is expressed in too few cells is dropped.
     a = DataAdaptor("x.h5ad", adata=_spatial_adata())

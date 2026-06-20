@@ -49,6 +49,8 @@ const TIPS: Record<string, string> = {
   recep_smooth: 'Average the receptor over direct spatial neighbors. Turn on for sparse / noisy data.',
   types: 'Diffusion = secreted ligands (Gaussian neighborhood). Contact = membrane-bound ligands (direct Delaunay neighbors). The database tags each pair.',
   max_pairs: 'Cap on the number of interactions scored; the most-expressed pairs are kept. Raise for a fuller scan (slower).',
+  section_col: 'Optional categorical .obs column of tissue sections. When set, neighborhoods and the permutation null never cross section boundaries. Leave as one tissue if your sample is a single section.',
+  gene_subset: 'Restrict eligible genes to a boolean .var column (e.g. highly_variable, spatially_variable). Off by default — L-R scoring normally wants all L-R genes regardless of variability.',
 }
 
 function Field({ label, tip, children }: { label: string; tip: string; children: React.ReactNode }) {
@@ -81,6 +83,10 @@ export default function LigRecModal() {
   const [maxPairs, setMaxPairs] = useState('400')
   const [signalType, setSignalType] = useState<'both' | 'diffusion' | 'contact'>('both')
   const [recepSmooth, setRecepSmooth] = useState(false)
+  const [sectionCol, setSectionCol] = useState('')
+  const [geneSubset, setGeneSubset] = useState('')
+  const [sectionOptions, setSectionOptions] = useState<string[]>([])
+  const [geneSubsetOptions, setGeneSubsetOptions] = useState<{ name: string; n_true: number }[]>([])
 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -127,6 +133,22 @@ export default function LigRecModal() {
         setPhase('results')
       })
       .catch(() => {})
+    // Categorical .obs columns -> optional Section column.
+    fetch(appendDataset(`${API_BASE}/obs/summaries`))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !Array.isArray(d)) return
+        setSectionOptions(d.filter((s: { dtype: string }) => s.dtype === 'category').map((s: { name: string }) => s.name))
+      })
+      .catch(() => {})
+    // Boolean .var columns (e.g. highly_variable) -> optional gene subset.
+    fetch(appendDataset(`${API_BASE}/var/boolean_columns`))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !Array.isArray(d)) return
+        setGeneSubsetOptions(d as { name: string; n_true: number }[])
+      })
+      .catch(() => {})
     return () => { cancelled = true }
   }, [isOpen])
 
@@ -152,6 +174,8 @@ export default function LigRecModal() {
       if (nPerm.trim()) body.n_perm = parseInt(nPerm, 10)
       if (minCells.trim()) body.min_cells = parseInt(minCells, 10)
       if (signalType !== 'both') body.types = [signalType]
+      if (sectionCol) body.section_col = sectionCol
+      if (geneSubset) body.gene_subset = geneSubset
 
       const resp = await fetch(appendDataset(`${API_BASE}/scanpy/ligrec/prepare`), {
         method: 'POST',
@@ -305,6 +329,28 @@ export default function LigRecModal() {
                 </Field>
                 <Field label="Max interactions" tip={TIPS.max_pairs}>
                   <input type="number" value={maxPairs} onChange={(e) => setMaxPairs(e.target.value)} style={numInput} />
+                </Field>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 16 }}>
+              <div style={{ flex: 1 }}>
+                <Field label="Section column" tip={TIPS.section_col}>
+                  <select value={sectionCol} onChange={(e) => setSectionCol(e.target.value)} style={numInput}>
+                    <option value="">— treat as one tissue —</option>
+                    {sectionOptions.map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div style={{ flex: 1 }}>
+                <Field label="Gene subset" tip={TIPS.gene_subset}>
+                  <select value={geneSubset} onChange={(e) => setGeneSubset(e.target.value)} style={numInput}>
+                    <option value="">All genes</option>
+                    {geneSubsetOptions.map((c) => (
+                      <option key={c.name} value={c.name}>{c.name} ({c.n_true.toLocaleString()})</option>
+                    ))}
+                  </select>
                 </Field>
               </div>
             </div>

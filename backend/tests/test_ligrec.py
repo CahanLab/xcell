@@ -188,3 +188,62 @@ def test_compute_ligrec_contact_pairs_use_delaunay():
     # contact mode still computes a finite score field
     assert np.isfinite(res["scores"]).all()
     assert res["scores"].shape == (X.shape[0], 1)
+
+
+# --- within-section permutation -------------------------------------------
+
+def test_section_permutation_stays_within_section():
+    sections = np.array([0, 0, 0, 1, 1, 1, 1])
+    rng = np.random.default_rng(0)
+    perm = ligrec.section_permutation(len(sections), sections, rng)
+    # a valid permutation
+    assert sorted(perm.tolist()) == list(range(len(sections)))
+    # every cell maps to a cell in the same section
+    assert (sections[perm] == sections).all()
+
+
+def test_section_permutation_none_is_global():
+    rng = np.random.default_rng(0)
+    perm = ligrec.section_permutation(5, None, rng)
+    assert sorted(perm.tolist()) == [0, 1, 2, 3, 4]
+
+
+def test_compute_ligrec_section_aware_no_cross_section_signal():
+    # Two well-separated sections. Ligand source + matching receptor live in
+    # section A; a decoy receptor sits in section B (no ligand reaches across the
+    # gap). With section awareness, only the within-section pair should fire.
+    rng = np.random.default_rng(0)
+    # Section A: the proven 40x40 field (sparse source -> decisive signal).
+    wA = 40
+    xs, ys = np.meshgrid(np.arange(wA), np.arange(wA))
+    secA = np.column_stack([xs.ravel(), ys.ravel()]).astype(float)
+    # Section B: a small grid placed far away to host the decoy receptor.
+    wB = 10
+    xb, yb = np.meshgrid(np.arange(wB), np.arange(wB))
+    secB = np.column_stack([xb.ravel(), yb.ravel()]).astype(float) + np.array([300.0, 0.0])
+    coords = np.vstack([secA, secB])
+    nA, nB = secA.shape[0], secB.shape[0]
+    sections = np.array(["A"] * nA + ["B"] * nB)
+
+    cA = np.array([20.0, 20.0])
+    dA = np.linalg.norm(secA - cA, axis=1)
+    # Section A: a dense ligand source + a broadly-expressed receptor (broad
+    # receptors + housekeeping keep library sizes stable, like real data).
+    L = np.concatenate([np.where(dA <= 2.0, 20.0, 0.0), np.zeros(nB)])
+    Rin = np.concatenate([12.0 + rng.poisson(2.0, nA), np.zeros(nB)])
+    # Decoy receptor only in section B, where the ligand never reaches.
+    Rdecoy = np.concatenate([np.zeros(nA), 12.0 + rng.poisson(2.0, nB)])
+    HK = 20.0 + rng.poisson(5.0, nA + nB)  # housekeeping -> stable lib size
+    X = np.column_stack([L, Rin, Rdecoy, HK])
+    var_names = ["L", "Rin", "Rdecoy", "HK"]
+    pairs = [
+        {"interaction": "L->Rin", "ligand": ["L"], "receptor": ["Rin"], "type": "diffusion"},
+        {"interaction": "L->Rdecoy", "ligand": ["L"], "receptor": ["Rdecoy"], "type": "diffusion"},
+    ]
+    res = ligrec.compute_ligrec(
+        X, var_names, coords, pairs, radius=4.0, n_perm=150, p_thresh=0.05,
+        sections=sections, seed=1,
+    )
+    by = {s["interaction"]: s for s in res["summary"]}
+    assert by["L->Rin"]["n_signif"] > 0
+    assert by["L->Rdecoy"]["n_signif"] == 0

@@ -3,6 +3,12 @@
 **Date:** 2026-06-20
 **Branch:** `improve-gene-coexpression-clustering`
 **Entry point:** Genes panel → gene set "…" → **Cluster genes** → produces new gene sets.
+**Status:** Implemented 2026-06-20 (plan
+`docs/superpowers/plans/2026-06-20-gene-coexpression-clustering.md`). New
+`backend/xcell/gene_coexpression.py` + `method='auto'` in `cluster_gene_set`,
+route params, and the modal's "Auto" default. 119 backend tests pass; frontend
+tsc + build clean; verified live end-to-end (UI → API → backend produced module
+gene sets on a real `.h5ad`).
 
 ---
 

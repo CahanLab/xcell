@@ -229,3 +229,88 @@ def test_prune_extra_orphans_routed_too():
         [np.arange(10)], Z, min_genes=5, reassign_floor=0.5, extra_orphans=[10]
     )
     assert unassigned == [10]
+
+
+def _names(n):
+    return [f"g{i}" for i in range(n)]
+
+
+def test_auto_recovers_modules_and_partitions_all_genes():
+    rng = np.random.default_rng(60)
+    X, labels = _profiles_from_factors(
+        rng,
+        [(rng.standard_normal(220), 12),
+         (rng.standard_normal(220), 10),
+         (rng.standard_normal(220), 8)],
+        noise=0.12,
+    )
+    n_struct = X.shape[0]
+    noise = rng.standard_normal((8, 220))      # 8 uncorrelated noise genes
+    tiny_f = rng.standard_normal(220)
+    tiny, _ = _profiles_from_factors(rng, [(tiny_f, 2)], noise=0.1)  # 2-gene mod
+    Xall = np.vstack([X, noise, tiny])
+    names = _names(Xall.shape[0])
+
+    out = gc.auto_coexpression_modules(
+        Xall, names, metric="pearson", min_genes=5,
+        merge_threshold=0.8, purity_threshold=0.6, max_split_depth=2,
+    )
+
+    # every input gene appears exactly once across all returned groups
+    flat = [g for grp in out for g in grp]
+    assert sorted(flat) == sorted(names)
+    assert len(flat) == len(set(flat))
+
+    # the three planted modules are recovered: build a per-gene predicted label
+    # over the structured genes and check agreement.
+    pred = {}
+    for ci, grp in enumerate(out):
+        for g in grp:
+            pred[g] = ci
+    struct_names = names[:n_struct]
+    pred_labels = [pred[g] for g in struct_names]
+    assert adjusted_rand_score(labels.tolist(), pred_labels) > 0.8
+
+
+def test_auto_merges_near_duplicate_planted_modules():
+    rng = np.random.default_rng(61)
+    f = rng.standard_normal(220)
+    X, _ = _profiles_from_factors(rng, [(f, 8), (f, 8)], noise=0.12)
+    names = _names(16)
+    out = gc.auto_coexpression_modules(
+        X, names, metric="pearson", min_genes=4,
+        merge_threshold=0.8, purity_threshold=0.95, max_split_depth=2,
+    )
+    # all 16 co-regulated genes end up in a single module (no unassigned)
+    main = [grp for grp in out if len(grp) >= 4]
+    assert len(main) == 1
+    assert len(main[0]) == 16
+
+
+def test_auto_zero_variance_genes_go_unassigned_not_error():
+    rng = np.random.default_rng(62)
+    X, _ = _profiles_from_factors(rng, [(rng.standard_normal(200), 8)], noise=0.1)
+    flat = np.zeros((1, 200))  # constant gene
+    names = _names(9)
+    out = gc.auto_coexpression_modules(np.vstack([X, flat]), names, metric="pearson")
+    allg = [g for grp in out for g in grp]
+    assert "g8" in allg                       # present, not dropped
+    assert sorted(allg) == sorted(names)
+
+
+def test_auto_bicor_robust_to_outliers():
+    rng = np.random.default_rng(63)
+    facs = [(rng.standard_normal(300), 10), (rng.standard_normal(300), 10)]
+    X, labels = _profiles_from_factors(rng, facs, noise=0.1)
+    # inject outlier cells into a handful of genes
+    for r in (0, 1, 11, 12):
+        for ccell in (10, 90, 180, 260):
+            X[r, ccell] += 25 * (1 if r < 10 else -1)
+    names = _names(X.shape[0])
+    out = gc.auto_coexpression_modules(
+        X, names, metric="bicor", min_genes=4,
+        merge_threshold=0.8, purity_threshold=0.6,
+    )
+    pred = {g: ci for ci, grp in enumerate(out) for g in grp}
+    pred_labels = [pred[n] for n in names]
+    assert adjusted_rand_score(labels.tolist(), pred_labels) >= 0.7

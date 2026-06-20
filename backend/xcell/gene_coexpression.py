@@ -232,3 +232,63 @@ def prune_small_modules(modules, Z, *, min_genes, reassign_floor, extra_orphans=
         else:
             unassigned.append(gi)
     return keep, sorted(set(unassigned))
+
+
+def auto_coexpression_modules(
+    X_genes,
+    gene_names,
+    *,
+    metric: str = "bicor",
+    min_genes: int = 5,
+    merge_threshold: float = 0.8,
+    purity_threshold: float = 0.5,
+    max_split_depth: int = 2,
+    reassign_floor: float = 0.5,
+):
+    """Detect co-expression modules from a (n_genes, n_cells) matrix.
+
+    Pipeline: robust metric -> silhouette-cut base clustering -> split impure
+    -> merge near-duplicates -> prune small (reassign or set aside). Returns a
+    list of gene-name lists, ordered by size descending, with a trailing
+    "unassigned" group last when any genes are left over.
+    """
+    if metric not in _METRICS:
+        raise ValueError(f"Unknown metric: {metric!r}; expected one of {_METRICS}")
+    gene_names = list(gene_names)
+    X_genes = np.asarray(X_genes, dtype=float)
+    n_genes = X_genes.shape[0]
+
+    # 1. set aside zero-variance genes (cannot be co-expressed meaningfully)
+    var = X_genes.var(axis=1)
+    valid_idx = np.where(var > 1e-12)[0]
+    zero_var_idx = np.where(var <= 1e-12)[0].tolist()
+
+    if len(valid_idx) < max(min_genes, 2):
+        # too few usable genes to form a module: everything is one group
+        return [gene_names]
+
+    Z = np.zeros_like(X_genes)
+    Z[valid_idx] = _standardize_profiles(X_genes[valid_idx], metric)
+
+    # 2. base clustering on the valid genes
+    D = distance_matrix(X_genes[valid_idx], metric)
+    base_labels = _auto_cut_hierarchical(D)
+    modules = [valid_idx[base_labels == lab] for lab in sorted(set(base_labels))]
+
+    # 3. refinement: split -> merge -> prune
+    modules = split_impure_modules(
+        modules, Z, purity_threshold=purity_threshold,
+        min_genes=min_genes, max_split_depth=max_split_depth,
+    )
+    modules = merge_similar_modules(modules, Z, merge_threshold=merge_threshold)
+    modules, unassigned = prune_small_modules(
+        modules, Z, min_genes=min_genes, reassign_floor=reassign_floor,
+        extra_orphans=zero_var_idx,
+    )
+
+    # 4. order by size desc, map to names, append trailing unassigned bucket
+    modules.sort(key=lambda m: len(m), reverse=True)
+    result = [[gene_names[i] for i in sorted(m.tolist())] for m in modules]
+    if unassigned:
+        result.append([gene_names[i] for i in sorted(unassigned)])
+    return result

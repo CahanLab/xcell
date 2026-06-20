@@ -1832,8 +1832,8 @@ export async function createLineEmbedding(
 export async function runClusterGeneSet(
   params: {
     geneNames: string[]
-    method: 'hierarchical' | 'kmeans' | 'dbscan'
-    /** Required for hierarchical / kmeans; ignored for dbscan. */
+    method: 'hierarchical' | 'kmeans' | 'dbscan' | 'auto'
+    /** Required for hierarchical / kmeans; ignored for dbscan / auto. */
     k?: number
     cellContext: 'all' | 'selection' | 'annotation'
     cellIndices?: number[]
@@ -1847,6 +1847,14 @@ export async function runClusterGeneSet(
     layer?: string
     /** Restrict clustered genes to those visible under the active .var mask. */
     useGeneMask?: boolean
+    /** Auto only: robust correlation metric. */
+    metric?: 'bicor' | 'pearson' | 'spearman'
+    /** Auto only: minimum genes per surviving module. */
+    minGenes?: number
+    /** Auto only: eigengene-correlation above which modules merge. */
+    mergeThreshold?: number
+    /** Auto only: eigengene PVE below which a module is split. */
+    purityThreshold?: number
   },
   slot?: DatasetSlot,
 ): Promise<{ clusters: string[][] }> {
@@ -1865,6 +1873,10 @@ export async function runClusterGeneSet(
       min_samples: params.minSamples,
       layer: params.layer,
       use_gene_mask: params.useGeneMask ?? false,
+      metric: params.metric,
+      min_genes: params.minGenes,
+      merge_threshold: params.mergeThreshold,
+      purity_threshold: params.purityThreshold,
     }),
   })
   if (!response.ok) {

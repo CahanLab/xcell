@@ -11,7 +11,7 @@ interface LayerInfo {
 // where `summaries: ObsSummary[]` and each ObsSummary has:
 //   { name: string; dtype: 'category' | 'numeric' | 'string'; categories?: { value: string; count: number }[] }
 
-type Method = 'hierarchical' | 'kmeans' | 'dbscan'
+type Method = 'auto' | 'hierarchical' | 'kmeans' | 'dbscan'
 type CellContext = 'all' | 'selection' | 'annotation'
 
 export default function ClusterGeneSetModal() {
@@ -23,10 +23,14 @@ export default function ClusterGeneSetModal() {
   const addFolderToCategory = useStore((s) => s.addFolderToCategory)
   const { summaries } = useObsSummaries()
 
-  const [method, setMethod] = useState<Method>('hierarchical')
+  const [method, setMethod] = useState<Method>('auto')
   const [k, setK] = useState(3)
   const [eps, setEps] = useState(0.3)
   const [minSamples, setMinSamples] = useState(3)
+  const [metric, setMetric] = useState<'bicor' | 'pearson' | 'spearman'>('bicor')
+  const [minGenes, setMinGenes] = useState(5)
+  const [mergeThreshold, setMergeThreshold] = useState(0.8)
+  const [purityThreshold, setPurityThreshold] = useState(0.5)
   const [cellContext, setCellContext] = useState<CellContext>('all')
   const [useGeneMask, setUseGeneMask] = useState(false)
   const [layer, setLayer] = useState<string>('X')
@@ -47,10 +51,14 @@ export default function ClusterGeneSetModal() {
   // user changes if summaries arrive after the modal is already open.
   useEffect(() => {
     if (!source) return
-    setMethod('hierarchical')
+    setMethod('auto')
     setK(3)
     setEps(0.3)
     setMinSamples(3)
+    setMetric('bicor')
+    setMinGenes(5)
+    setMergeThreshold(0.8)
+    setPurityThreshold(0.5)
     setCellContext('all')
     setUseGeneMask(false)
     setLayer('X')
@@ -105,9 +113,11 @@ export default function ClusterGeneSetModal() {
     (cellContext !== 'annotation' ||
       (annotationColumn !== '' && annotationValues.size > 0)) &&
     (
-      method === 'dbscan'
-        ? eps > 0 && eps <= 2 && minSamples >= 2 && minSamples <= maxMinSamples
-        : k >= 2 && k <= maxK
+      method === 'auto'
+        ? true
+        : method === 'dbscan'
+          ? eps > 0 && eps <= 2 && minSamples >= 2 && minSamples <= maxMinSamples
+          : k >= 2 && k <= maxK
     )
 
   const toggleAnnotationValue = (value: string) => {
@@ -152,6 +162,9 @@ export default function ClusterGeneSetModal() {
         ...(effectiveContext === 'annotation' ? { annotationColumn, annotationValues: Array.from(annotationValues) } : {}),
         ...(layer && layer !== 'X' ? { layer } : {}),
         useGeneMask,
+        ...(method === 'auto'
+          ? { metric, minGenes, mergeThreshold, purityThreshold }
+          : {}),
       }
       const { clusters } = await runClusterGeneSet(payload)
       const now = new Date()
@@ -259,6 +272,7 @@ export default function ClusterGeneSetModal() {
               borderRadius: '4px',
             }}
           >
+            <option value="auto">Auto — co-expression modules (recommended)</option>
             <option value="hierarchical">Hierarchical (Ward linkage)</option>
             <option value="kmeans">K-means</option>
             <option value="dbscan">DBSCAN (density-based)</option>
@@ -295,7 +309,54 @@ export default function ClusterGeneSetModal() {
           </div>
         </div>
 
-        {method === 'dbscan' ? (
+        {method === 'auto' ? (
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
+              Similarity metric
+            </label>
+            <select
+              value={metric}
+              onChange={(e) => setMetric(e.target.value as 'bicor' | 'pearson' | 'spearman')}
+              style={{
+                width: '100%', padding: '6px 8px', fontSize: '12px',
+                backgroundColor: '#0f3460', color: '#eee',
+                border: '1px solid #1a1a2e', borderRadius: '4px', marginBottom: '10px',
+              }}
+            >
+              <option value="bicor">Biweight midcorrelation (robust, default)</option>
+              <option value="pearson">Pearson</option>
+              <option value="spearman">Spearman (rank)</option>
+            </select>
+            <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
+              Min genes per module: <span style={{ color: '#eee' }}>{minGenes}</span>
+            </label>
+            <input
+              type="range" min={2} max={20} step={1} value={minGenes}
+              onChange={(e) => setMinGenes(parseInt(e.target.value))}
+              style={{ width: '100%', marginBottom: '10px' }}
+            />
+            <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
+              Merge similarity: <span style={{ color: '#eee' }}>{mergeThreshold.toFixed(2)}</span>
+            </label>
+            <input
+              type="range" min={0.5} max={0.95} step={0.05} value={mergeThreshold}
+              onChange={(e) => setMergeThreshold(parseFloat(e.target.value))}
+              style={{ width: '100%', marginBottom: '10px' }}
+            />
+            <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
+              Split sensitivity (purity): <span style={{ color: '#eee' }}>{purityThreshold.toFixed(2)}</span>
+            </label>
+            <input
+              type="range" min={0.3} max={0.9} step={0.05} value={purityThreshold}
+              onChange={(e) => setPurityThreshold(parseFloat(e.target.value))}
+              style={{ width: '100%' }}
+            />
+            <div style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
+              No need to pick a cluster count — modules are discovered, then merged,
+              split, and pruned (modules under "min genes" are set aside as "unassigned").
+            </div>
+          </div>
+        ) : method === 'dbscan' ? (
           <>
             <div style={{ marginBottom: '12px' }}>
               <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>

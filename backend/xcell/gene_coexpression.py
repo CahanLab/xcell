@@ -179,3 +179,23 @@ def split_impure_modules(modules, Z, *, purity_threshold, min_genes, max_split_d
             )
         )
     return out
+
+
+def merge_similar_modules(modules, Z, *, merge_threshold):
+    """Iteratively merge the closest module pair whose eigengenes correlate
+    at or above merge_threshold, recomputing eigengenes after each merge."""
+    modules = [np.asarray(m) for m in modules]
+    while len(modules) >= 2:
+        egs = [_module_eigengene(Z[m]) for m in modules]
+        best_c, bi, bj = -np.inf, -1, -1
+        for i in range(len(modules)):
+            for j in range(i + 1, len(modules)):
+                c = float(egs[i] @ egs[j])
+                if c > best_c:
+                    best_c, bi, bj = c, i, j
+        if best_c < merge_threshold:
+            break
+        merged = np.concatenate([modules[bi], modules[bj]])
+        modules = [m for k, m in enumerate(modules) if k not in (bi, bj)]
+        modules.append(merged)
+    return modules

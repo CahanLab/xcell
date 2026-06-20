@@ -164,3 +164,27 @@ def test_split_leaves_coherent_module_intact():
     )
     assert len(out) == 1
     assert sorted(out[0].tolist()) == list(range(12))
+
+
+def test_merge_combines_near_duplicate_modules():
+    rng = np.random.default_rng(40)
+    f = rng.standard_normal(200)
+    X, _ = _profiles_from_factors(rng, [(f, 6), (f, 6)], noise=0.1)
+    Z = gc._standardize_profiles(X, "pearson")
+    out = gc.merge_similar_modules(
+        [np.arange(6), np.arange(6, 12)], Z, merge_threshold=0.8
+    )
+    assert len(out) == 1
+    assert sorted(out[0].tolist()) == list(range(12))
+
+
+def test_merge_keeps_distinct_modules_apart():
+    rng = np.random.default_rng(41)
+    X, _ = _profiles_from_factors(
+        rng, [(rng.standard_normal(200), 6), (rng.standard_normal(200), 6)], noise=0.1
+    )
+    Z = gc._standardize_profiles(X, "pearson")
+    out = gc.merge_similar_modules(
+        [np.arange(6), np.arange(6, 12)], Z, merge_threshold=0.8
+    )
+    assert len(out) == 2

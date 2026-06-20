@@ -31,6 +31,7 @@ export default function ClusterGeneSetModal() {
   const [minGenes, setMinGenes] = useState(5)
   const [mergeThreshold, setMergeThreshold] = useState(0.8)
   const [purityThreshold, setPurityThreshold] = useState(0.5)
+  const [minModuleCorr, setMinModuleCorr] = useState(0.2)
   const [cellContext, setCellContext] = useState<CellContext>('all')
   const [useGeneMask, setUseGeneMask] = useState(false)
   const [layer, setLayer] = useState<string>('X')
@@ -59,6 +60,7 @@ export default function ClusterGeneSetModal() {
     setMinGenes(5)
     setMergeThreshold(0.8)
     setPurityThreshold(0.5)
+    setMinModuleCorr(0.2)
     setCellContext('all')
     setUseGeneMask(false)
     setLayer('X')
@@ -163,7 +165,7 @@ export default function ClusterGeneSetModal() {
         ...(layer && layer !== 'X' ? { layer } : {}),
         useGeneMask,
         ...(method === 'auto'
-          ? { metric, minGenes, mergeThreshold, purityThreshold }
+          ? { metric, minGenes, mergeThreshold, purityThreshold, minModuleCorr }
           : {}),
       }
       const { clusters } = await runClusterGeneSet(payload)
@@ -327,6 +329,19 @@ export default function ClusterGeneSetModal() {
               <option value="pearson">Pearson</option>
               <option value="spearman">Spearman (rank)</option>
             </select>
+            <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
+              Min co-expression to join a module: <span style={{ color: '#eee' }}>{minModuleCorr.toFixed(2)}</span>
+            </label>
+            <input
+              type="range" min={0.05} max={0.6} step={0.05} value={minModuleCorr}
+              onChange={(e) => setMinModuleCorr(parseFloat(e.target.value))}
+              style={{ width: '100%', marginBottom: '4px' }}
+            />
+            <div style={{ fontSize: '10px', color: '#666', marginBottom: '10px' }}>
+              Genes whose best partner correlates below this are set aside as
+              "unassigned" instead of forced into a module. Raise it for purer,
+              fewer modules; lower it to cluster more genes.
+            </div>
             <label style={{ display: 'block', fontSize: '11px', color: '#888', marginBottom: '4px' }}>
               Min genes per module: <span style={{ color: '#eee' }}>{minGenes}</span>
             </label>

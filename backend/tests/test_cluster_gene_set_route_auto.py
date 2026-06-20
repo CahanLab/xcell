@@ -73,6 +73,7 @@ def test_route_forwards_auto_params(monkeypatch):
         "merge_threshold": 0.66,
         "purity_threshold": 0.42,
         "max_split_depth": 3,
+        "min_module_corr": 0.27,
         "layer": "raw",
     })
     assert resp.status_code == 200, resp.text
@@ -81,3 +82,4 @@ def test_route_forwards_auto_params(monkeypatch):
     assert captured.get("merge_threshold") == 0.66
     assert captured.get("purity_threshold") == 0.42
     assert captured.get("max_split_depth") == 3
+    assert captured.get("min_module_corr") == 0.27

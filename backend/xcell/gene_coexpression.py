@@ -133,3 +133,49 @@ def _auto_cut_hierarchical(D: np.ndarray, k_max: int = 20) -> np.ndarray:
         if score > best_score:
             best_score, best_labels = score, labels
     return best_labels
+
+
+def _two_way_split(idx: np.ndarray, Z: np.ndarray, min_genes: int):
+    """Average-linkage 2-cut of one module; None if either side < min_genes."""
+    sub = Z[idx]
+    C = sub @ sub.T
+    np.clip(C, -1.0, 1.0, out=C)
+    D = 1.0 - C
+    np.clip(D, 0.0, 2.0, out=D)
+    np.fill_diagonal(D, 0.0)
+    link = linkage(squareform(D, checks=False), method="average")
+    labels = fcluster(link, t=2, criterion="maxclust")
+    a = idx[labels == 1]
+    b = idx[labels == 2]
+    if len(a) < min_genes or len(b) < min_genes:
+        return None
+    return a, b
+
+
+def _split_recursive(idx, Z, purity_threshold, min_genes, depth):
+    profiles = Z[idx]
+    parent_pve = _module_coherence(profiles)
+    if depth <= 0 or len(idx) < 2 * min_genes or parent_pve >= purity_threshold:
+        return [idx]
+    pair = _two_way_split(idx, Z, min_genes)
+    if pair is None:
+        return [idx]
+    a, b = pair
+    if _module_coherence(Z[a]) > parent_pve and _module_coherence(Z[b]) > parent_pve:
+        return (
+            _split_recursive(a, Z, purity_threshold, min_genes, depth - 1)
+            + _split_recursive(b, Z, purity_threshold, min_genes, depth - 1)
+        )
+    return [idx]
+
+
+def split_impure_modules(modules, Z, *, purity_threshold, min_genes, max_split_depth):
+    """Recursively split modules whose eigengene PVE < purity_threshold."""
+    out = []
+    for m in modules:
+        out.extend(
+            _split_recursive(
+                np.asarray(m), Z, purity_threshold, min_genes, max_split_depth
+            )
+        )
+    return out

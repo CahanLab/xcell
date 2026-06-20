@@ -135,3 +135,32 @@ def test_base_cut_trivial_for_two_genes():
     D = gc.distance_matrix(rng.standard_normal((2, 50)), metric="pearson")
     found = gc._auto_cut_hierarchical(D)
     assert found.shape == (2,)
+
+
+def test_split_breaks_glued_two_factor_module():
+    rng = np.random.default_rng(30)
+    f1 = rng.standard_normal(200)
+    f2 = rng.standard_normal(200)
+    X, labels = _profiles_from_factors(rng, [(f1, 8), (f2, 8)], noise=0.1)
+    Z = gc._standardize_profiles(X, "pearson")
+    glued = [np.arange(16)]  # both factors as one module
+    out = gc.split_impure_modules(
+        glued, Z, purity_threshold=0.7, min_genes=3, max_split_depth=2
+    )
+    assert len(out) == 2
+    # each child is predominantly one ground-truth factor
+    for child in out:
+        vals = labels[child]
+        major = np.bincount(vals).max()
+        assert major / len(vals) >= 0.8
+
+
+def test_split_leaves_coherent_module_intact():
+    rng = np.random.default_rng(31)
+    X, _ = _profiles_from_factors(rng, [(rng.standard_normal(200), 12)], noise=0.1)
+    Z = gc._standardize_profiles(X, "pearson")
+    out = gc.split_impure_modules(
+        [np.arange(12)], Z, purity_threshold=0.7, min_genes=3, max_split_depth=2
+    )
+    assert len(out) == 1
+    assert sorted(out[0].tolist()) == list(range(12))

@@ -1855,6 +1855,8 @@ export async function runClusterGeneSet(
     mergeThreshold?: number
     /** Auto only: eigengene PVE below which a module is split. */
     purityThreshold?: number
+    /** Auto only: min best-partner correlation to join a module (else unassigned). */
+    minModuleCorr?: number
   },
   slot?: DatasetSlot,
 ): Promise<{ clusters: string[][] }> {
@@ -1877,6 +1879,7 @@ export async function runClusterGeneSet(
       min_genes: params.minGenes,
       merge_threshold: params.mergeThreshold,
       purity_threshold: params.purityThreshold,
+      min_module_corr: params.minModuleCorr,
     }),
   })
   if (!response.ok) {

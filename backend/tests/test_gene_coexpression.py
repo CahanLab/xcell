@@ -314,3 +314,59 @@ def test_auto_bicor_robust_to_outliers():
     pred = {g: ci for ci, grp in enumerate(out) for g in grp}
     pred_labels = [pred[n] for n in names]
     assert adjusted_rand_score(labels.tolist(), pred_labels) >= 0.7
+
+
+# ---- connectivity gate (grey module) -------------------------------------
+
+def test_connected_mask_flags_genes_without_a_partner():
+    # 4 mutually-correlated genes (a clear module) + 1 orphan gene that
+    # correlates with nothing.
+    rng = np.random.default_rng(70)
+    f = rng.standard_normal(300)
+    X, _ = _profiles_from_factors(rng, [(f, 4)], noise=0.1)
+    orphan = rng.standard_normal((1, 300))
+    C = gc.corr_matrix(np.vstack([X, orphan]), metric="pearson")
+    mask = gc._connected_mask(C, min_module_corr=0.3)
+    assert mask[:4].all()      # the module genes are connected
+    assert not mask[4]         # the orphan is not
+
+
+def test_auto_gates_uncorrelated_genes_to_unassigned():
+    # One strong 8-gene module + 5 independent noise genes. The noise genes
+    # must land in the trailing "unassigned" group, never inside the module.
+    rng = np.random.default_rng(71)
+    f = rng.standard_normal(400)
+    X, _ = _profiles_from_factors(rng, [(f, 8)], noise=0.1)
+    noise = rng.standard_normal((5, 400))
+    names = _names(13)
+    out = gc.auto_coexpression_modules(
+        np.vstack([X, noise]), names, metric="pearson",
+        min_genes=5, min_module_corr=0.3,
+    )
+    # the module genes g0..g7 should be one group; noise g8..g12 unassigned
+    module = next(grp for grp in out if "g0" in grp)
+    assert set(module) == {f"g{i}" for i in range(8)}     # pure module
+    assigned_noise = [g for grp in out if "g0" not in grp for g in grp]
+    assert set(f"g{i}" for i in range(8, 13)) <= set(assigned_noise)
+    # partition property preserved
+    flat = [g for grp in out for g in grp]
+    assert sorted(flat) == sorted(names)
+
+
+def test_min_module_corr_controls_unassigned_count():
+    # A single moderately-correlated module: a high gate sends all of it to
+    # "unassigned"; a low gate keeps it as a module.
+    rng = np.random.default_rng(72)
+    f = rng.standard_normal(300)
+    X, _ = _profiles_from_factors(rng, [(f, 8)], noise=0.6)  # weak-ish module
+    names = _names(8)
+
+    low = gc.auto_coexpression_modules(X, names, metric="pearson",
+                                       min_genes=5, min_module_corr=0.1)
+    high = gc.auto_coexpression_modules(X, names, metric="pearson",
+                                        min_genes=5, min_module_corr=0.95)
+    # low gate: recovered as a module (a group of >= 5)
+    assert any(len(grp) >= 5 for grp in low)
+    # high gate: nothing meets it -> everything ends up unassigned together
+    assert len(high) == 1
+    assert len(high[0]) == 8

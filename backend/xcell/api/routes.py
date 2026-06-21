@@ -1104,6 +1104,8 @@ class ClusterGeneSetRequest(BaseModel):
     merge_threshold: float = 0.8     # eigengene-corr above which modules merge
     purity_threshold: float = 0.5    # eigengene PVE below which a module splits
     max_split_depth: int = 2         # recursion cap on splitting
+    min_module_corr: float = 0.2     # min best-partner corr to join a module
+                                     # (below -> grey/unassigned)
 
 
 class MarkerGeneEntry(BaseModel):
@@ -2740,6 +2742,7 @@ def cluster_gene_set_route(req: ClusterGeneSetRequest, dataset: str | None = Que
             merge_threshold=req.merge_threshold,
             purity_threshold=req.purity_threshold,
             max_split_depth=req.max_split_depth,
+            min_module_corr=req.min_module_corr,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

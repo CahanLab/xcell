@@ -207,6 +207,19 @@ def _unit(vec: np.ndarray) -> np.ndarray:
     return v / n if n > 0 else v
 
 
+def _connected_mask(C: np.ndarray, min_module_corr: float) -> np.ndarray:
+    """Boolean mask of genes that have at least one co-expression partner.
+
+    A gene is "connected" when its best off-diagonal correlation in ``C`` is
+    >= ``min_module_corr``. Genes that correlate with nothing form the grey
+    (unassigned) module and are excluded from base clustering so the cluster
+    count is not gamed by isolated singletons.
+    """
+    Coff = C.copy()
+    np.fill_diagonal(Coff, -np.inf)
+    return Coff.max(axis=1) >= min_module_corr
+
+
 def prune_small_modules(modules, Z, *, min_genes, reassign_floor, extra_orphans=()):
     """Drop modules smaller than min_genes; reassign their genes (and any
     extra_orphans, e.g. base-clustering noise / zero-variance genes) to the
@@ -244,13 +257,16 @@ def auto_coexpression_modules(
     purity_threshold: float = 0.5,
     max_split_depth: int = 2,
     reassign_floor: float = 0.5,
+    min_module_corr: float = 0.2,
 ):
     """Detect co-expression modules from a (n_genes, n_cells) matrix.
 
-    Pipeline: robust metric -> silhouette-cut base clustering -> split impure
-    -> merge near-duplicates -> prune small (reassign or set aside). Returns a
-    list of gene-name lists, ordered by size descending, with a trailing
-    "unassigned" group last when any genes are left over.
+    Pipeline: robust metric -> connectivity gate (genes with no co-expression
+    partner go straight to the grey/unassigned module) -> silhouette-cut base
+    clustering on the connected genes -> split impure -> merge near-duplicates
+    -> prune small (reassign or set aside). Returns a list of gene-name lists,
+    ordered by size descending, with a trailing "unassigned" group last when
+    any genes are left over.
     """
     if metric not in _METRICS:
         raise ValueError(f"Unknown metric: {metric!r}; expected one of {_METRICS}")
@@ -270,12 +286,32 @@ def auto_coexpression_modules(
     Z = np.zeros_like(X_genes)
     Z[valid_idx] = _standardize_profiles(X_genes[valid_idx], metric)
 
-    # 2. base clustering on the valid genes
-    D = distance_matrix(X_genes[valid_idx], metric)
-    base_labels = _auto_cut_hierarchical(D)
-    modules = [valid_idx[base_labels == lab] for lab in sorted(set(base_labels))]
+    # 2. connectivity gate: genes whose best partner correlation is below
+    # min_module_corr co-express with nothing -> grey (unassigned). Cluster
+    # only the connected genes so the silhouette cut is not gamed by isolated
+    # singletons.
+    Zv = Z[valid_idx]
+    C = Zv @ Zv.T
+    np.clip(C, -1.0, 1.0, out=C)
+    conn_mask = _connected_mask(C, min_module_corr)
+    connected_local = np.where(conn_mask)[0]
+    grey_idx = valid_idx[~conn_mask].tolist()
+    orphans = zero_var_idx + grey_idx
 
-    # 3. refinement: split -> merge -> prune
+    if len(connected_local) < max(min_genes, 2):
+        # no real co-expression structure: everything is one (unassigned) group
+        return [gene_names]
+
+    conn_idx = valid_idx[connected_local]
+    # 3. base clustering on the connected genes only
+    Cc = C[np.ix_(connected_local, connected_local)]
+    D = 1.0 - Cc
+    np.clip(D, 0.0, 2.0, out=D)
+    np.fill_diagonal(D, 0.0)
+    base_labels = _auto_cut_hierarchical(D)
+    modules = [conn_idx[base_labels == lab] for lab in sorted(set(base_labels))]
+
+    # 4. refinement: split -> merge -> prune (grey genes join the prune orphans)
     modules = split_impure_modules(
         modules, Z, purity_threshold=purity_threshold,
         min_genes=min_genes, max_split_depth=max_split_depth,
@@ -283,7 +319,7 @@ def auto_coexpression_modules(
     modules = merge_similar_modules(modules, Z, merge_threshold=merge_threshold)
     modules, unassigned = prune_small_modules(
         modules, Z, min_genes=min_genes, reassign_floor=reassign_floor,
-        extra_orphans=zero_var_idx,
+        extra_orphans=orphans,
     )
 
     # 4. order by size desc, map to names, append trailing unassigned bucket

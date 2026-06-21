@@ -63,6 +63,23 @@ def test_auto_does_not_require_k():
     assert len(clusters) >= 1
 
 
+def test_auto_report_returns_modules_unassigned_diagnostics():
+    ad, names = _adata_with_modules()
+    a = DataAdaptor("x.h5ad", adata=ad)
+    rep = a.auto_coexpression_report(
+        names, metric="pearson", min_genes=4, layer="raw", min_module_corr=0.3
+    )
+    assert set(rep) == {"modules", "unassigned", "diagnostics"}
+    # partition: modules + unassigned == all known genes, each once
+    flat = [g for m in rep["modules"] for g in m] + list(rep["unassigned"])
+    assert sorted(flat) == sorted(names)
+    # noise genes are not forced into a module
+    assert all(not g.startswith("N") for m in rep["modules"] for g in m)
+    diag = rep["diagnostics"]
+    assert len(diag["module_coherence"]) == len(rep["modules"])
+    assert diag["n_unassigned"] == len(rep["unassigned"])
+
+
 def test_auto_min_module_corr_gates_uncorrelated_genes():
     """A high min_module_corr should route the uncorrelated noise genes
     (N0..N3) to the trailing unassigned group, not into a module."""

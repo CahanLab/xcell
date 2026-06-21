@@ -5440,6 +5440,102 @@ class DataAdaptor:
         }, result)
         return result
 
+    def _resolve_gene_indices(
+        self, gene_names: list[str], *, use_gene_mask: bool = False
+    ) -> tuple[list[str], list[int]]:
+        """Map requested gene names to (found_names, .var row indices).
+
+        Unknown names are dropped. When ``use_gene_mask`` and a .var gene mask
+        is active, masked-out genes are skipped (no-op otherwise).
+        """
+        var_names = self.adata.var_names
+        active_mask = (
+            self._visible_gene_mask
+            if (use_gene_mask and self._visible_gene_mask is not None)
+            else None
+        )
+        found_genes: list[str] = []
+        gene_idx: list[int] = []
+        for name in gene_names:
+            if name in var_names:
+                loc = int(var_names.get_loc(name))
+                if active_mask is not None and not active_mask[loc]:
+                    continue
+                found_genes.append(name)
+                gene_idx.append(loc)
+        return found_genes, gene_idx
+
+    def _read_gene_matrix(
+        self,
+        gene_idx: list[int],
+        *,
+        cell_indices: list[int] | None = None,
+        layer: str | None = None,
+    ) -> np.ndarray:
+        """Return a (n_genes, n_cells) profile matrix for the given gene indices.
+
+        Source is a user-supplied layer (read directly, no extra normalization)
+        or the lazy normalize_total + log1p snapshot of .X; optionally subset to
+        ``cell_indices``.
+        """
+        if layer is not None and layer != 'X':
+            source_matrix = self._resolve_source_matrix(layer)
+        else:
+            source_matrix = self.normalized_adata.X
+        if cell_indices is not None:
+            if len(cell_indices) == 0:
+                raise ValueError("Cell subset is empty")
+            cell_arr = np.asarray(cell_indices, dtype=np.int64)
+            X = source_matrix[cell_arr, :][:, gene_idx]
+        else:
+            X = source_matrix[:, gene_idx]
+        import scipy.sparse
+        if scipy.sparse.issparse(X):
+            X = X.toarray()
+        # Transpose so each row is one gene's profile across the cells.
+        return np.asarray(X).T
+
+    def auto_coexpression_report(
+        self,
+        gene_names: list[str],
+        *,
+        cell_indices: list[int] | None = None,
+        layer: str | None = None,
+        use_gene_mask: bool = False,
+        metric: str = 'bicor',
+        min_genes: int = 5,
+        merge_threshold: float = 0.8,
+        purity_threshold: float = 0.5,
+        max_split_depth: int = 2,
+        min_module_corr: float = 0.2,
+    ) -> dict[str, Any]:
+        """Auto co-expression modules with diagnostics.
+
+        Same matrix path as ``cluster_gene_set(method='auto')`` but returns the
+        structured report ``{"modules", "unassigned", "diagnostics"}`` (modules
+        and unassigned are gene-name lists).
+        """
+        found_genes, gene_idx = self._resolve_gene_indices(
+            gene_names, use_gene_mask=use_gene_mask
+        )
+        if len(found_genes) < 2:
+            raise ValueError(
+                f"auto_coexpression_report: need at least 2 known genes, "
+                f"got {len(found_genes)}"
+            )
+        X_genes = self._read_gene_matrix(
+            gene_idx, cell_indices=cell_indices, layer=layer
+        )
+        from .gene_coexpression import auto_coexpression_report
+        return auto_coexpression_report(
+            X_genes, found_genes,
+            metric=metric, min_genes=min_genes,
+            merge_threshold=merge_threshold,
+            purity_threshold=purity_threshold,
+            max_split_depth=max_split_depth,
+            min_module_corr=min_module_corr,
+        )
+
     def cluster_gene_set(
         self,
         gene_names: list[str],
@@ -5508,23 +5604,9 @@ class DataAdaptor:
                     f"dbscan min_samples must be >= 2, got {min_samples!r}"
                 )
 
-        var_names = self.adata.var_names
-        # When requested, restrict to genes visible under the active .var gene
-        # mask (no-op if no mask is active).
-        active_mask = (
-            self._visible_gene_mask
-            if (use_gene_mask and self._visible_gene_mask is not None)
-            else None
+        found_genes, gene_idx = self._resolve_gene_indices(
+            gene_names, use_gene_mask=use_gene_mask
         )
-        found_genes: list[str] = []
-        gene_idx: list[int] = []
-        for name in gene_names:
-            if name in var_names:
-                loc = int(var_names.get_loc(name))
-                if active_mask is not None and not active_mask[loc]:
-                    continue
-                found_genes.append(name)
-                gene_idx.append(loc)
         # Hierarchical / kmeans need at least k genes; DBSCAN needs at least
         # min_samples genes to seed any cluster; auto needs at least 2.
         if method == 'auto':
@@ -5539,27 +5621,10 @@ class DataAdaptor:
                 f"got {len(found_genes)}"
             )
 
-        # Source matrix: a user-supplied layer (read directly, no extra
-        # normalization), or the lazy normalize_total + log1p snapshot of .X.
-        if layer is not None and layer != 'X':
-            source_matrix = self._resolve_source_matrix(layer)
-        else:
-            source_matrix = self.normalized_adata.X
-        if cell_indices is not None:
-            if len(cell_indices) == 0:
-                raise ValueError("Cell subset is empty")
-            cell_arr = np.asarray(cell_indices, dtype=np.int64)
-            X = source_matrix[cell_arr, :][:, gene_idx]
-        else:
-            X = source_matrix[:, gene_idx]
-
-        import scipy.sparse
-        if scipy.sparse.issparse(X):
-            X = X.toarray()
-        X = np.asarray(X)
-        # Shape here is (n_cells_subset, n_genes_found). Transpose so
-        # each row is one gene's profile across the selected cells.
-        X_genes = X.T
+        # Shape (n_genes_found, n_cells_subset): each row one gene's profile.
+        X_genes = self._read_gene_matrix(
+            gene_idx, cell_indices=cell_indices, layer=layer
+        )
 
         if method == 'auto':
             from .gene_coexpression import auto_coexpression_modules

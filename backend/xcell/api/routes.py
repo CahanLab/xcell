@@ -2728,6 +2728,26 @@ def cluster_gene_set_route(req: ClusterGeneSetRequest, dataset: str | None = Que
         annotation_values=req.annotation_values,
     )
     try:
+        if req.method == "auto":
+            # Auto returns modules-only clusters plus a separate unassigned
+            # group and per-module diagnostics, so the UI can label and explain.
+            report = adaptor.auto_coexpression_report(
+                gene_names=req.gene_names,
+                cell_indices=cell_indices,
+                layer=req.layer,
+                use_gene_mask=req.use_gene_mask,
+                metric=req.metric,
+                min_genes=req.min_genes,
+                merge_threshold=req.merge_threshold,
+                purity_threshold=req.purity_threshold,
+                max_split_depth=req.max_split_depth,
+                min_module_corr=req.min_module_corr,
+            )
+            return {
+                "clusters": report["modules"],
+                "unassigned": report["unassigned"],
+                "diagnostics": report["diagnostics"],
+            }
         clusters = adaptor.cluster_gene_set(
             gene_names=req.gene_names,
             method=req.method,
@@ -2737,12 +2757,6 @@ def cluster_gene_set_route(req: ClusterGeneSetRequest, dataset: str | None = Que
             min_samples=req.min_samples,
             layer=req.layer,
             use_gene_mask=req.use_gene_mask,
-            metric=req.metric,
-            min_genes=req.min_genes,
-            merge_threshold=req.merge_threshold,
-            purity_threshold=req.purity_threshold,
-            max_split_depth=req.max_split_depth,
-            min_module_corr=req.min_module_corr,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

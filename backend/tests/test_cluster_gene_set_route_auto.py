@@ -43,26 +43,30 @@ def test_route_auto_method(monkeypatch):
         "layer": "raw",
     })
     assert resp.status_code == 200, resp.text
-    clusters = resp.json()["clusters"]
-    flat = [g for c in clusters for g in c]
+    body = resp.json()
+    # auto returns modules-only clusters + a separate unassigned group + diagnostics
+    assert "unassigned" in body and "diagnostics" in body
+    flat = [g for c in body["clusters"] for g in c] + list(body["unassigned"])
     assert sorted(flat) == sorted(names)
+    diag = body["diagnostics"]
+    assert len(diag["module_coherence"]) == len(body["clusters"])
 
 
 def test_route_forwards_auto_params(monkeypatch):
-    """The auto knobs in the request body must reach the adaptor call."""
+    """The auto knobs in the request body must reach the report call."""
     from xcell.adaptor import DataAdaptor
     ad, names = _adata()
     adaptor = DataAdaptor("x.h5ad", adata=ad)
     monkeypatch.setattr(routes, "get_adaptor", lambda dataset=None: adaptor)
 
     captured = {}
-    real = adaptor.cluster_gene_set
+    real = adaptor.auto_coexpression_report
 
     def spy(*args, **kwargs):
         captured.update(kwargs)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(adaptor, "cluster_gene_set", spy)
+    monkeypatch.setattr(adaptor, "auto_coexpression_report", spy)
     client = TestClient(app)
     resp = client.post("/api/cluster_gene_set", json={
         "gene_names": names,
@@ -83,3 +87,24 @@ def test_route_forwards_auto_params(monkeypatch):
     assert captured.get("purity_threshold") == 0.42
     assert captured.get("max_split_depth") == 3
     assert captured.get("min_module_corr") == 0.27
+
+
+def test_route_non_auto_unchanged(monkeypatch):
+    """Non-auto methods keep the plain {clusters} response (no unassigned)."""
+    from xcell.adaptor import DataAdaptor
+    ad, names = _adata()
+    adaptor = DataAdaptor("x.h5ad", adata=ad)
+    monkeypatch.setattr(routes, "get_adaptor", lambda dataset=None: adaptor)
+    client = TestClient(app)
+    resp = client.post("/api/cluster_gene_set", json={
+        "gene_names": names,
+        "method": "kmeans",
+        "k": 3,
+        "cell_context": "all",
+        "layer": "raw",
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "clusters" in body
+    assert "unassigned" not in body
+    assert "diagnostics" not in body

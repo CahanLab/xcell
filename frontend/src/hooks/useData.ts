@@ -1829,6 +1829,20 @@ export async function createLineEmbedding(
   })
 }
 
+/** Per-run diagnostics returned by the auto co-expression method. */
+export interface AutoClusterDiagnostics {
+  n_found: number
+  n_modules: number
+  n_unassigned: number
+  n_grey: number
+  n_zero_var: number
+  module_sizes: number[]
+  module_coherence: number[]
+  max_cross_corr: number | null
+  min_module_corr: number
+  metric: string
+}
+
 export async function runClusterGeneSet(
   params: {
     geneNames: string[]
@@ -1859,7 +1873,13 @@ export async function runClusterGeneSet(
     minModuleCorr?: number
   },
   slot?: DatasetSlot,
-): Promise<{ clusters: string[][] }> {
+): Promise<{
+  clusters: string[][]
+  /** Auto only: genes that joined no module. */
+  unassigned?: string[]
+  /** Auto only: per-run diagnostics for the results readout. */
+  diagnostics?: AutoClusterDiagnostics
+}> {
   const response = await fetch(appendDataset(`${API_BASE}/cluster_gene_set`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -370,3 +370,70 @@ def test_min_module_corr_controls_unassigned_count():
     # high gate: nothing meets it -> everything ends up unassigned together
     assert len(high) == 1
     assert len(high[0]) == 8
+
+
+# ---- structured report (diagnostics) -------------------------------------
+
+def test_report_partitions_modules_and_unassigned_with_coherence():
+    rng = np.random.default_rng(80)
+    f = rng.standard_normal(400)
+    X, _ = _profiles_from_factors(rng, [(f, 8)], noise=0.1)
+    noise = rng.standard_normal((5, 400))
+    names = _names(13)
+    r = gc.auto_coexpression_report(
+        np.vstack([X, noise]), names, metric="pearson",
+        min_genes=5, min_module_corr=0.3,
+    )
+    # one real module of the 8 correlated genes; the noise is unassigned
+    assert len(r["modules"]) == 1
+    assert set(r["modules"][0]) == {f"g{i}" for i in range(8)}
+    assert {f"g{i}" for i in range(8, 13)} <= set(r["unassigned"])
+    # partition property: modules + unassigned == all genes, each once
+    flat = [g for m in r["modules"] for g in m] + list(r["unassigned"])
+    assert sorted(flat) == sorted(names)
+    # diagnostics: one coherence value, aligned to modules; strong module is high
+    diag = r["diagnostics"]
+    assert len(diag["module_coherence"]) == 1
+    assert diag["module_coherence"][0] > 0.8
+    assert diag["n_grey"] >= 5
+    assert diag["n_unassigned"] == len(r["unassigned"])
+
+
+def test_report_max_cross_corr_low_for_distinct_modules():
+    rng = np.random.default_rng(81)
+    X, _ = _profiles_from_factors(
+        rng, [(rng.standard_normal(400), 8), (rng.standard_normal(400), 8)], noise=0.1
+    )
+    names = _names(16)
+    r = gc.auto_coexpression_report(X, names, metric="pearson",
+                                    min_genes=5, min_module_corr=0.3)
+    assert len(r["modules"]) == 2
+    # two independent programs -> their eigengenes barely correlate
+    assert r["diagnostics"]["max_cross_corr"] is not None
+    assert r["diagnostics"]["max_cross_corr"] < 0.5
+
+
+def test_report_degenerate_all_unassigned():
+    rng = np.random.default_rng(82)
+    f = rng.standard_normal(300)
+    X, _ = _profiles_from_factors(rng, [(f, 8)], noise=0.6)  # weak module
+    names = _names(8)
+    r = gc.auto_coexpression_report(X, names, metric="pearson",
+                                    min_genes=5, min_module_corr=0.95)
+    assert r["modules"] == []
+    assert sorted(r["unassigned"]) == sorted(names)
+    assert r["diagnostics"]["max_cross_corr"] is None
+
+
+def test_report_and_flat_modules_agree():
+    rng = np.random.default_rng(83)
+    X, _ = _profiles_from_factors(
+        rng, [(rng.standard_normal(300), 7), (rng.standard_normal(300), 6)], noise=0.1
+    )
+    names = _names(13)
+    flat = gc.auto_coexpression_modules(X, names, metric="pearson", min_genes=4)
+    r = gc.auto_coexpression_report(X, names, metric="pearson", min_genes=4)
+    rebuilt = [list(m) for m in r["modules"]]
+    if r["unassigned"]:
+        rebuilt.append(list(r["unassigned"]))
+    assert rebuilt == flat

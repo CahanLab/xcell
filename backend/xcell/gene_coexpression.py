@@ -247,32 +247,63 @@ def prune_small_modules(modules, Z, *, min_genes, reassign_floor, extra_orphans=
     return keep, sorted(set(unassigned))
 
 
-def auto_coexpression_modules(
+def _max_cross_corr(modules, Z):
+    """Largest pairwise eigengene correlation among modules (None if < 2)."""
+    if len(modules) < 2:
+        return None
+    egs = [_module_eigengene(Z[m]) for m in modules]
+    best = -np.inf
+    for i in range(len(egs)):
+        for j in range(i + 1, len(egs)):
+            best = max(best, float(egs[i] @ egs[j]))
+    return best
+
+
+def _run_auto(
     X_genes,
     gene_names,
     *,
-    metric: str = "bicor",
-    min_genes: int = 5,
-    merge_threshold: float = 0.8,
-    purity_threshold: float = 0.5,
-    max_split_depth: int = 2,
-    reassign_floor: float = 0.5,
-    min_module_corr: float = 0.2,
+    metric="bicor",
+    min_genes=5,
+    merge_threshold=0.8,
+    purity_threshold=0.5,
+    max_split_depth=2,
+    reassign_floor=0.5,
+    min_module_corr=0.2,
 ):
-    """Detect co-expression modules from a (n_genes, n_cells) matrix.
+    """Core auto-clustering pipeline.
 
-    Pipeline: robust metric -> connectivity gate (genes with no co-expression
-    partner go straight to the grey/unassigned module) -> silhouette-cut base
-    clustering on the connected genes -> split impure -> merge near-duplicates
-    -> prune small (reassign or set aside). Returns a list of gene-name lists,
-    ordered by size descending, with a trailing "unassigned" group last when
-    any genes are left over.
+    Returns a dict: ``{"modules": [[name,...], ...], "unassigned": [name,...],
+    "diagnostics": {...}}``. Modules are ordered by size descending; every input
+    gene appears exactly once across modules + unassigned.
     """
     if metric not in _METRICS:
         raise ValueError(f"Unknown metric: {metric!r}; expected one of {_METRICS}")
     gene_names = list(gene_names)
     X_genes = np.asarray(X_genes, dtype=float)
-    n_genes = X_genes.shape[0]
+
+    def _report(modules_idx, unassigned_idx, Z, *, n_grey, n_zero_var):
+        modules_idx = sorted(modules_idx, key=len, reverse=True)
+        modules = [[gene_names[i] for i in sorted(m.tolist())] for m in modules_idx]
+        unassigned = [gene_names[i] for i in sorted(unassigned_idx)]
+        coherence = [round(_module_coherence(Z[m]), 4) for m in modules_idx]
+        mcc = _max_cross_corr(modules_idx, Z)
+        return {
+            "modules": modules,
+            "unassigned": unassigned,
+            "diagnostics": {
+                "n_found": len(gene_names),
+                "n_modules": len(modules),
+                "n_unassigned": len(unassigned),
+                "n_grey": int(n_grey),
+                "n_zero_var": int(n_zero_var),
+                "module_sizes": [len(m) for m in modules],
+                "module_coherence": coherence,
+                "max_cross_corr": (round(mcc, 4) if mcc is not None else None),
+                "min_module_corr": min_module_corr,
+                "metric": metric,
+            },
+        }
 
     # 1. set aside zero-variance genes (cannot be co-expressed meaningfully)
     var = X_genes.var(axis=1)
@@ -280,8 +311,10 @@ def auto_coexpression_modules(
     zero_var_idx = np.where(var <= 1e-12)[0].tolist()
 
     if len(valid_idx) < max(min_genes, 2):
-        # too few usable genes to form a module: everything is one group
-        return [gene_names]
+        # too few usable genes to form a module: everything is unassigned
+        Z = np.zeros_like(X_genes)
+        return _report([], list(range(len(gene_names))), Z,
+                       n_grey=0, n_zero_var=len(zero_var_idx))
 
     Z = np.zeros_like(X_genes)
     Z[valid_idx] = _standardize_profiles(X_genes[valid_idx], metric)
@@ -299,8 +332,9 @@ def auto_coexpression_modules(
     orphans = zero_var_idx + grey_idx
 
     if len(connected_local) < max(min_genes, 2):
-        # no real co-expression structure: everything is one (unassigned) group
-        return [gene_names]
+        # no real co-expression structure: everything is unassigned
+        return _report([], list(range(len(gene_names))), Z,
+                       n_grey=len(grey_idx), n_zero_var=len(zero_var_idx))
 
     conn_idx = valid_idx[connected_local]
     # 3. base clustering on the connected genes only
@@ -321,10 +355,30 @@ def auto_coexpression_modules(
         modules, Z, min_genes=min_genes, reassign_floor=reassign_floor,
         extra_orphans=orphans,
     )
+    return _report(modules, unassigned, Z,
+                   n_grey=len(grey_idx), n_zero_var=len(zero_var_idx))
 
-    # 4. order by size desc, map to names, append trailing unassigned bucket
-    modules.sort(key=lambda m: len(m), reverse=True)
-    result = [[gene_names[i] for i in sorted(m.tolist())] for m in modules]
-    if unassigned:
-        result.append([gene_names[i] for i in sorted(unassigned)])
-    return result
+
+def auto_coexpression_report(X_genes, gene_names, **kwargs):
+    """Structured auto-clustering result with diagnostics.
+
+    Returns ``{"modules", "unassigned", "diagnostics"}`` (see :func:`_run_auto`).
+    """
+    return _run_auto(X_genes, gene_names, **kwargs)
+
+
+def auto_coexpression_modules(X_genes, gene_names, **kwargs):
+    """Detect co-expression modules from a (n_genes, n_cells) matrix.
+
+    Pipeline: robust metric -> connectivity gate (genes with no co-expression
+    partner go straight to the grey/unassigned module) -> silhouette-cut base
+    clustering on the connected genes -> split impure -> merge near-duplicates
+    -> prune small (reassign or set aside). Returns a list of gene-name lists,
+    ordered by size descending, with a trailing "unassigned" group last when
+    any genes are left over.
+    """
+    r = _run_auto(X_genes, gene_names, **kwargs)
+    out = [list(m) for m in r["modules"]]
+    if r["unassigned"]:
+        out.append(list(r["unassigned"]))
+    return out

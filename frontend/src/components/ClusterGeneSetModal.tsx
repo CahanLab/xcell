@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useStore } from '../store'
 import { runClusterGeneSet, useObsSummaries, appendDataset } from '../hooks/useData'
+import type { AutoClusterDiagnostics } from '../hooks/useData'
 
 interface LayerInfo {
   name: string
@@ -40,6 +41,7 @@ export default function ClusterGeneSetModal() {
   const [annotationValues, setAnnotationValues] = useState<Set<string>>(new Set())
   const [isRunning, setIsRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [report, setReport] = useState<AutoClusterDiagnostics | null>(null)
 
   // Categorical obs columns usable for the annotation picker.
   const categoricalColumns = useMemo(() => {
@@ -61,6 +63,7 @@ export default function ClusterGeneSetModal() {
     setMergeThreshold(0.8)
     setPurityThreshold(0.5)
     setMinModuleCorr(0.2)
+    setReport(null)
     setCellContext('all')
     setUseGeneMask(false)
     setLayer('X')
@@ -168,7 +171,7 @@ export default function ClusterGeneSetModal() {
           ? { metric, minGenes, mergeThreshold, purityThreshold, minModuleCorr }
           : {}),
       }
-      const { clusters } = await runClusterGeneSet(payload)
+      const { clusters, unassigned, diagnostics } = await runClusterGeneSet(payload)
       const now = new Date()
       const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
         now.getDate(),
@@ -180,8 +183,19 @@ export default function ClusterGeneSetModal() {
         name: `${source.name} cluster ${i + 1}`,
         genes,
       }))
+      // The auto method returns genes that joined no module separately; surface
+      // them as an explicitly-named "unassigned" set rather than "cluster N".
+      if (unassigned && unassigned.length > 0) {
+        resultSets.push({ name: `${source.name} unassigned`, genes: unassigned })
+      }
       addFolderToCategory('gene_clusters', folderName, resultSets)
-      setSource(null)
+      // Auto: keep the modal open to show the diagnostics readout. Other
+      // methods close immediately as before.
+      if (method === 'auto' && diagnostics) {
+        setReport(diagnostics)
+      } else {
+        setSource(null)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -224,6 +238,67 @@ export default function ClusterGeneSetModal() {
           Clustering: <span style={{ color: '#eee' }}>{source.name}</span> ({source.genes.length} genes)
         </div>
 
+        {report ? (
+          <>
+            <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>Results</div>
+            <div style={{ fontSize: '12px', color: '#ccc', marginBottom: '10px' }}>
+              {report.n_modules} module{report.n_modules === 1 ? '' : 's'}
+              {report.n_unassigned > 0 ? ` + ${report.n_unassigned} unassigned` : ''} — saved under “Gene Clusters”.
+            </div>
+            {report.module_sizes.length > 0 && (
+              <div style={{ marginBottom: '10px' }}>
+                {report.module_sizes.map((sz, i) => {
+                  const pve = report.module_coherence[i] ?? 0
+                  return (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', marginBottom: '3px' }}>
+                      <span style={{ width: '60px', color: '#aaa' }}>module {i + 1}</span>
+                      <span style={{ width: '52px', color: '#ccc' }}>{sz} genes</span>
+                      <div style={{ flex: 1, height: '7px', backgroundColor: '#0f3460', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{ width: `${Math.round(Math.max(0, Math.min(1, pve)) * 100)}%`, height: '100%', backgroundColor: '#4ecdc4' }} />
+                      </div>
+                      <span style={{ width: '60px', textAlign: 'right', color: '#aaa' }}>PVE {pve.toFixed(2)}</span>
+                    </div>
+                  )
+                })}
+                <div style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
+                  PVE = fraction of each module's variance captured by its eigengene (higher = tighter co-expression).
+                </div>
+              </div>
+            )}
+            <div style={{ fontSize: '11px', color: '#bbb', marginBottom: '6px' }}>
+              {report.max_cross_corr != null ? (
+                <>
+                  Modules are {report.max_cross_corr < 0.5 ? 'mutually distinct' : 'related'} — max cross-module
+                  correlation <span style={{ color: '#eee' }}>{report.max_cross_corr.toFixed(2)}</span>.
+                  {report.max_cross_corr < 0.5 ? ' Below your merge-similarity setting, so merging had nothing to combine.' : ''}
+                </>
+              ) : (
+                <>Single module (or none) — no cross-module correlation to report.</>
+              )}
+            </div>
+            {report.n_grey > 0 && (
+              <div style={{ fontSize: '11px', color: '#bbb', marginBottom: '6px' }}>
+                {report.n_grey} gene{report.n_grey === 1 ? '' : 's'} set aside as “unassigned” — no partner correlated ≥ {report.min_module_corr.toFixed(2)}.
+                Lower “Min co-expression to join a module” to cluster more of them.
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '14px' }}>
+              <button
+                onClick={() => setReport(null)}
+                style={{ padding: '6px 12px', fontSize: '12px', backgroundColor: 'transparent', color: '#888', border: '1px solid #888', borderRadius: '4px', cursor: 'pointer' }}
+              >
+                Adjust &amp; re-run
+              </button>
+              <button
+                onClick={() => setSource(null)}
+                style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 500, backgroundColor: '#4ecdc4', color: '#000', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+              >
+                Done
+              </button>
+            </div>
+          </>
+        ) : (
+        <>
         {(() => {
           const maskActive = !!geneMaskConfig?.active
           const visible = geneMaskConfig?.visibleGeneNames
@@ -623,6 +698,8 @@ export default function ClusterGeneSetModal() {
             {isRunning ? 'Running…' : 'Run'}
           </button>
         </div>
+        </>
+        )}
       </div>
     </div>
   )

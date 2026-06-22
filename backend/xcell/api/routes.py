@@ -2074,6 +2074,19 @@ def get_var_boolean_column_values(dataset: str | None = Query(None)):
     }
 
 
+@router.get("/var/column_genes")
+def get_var_column_genes(
+    column: str = Query(...), dataset: str | None = Query(None)
+):
+    """Gene names where a boolean .var column is True."""
+    adaptor = get_adaptor(dataset)
+    try:
+        genes = adaptor.column_to_gene_names(column)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"column": column, "genes": genes}
+
+
 class GeneMaskRequest(BaseModel):
     keep_columns: list[str] = []
     hide_columns: list[str] = []

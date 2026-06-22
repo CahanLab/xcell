@@ -3,6 +3,8 @@ import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType 
 import { useGeneSearch, useGeneBrowse, useDataActions, useObsSummaries, appendDataset, fetchVarIdentifierColumns, swapVarIndex } from '../hooks/useData'
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
 import HighlightOverlayPanel from './HighlightOverlayPanel'
+import VarColumnsSection from './VarColumnsSection'
+import CombineGeneSetsModal from './CombineGeneSetsModal'
 import BivariateAxisPicker, { AxisKind, resolveBivariateAxis } from './BivariateAxisPicker'
 import ImportModal from './ImportModal'
 import { MESSAGES } from '../messages'
@@ -1695,8 +1697,10 @@ export default function GenePanel() {
   const currentVarIndex = useStore((s) => s.currentVarIndex)
   const geneMaskConfig = useStore((s) => s.geneMaskConfig)
   const setGeneMaskModalOpen = useStore((s) => s.setGeneMaskModalOpen)
+  const setCombineModalOpen = useStore((s) => s.setCombineModalOpen)
   const [isSwapping, setIsSwapping] = useState(false)
   const [showBrowse, setShowBrowse] = useState(false)
+  const [geneTab, setGeneTab] = useState<'sets' | 'color'>('sets')
 
   // Fetch var identifier columns on mount
   useEffect(() => {
@@ -1890,6 +1894,7 @@ export default function GenePanel() {
         />
       </div>
       <ImportModal />
+      <CombineGeneSetsModal />
 
       {selectedGenes.length > 0 && colorMode === 'expression' && (
         <div style={styles.selectedGenesBar}>
@@ -1916,6 +1921,27 @@ export default function GenePanel() {
       )}
 
       <div style={styles.content}>
+        {/* Sets | Color tabs */}
+        <div style={{ display: 'flex', gap: '4px', marginBottom: '10px' }}>
+          {([['sets', 'Sets'], ['color', 'Color']] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setGeneTab(key)}
+              style={{
+                flex: 1, padding: '5px 8px', fontSize: '11px', cursor: 'pointer',
+                backgroundColor: geneTab === key ? '#0f3460' : 'transparent',
+                color: geneTab === key ? '#4ecdc4' : '#888',
+                border: '1px solid ' + (geneTab === key ? '#4ecdc4' : '#1a1a2e'),
+                borderRadius: '4px',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {geneTab === 'sets' && (
+        <>
         {/* New Set Input (for manual category) */}
         {showNewSetInput && (
           <div style={{ marginBottom: '12px', display: 'flex', gap: '4px' }}>
@@ -1980,6 +2006,15 @@ export default function GenePanel() {
             />
           )
         })}
+
+        <VarColumnsSection />
+
+        <button
+          onClick={() => setCombineModalOpen(true)}
+          style={{ width: '100%', padding: '7px', fontSize: '12px', marginBottom: '12px', backgroundColor: '#0f3460', color: '#4ecdc4', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
+        >
+          ⨂ Combine sets…
+        </button>
 
         {/* Find Similar Genes Section - only shown when gene_neighbors exists */}
         {hasGeneNeighbors && (
@@ -2061,7 +2096,11 @@ export default function GenePanel() {
             </div>
           </div>
         )}
+        </>
+        )}
 
+        {geneTab === 'color' && (
+        <>
         {/* Bivariate Mode Section */}
         {(() => {
           const r1 = resolveBivariateAxis(bivAxis1.kind, bivAxis1.value, allGeneSets)
@@ -2140,6 +2179,8 @@ export default function GenePanel() {
           updateHighlightLayer={updateHighlightLayer}
           clearHighlightOverlay={clearHighlightOverlay}
         />
+        </>
+        )}
 
         <HiddenCategoriesFooter />
       </div>

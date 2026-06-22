@@ -898,8 +898,7 @@ export default function CellPanel() {
   const [isDeleting, setIsDeleting] = useState(false)
 
   // State for collapsible sections
-  const [categoricalExpanded, setCategoricalExpanded] = useState(true)
-  const [continuousExpanded, setContinuousExpanded] = useState(true)
+  const [cellTab, setCellTab] = useState<'categorical' | 'continuous'>('categorical')
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
   const [selectedCategorySource, setSelectedCategorySource] = useState<{ column: string; value: string } | null>(null)
 
@@ -1318,43 +1317,45 @@ export default function CellPanel() {
           </div>
         </div>
 
-        {/* Categorical Columns - collapsible */}
-        {categoricalColumns.length > 0 && (
-          <div style={styles.section}>
-            <div
-              style={styles.sectionHeader}
-              onClick={() => setCategoricalExpanded(!categoricalExpanded)}
+        {/* Categorical | Continuous tabs */}
+        <div style={{ display: 'flex', gap: '4px', margin: '4px 0 8px' }}>
+          {([
+            ['categorical', `Categorical (${categoricalColumns.length})`],
+            ['continuous', `Continuous (${continuousColumns.length})`],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setCellTab(key)}
+              style={{
+                flex: 1, padding: '5px 8px', fontSize: '11px', cursor: 'pointer',
+                backgroundColor: cellTab === key ? '#0f3460' : 'transparent',
+                color: cellTab === key ? '#4ecdc4' : '#888',
+                border: '1px solid ' + (cellTab === key ? '#4ecdc4' : '#1a1a2e'),
+                borderRadius: '4px',
+              }}
             >
-              <span style={styles.sectionToggle}>{categoricalExpanded ? '▼' : '▶'}</span>
-              Categorical ({categoricalColumns.length})
-            </div>
-            {categoricalExpanded &&
-              categoricalColumns.map((summary) => (
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {cellTab === 'categorical' && (
+          categoricalColumns.length > 0 ? (
+            <div style={styles.section}>
+              {categoricalColumns.map((summary) => (
                 <CategoryColumn
                   key={summary.name}
                   summary={summary}
                   displayName={getDisplayName(summary.name)}
                   isActive={colorMode === 'metadata' && selectedColorColumn === summary.name}
                   onColorBy={() => handleColorBy(summary.name)}
-                  onSelectCells={(categoryValue) =>
-                    handleSelectCellsByCategory(summary.name, categoryValue)
-                  }
-                  onHighlightCells={(categoryValue) =>
-                    handleHighlightCategory(summary.name, categoryValue)
-                  }
-                  checkedCategories={
-                    comparisonCheckedColumn === summary.name
-                      ? comparisonCheckedCategories
-                      : new Set<string>()
-                  }
-                  onToggleCategory={(category) =>
-                    handleCheckboxToggle(summary.name, category)
-                  }
+                  onSelectCells={(categoryValue) => handleSelectCellsByCategory(summary.name, categoryValue)}
+                  onHighlightCells={(categoryValue) => handleHighlightCategory(summary.name, categoryValue)}
+                  checkedCategories={comparisonCheckedColumn === summary.name ? comparisonCheckedCategories : new Set<string>()}
+                  onToggleCategory={(category) => handleCheckboxToggle(summary.name, category)}
                   onHide={() => hideColumn(summary.name)}
                   onRename={(newName) => setColumnDisplayName(summary.name, newName)}
-                  onRenameLabel={(oldLabel, newLabel) =>
-                    handleRenameLabel(summary.name, oldLabel, newLabel)
-                  }
+                  onRenameLabel={(oldLabel, newLabel) => handleRenameLabel(summary.name, oldLabel, newLabel)}
                   onMergeLabels={() => setMergeModalColumn(summary.name)}
                   onTransferLabels={() => setTransferModalColumn(summary.name)}
                   labelsShown={embeddingLabelColumn === summary.name}
@@ -1362,21 +1363,16 @@ export default function CellPanel() {
                   selectedCategorySource={selectedCategorySource}
                 />
               ))}
-          </div>
+            </div>
+          ) : (
+            <div style={styles.emptyState}>No categorical columns</div>
+          )
         )}
 
-        {/* Continuous Columns - collapsible */}
-        {continuousColumns.length > 0 && (
-          <div style={styles.section}>
-            <div
-              style={styles.sectionHeader}
-              onClick={() => setContinuousExpanded(!continuousExpanded)}
-            >
-              <span style={styles.sectionToggle}>{continuousExpanded ? '▼' : '▶'}</span>
-              Continuous ({continuousColumns.length})
-            </div>
-            {continuousExpanded &&
-              continuousColumns.map((summary) => (
+        {cellTab === 'continuous' && (
+          continuousColumns.length > 0 ? (
+            <div style={styles.section}>
+              {continuousColumns.map((summary) => (
                 <ContinuousColumn
                   key={summary.name}
                   summary={summary}
@@ -1387,7 +1383,10 @@ export default function CellPanel() {
                   onRename={(newName) => setColumnDisplayName(summary.name, newName)}
                 />
               ))}
-          </div>
+            </div>
+          ) : (
+            <div style={styles.emptyState}>No continuous columns</div>
+          )
         )}
 
         {/* Hidden Columns - collapsible */}

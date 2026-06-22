@@ -649,6 +649,9 @@ interface AppState {
 
   // Import modal state
   isImportModalOpen: boolean
+  // Combine-gene-sets modal state
+  isCombineModalOpen: boolean
+  setCombineModalOpen: (open: boolean) => void
 
   // Gene mask modal state (global)
   geneMaskModalOpen: boolean
@@ -1022,6 +1025,7 @@ export const useStore = create<AppState>((set, get) => {
     drawTool: 'pencil' as DrawTool,
     selectionTool: 'lasso' as SelectionTool,
     isImportModalOpen: false,
+    isCombineModalOpen: false,
     geneMaskModalOpen: false,
     geneMaskConfig: null,
     pcaSubsets: [],
@@ -2033,6 +2037,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Import modal actions (global)
     setImportModalOpen: (open) => set({ isImportModalOpen: open }),
+    setCombineModalOpen: (open) => set({ isCombineModalOpen: open }),
 
     // Gene mask actions
     setGeneMaskModalOpen: (open) => set({ geneMaskModalOpen: open }),

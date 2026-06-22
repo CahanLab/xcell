@@ -3313,6 +3313,18 @@ class DataAdaptor:
                     })
         return bool_columns
 
+    def column_to_gene_names(self, column: str) -> list[str]:
+        """Gene names where a boolean .var column is True (in .var order).
+
+        Raises ValueError if the column is absent or not boolean-like (the
+        allow-list is exactly what get_var_boolean_columns reports).
+        """
+        valid = {c['name'] for c in self.get_var_boolean_columns()}
+        if column not in valid:
+            raise ValueError(f"'{column}' is not a boolean .var column")
+        mask = self._column_to_bool_array(column)
+        return self.adata.var_names[mask].tolist()
+
     def _resolve_source_matrix(self, layer: str | None):
         """Return the (n_cells, n_genes) expression matrix to read from.
 

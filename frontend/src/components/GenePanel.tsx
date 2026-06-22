@@ -3,6 +3,7 @@ import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType 
 import { useGeneSearch, useGeneBrowse, useDataActions, useObsSummaries, appendDataset, fetchVarIdentifierColumns, swapVarIndex } from '../hooks/useData'
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
 import HighlightOverlayPanel from './HighlightOverlayPanel'
+import VarColumnsSection from './VarColumnsSection'
 import BivariateAxisPicker, { AxisKind, resolveBivariateAxis } from './BivariateAxisPicker'
 import ImportModal from './ImportModal'
 import { MESSAGES } from '../messages'
@@ -2002,6 +2003,8 @@ export default function GenePanel() {
             />
           )
         })}
+
+        <VarColumnsSection />
 
         {/* Find Similar Genes Section - only shown when gene_neighbors exists */}
         {hasGeneNeighbors && (

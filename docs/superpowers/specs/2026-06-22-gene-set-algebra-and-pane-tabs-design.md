@@ -1,6 +1,12 @@
 # Gene-set algebra (.var columns + set operations) and pane de-crowding
 
 **Date:** 2026-06-22
+**Status:** Implemented 2026-06-22 (plan
+`docs/superpowers/plans/2026-06-22-gene-set-algebra-and-pane-tabs.md`). 134
+backend tests pass; frontend tsc + build clean; verified live end-to-end on the
+adE11 dataset (Cells Categorical|Continuous tabs; Genes Sets|Color tabs with
+Bivariate/Highlight under Color; `.var` columns `mt`/`ribo` materialized as gene
+sets; Combine `mt ∪ ribo` → 114-gene Manual set).
 
 ## 1. Problem / goal
 

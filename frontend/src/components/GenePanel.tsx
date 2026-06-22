@@ -4,6 +4,7 @@ import { useGeneSearch, useGeneBrowse, useDataActions, useObsSummaries, appendDa
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
 import HighlightOverlayPanel from './HighlightOverlayPanel'
 import VarColumnsSection from './VarColumnsSection'
+import CombineGeneSetsModal from './CombineGeneSetsModal'
 import BivariateAxisPicker, { AxisKind, resolveBivariateAxis } from './BivariateAxisPicker'
 import ImportModal from './ImportModal'
 import { MESSAGES } from '../messages'
@@ -1696,6 +1697,7 @@ export default function GenePanel() {
   const currentVarIndex = useStore((s) => s.currentVarIndex)
   const geneMaskConfig = useStore((s) => s.geneMaskConfig)
   const setGeneMaskModalOpen = useStore((s) => s.setGeneMaskModalOpen)
+  const setCombineModalOpen = useStore((s) => s.setCombineModalOpen)
   const [isSwapping, setIsSwapping] = useState(false)
   const [showBrowse, setShowBrowse] = useState(false)
   const [geneTab, setGeneTab] = useState<'sets' | 'color'>('sets')
@@ -1892,6 +1894,7 @@ export default function GenePanel() {
         />
       </div>
       <ImportModal />
+      <CombineGeneSetsModal />
 
       {selectedGenes.length > 0 && colorMode === 'expression' && (
         <div style={styles.selectedGenesBar}>
@@ -2005,6 +2008,13 @@ export default function GenePanel() {
         })}
 
         <VarColumnsSection />
+
+        <button
+          onClick={() => setCombineModalOpen(true)}
+          style={{ width: '100%', padding: '7px', fontSize: '12px', marginBottom: '12px', backgroundColor: '#0f3460', color: '#4ecdc4', border: '1px solid #1a1a2e', borderRadius: '4px', cursor: 'pointer' }}
+        >
+          ⨂ Combine sets…
+        </button>
 
         {/* Find Similar Genes Section - only shown when gene_neighbors exists */}
         {hasGeneNeighbors && (

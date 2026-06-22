@@ -1697,6 +1697,7 @@ export default function GenePanel() {
   const setGeneMaskModalOpen = useStore((s) => s.setGeneMaskModalOpen)
   const [isSwapping, setIsSwapping] = useState(false)
   const [showBrowse, setShowBrowse] = useState(false)
+  const [geneTab, setGeneTab] = useState<'sets' | 'color'>('sets')
 
   // Fetch var identifier columns on mount
   useEffect(() => {
@@ -1916,6 +1917,27 @@ export default function GenePanel() {
       )}
 
       <div style={styles.content}>
+        {/* Sets | Color tabs */}
+        <div style={{ display: 'flex', gap: '4px', marginBottom: '10px' }}>
+          {([['sets', 'Sets'], ['color', 'Color']] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setGeneTab(key)}
+              style={{
+                flex: 1, padding: '5px 8px', fontSize: '11px', cursor: 'pointer',
+                backgroundColor: geneTab === key ? '#0f3460' : 'transparent',
+                color: geneTab === key ? '#4ecdc4' : '#888',
+                border: '1px solid ' + (geneTab === key ? '#4ecdc4' : '#1a1a2e'),
+                borderRadius: '4px',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {geneTab === 'sets' && (
+        <>
         {/* New Set Input (for manual category) */}
         {showNewSetInput && (
           <div style={{ marginBottom: '12px', display: 'flex', gap: '4px' }}>
@@ -2061,7 +2083,11 @@ export default function GenePanel() {
             </div>
           </div>
         )}
+        </>
+        )}
 
+        {geneTab === 'color' && (
+        <>
         {/* Bivariate Mode Section */}
         {(() => {
           const r1 = resolveBivariateAxis(bivAxis1.kind, bivAxis1.value, allGeneSets)
@@ -2140,6 +2166,8 @@ export default function GenePanel() {
           updateHighlightLayer={updateHighlightLayer}
           clearHighlightOverlay={clearHighlightOverlay}
         />
+        </>
+        )}
 
         <HiddenCategoriesFooter />
       </div>

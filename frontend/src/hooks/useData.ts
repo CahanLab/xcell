@@ -950,6 +950,39 @@ export async function fetchVarIdentifierColumns(slot?: DatasetSlot): Promise<voi
   }
 }
 
+export interface VarBooleanColumn {
+  name: string
+  n_true: number
+  n_total: number
+}
+
+/** Boolean .var columns usable as gene sets (e.g. highly_variable). */
+export async function fetchVarBooleanColumns(
+  slot?: DatasetSlot,
+): Promise<VarBooleanColumn[]> {
+  const res = await fetch(appendDataset(`${API_BASE}/var/boolean_columns`, slot))
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+/** Gene names where a boolean .var column is True. */
+export async function fetchVarColumnGenes(
+  column: string,
+  slot?: DatasetSlot,
+): Promise<string[]> {
+  const url = appendDataset(
+    `${API_BASE}/var/column_genes?column=${encodeURIComponent(column)}`,
+    slot,
+  )
+  const res = await fetch(url)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  const body = await res.json()
+  return body.genes as string[]
+}
+
 // Swap the var index to a different column (changes gene identifiers)
 export async function swapVarIndex(column: string, slot?: DatasetSlot): Promise<void> {
   const store = useStore.getState()

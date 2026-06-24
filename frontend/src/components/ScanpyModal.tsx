@@ -247,6 +247,17 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
   cell_analysis: {
     label: 'Cells',
     functions: {
+      embedding_from_obs: {
+        label: 'Embedding from .obs',
+        description: 'Build a 2-D embedding from two numeric .obs columns (e.g. a barnyard plot of two species count columns). Optionally log each axis.',
+        prerequisites: [],
+        params: [
+          { name: 'col_x', label: 'X column', type: 'obs_column_select', obsDtype: 'numeric', default: null, description: 'Numeric .obs column for the X axis' },
+          { name: 'col_y', label: 'Y column', type: 'obs_column_select', obsDtype: 'numeric', default: null, description: 'Numeric .obs column for the Y axis' },
+          { name: 'log_axes', label: 'Log axes', type: 'select', default: 'none', options: ['none', 'x', 'y', 'both'], description: 'Apply log1p to the chosen axis/axes' },
+          { name: 'name', label: 'Name (optional)', type: 'text', default: null, description: 'Embedding name; default X_<x>_vs_<y>' },
+        ],
+      },
       pca: {
         label: 'PCA',
         description: 'Principal component analysis on cells',
@@ -418,6 +429,33 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         prerequisites: ['has_spatial'],
         custom: true,
         params: [],
+      },
+    },
+  },
+  multigenome: {
+    label: 'Multi-genome',
+    functions: {
+      sum_counts_by_pattern: {
+        label: 'Sum species counts',
+        description: 'Sum counts of genes whose names match a prefix or regex into a new .obs column (e.g. GRCh38_ for human, mm10_ for mouse in a PDX).',
+        prerequisites: [],
+        params: [
+          { name: 'pattern', label: 'Gene-name pattern', type: 'text', default: 'GRCh38_', description: 'Prefix (e.g. GRCh38_) or regex (e.g. ^mm10)' },
+          { name: 'match_mode', label: 'Match mode', type: 'select', default: 'prefix', options: ['prefix', 'regex'], description: 'How to match gene names' },
+          { name: 'obs_name', label: 'Output column (optional)', type: 'text', default: null, description: 'Default derived from the pattern (e.g. GRCh38_counts)' },
+          { name: 'layer', label: 'Source matrix', type: 'layer_select', default: 'counts', description: 'Counts layer to sum (falls back to .X)' },
+        ],
+      },
+      assign_species: {
+        label: 'Assign species',
+        description: 'Classify each cell by which species dominates its counts. Cells below the purity threshold become "mixed"; zero-count cells "unassigned".',
+        prerequisites: [],
+        params: [
+          { name: 'count_columns', label: 'Count columns', type: 'text', default: 'GRCh38_counts, mm10_counts', description: 'Comma-separated .obs count columns (>= 2)' },
+          { name: 'labels', label: 'Labels (optional)', type: 'text', default: null, description: 'Comma-separated species labels; default from column names' },
+          { name: 'obs_name', label: 'Output column', type: 'text', default: 'species', description: 'New categorical .obs column' },
+          { name: 'threshold', label: 'Purity threshold', type: 'number', default: 0.9, description: 'Min fraction to call a species (else "mixed")' },
+        ],
       },
     },
   },
@@ -769,7 +807,7 @@ export default function ScanpyModal() {
 
   // Load layer + graph lists when any function that consumes them is selected.
   useEffect(() => {
-    const needsLayers = ['smooth', 'gene_pca', 'gene_neighbors', 'build_gene_graph'].includes(selectedFunction)
+    const needsLayers = ['smooth', 'gene_pca', 'gene_neighbors', 'build_gene_graph', 'sum_counts_by_pattern'].includes(selectedFunction)
     const needsGraphs = ['smooth'].includes(selectedFunction)
     if (!needsLayers && !needsGraphs) return
     if (needsLayers) {
@@ -1259,7 +1297,7 @@ export default function ScanpyModal() {
       addScanpyAction(actionRecord)
 
       // Refresh schema if data shape may have changed
-      if (['filter_genes', 'exclude_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize'].includes(selectedFunction)) {
+      if (['filter_genes', 'exclude_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize', 'embedding_from_obs', 'sum_counts_by_pattern', 'assign_species'].includes(selectedFunction)) {
         await refreshSchema()
         // Also refresh obs summaries so Cell Manager shows new/updated columns (e.g. leiden clusters, contour levels)
         refreshObsSummaries()
@@ -1280,7 +1318,7 @@ export default function ScanpyModal() {
       }
 
       // Invalidate cached embedding so it re-fetches (e.g. new UMAP coordinates)
-      if (['umap', 'pca', 'filter_cells'].includes(selectedFunction)) {
+      if (['umap', 'pca', 'filter_cells', 'embedding_from_obs'].includes(selectedFunction)) {
         setEmbedding(null)
         // Auto-select the newly created embedding (important when dataset had none initially)
         if (data.embedding_name) {

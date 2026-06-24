@@ -521,6 +521,123 @@ class DataAdaptor:
             "coordinates": coords_2d.tolist(),
         }
 
+    def create_obs_embedding(
+        self, col_x: str, col_y: str, log_axes: str = 'none',
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a 2-D embedding (obsm['X_...']) from two numeric .obs columns.
+
+        log_axes in {'none','x','y','both'} applies log1p to the chosen axis
+        (requires non-negative values). Raises ValueError on bad input or a
+        duplicate embedding name.
+        """
+        obs = self.adata.obs
+        for c in (col_x, col_y):
+            if c not in obs.columns:
+                raise ValueError(f"obs column '{c}' not found")
+            if not pd.api.types.is_numeric_dtype(obs[c].dtype):
+                raise ValueError(f"obs column '{c}' is not numeric")
+        if log_axes not in ('none', 'x', 'y', 'both'):
+            raise ValueError(f"log_axes must be none/x/y/both, got {log_axes!r}")
+        x = obs[col_x].to_numpy(dtype=float)
+        y = obs[col_y].to_numpy(dtype=float)
+        if log_axes in ('x', 'both'):
+            if np.nanmin(x) < 0:
+                raise ValueError(f"log requires non-negative values; '{col_x}' has negatives")
+            x = np.log1p(x)
+        if log_axes in ('y', 'both'):
+            if np.nanmin(y) < 0:
+                raise ValueError(f"log requires non-negative values; '{col_y}' has negatives")
+            y = np.log1p(y)
+        if name:
+            key = name if name.startswith('X_') else f'X_{name}'
+        else:
+            key = f'X_{col_x}_vs_{col_y}'
+        if key in self.adata.obsm:
+            raise ValueError(f"embedding '{key}' already exists")
+        self.adata.obsm[key] = np.column_stack([x, y]).astype(float)
+        return {"embedding_name": key, "n_cells": self.n_cells}
+
+    def sum_counts_by_pattern(
+        self, pattern: str, match_mode: str = 'prefix',
+        obs_name: str | None = None, layer: str = 'counts',
+    ) -> dict[str, Any]:
+        """Sum counts of genes whose names match a prefix/regex into .obs.
+
+        match_mode in {'prefix','regex'}. Reads layers[layer] (default
+        'counts') if present, else .X. Raises ValueError on empty pattern or
+        no match.
+        """
+        import re
+        import scipy.sparse as sp
+        if not pattern:
+            raise ValueError("pattern must be non-empty")
+        if match_mode not in ('prefix', 'regex'):
+            raise ValueError("match_mode must be 'prefix' or 'regex'")
+        names = self.adata.var_names
+        if match_mode == 'prefix':
+            mask = np.asarray(names.str.startswith(pattern))
+        else:
+            rx = re.compile(pattern)
+            mask = np.array([bool(rx.search(str(n))) for n in names])
+        n_matched = int(mask.sum())
+        if n_matched == 0:
+            raise ValueError(f"no genes match {match_mode} '{pattern}'")
+        src = layer if layer else 'counts'
+        M = self.adata.layers[src] if (src != 'X' and src in self.adata.layers) else self.adata.X
+        sub = M[:, mask]
+        sums = (np.asarray(sub.sum(axis=1)).ravel() if sp.issparse(sub)
+                else np.asarray(sub).sum(axis=1).ravel())
+        if not obs_name:
+            base = re.sub(r'[^0-9A-Za-z]+', '', pattern) or 'species'
+            obs_name = f"{base}_counts"
+        self.adata.obs[obs_name] = sums.astype(float)
+        return {"obs_name": obs_name, "n_genes_matched": n_matched}
+
+    def assign_species(
+        self, count_columns, labels=None, obs_name: str = 'species',
+        threshold: float = 0.9,
+    ) -> dict[str, Any]:
+        """Assign each cell a species from per-species count columns.
+
+        For each cell, the argmax-fraction species is assigned iff its fraction
+        >= threshold, else 'mixed'; zero-total cells are 'unassigned'.
+        """
+        if isinstance(count_columns, str):
+            count_columns = [c.strip() for c in count_columns.split(',') if c.strip()]
+        count_columns = list(count_columns)
+        if len(count_columns) < 2:
+            raise ValueError("assign_species needs at least 2 count columns")
+        obs = self.adata.obs
+        for c in count_columns:
+            if c not in obs.columns:
+                raise ValueError(f"obs column '{c}' not found")
+            if not pd.api.types.is_numeric_dtype(obs[c].dtype):
+                raise ValueError(f"obs column '{c}' is not numeric")
+        if labels is None:
+            labels = [c[:-7] if c.endswith('_counts') else c for c in count_columns]
+        elif isinstance(labels, str):
+            labels = [s.strip() for s in labels.split(',') if s.strip()]
+        labels = list(labels)
+        if len(labels) != len(count_columns):
+            raise ValueError("labels must match count_columns length")
+        if not (0 < threshold <= 1):
+            raise ValueError("threshold must be in (0, 1]")
+        mat = np.column_stack([obs[c].to_numpy(dtype=float) for c in count_columns])
+        total = mat.sum(axis=1)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            frac = np.where(total[:, None] > 0, mat / total[:, None], 0.0)
+        argmax = frac.argmax(axis=1)
+        labels_arr = np.array(labels, dtype=object)
+        assigned = np.where(frac[np.arange(len(total)), argmax] >= threshold,
+                            labels_arr[argmax], 'mixed').astype(object)
+        assigned[total <= 0] = 'unassigned'
+        cats = [c for c in (list(dict.fromkeys(labels)) + ['mixed', 'unassigned'])
+                if c in set(assigned.tolist())]
+        self.adata.obs[obs_name] = pd.Categorical(assigned, categories=cats)
+        counts = {c: int((assigned == c).sum()) for c in cats}
+        return {"obs_name": obs_name, "counts": counts}
+
     def transform_embedding(
         self,
         name: str,

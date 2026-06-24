@@ -1755,6 +1755,72 @@ def run_highly_variable_genes(request: HighlyVariableGenesRequest, dataset: str 
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class EmbeddingFromObsRequest(BaseModel):
+    col_x: str
+    col_y: str
+    log_axes: str = "none"
+    name: str | None = None
+
+
+@router.post("/scanpy/embedding_from_obs")
+def scanpy_embedding_from_obs(
+    request: EmbeddingFromObsRequest, dataset: str | None = Query(None)
+):
+    """Build a 2-D embedding from two numeric .obs columns."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.create_obs_embedding(
+            col_x=request.col_x, col_y=request.col_y,
+            log_axes=request.log_axes, name=request.name,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class SumCountsRequest(BaseModel):
+    pattern: str
+    match_mode: str = "prefix"
+    obs_name: str | None = None
+    layer: str = "counts"
+
+
+@router.post("/scanpy/sum_counts_by_pattern")
+def scanpy_sum_counts_by_pattern(
+    request: SumCountsRequest, dataset: str | None = Query(None)
+):
+    """Sum counts of genes matching a prefix/regex into a new .obs column."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.sum_counts_by_pattern(
+            pattern=request.pattern, match_mode=request.match_mode,
+            obs_name=request.obs_name, layer=request.layer,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class AssignSpeciesRequest(BaseModel):
+    count_columns: str  # comma-separated obs column names
+    labels: str | None = None  # comma-separated, optional
+    obs_name: str = "species"
+    threshold: float = 0.9
+
+
+@router.post("/scanpy/assign_species")
+def scanpy_assign_species(
+    request: AssignSpeciesRequest, dataset: str | None = Query(None)
+):
+    """Assign each cell a species from per-species count columns."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.assign_species(
+            count_columns=request.count_columns, labels=request.labels,
+            obs_name=request.obs_name, threshold=request.threshold,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/scanpy/pca")
 def run_pca(request: PcaRequest, dataset: str | None = Query(None)):
     """Run PCA dimensionality reduction.

@@ -124,7 +124,9 @@ prerequisites endpoint's known-function handling (default satisfied).
   clear message.
 - Pattern matches no genes → 400.
 - `assign_species` with <2 columns, or a named column missing/non-numeric → 400.
-- Duplicate embedding/obs names → 400 (don't silently overwrite).
+- Duplicate **embedding** name → 400 (don't clobber e.g. an existing UMAP).
+  **Obs** columns (counts / species) **overwrite on re-run** — re-running to
+  tweak a pattern or threshold is the expected workflow.
 - Cells with `total == 0` species counts → `'unassigned'` (not a crash).
 
 ## 8. Testing

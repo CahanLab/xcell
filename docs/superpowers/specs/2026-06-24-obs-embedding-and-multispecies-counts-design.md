@@ -1,6 +1,13 @@
 # Custom .obs embeddings + multi-species (PDX) counts
 
 **Date:** 2026-06-24
+**Status:** Implemented 2026-06-24 (plan
+`docs/superpowers/plans/2026-06-24-obs-embedding-and-multispecies-counts.md`).
+148 backend tests pass; frontend tsc + build clean; verified live on the adE11
+dataset — created an `.obs` embedding (total_counts × n_genes_by_counts, log
+both) that auto-selected and rendered as an operable scatter; `sum_counts_by_pattern`
++ `assign_species` produced count columns and a `species` categorical visible in
+the Cells pane.
 
 ## 1. Goals
 

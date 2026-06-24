@@ -151,6 +151,7 @@ interface ParamDef {
   default: string | number | null
   description: string
   options?: string[]
+  obsDtype?: 'numeric' | 'category'
   visibleWhen?: { param: string; value: string }
 }
 
@@ -686,6 +687,7 @@ export default function ScanpyModal() {
   const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
   const [availableGraphs, setAvailableGraphs] = useState<NeighborGraphInfo[]>([])
   const [availableObsColumns, setAvailableObsColumns] = useState<string[]>([])
+  const [availableNumericObsColumns, setAvailableNumericObsColumns] = useState<string[]>([])
   const activeSlot = useStore((s) => s.activeSlot)
   const pcaSubsetsFromStore: PCASubsetSummary[] =
     useStore((s) => s.datasets[s.activeSlot]?.pcaSubsets || [])
@@ -750,19 +752,19 @@ export default function ScanpyModal() {
     }
   }, [selectedFunction, activeSlot])
 
-  // Load categorical obs columns for any function exposing an obs_column_select.
+  // Load obs columns (split by dtype) for any function exposing an
+  // obs_column_select. A param's obsDtype selects which list it offers.
   useEffect(() => {
     const needsObsColumns = (functionDef?.params || []).some((p) => p.type === 'obs_column_select')
     if (!needsObsColumns) return
     fetch(appendDataset(`${API_BASE}/obs/summaries`))
       .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
       .then((data) => {
-        const cols = (data.summaries || data || [])
-          .filter((s: { dtype?: string }) => s.dtype === 'category')
-          .map((s: { name: string }) => s.name)
-        setAvailableObsColumns(cols)
+        const rows = (data.summaries || data || []) as { name: string; dtype?: string }[]
+        setAvailableObsColumns(rows.filter((s) => s.dtype === 'category').map((s) => s.name))
+        setAvailableNumericObsColumns(rows.filter((s) => s.dtype === 'numeric').map((s) => s.name))
       })
-      .catch(() => setAvailableObsColumns([]))
+      .catch(() => { setAvailableObsColumns([]); setAvailableNumericObsColumns([]) })
   }, [selectedFunction, functionDef, activeSlot, scanpyActionHistory])
 
   // Load layer + graph lists when any function that consumes them is selected.
@@ -2052,8 +2054,10 @@ export default function ScanpyModal() {
                           value={paramValues[param.name] ?? ''}
                           onChange={(e) => handleParamChange(param.name, e.target.value)}
                         >
-                          <option value="">— treat as one tissue —</option>
-                          {availableObsColumns.map((c) => (
+                          <option value="">
+                            {param.obsDtype === 'numeric' ? '— select column —' : '— treat as one tissue —'}
+                          </option>
+                          {(param.obsDtype === 'numeric' ? availableNumericObsColumns : availableObsColumns).map((c) => (
                             <option key={c} value={c}>{c}</option>
                           ))}
                         </select>

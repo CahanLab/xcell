@@ -62,3 +62,34 @@ def test_ucell_skips_missing_genes():
     r = a.ucell_score_values(["A", "B", "ZZZ"], [], layer="X", max_rank=1500)
     assert r["n_up_used"] == 2          # ZZZ filtered out
     assert np.allclose(r["values"], [1.0, 0.2])
+
+
+def test_score_gene_sets_writes_obs_columns():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    out = a.score_gene_sets_ucell(
+        [{"name": "Sig A", "up": ["A", "B"], "down": ["D"]},
+         {"name": "Sig C", "up": ["C", "D"]}],
+        layer="X", max_rank=1500, w_neg=1.0,
+    )
+    cols = {r["name"]: r for r in out["results"]}
+    assert "UCell_Sig_A" in a.adata.obs.columns
+    assert cols["Sig A"]["obs_column"] == "UCell_Sig_A"
+    assert np.allclose(a.adata.obs["UCell_Sig_A"].to_numpy(), [1.0, 0.0])
+    assert cols["Sig A"]["n_up_used"] == 2 and cols["Sig A"]["n_down_used"] == 1
+
+
+def test_score_gene_sets_skips_down_only_set():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    out = a.score_gene_sets_ucell([{"name": "DownOnly", "up": [], "down": ["D"]}])
+    r = out["results"][0]
+    assert r.get("skipped")
+    assert "UCell_DownOnly" not in a.adata.obs.columns
+
+
+def test_score_gene_sets_obs_name_collision_suffixes():
+    ad = _adata()
+    ad.obs["UCell_Dup"] = [9.0, 9.0]
+    a = DataAdaptor("x.h5ad", adata=ad)
+    out = a.score_gene_sets_ucell([{"name": "Dup", "up": ["A"]}])
+    assert out["results"][0]["obs_column"] == "UCell_Dup_1"
+    assert "UCell_Dup_1" in a.adata.obs.columns

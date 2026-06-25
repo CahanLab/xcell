@@ -1274,6 +1274,61 @@ class DataAdaptor:
             "max_rank": eff_max_rank,
         }
 
+    @staticmethod
+    def _sanitize_obs_name(name: str) -> str:
+        import re
+        base = re.sub(r'[^0-9A-Za-z]+', '_', name).strip('_') or 'set'
+        return f"UCell_{base}"
+
+    def _unique_obs_name(self, base: str) -> str:
+        if base not in self.adata.obs.columns:
+            return base
+        i = 1
+        while f"{base}_{i}" in self.adata.obs.columns:
+            i += 1
+        return f"{base}_{i}"
+
+    def score_gene_sets_ucell(
+        self, sets: list[dict[str, Any]], layer: str = 'counts',
+        max_rank: int = 1500, w_neg: float = 1.0,
+    ) -> dict[str, Any]:
+        """Score directional gene sets with UCell and write .obs columns.
+
+        Each set is {name, up:[...], down:[...]}. All sets share one rank matrix
+        (one eff_max_rank for comparability). Sets with no usable up-genes are
+        skipped (would score 0). Writes obs[UCell_<name>] (collision-safe) and
+        returns per-set metadata.
+        """
+        var_index = self.adata.var.index
+        n_genes = self.adata.shape[1]
+        prepared = []
+        for s in sets:
+            name = s.get("name") or "set"
+            up = [g for g in (s.get("up") or []) if g in var_index]
+            down = [g for g in (s.get("down") or []) if g in var_index]
+            prepared.append((name, up, down))
+        longest = max([len(u) for _, u, _ in prepared]
+                      + [len(d) for _, _, d in prepared] + [1])
+        eff_max_rank = int(min(max(max_rank, longest), n_genes))
+        ranks = self._ucell_ranks(layer, eff_max_rank)
+
+        results = []
+        for name, up, down in prepared:
+            if not up:
+                results.append({"name": name, "skipped": "no up-genes present in dataset"})
+                continue
+            up_idx = [var_index.get_loc(g) for g in up]
+            down_idx = [var_index.get_loc(g) for g in down]
+            scores = self._ucell_score_one(up_idx, down_idx, ranks, eff_max_rank, w_neg)
+            col = self._unique_obs_name(self._sanitize_obs_name(name))
+            self.adata.obs[col] = scores.astype(np.float64)
+            results.append({
+                "name": name, "obs_column": col,
+                "min": float(scores.min()), "max": float(scores.max()),
+                "n_up_used": len(up_idx), "n_down_used": len(down_idx),
+            })
+        return {"results": results, "max_rank": eff_max_rank, "layer": layer}
+
     def _aggregate_gene_set_scores(
         self,
         genes: list[str],

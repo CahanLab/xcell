@@ -428,6 +428,7 @@ export interface DisplayPreferences {
   geneSetPerGeneNorm: GeneSetPerGeneNorm
   geneSetPerGeneClip: number  // percentile (0–5%); only used by 'minmax' per-gene norm
   geneSetAggregation: GeneSetAggregation
+  geneSetScoringMethod: 'mean' | 'ucell'   // 'mean' = per-gene-norm+aggregate path; 'ucell' = rank AUC
   pointOpacity: number  // 0-1
   expressionTransform: ExpressionTransform  // Transformation for expression values
   clipPercentile: number  // Symmetric percentile clip for color-ramp anchors (0 = off)
@@ -491,6 +492,7 @@ export function defaultDisplayPreferences(): DisplayPreferences {
     geneSetPerGeneNorm: 'zscore_mad',
     geneSetPerGeneClip: 1.0,
     geneSetAggregation: 'mean',
+    geneSetScoringMethod: 'mean',
     pointOpacity: 0.85,
     expressionTransform: 'none',
     clipPercentile: 1.0,
@@ -532,6 +534,8 @@ export function displayPreferencesFromConfig(
   if (gsc !== undefined) out.geneSetPerGeneClip = gsc
   const gsa = str(d.gene_set_aggregation)
   if (gsa !== undefined) out.geneSetAggregation = gsa as GeneSetAggregation
+  const gsm = str(d.gene_set_scoring_method)
+  if (gsm === 'mean' || gsm === 'ucell') out.geneSetScoringMethod = gsm
   return out
 }
 

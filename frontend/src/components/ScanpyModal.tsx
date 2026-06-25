@@ -147,7 +147,7 @@ function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData
 interface ParamDef {
   name: string
   label: string
-  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select' | 'layer_select' | 'graph_select' | 'obs_column_select'
+  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select' | 'layer_select' | 'graph_select' | 'obs_column_select' | 'var_bool_multiselect'
   default: string | number | null
   description: string
   options?: string[]
@@ -2086,6 +2086,40 @@ export default function ScanpyModal() {
                             </>
                           )}
                         </select>
+                      ) : param.type === 'var_bool_multiselect' ? (
+                        booleanColumns.length === 0 ? (
+                          <div style={{ fontSize: '11px', color: '#888' }}>
+                            No boolean .var columns yet — add one via Genes → Add boolean column.
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                            {booleanColumns.map((col) => {
+                              const selected = String(paramValues[param.name] ?? '')
+                                .split(',').map((s) => s.trim()).filter(Boolean)
+                              const isSel = selected.includes(col.name)
+                              return (
+                                <button
+                                  key={col.name}
+                                  onClick={() => {
+                                    const next = isSel
+                                      ? selected.filter((c) => c !== col.name)
+                                      : [...selected, col.name]
+                                    handleParamChange(param.name, next.join(','))
+                                  }}
+                                  style={{
+                                    padding: '4px 10px', fontSize: '11px',
+                                    backgroundColor: isSel ? '#4ecdc4' : '#1a1a2e',
+                                    color: isSel ? '#000' : '#aaa',
+                                    border: `1px solid ${isSel ? '#4ecdc4' : '#333'}`,
+                                    borderRadius: '12px', cursor: 'pointer',
+                                  }}
+                                >
+                                  {col.name} <span style={{ opacity: 0.7 }}>({col.n_true})</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )
                       ) : param.type === 'obs_column_select' ? (
                         <select
                           style={styles.paramInput}

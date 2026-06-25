@@ -147,7 +147,7 @@ function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData
 interface ParamDef {
   name: string
   label: string
-  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select' | 'layer_select' | 'graph_select' | 'obs_column_select'
+  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select' | 'layer_select' | 'graph_select' | 'obs_column_select' | 'var_bool_multiselect'
   default: string | number | null
   description: string
   options?: string[]
@@ -173,6 +173,16 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
   preprocessing: {
     label: 'Preprocess',
     functions: {
+      calculate_qc_metrics: {
+        label: 'QC Metrics',
+        description: 'Compute standard QC metrics (sc.pp.calculate_qc_metrics) into .obs/.var, including per-qc_var pct_counts (e.g. % mitochondrial).',
+        prerequisites: [],
+        params: [
+          { name: 'qc_vars', label: 'QC vars (boolean .var columns)', type: 'var_bool_multiselect', default: null, description: 'Boolean .var columns to compute pct/total counts for (e.g. mt). Add columns via Genes → Add boolean column.' },
+          { name: 'log1p', label: 'Add log1p columns', type: 'select', default: 'true', options: ['true', 'false'], description: 'Also write log1p_* QC columns' },
+          { name: 'percent_top', label: 'Percent-top (optional)', type: 'text', default: null, description: 'Comma-separated ints (e.g. 50,100,200,500). Blank skips top-N columns.' },
+        ],
+      },
       exclude_genes: {
         label: 'Exclude Genes',
         description: 'Remove genes by name or regex pattern (e.g. ^mt- for mitochondrial, ^Gm\\d+ for predicted)',
@@ -324,6 +334,16 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
   gene_analysis: {
     label: 'Genes',
     functions: {
+      add_var_boolean: {
+        label: 'Add boolean column',
+        description: 'Flag genes whose names match a prefix/regex as a boolean .var column (e.g. mt from ^mt-, or a species). Usable as a QC var.',
+        prerequisites: [],
+        params: [
+          { name: 'name', label: 'Column name', type: 'text', default: 'mt', description: 'New boolean .var column name' },
+          { name: 'pattern', label: 'Gene-name pattern', type: 'text', default: '^mt-', description: 'Prefix (e.g. GRCh38_) or regex (e.g. ^mt-)' },
+          { name: 'match_mode', label: 'Match mode', type: 'select', default: 'regex', options: ['prefix', 'regex'], description: 'How to match gene names' },
+        ],
+      },
       build_gene_graph: {
         label: 'Build Gene Graph',
         description: 'Build gene-gene similarity graph (runs PCA + neighbors)',
@@ -1297,7 +1317,7 @@ export default function ScanpyModal() {
       addScanpyAction(actionRecord)
 
       // Refresh schema if data shape may have changed
-      if (['filter_genes', 'exclude_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize', 'embedding_from_obs', 'sum_counts_by_pattern', 'assign_species'].includes(selectedFunction)) {
+      if (['filter_genes', 'exclude_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize', 'embedding_from_obs', 'sum_counts_by_pattern', 'assign_species', 'add_var_boolean', 'calculate_qc_metrics'].includes(selectedFunction)) {
         await refreshSchema()
         // Also refresh obs summaries so Cell Manager shows new/updated columns (e.g. leiden clusters, contour levels)
         refreshObsSummaries()
@@ -2086,6 +2106,40 @@ export default function ScanpyModal() {
                             </>
                           )}
                         </select>
+                      ) : param.type === 'var_bool_multiselect' ? (
+                        booleanColumns.length === 0 ? (
+                          <div style={{ fontSize: '11px', color: '#888' }}>
+                            No boolean .var columns yet — add one via Genes → Add boolean column.
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                            {booleanColumns.map((col) => {
+                              const selected = String(paramValues[param.name] ?? '')
+                                .split(',').map((s) => s.trim()).filter(Boolean)
+                              const isSel = selected.includes(col.name)
+                              return (
+                                <button
+                                  key={col.name}
+                                  onClick={() => {
+                                    const next = isSel
+                                      ? selected.filter((c) => c !== col.name)
+                                      : [...selected, col.name]
+                                    handleParamChange(param.name, next.join(','))
+                                  }}
+                                  style={{
+                                    padding: '4px 10px', fontSize: '11px',
+                                    backgroundColor: isSel ? '#4ecdc4' : '#1a1a2e',
+                                    color: isSel ? '#000' : '#aaa',
+                                    border: `1px solid ${isSel ? '#4ecdc4' : '#333'}`,
+                                    borderRadius: '12px', cursor: 'pointer',
+                                  }}
+                                >
+                                  {col.name} <span style={{ opacity: 0.7 }}>({col.n_true})</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )
                       ) : param.type === 'obs_column_select' ? (
                         <select
                           style={styles.paramInput}

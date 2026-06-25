@@ -1821,6 +1821,47 @@ def scanpy_assign_species(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class AddVarBooleanRequest(BaseModel):
+    name: str
+    pattern: str
+    match_mode: str = "prefix"
+
+
+@router.post("/scanpy/add_var_boolean")
+def scanpy_add_var_boolean(
+    request: AddVarBooleanRequest, dataset: str | None = Query(None)
+):
+    """Add a boolean .var column from a gene-name prefix/regex."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.add_var_boolean_column(
+            name=request.name, pattern=request.pattern, match_mode=request.match_mode,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class CalculateQcMetricsRequest(BaseModel):
+    qc_vars: str | None = None      # comma-separated boolean .var columns
+    percent_top: str | None = None  # comma-separated ints; blank -> None
+    log1p: bool = True
+
+
+@router.post("/scanpy/calculate_qc_metrics")
+def scanpy_calculate_qc_metrics(
+    request: CalculateQcMetricsRequest, dataset: str | None = Query(None)
+):
+    """sc.pp.calculate_qc_metrics with user-selected qc_vars."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.run_calculate_qc_metrics(
+            qc_vars=request.qc_vars, percent_top=request.percent_top,
+            log1p=request.log1p,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/scanpy/pca")
 def run_pca(request: PcaRequest, dataset: str | None = Query(None)):
     """Run PCA dimensionality reduction.

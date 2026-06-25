@@ -280,6 +280,10 @@ class DataAdaptor:
         # Multi-contour: cache of per-module scores between prepare and finalize,
         # keyed by an opaque token. See prepare_multicontour / finalize_multicontour.
         self._multicontour_cache: dict[str, dict[str, Any]] = {}
+        # UCell rank matrices, keyed by (resolved_layer, max_rank). Transient:
+        # validated against id(self.adata); never written into adata.
+        self._ucell_rank_cache: dict[tuple[str, int], Any] = {}
+        self._ucell_rank_cache_adata_id: int | None = None
 
 
         # Defensively preserve raw counts: if .X looks like integer counts and
@@ -785,6 +789,8 @@ class DataAdaptor:
 
         # Clear normalized cache (it may share obsm references)
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         result = self.get_embedding(name)
         result["undo_depth"] = len(self._embedding_undo_stacks.get(name, []))
@@ -808,6 +814,8 @@ class DataAdaptor:
         coords = stack.pop()
         self.adata.obsm[name][:, :2] = coords
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
         result = self.get_embedding(name)
         result["undo_depth"] = len(stack)
         return result
@@ -950,6 +958,8 @@ class DataAdaptor:
 
         # Clear caches
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         # Regenerate the visible-gene mask since .var axis may have changed.
         # If referenced columns no longer exist, the mask is cleared.
@@ -1157,6 +1167,53 @@ class DataAdaptor:
             with np.errstate(all='ignore'):
                 return np.nanmax(matrix, axis=1)
         raise ValueError(f"Unknown aggregation method: {method!r}")
+
+    def _ucell_ranks(self, layer: str | None, max_rank: int):
+        """Per-cell capped descending gene ranks as a sparse CSC matrix.
+
+        Ranks each cell's genes by expression descending (rank 1 = highest),
+        average ties, then caps at ``max_rank`` (also capped to n_genes, per
+        UCell). Ranks >= max_rank are dropped to 0 (sparse), meaning "treat as
+        max_rank" when scoring. Result shape (n_cells, n_genes), cached on the
+        adaptor keyed by (resolved layer, max_rank) and invalidated whenever
+        ``self.adata`` is reassigned. Source layer 'counts' falls back to X.
+        """
+        from scipy.stats import rankdata
+        import scipy.sparse as sp
+
+        if layer in (None, 'counts'):
+            resolved = 'counts' if 'counts' in self.adata.layers else 'X'
+        else:
+            resolved = layer
+        n_cells, n_genes = self.adata.shape
+        eff_max_rank = int(min(max_rank, n_genes))
+        key = (resolved, eff_max_rank)
+
+        if self._ucell_rank_cache_adata_id != id(self.adata):
+            self._ucell_rank_cache = {}
+            self._ucell_rank_cache_adata_id = id(self.adata)
+        if key in self._ucell_rank_cache:
+            return self._ucell_rank_cache[key]
+
+        if resolved == 'X':
+            M = self.adata.X
+        elif resolved in self.adata.layers:
+            M = self.adata.layers[resolved]
+        else:
+            raise ValueError(f"Layer '{resolved}' not found for UCell ranking")
+
+        chunk = 2000
+        blocks = []
+        for start in range(0, n_cells, chunk):
+            block = M[start:start + chunk]
+            dense = block.toarray() if sp.issparse(block) else np.asarray(block)
+            dense = dense.astype(np.float64, copy=False)
+            r = rankdata(-dense, method='average', axis=1)
+            r[r >= eff_max_rank] = 0.0
+            blocks.append(sp.csr_matrix(r.astype(np.float32)))
+        ranks = sp.vstack(blocks).tocsc() if blocks else sp.csc_matrix((0, n_genes))
+        self._ucell_rank_cache[key] = ranks
+        return ranks
 
     def _aggregate_gene_set_scores(
         self,
@@ -3688,6 +3745,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache since data changed
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         mask_cleared = self._regenerate_gene_mask_after_var_change()
 
@@ -3741,6 +3800,8 @@ class DataAdaptor:
         if n_removed > 0:
             self.adata = self.adata[:, ~mask].copy()
             self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         mask_cleared = self._regenerate_gene_mask_after_var_change()
 
@@ -3814,6 +3875,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache since data changed
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         result = {
             'n_cells_before': n_cells_before,
@@ -3854,6 +3917,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         n_cells_after = self.n_cells
 
@@ -3905,6 +3970,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         result = {'status': 'completed', 'target_sum': target_sum}
         self._log_action('normalize_total', kwargs, result)
@@ -3942,6 +4009,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         result = {'status': 'completed'}
         self._log_action('log1p', {}, result)

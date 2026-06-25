@@ -528,7 +528,7 @@ export function useDataActions() {
   )
 
   const colorByGenes = useCallback(
-    async (genes: string[], transform?: string, geneSetName?: string) => {
+    async (genes: string[], transform?: string, geneSetName?: string, genesDown?: string[]) => {
       if (genes.length === 0) {
         clearSelectedGenes()
         // Mirror clear to other slot in dual mode
@@ -537,6 +537,30 @@ export function useDataActions() {
             selectedGenes: [], selectedGeneSetName: null, expressionData: null, colorMode: 'none',
             cellSortOrder: null, cellSortVersion: 0,
           })
+        }
+        return
+      }
+      // UCell rank-AUC scoring path (directional; not persisted). Branches before
+      // the single-gene shortcut so 1-up-gene or down-bearing sets still use UCell.
+      if (displayPreferences.geneSetScoringMethod === 'ucell') {
+        setLoading(true)
+        try {
+          const data = await fetchJson<ExpressionData>(appendDataset(`${API_BASE}/expression/ucell`), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ up: genes, down: genesDown ?? [], layer: 'counts' }),
+          })
+          setExpressionData(data)
+          setSelectedGenes(genes)
+          setSelectedGeneSetName(geneSetName ?? null)
+          setColorMode('expression')
+          setSelectedColorColumn(null)
+        } catch (err) {
+          setError((err as Error).message)
+          setExpressionData(null)
+          setColorMode('none')
+        } finally {
+          setLoading(false)
         }
         return
       }
@@ -595,7 +619,7 @@ export function useDataActions() {
         setLoading(false)
       }
     },
-    [setLoading, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform, displayPreferences.geneSetPerGeneNorm, displayPreferences.geneSetPerGeneClip, displayPreferences.geneSetAggregation, displayPreferences.clipPercentile, layoutMode, activeSlot, patchSlotState, displayLayer]
+    [setLoading, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn, setError, clearSelectedGenes, colorByGene, displayPreferences.expressionTransform, displayPreferences.geneSetPerGeneNorm, displayPreferences.geneSetPerGeneClip, displayPreferences.geneSetAggregation, displayPreferences.geneSetScoringMethod, displayPreferences.clipPercentile, layoutMode, activeSlot, patchSlotState, displayLayer]
   )
 
   const clearExpressionColor = useCallback(() => {

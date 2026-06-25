@@ -750,7 +750,7 @@ function CategoryGeneSetComponent({
   categoryType: GeneSetCategoryType
   folderId?: string
   onColorByGene: (gene: string) => void
-  onColorBySet: (genes: string[], geneSetName?: string) => void
+  onColorBySet: (genes: string[], geneSetName?: string, genesDown?: string[]) => void
   activeGenes: string[]
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -997,8 +997,8 @@ function CategoryGeneSetComponent({
         <div style={styles.geneSetActions}>
           <button
             style={styles.iconButton}
-            onClick={(e) => { e.stopPropagation(); onColorBySet(geneSet.genes, geneSet.name) }}
-            title="Color by mean expression"
+            onClick={(e) => { e.stopPropagation(); onColorBySet(geneSet.genes, geneSet.name, geneSet.genesDown) }}
+            title="Color by gene set (mean or UCell, per Display settings)"
           >
             🎨
           </button>
@@ -1130,7 +1130,7 @@ function GeneSetFolderComponent({
   folder: GeneSetFolder
   categoryType: GeneSetCategoryType
   onColorByGene: (gene: string) => void
-  onColorBySet: (genes: string[], geneSetName?: string) => void
+  onColorBySet: (genes: string[], geneSetName?: string, genesDown?: string[]) => void
   activeGenes: string[]
   allowAddSet?: boolean
 }) {
@@ -1561,7 +1561,7 @@ function GeneSetCategoryComponent({
 }: {
   category: GeneSetCategory
   onColorByGene: (gene: string) => void
-  onColorBySet: (genes: string[], geneSetName?: string) => void
+  onColorBySet: (genes: string[], geneSetName?: string, genesDown?: string[]) => void
   activeGenes: string[]
   onAddNewSet?: () => void
   onAddNewFolder?: () => void
@@ -1685,8 +1685,8 @@ export default function GenePanel() {
   const refreshObsSummaries = useStore((s) => s.refreshObsSummaries)
   const [ucellNotice, setUcellNotice] = useState<string | null>(null)
 
-  const handleColorBySet = useCallback((genes: string[], geneSetName?: string) => {
-    colorByGenes(genes, undefined, geneSetName)
+  const handleColorBySet = useCallback((genes: string[], geneSetName?: string, genesDown?: string[]) => {
+    colorByGenes(genes, undefined, geneSetName, genesDown)
   }, [colorByGenes])
 
   // Flatten gene sets for bivariate selection

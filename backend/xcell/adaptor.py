@@ -558,6 +558,70 @@ class DataAdaptor:
         self.adata.obsm[key] = np.column_stack([x, y]).astype(float)
         return {"embedding_name": key, "n_cells": self.n_cells}
 
+    def _match_var_names(self, pattern: str, match_mode: str = 'prefix') -> np.ndarray:
+        """Boolean mask over var_names matching a prefix or regex."""
+        import re
+        if not pattern:
+            raise ValueError("pattern must be non-empty")
+        if match_mode not in ('prefix', 'regex'):
+            raise ValueError("match_mode must be 'prefix' or 'regex'")
+        names = self.adata.var_names
+        if match_mode == 'prefix':
+            return np.asarray(names.str.startswith(pattern))
+        rx = re.compile(pattern)
+        return np.array([bool(rx.search(str(n))) for n in names])
+
+    def add_var_boolean_column(
+        self, name: str, pattern: str, match_mode: str = 'prefix',
+    ) -> dict[str, Any]:
+        """Add a boolean .var column flagging genes whose names match a
+        prefix/regex (e.g. mitochondrial, a species of origin).
+
+        Raises ValueError on empty name/pattern, no match, or a name that
+        collides with an existing non-boolean .var column.
+        """
+        if not name:
+            raise ValueError("column name must be non-empty")
+        if name in self.adata.var.columns and self.adata.var[name].dtype != bool:
+            raise ValueError(f"'{name}' already exists and is not boolean")
+        mask = self._match_var_names(pattern, match_mode)
+        n_matched = int(mask.sum())
+        if n_matched == 0:
+            raise ValueError(f"no genes match {match_mode} '{pattern}'")
+        self.adata.var[name] = mask.astype(bool)
+        return {"name": name, "n_genes_matched": n_matched}
+
+    def run_calculate_qc_metrics(
+        self, qc_vars=None, percent_top=None, log1p: bool = True,
+    ) -> dict[str, Any]:
+        """Run sc.pp.calculate_qc_metrics(inplace=True).
+
+        qc_vars: list or comma-separated string of boolean .var columns.
+        percent_top: None (default; skips top-N columns) or list/comma-string
+        of ints. log1p adds the log1p_* columns.
+        """
+        if isinstance(qc_vars, str):
+            qc_vars = [c.strip() for c in qc_vars.split(',') if c.strip()]
+        qc_vars = list(qc_vars or [])
+        for v in qc_vars:
+            if v not in self.adata.var.columns:
+                raise ValueError(f"qc_var '{v}' not found in .var")
+            if self.adata.var[v].dtype != bool:
+                raise ValueError(f"qc_var '{v}' is not boolean")
+        if isinstance(percent_top, str):
+            percent_top = [int(x) for x in percent_top.split(',') if x.strip()] or None
+        obs_before = set(self.adata.obs.columns)
+        var_before = set(self.adata.var.columns)
+        sc.pp.calculate_qc_metrics(
+            self.adata, qc_vars=qc_vars, percent_top=percent_top,
+            log1p=log1p, inplace=True,
+        )
+        return {
+            "qc_vars": qc_vars,
+            "n_obs_columns": len(set(self.adata.obs.columns) - obs_before),
+            "n_var_columns": len(set(self.adata.var.columns) - var_before),
+        }
+
     def sum_counts_by_pattern(
         self, pattern: str, match_mode: str = 'prefix',
         obs_name: str | None = None, layer: str = 'counts',
@@ -570,16 +634,7 @@ class DataAdaptor:
         """
         import re
         import scipy.sparse as sp
-        if not pattern:
-            raise ValueError("pattern must be non-empty")
-        if match_mode not in ('prefix', 'regex'):
-            raise ValueError("match_mode must be 'prefix' or 'regex'")
-        names = self.adata.var_names
-        if match_mode == 'prefix':
-            mask = np.asarray(names.str.startswith(pattern))
-        else:
-            rx = re.compile(pattern)
-            mask = np.array([bool(rx.search(str(n))) for n in names])
+        mask = self._match_var_names(pattern, match_mode)
         n_matched = int(mask.sum())
         if n_matched == 0:
             raise ValueError(f"no genes match {match_mode} '{pattern}'")

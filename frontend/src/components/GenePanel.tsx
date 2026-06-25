@@ -980,9 +980,16 @@ function CategoryGeneSetComponent({
                   ? geneSet.genes.filter((g) => visibleGeneNameSet.has(g)).length
                   : total
                 const hidden = total - visible
+                const nDown = geneSet.genesDown?.length ?? 0
                 return (
                   <span style={styles.geneSetCount}>
-                    ({total})
+                    {nDown > 0 ? (
+                      <span title="up / down genes">
+                        ({total}↑ <span style={{ color: '#ff9e64' }}>{nDown}↓</span>)
+                      </span>
+                    ) : (
+                      <>({total})</>
+                    )}
                     {hidden > 0 && (
                       <span style={{ marginLeft: '4px', color: '#777', fontSize: '10px' }}>
                         {MESSAGES.geneMask.hiddenSuffix(hidden)}
@@ -1094,6 +1101,26 @@ function CategoryGeneSetComponent({
               </button>
             </div>
           ))}
+          {geneSet.genesDown && geneSet.genesDown.length > 0 &&
+            (visibleGeneNameSet
+              ? geneSet.genesDown.filter((g) => visibleGeneNameSet.has(g))
+              : geneSet.genesDown
+            ).map((gene) => (
+              <div
+                key={`down-${gene}`}
+                style={{ ...styles.gene, cursor: 'pointer', opacity: 0.9 }}
+                onMouseEnter={() => setHoveredGene(gene)}
+                onMouseLeave={() => setHoveredGene(null)}
+                title="Down / negative gene (UCell)"
+              >
+                <span
+                  style={{ ...styles.geneName, color: '#ff9e64' }}
+                  onClick={() => onColorByGene(gene)}
+                >
+                  ↓ {gene}
+                </span>
+              </div>
+            ))}
         </div>
       )}
       {expanded && geneSet.genes.length === 0 && (

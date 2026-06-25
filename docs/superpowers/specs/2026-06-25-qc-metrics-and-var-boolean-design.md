@@ -1,6 +1,12 @@
 # calculate_qc_metrics + pattern-based boolean .var columns
 
 **Date:** 2026-06-25
+**Status:** Implemented 2026-06-25 (plan
+`docs/superpowers/plans/2026-06-25-qc-metrics-and-var-boolean.md`). 158 backend
+tests pass; frontend tsc + build clean; verified live on adE11 — Genes → Add
+boolean column (`^mt-` → `mt2`, 13 genes), then Preprocess → QC Metrics with the
+`qc_vars` chip picker (showing mt/ribo/mt2) wrote `pct_counts_mt2`,
+`total_counts_mt2`, `log1p_total_counts_mt2` into `.obs`.
 
 ## 1. Goals
 

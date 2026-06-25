@@ -784,6 +784,29 @@ def get_multi_expression(request: MultiExpressionRequest, dataset: str | None = 
         raise HTTPException(status_code=404, detail=str(e))
 
 
+class UcellExpressionRequest(BaseModel):
+    up: list[str]
+    down: list[str] = []
+    layer: str = 'counts'
+    max_rank: int = 1500
+    w_neg: float = 1.0
+
+
+@router.post("/expression/ucell")
+def expression_ucell(request: UcellExpressionRequest, dataset: str | None = Query(None)):
+    """Non-persisted per-cell UCell score for one directional set (interactive coloring)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.ucell_score_values(
+            up=request.up, down=request.down, layer=request.layer,
+            max_rank=request.max_rank, w_neg=request.w_neg,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class BivariateExpressionRequest(BaseModel):
     """Request model for bivariate gene expression.
 
@@ -1860,6 +1883,28 @@ def scanpy_calculate_qc_metrics(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class ScoreGenesUcellRequest(BaseModel):
+    sets: list[dict[str, Any]]
+    layer: str = 'counts'
+    max_rank: int = 1500
+    w_neg: float = 1.0
+
+
+@router.post("/scanpy/score_genes_ucell")
+def scanpy_score_genes_ucell(request: ScoreGenesUcellRequest, dataset: str | None = Query(None)):
+    """Score directional gene sets with UCell; writes UCell_<name> .obs columns."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.score_gene_sets_ucell(
+            sets=request.sets, layer=request.layer,
+            max_rank=request.max_rank, w_neg=request.w_neg,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/scanpy/pca")

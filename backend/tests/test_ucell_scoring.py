@@ -93,3 +93,31 @@ def test_score_gene_sets_obs_name_collision_suffixes():
     out = a.score_gene_sets_ucell([{"name": "Dup", "up": ["A"]}])
     assert out["results"][0]["obs_column"] == "UCell_Dup_1"
     assert "UCell_Dup_1" in a.adata.obs.columns
+
+
+def test_route_score_genes_ucell(monkeypatch):
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    monkeypatch.setattr(routes, "get_adaptor", lambda dataset=None: a)
+    client = TestClient(app)
+    resp = client.post("/api/scanpy/score_genes_ucell", json={
+        "sets": [{"name": "Sig A", "up": ["A", "B"], "down": ["D"]}],
+        "layer": "X", "max_rank": 1500, "w_neg": 1.0,
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"][0]["obs_column"] == "UCell_Sig_A"
+    assert "UCell_Sig_A" in a.adata.obs.columns
+
+
+def test_route_expression_ucell(monkeypatch):
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    monkeypatch.setattr(routes, "get_adaptor", lambda dataset=None: a)
+    client = TestClient(app)
+    resp = client.post("/api/expression/ucell", json={
+        "up": ["A", "B"], "down": ["D"], "layer": "X",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert np.allclose(body["values"], [1.0, 0.0])
+    # interactive endpoint must NOT persist a column
+    assert not any(c.startswith("UCell_") for c in a.adata.obs.columns)

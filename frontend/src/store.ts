@@ -77,7 +77,8 @@ export interface HighlightLayer {
 export interface GeneSet {
   id: string
   name: string
-  genes: string[]
+  genes: string[]          // UP / positive list
+  genesDown?: string[]     // DOWN / negative list (UCell only; optional)
   pinned?: boolean
 }
 
@@ -749,8 +750,8 @@ interface AppState {
   // Gene set category actions (hierarchical)
   toggleCategoryExpanded: (categoryType: GeneSetCategoryType) => void
   toggleFolderExpanded: (categoryType: GeneSetCategoryType, folderId: string) => void
-  addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[]) => void
-  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[] }[]) => void
+  addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[], genesDown?: string[]) => void
+  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[]; genesDown?: string[] }[]) => void
   addGeneSetToFolder: (categoryType: GeneSetCategoryType, folderId: string, name: string, genes: string[]) => void
   removeGeneSetFromCategory: (categoryType: GeneSetCategoryType, geneSetId: string) => void
   removeGeneSetFromFolder: (categoryType: GeneSetCategoryType, folderId: string, geneSetId: string) => void
@@ -1224,7 +1225,7 @@ export const useStore = create<AppState>((set, get) => {
         },
       })),
 
-    addGeneSetToCategory: (categoryType, name, genes) =>
+    addGeneSetToCategory: (categoryType, name, genes, genesDown) =>
       set((state) => ({
         geneSetCategories: {
           ...state.geneSetCategories,
@@ -1232,7 +1233,7 @@ export const useStore = create<AppState>((set, get) => {
             ...state.geneSetCategories[categoryType],
             geneSets: [
               ...state.geneSetCategories[categoryType].geneSets,
-              { id: generateGeneSetId(), name, genes },
+              { id: generateGeneSetId(), name, genes, genesDown },
             ],
           },
         },
@@ -1255,6 +1256,7 @@ export const useStore = create<AppState>((set, get) => {
                   id: generateGeneSetId(),
                   name: gs.name,
                   genes: gs.genes,
+                  genesDown: gs.genesDown,
                 })),
               },
             ],

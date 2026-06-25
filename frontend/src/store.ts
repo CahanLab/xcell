@@ -204,6 +204,11 @@ export type SelectByExpressionSource =
   | { type: 'gene'; gene: string }
   | { type: 'geneSet'; name: string; genes: string[] }
 
+// Target for the "Score with UCell" modal (one or more directional sets).
+export interface UcellScoreSource {
+  sets: { name: string; up: string[]; down: string[] }[]
+}
+
 // Color mode: what determines cell colors
 export type ColorMode = 'none' | 'metadata' | 'expression' | 'bivariate'
 
@@ -619,6 +624,7 @@ interface AppState {
     folderId: string | null
   } | null
   selectByExpressionSource: SelectByExpressionSource | null
+  ucellScoreSource: UcellScoreSource | null
 
   // Line association state
   lineAssociationResult: LineAssociationResult | null
@@ -803,6 +809,7 @@ interface AppState {
     folderId: string | null
   } | null) => void
   setSelectByExpressionSource: (src: SelectByExpressionSource | null) => void
+  setUcellScoreSource: (src: UcellScoreSource | null) => void
 
   // Line association actions
   setLineAssociationResult: (result: LineAssociationResult | null) => void
@@ -1006,6 +1013,7 @@ export const useStore = create<AppState>((set, get) => {
     isDiffExpModalOpen: false,
     clusterModalSourceSet: null,
     selectByExpressionSource: null,
+    ucellScoreSource: null,
     lineAssociationResult: null,
     isLineAssociationLoading: false,
     isLineAssociationModalOpen: false,
@@ -1708,6 +1716,7 @@ export const useStore = create<AppState>((set, get) => {
     setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
+    setUcellScoreSource: (src) => set({ ucellScoreSource: src }),
 
     // Line association actions (global)
     setLineAssociationResult: (result) => set({ lineAssociationResult: result }),

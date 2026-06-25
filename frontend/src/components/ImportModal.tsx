@@ -90,12 +90,28 @@ const styles = {
 
 interface ParsedGeneList {
   name: string
-  genes: string[]
+  genes: string[]          // up / positive
+  genesDown?: string[]     // down / negative
 }
 
 interface ParsedFile {
   filename: string
   geneLists: ParsedGeneList[]
+}
+
+// Split a flat token list by the UCell suffix convention: trailing '-' -> down,
+// trailing '+' (or none) -> up. Returns cleaned symbols.
+function splitSuffixDirection(tokens: string[]): { up: string[]; down: string[] } {
+  const up: string[] = []
+  const down: string[] = []
+  for (const raw of tokens) {
+    const t = raw.trim()
+    if (!t) continue
+    if (t.endsWith('-')) down.push(t.slice(0, -1))
+    else if (t.endsWith('+')) up.push(t.slice(0, -1))
+    else up.push(t)
+  }
+  return { up, down }
 }
 
 function parseGMT(text: string): ParsedGeneList[] {
@@ -106,9 +122,9 @@ function parseGMT(text: string): ParsedGeneList[] {
     if (parts.length < 3) continue
     const name = parts[0].trim()
     // parts[1] is description (skip), rest are genes
-    const genes = parts.slice(2).map((g) => g.trim()).filter(Boolean)
-    if (name && genes.length > 0) {
-      lists.push({ name, genes })
+    const { up, down } = splitSuffixDirection(parts.slice(2))
+    if (name && up.length + down.length > 0) {
+      lists.push({ name, genes: up, genesDown: down.length ? down : undefined })
     }
   }
   return lists
@@ -132,11 +148,14 @@ function parseCSV(text: string, filename: string): ParsedGeneList[] {
   if (headerParts.length === 1) {
     // Single column: one gene per line
     const startIdx = hasHeader ? 1 : 0
-    const genes = lines.slice(startIdx)
+    const tokens = lines.slice(startIdx)
       .map((l) => l.trim().replace(/^["']|["']$/g, ''))
       .filter(Boolean)
     const name = hasHeader ? headerParts[0] : filename.replace(/\.\w+$/, '')
-    return genes.length > 0 ? [{ name, genes }] : []
+    const { up, down } = splitSuffixDirection(tokens)
+    return up.length + down.length > 0
+      ? [{ name, genes: up, genesDown: down.length ? down : undefined }]
+      : []
   }
 
   // Multiple columns: each column is a gene list
@@ -154,7 +173,8 @@ function parseCSV(text: string, filename: string): ParsedGeneList[] {
       }
     }
     if (genes.length > 0) {
-      lists.push({ name: names[col], genes })
+      const { up, down } = splitSuffixDirection(genes)
+      lists.push({ name: names[col], genes: up, genesDown: down.length ? down : undefined })
     }
   }
   return lists
@@ -162,24 +182,22 @@ function parseCSV(text: string, filename: string): ParsedGeneList[] {
 
 function parseJSON(text: string): ParsedGeneList[] {
   const data = JSON.parse(text)
-  // Accept three shapes:
-  //   1. legacy:                 [{name, genes: [string]}]
-  //   2. geneset-builder export: {sets: [{name, genes: [string]}], ...}
-  //   3. geneset-builder project (.gsb.json): {sets: [{name, genes: [{symbol, from}]}], ...}
+  // Accepted shapes:
+  //   1. legacy array:           [{name, genes:[...]}]
+  //   2. geneset-builder export: {sets:[{name, genes:[...]}]}
+  //   3. .gsb.json:              genes may be [{symbol, from}]
+  //   4. directional:            {name, up:[...], down:[...]} (synonyms below)
+  //   Plus the '-'/'+' suffix convention inside any flat list.
   let rawSets: unknown[] | null = null
-  if (Array.isArray(data)) {
-    rawSets = data
-  } else if (data && typeof data === 'object' && Array.isArray((data as { sets?: unknown }).sets)) {
+  if (Array.isArray(data)) rawSets = data
+  else if (data && typeof data === 'object' && Array.isArray((data as { sets?: unknown }).sets)) {
     rawSets = (data as { sets: unknown[] }).sets
   }
   if (!rawSets) return []
 
-  const lists: ParsedGeneList[] = []
-  for (const item of rawSets) {
-    if (!item || typeof item !== 'object') continue
-    const obj = item as { name?: unknown; genes?: unknown }
-    if (typeof obj.name !== 'string' || !Array.isArray(obj.genes)) continue
-    const genes = (obj.genes as unknown[])
+  const toSymbols = (val: unknown): string[] => {
+    if (!Array.isArray(val)) return []
+    return val
       .map((g) => {
         if (typeof g === 'string') return g
         if (g && typeof g === 'object' && typeof (g as { symbol?: unknown }).symbol === 'string') {
@@ -188,8 +206,21 @@ function parseJSON(text: string): ParsedGeneList[] {
         return ''
       })
       .filter((s) => s.length > 0)
-    if (genes.length > 0) {
-      lists.push({ name: obj.name, genes })
+  }
+
+  const lists: ParsedGeneList[] = []
+  for (const item of rawSets) {
+    if (!item || typeof item !== 'object') continue
+    const obj = item as Record<string, unknown>
+    if (typeof obj.name !== 'string') continue
+    const upRaw = toSymbols(obj.up ?? obj.positive ?? obj.genesUp ?? obj.genes)
+    const downRaw = toSymbols(obj.down ?? obj.negative ?? obj.genesDown)
+    // honor suffix convention inside the up list (e.g. ["CD8A","CCR7-"])
+    const splitUp = splitSuffixDirection(upRaw)
+    const up = splitUp.up
+    const down = [...splitUp.down, ...downRaw.map((g) => g.replace(/[-+]$/, ''))]
+    if (up.length + down.length > 0) {
+      lists.push({ name: obj.name, genes: up, genesDown: down.length ? down : undefined })
     }
   }
   return lists
@@ -323,7 +354,8 @@ export default function ImportModal() {
       const folderName = pf.filename.replace(/\.\w+$/, '')
       if (pf.geneLists.length === 1) {
         // Single list: add directly without folder
-        addGeneSetToCategory('manual', pf.geneLists[0].name, pf.geneLists[0].genes)
+        const gl = pf.geneLists[0]
+        addGeneSetToCategory('manual', gl.name, gl.genes, gl.genesDown)
       } else {
         // Multiple lists: wrap in folder
         addFolderToCategory('manual', folderName, pf.geneLists)

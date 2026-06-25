@@ -456,6 +456,26 @@ export default function DisplaySettings() {
                   unaffected.
                 </div>
 
+                {/* Scoring method: mean/per-gene-norm vs UCell rank AUC */}
+                <div style={{ marginBottom: '8px' }}>
+                  <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>
+                    Scoring method
+                  </div>
+                  <select
+                    value={displayPreferences.geneSetScoringMethod}
+                    onChange={(e) => setDisplayPreferences({ geneSetScoringMethod: e.target.value as 'mean' | 'ucell' })}
+                    style={{ ...styles.select, width: '100%' }}
+                  >
+                    <option value="mean">Mean / per-gene norm</option>
+                    <option value="ucell">UCell (rank AUC, directional)</option>
+                  </select>
+                  <div style={{ fontSize: '10px', color: '#666', marginTop: '3px' }}>
+                    {displayPreferences.geneSetScoringMethod === 'mean' && 'Per-gene normalize then aggregate across genes (settings below).'}
+                    {displayPreferences.geneSetScoringMethod === 'ucell' && 'Per-cell rank-based AUC; uses a set’s down-genes when present. Source layer is counts.'}
+                  </div>
+                </div>
+
+                {displayPreferences.geneSetScoringMethod === 'mean' && (<>
                 {/* Per-gene normalization */}
                 <div style={{ marginBottom: '8px' }}>
                   <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>
@@ -530,6 +550,7 @@ export default function DisplaySettings() {
                     {displayPreferences.geneSetAggregation === 'max' && 'Brightest gene per cell — emphasizes any-of-set expression.'}
                   </div>
                 </div>
+                </>)}
               </div>
 
               {/* Color-ramp clip percentile */}

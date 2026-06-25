@@ -77,7 +77,8 @@ export interface HighlightLayer {
 export interface GeneSet {
   id: string
   name: string
-  genes: string[]
+  genes: string[]          // UP / positive list
+  genesDown?: string[]     // DOWN / negative list (UCell only; optional)
   pinned?: boolean
 }
 
@@ -202,6 +203,11 @@ export interface ComparisonState {
 export type SelectByExpressionSource =
   | { type: 'gene'; gene: string }
   | { type: 'geneSet'; name: string; genes: string[] }
+
+// Target for the "Score with UCell" modal (one or more directional sets).
+export interface UcellScoreSource {
+  sets: { name: string; up: string[]; down: string[] }[]
+}
 
 // Color mode: what determines cell colors
 export type ColorMode = 'none' | 'metadata' | 'expression' | 'bivariate'
@@ -422,6 +428,7 @@ export interface DisplayPreferences {
   geneSetPerGeneNorm: GeneSetPerGeneNorm
   geneSetPerGeneClip: number  // percentile (0–5%); only used by 'minmax' per-gene norm
   geneSetAggregation: GeneSetAggregation
+  geneSetScoringMethod: 'mean' | 'ucell'   // 'mean' = per-gene-norm+aggregate path; 'ucell' = rank AUC
   pointOpacity: number  // 0-1
   expressionTransform: ExpressionTransform  // Transformation for expression values
   clipPercentile: number  // Symmetric percentile clip for color-ramp anchors (0 = off)
@@ -485,6 +492,7 @@ export function defaultDisplayPreferences(): DisplayPreferences {
     geneSetPerGeneNorm: 'zscore_mad',
     geneSetPerGeneClip: 1.0,
     geneSetAggregation: 'mean',
+    geneSetScoringMethod: 'mean',
     pointOpacity: 0.85,
     expressionTransform: 'none',
     clipPercentile: 1.0,
@@ -526,6 +534,8 @@ export function displayPreferencesFromConfig(
   if (gsc !== undefined) out.geneSetPerGeneClip = gsc
   const gsa = str(d.gene_set_aggregation)
   if (gsa !== undefined) out.geneSetAggregation = gsa as GeneSetAggregation
+  const gsm = str(d.gene_set_scoring_method)
+  if (gsm === 'mean' || gsm === 'ucell') out.geneSetScoringMethod = gsm
   return out
 }
 
@@ -618,6 +628,7 @@ interface AppState {
     folderId: string | null
   } | null
   selectByExpressionSource: SelectByExpressionSource | null
+  ucellScoreSource: UcellScoreSource | null
 
   // Line association state
   lineAssociationResult: LineAssociationResult | null
@@ -749,8 +760,8 @@ interface AppState {
   // Gene set category actions (hierarchical)
   toggleCategoryExpanded: (categoryType: GeneSetCategoryType) => void
   toggleFolderExpanded: (categoryType: GeneSetCategoryType, folderId: string) => void
-  addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[]) => void
-  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[] }[]) => void
+  addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[], genesDown?: string[]) => void
+  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[]; genesDown?: string[] }[]) => void
   addGeneSetToFolder: (categoryType: GeneSetCategoryType, folderId: string, name: string, genes: string[]) => void
   removeGeneSetFromCategory: (categoryType: GeneSetCategoryType, geneSetId: string) => void
   removeGeneSetFromFolder: (categoryType: GeneSetCategoryType, folderId: string, geneSetId: string) => void
@@ -802,6 +813,7 @@ interface AppState {
     folderId: string | null
   } | null) => void
   setSelectByExpressionSource: (src: SelectByExpressionSource | null) => void
+  setUcellScoreSource: (src: UcellScoreSource | null) => void
 
   // Line association actions
   setLineAssociationResult: (result: LineAssociationResult | null) => void
@@ -1005,6 +1017,7 @@ export const useStore = create<AppState>((set, get) => {
     isDiffExpModalOpen: false,
     clusterModalSourceSet: null,
     selectByExpressionSource: null,
+    ucellScoreSource: null,
     lineAssociationResult: null,
     isLineAssociationLoading: false,
     isLineAssociationModalOpen: false,
@@ -1224,7 +1237,7 @@ export const useStore = create<AppState>((set, get) => {
         },
       })),
 
-    addGeneSetToCategory: (categoryType, name, genes) =>
+    addGeneSetToCategory: (categoryType, name, genes, genesDown) =>
       set((state) => ({
         geneSetCategories: {
           ...state.geneSetCategories,
@@ -1232,7 +1245,7 @@ export const useStore = create<AppState>((set, get) => {
             ...state.geneSetCategories[categoryType],
             geneSets: [
               ...state.geneSetCategories[categoryType].geneSets,
-              { id: generateGeneSetId(), name, genes },
+              { id: generateGeneSetId(), name, genes, genesDown },
             ],
           },
         },
@@ -1255,6 +1268,7 @@ export const useStore = create<AppState>((set, get) => {
                   id: generateGeneSetId(),
                   name: gs.name,
                   genes: gs.genes,
+                  genesDown: gs.genesDown,
                 })),
               },
             ],
@@ -1706,6 +1720,7 @@ export const useStore = create<AppState>((set, get) => {
     setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
+    setUcellScoreSource: (src) => set({ ucellScoreSource: src }),
 
     // Line association actions (global)
     setLineAssociationResult: (result) => set({ lineAssociationResult: result }),

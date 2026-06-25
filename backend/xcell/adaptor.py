@@ -280,6 +280,10 @@ class DataAdaptor:
         # Multi-contour: cache of per-module scores between prepare and finalize,
         # keyed by an opaque token. See prepare_multicontour / finalize_multicontour.
         self._multicontour_cache: dict[str, dict[str, Any]] = {}
+        # UCell rank matrices, keyed by (resolved_layer, max_rank). Transient:
+        # validated against id(self.adata); never written into adata.
+        self._ucell_rank_cache: dict[tuple[str, int], Any] = {}
+        self._ucell_rank_cache_adata_id: int | None = None
 
 
         # Defensively preserve raw counts: if .X looks like integer counts and
@@ -785,6 +789,8 @@ class DataAdaptor:
 
         # Clear normalized cache (it may share obsm references)
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         result = self.get_embedding(name)
         result["undo_depth"] = len(self._embedding_undo_stacks.get(name, []))
@@ -808,6 +814,8 @@ class DataAdaptor:
         coords = stack.pop()
         self.adata.obsm[name][:, :2] = coords
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
         result = self.get_embedding(name)
         result["undo_depth"] = len(stack)
         return result
@@ -950,6 +958,8 @@ class DataAdaptor:
 
         # Clear caches
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         # Regenerate the visible-gene mask since .var axis may have changed.
         # If referenced columns no longer exist, the mask is cleared.
@@ -1157,6 +1167,167 @@ class DataAdaptor:
             with np.errstate(all='ignore'):
                 return np.nanmax(matrix, axis=1)
         raise ValueError(f"Unknown aggregation method: {method!r}")
+
+    def _ucell_ranks(self, layer: str | None, max_rank: int):
+        """Per-cell capped descending gene ranks as a sparse CSC matrix.
+
+        Ranks each cell's genes by expression descending (rank 1 = highest),
+        average ties, then caps at ``max_rank`` (also capped to n_genes, per
+        UCell). Ranks >= max_rank are dropped to 0 (sparse), meaning "treat as
+        max_rank" when scoring. Result shape (n_cells, n_genes), cached on the
+        adaptor keyed by (resolved layer, max_rank) and invalidated whenever
+        ``self.adata`` is reassigned. Source layer 'counts' falls back to X.
+        """
+        from scipy.stats import rankdata
+        import scipy.sparse as sp
+
+        if layer in (None, 'counts'):
+            resolved = 'counts' if 'counts' in self.adata.layers else 'X'
+        else:
+            resolved = layer
+        n_cells, n_genes = self.adata.shape
+        eff_max_rank = int(min(max_rank, n_genes))
+        key = (resolved, eff_max_rank)
+
+        if self._ucell_rank_cache_adata_id != id(self.adata):
+            self._ucell_rank_cache = {}
+            self._ucell_rank_cache_adata_id = id(self.adata)
+        if key in self._ucell_rank_cache:
+            return self._ucell_rank_cache[key]
+
+        if resolved == 'X':
+            M = self.adata.X
+        elif resolved in self.adata.layers:
+            M = self.adata.layers[resolved]
+        else:
+            raise ValueError(f"Layer '{resolved}' not found for UCell ranking")
+
+        chunk = 2000
+        blocks = []
+        for start in range(0, n_cells, chunk):
+            block = M[start:start + chunk]
+            dense = block.toarray() if sp.issparse(block) else np.asarray(block)
+            dense = dense.astype(np.float64, copy=False)
+            r = rankdata(-dense, method='average', axis=1)
+            r[r >= eff_max_rank] = 0.0
+            blocks.append(sp.csr_matrix(r.astype(np.float32)))
+        ranks = sp.vstack(blocks).tocsc() if blocks else sp.csc_matrix((0, n_genes))
+        self._ucell_rank_cache[key] = ranks
+        return ranks
+
+    def _ucell_score_one(self, up_idx, down_idx, ranks, max_rank, w_neg):
+        """Per-cell UCell score for one signature given the cached rank matrix.
+
+        ``ranks`` is the sparse CSC from ``_ucell_ranks`` (0 means rank>=max_rank).
+        Returns a float64 array of shape (n_cells,).
+        """
+        n_cells = ranks.shape[0]
+
+        def u_stat(idx):
+            n = len(idx)
+            if n == 0:
+                return np.zeros(n_cells, dtype=np.float64)
+            sub = ranks[:, idx]
+            sum_stored = np.asarray(sub.sum(axis=1)).ravel().astype(np.float64)
+            nnz = sub.getnnz(axis=1).astype(np.float64)
+            # stored entries hold the true rank (<max_rank); missing -> max_rank
+            rank_sum = n * max_rank - max_rank * nnz + sum_stored
+            rank_sum_min = n * (n + 1) / 2.0
+            denom = n * max_rank - rank_sum_min
+            if denom <= 0:
+                return np.ones(n_cells, dtype=np.float64)
+            return 1.0 - (rank_sum - rank_sum_min) / denom
+
+        u_p = u_stat(up_idx)
+        u_n = u_stat(down_idx) if down_idx else 0.0
+        return np.maximum(u_p - w_neg * u_n, 0.0)
+
+    def ucell_score_values(
+        self, up: list[str], down: list[str] | None = None,
+        layer: str = 'counts', max_rank: int = 1500, w_neg: float = 1.0,
+    ) -> dict[str, Any]:
+        """Compute (non-persisted) per-cell UCell scores for one signature.
+
+        Filters up/down to genes present in .var (missing skipped). A signature
+        with no usable up-genes scores 0 everywhere (UCell property). Returns
+        values + min/max + counts of genes used.
+        """
+        down = down or []
+        var_index = self.adata.var.index
+        up_g = [g for g in up if g in var_index]
+        down_g = [g for g in down if g in var_index]
+        n_genes = self.adata.shape[1]
+        eff_max_rank = int(min(max(max_rank, len(up_g), len(down_g), 1), n_genes))
+        ranks = self._ucell_ranks(layer, eff_max_rank)
+        up_idx = [var_index.get_loc(g) for g in up_g]
+        down_idx = [var_index.get_loc(g) for g in down_g]
+        if not up_idx:
+            scores = np.zeros(self.adata.shape[0], dtype=np.float64)
+        else:
+            scores = self._ucell_score_one(up_idx, down_idx, ranks, eff_max_rank, w_neg)
+        return {
+            "values": [float(v) for v in scores],
+            "min": float(scores.min()) if scores.size else 0.0,
+            "max": float(scores.max()) if scores.size else 0.0,
+            "n_up_used": len(up_idx),
+            "n_down_used": len(down_idx),
+            "max_rank": eff_max_rank,
+        }
+
+    @staticmethod
+    def _sanitize_obs_name(name: str) -> str:
+        import re
+        base = re.sub(r'[^0-9A-Za-z]+', '_', name).strip('_') or 'set'
+        return f"UCell_{base}"
+
+    def _unique_obs_name(self, base: str) -> str:
+        if base not in self.adata.obs.columns:
+            return base
+        i = 1
+        while f"{base}_{i}" in self.adata.obs.columns:
+            i += 1
+        return f"{base}_{i}"
+
+    def score_gene_sets_ucell(
+        self, sets: list[dict[str, Any]], layer: str = 'counts',
+        max_rank: int = 1500, w_neg: float = 1.0,
+    ) -> dict[str, Any]:
+        """Score directional gene sets with UCell and write .obs columns.
+
+        Each set is {name, up:[...], down:[...]}. All sets share one rank matrix
+        (one eff_max_rank for comparability). Sets with no usable up-genes are
+        skipped (would score 0). Writes obs[UCell_<name>] (collision-safe) and
+        returns per-set metadata.
+        """
+        var_index = self.adata.var.index
+        n_genes = self.adata.shape[1]
+        prepared = []
+        for s in sets:
+            name = s.get("name") or "set"
+            up = [g for g in (s.get("up") or []) if g in var_index]
+            down = [g for g in (s.get("down") or []) if g in var_index]
+            prepared.append((name, up, down))
+        longest = max([len(u) for _, u, _ in prepared]
+                      + [len(d) for _, _, d in prepared] + [1])
+        eff_max_rank = int(min(max(max_rank, longest), n_genes))
+        ranks = self._ucell_ranks(layer, eff_max_rank)
+
+        results = []
+        for name, up, down in prepared:
+            if not up:
+                results.append({"name": name, "skipped": "no up-genes present in dataset"})
+                continue
+            up_idx = [var_index.get_loc(g) for g in up]
+            down_idx = [var_index.get_loc(g) for g in down]
+            scores = self._ucell_score_one(up_idx, down_idx, ranks, eff_max_rank, w_neg)
+            col = self._unique_obs_name(self._sanitize_obs_name(name))
+            self.adata.obs[col] = scores.astype(np.float64)
+            results.append({
+                "name": name, "obs_column": col,
+                "min": float(scores.min()), "max": float(scores.max()),
+                "n_up_used": len(up_idx), "n_down_used": len(down_idx),
+            })
+        return {"results": results, "max_rank": eff_max_rank, "layer": layer}
 
     def _aggregate_gene_set_scores(
         self,
@@ -3688,6 +3859,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache since data changed
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         mask_cleared = self._regenerate_gene_mask_after_var_change()
 
@@ -3741,6 +3914,8 @@ class DataAdaptor:
         if n_removed > 0:
             self.adata = self.adata[:, ~mask].copy()
             self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         mask_cleared = self._regenerate_gene_mask_after_var_change()
 
@@ -3814,6 +3989,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache since data changed
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         result = {
             'n_cells_before': n_cells_before,
@@ -3854,6 +4031,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         n_cells_after = self.n_cells
 
@@ -3905,6 +4084,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         result = {'status': 'completed', 'target_sum': target_sum}
         self._log_action('normalize_total', kwargs, result)
@@ -3942,6 +4123,8 @@ class DataAdaptor:
 
         # Invalidate normalized cache
         self._normalized_adata = None
+        self._ucell_rank_cache = {}
+        self._ucell_rank_cache_adata_id = None
 
         result = {'status': 'completed'}
         self._log_action('log1p', {}, result)

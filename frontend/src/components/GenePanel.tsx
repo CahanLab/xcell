@@ -1,12 +1,13 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType } from '../store'
-import { useGeneSearch, useGeneBrowse, useDataActions, useObsSummaries, appendDataset, fetchVarIdentifierColumns, swapVarIndex } from '../hooks/useData'
+import { useGeneSearch, useGeneBrowse, useDataActions, useObsSummaries, appendDataset, fetchVarIdentifierColumns, swapVarIndex, refreshSchema } from '../hooks/useData'
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
 import HighlightOverlayPanel from './HighlightOverlayPanel'
 import VarColumnsSection from './VarColumnsSection'
 import CombineGeneSetsModal from './CombineGeneSetsModal'
 import BivariateAxisPicker, { AxisKind, resolveBivariateAxis } from './BivariateAxisPicker'
 import ImportModal from './ImportModal'
+import { UcellScoreModal } from './UcellScoreModal'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -749,7 +750,7 @@ function CategoryGeneSetComponent({
   categoryType: GeneSetCategoryType
   folderId?: string
   onColorByGene: (gene: string) => void
-  onColorBySet: (genes: string[], geneSetName?: string) => void
+  onColorBySet: (genes: string[], geneSetName?: string, genesDown?: string[]) => void
   activeGenes: string[]
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -772,6 +773,7 @@ function CategoryGeneSetComponent({
     setClusterModalSourceSet,
   } = useStore()
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
+  const setUcellScoreSource = useStore((s) => s.setUcellScoreSource)
   const geneMaskConfig = useStore((s) => s.geneMaskConfig)
   const visibleGeneNameSet = useMemo<Set<string> | null>(() => {
     if (!geneMaskConfig?.active || !geneMaskConfig.visibleGeneNames) return null
@@ -978,9 +980,16 @@ function CategoryGeneSetComponent({
                   ? geneSet.genes.filter((g) => visibleGeneNameSet.has(g)).length
                   : total
                 const hidden = total - visible
+                const nDown = geneSet.genesDown?.length ?? 0
                 return (
                   <span style={styles.geneSetCount}>
-                    ({total})
+                    {nDown > 0 ? (
+                      <span title="up / down genes">
+                        ({total}↑ <span style={{ color: '#ff9e64' }}>{nDown}↓</span>)
+                      </span>
+                    ) : (
+                      <>({total})</>
+                    )}
                     {hidden > 0 && (
                       <span style={{ marginLeft: '4px', color: '#777', fontSize: '10px' }}>
                         {MESSAGES.geneMask.hiddenSuffix(hidden)}
@@ -995,8 +1004,8 @@ function CategoryGeneSetComponent({
         <div style={styles.geneSetActions}>
           <button
             style={styles.iconButton}
-            onClick={(e) => { e.stopPropagation(); onColorBySet(geneSet.genes, geneSet.name) }}
-            title="Color by mean expression"
+            onClick={(e) => { e.stopPropagation(); onColorBySet(geneSet.genes, geneSet.name, geneSet.genesDown) }}
+            title="Color by gene set (mean or UCell, per Display settings)"
           >
             🎨
           </button>
@@ -1035,6 +1044,15 @@ function CategoryGeneSetComponent({
                   }),
                 disabled: geneSet.genes.length === 0,
                 tooltip: geneSet.genes.length === 0 ? 'Gene set is empty' : undefined,
+              },
+              {
+                label: 'Score with UCell…',
+                onClick: () =>
+                  setUcellScoreSource({
+                    sets: [{ name: geneSet.name, up: geneSet.genes, down: geneSet.genesDown ?? [] }],
+                  }),
+                disabled: geneSet.genes.length === 0,
+                tooltip: geneSet.genes.length === 0 ? 'Need at least one up-gene' : undefined,
               },
             ]}
           />
@@ -1083,6 +1101,26 @@ function CategoryGeneSetComponent({
               </button>
             </div>
           ))}
+          {geneSet.genesDown && geneSet.genesDown.length > 0 &&
+            (visibleGeneNameSet
+              ? geneSet.genesDown.filter((g) => visibleGeneNameSet.has(g))
+              : geneSet.genesDown
+            ).map((gene) => (
+              <div
+                key={`down-${gene}`}
+                style={{ ...styles.gene, cursor: 'pointer', opacity: 0.9 }}
+                onMouseEnter={() => setHoveredGene(gene)}
+                onMouseLeave={() => setHoveredGene(null)}
+                title="Down / negative gene (UCell)"
+              >
+                <span
+                  style={{ ...styles.geneName, color: '#ff9e64' }}
+                  onClick={() => onColorByGene(gene)}
+                >
+                  ↓ {gene}
+                </span>
+              </div>
+            ))}
         </div>
       )}
       {expanded && geneSet.genes.length === 0 && (
@@ -1119,7 +1157,7 @@ function GeneSetFolderComponent({
   folder: GeneSetFolder
   categoryType: GeneSetCategoryType
   onColorByGene: (gene: string) => void
-  onColorBySet: (genes: string[], geneSetName?: string) => void
+  onColorBySet: (genes: string[], geneSetName?: string, genesDown?: string[]) => void
   activeGenes: string[]
   allowAddSet?: boolean
 }) {
@@ -1550,7 +1588,7 @@ function GeneSetCategoryComponent({
 }: {
   category: GeneSetCategory
   onColorByGene: (gene: string) => void
-  onColorBySet: (genes: string[], geneSetName?: string) => void
+  onColorBySet: (genes: string[], geneSetName?: string, genesDown?: string[]) => void
   activeGenes: string[]
   onAddNewSet?: () => void
   onAddNewFolder?: () => void
@@ -1669,9 +1707,13 @@ export default function GenePanel() {
   const selectedCellIndices = useStore((s) => s.selectedCellIndices)
   const { colorByGene, colorByGenes, clearExpressionColor, colorByBivariate, clearBivariateColor, addGeneSetHighlight, addCellSetHighlight, removeHighlightLayer, updateHighlightLayer, clearHighlightOverlay } = useDataActions()
   const { summaries: obsSummaries } = useObsSummaries()
+  const ucellScoreSource = useStore((s) => s.ucellScoreSource)
+  const setUcellScoreSource = useStore((s) => s.setUcellScoreSource)
+  const refreshObsSummaries = useStore((s) => s.refreshObsSummaries)
+  const [ucellNotice, setUcellNotice] = useState<string | null>(null)
 
-  const handleColorBySet = useCallback((genes: string[], geneSetName?: string) => {
-    colorByGenes(genes, undefined, geneSetName)
+  const handleColorBySet = useCallback((genes: string[], geneSetName?: string, genesDown?: string[]) => {
+    colorByGenes(genes, undefined, geneSetName, genesDown)
   }, [colorByGenes])
 
   // Flatten gene sets for bivariate selection
@@ -1895,6 +1937,25 @@ export default function GenePanel() {
       </div>
       <ImportModal />
       <CombineGeneSetsModal />
+      <UcellScoreModal
+        target={ucellScoreSource}
+        onClose={() => setUcellScoreSource(null)}
+        onScored={(msg) => {
+          refreshSchema()
+          refreshObsSummaries()
+          setUcellNotice(msg)
+          window.setTimeout(() => setUcellNotice(null), 6000)
+        }}
+      />
+      {ucellNotice && (
+        <div style={{
+          position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+          background: '#2d4a43', color: '#d6f5ee', border: '1px solid #4ecdc4',
+          padding: '8px 16px', borderRadius: 6, fontSize: 12, zIndex: 1100, maxWidth: '80vw',
+        }}>
+          {ucellNotice}
+        </div>
+      )}
 
       {selectedGenes.length > 0 && colorMode === 'expression' && (
         <div style={styles.selectedGenesBar}>

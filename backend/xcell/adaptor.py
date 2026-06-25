@@ -1215,6 +1215,65 @@ class DataAdaptor:
         self._ucell_rank_cache[key] = ranks
         return ranks
 
+    def _ucell_score_one(self, up_idx, down_idx, ranks, max_rank, w_neg):
+        """Per-cell UCell score for one signature given the cached rank matrix.
+
+        ``ranks`` is the sparse CSC from ``_ucell_ranks`` (0 means rank>=max_rank).
+        Returns a float64 array of shape (n_cells,).
+        """
+        n_cells = ranks.shape[0]
+
+        def u_stat(idx):
+            n = len(idx)
+            if n == 0:
+                return np.zeros(n_cells, dtype=np.float64)
+            sub = ranks[:, idx]
+            sum_stored = np.asarray(sub.sum(axis=1)).ravel().astype(np.float64)
+            nnz = sub.getnnz(axis=1).astype(np.float64)
+            # stored entries hold the true rank (<max_rank); missing -> max_rank
+            rank_sum = n * max_rank - max_rank * nnz + sum_stored
+            rank_sum_min = n * (n + 1) / 2.0
+            denom = n * max_rank - rank_sum_min
+            if denom <= 0:
+                return np.ones(n_cells, dtype=np.float64)
+            return 1.0 - (rank_sum - rank_sum_min) / denom
+
+        u_p = u_stat(up_idx)
+        u_n = u_stat(down_idx) if down_idx else 0.0
+        return np.maximum(u_p - w_neg * u_n, 0.0)
+
+    def ucell_score_values(
+        self, up: list[str], down: list[str] | None = None,
+        layer: str = 'counts', max_rank: int = 1500, w_neg: float = 1.0,
+    ) -> dict[str, Any]:
+        """Compute (non-persisted) per-cell UCell scores for one signature.
+
+        Filters up/down to genes present in .var (missing skipped). A signature
+        with no usable up-genes scores 0 everywhere (UCell property). Returns
+        values + min/max + counts of genes used.
+        """
+        down = down or []
+        var_index = self.adata.var.index
+        up_g = [g for g in up if g in var_index]
+        down_g = [g for g in down if g in var_index]
+        n_genes = self.adata.shape[1]
+        eff_max_rank = int(min(max(max_rank, len(up_g), len(down_g), 1), n_genes))
+        ranks = self._ucell_ranks(layer, eff_max_rank)
+        up_idx = [var_index.get_loc(g) for g in up_g]
+        down_idx = [var_index.get_loc(g) for g in down_g]
+        if not up_idx:
+            scores = np.zeros(self.adata.shape[0], dtype=np.float64)
+        else:
+            scores = self._ucell_score_one(up_idx, down_idx, ranks, eff_max_rank, w_neg)
+        return {
+            "values": [float(v) for v in scores],
+            "min": float(scores.min()) if scores.size else 0.0,
+            "max": float(scores.max()) if scores.size else 0.0,
+            "n_up_used": len(up_idx),
+            "n_down_used": len(down_idx),
+            "max_rank": eff_max_rank,
+        }
+
     def _aggregate_gene_set_scores(
         self,
         genes: list[str],

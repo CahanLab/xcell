@@ -32,3 +32,33 @@ def test_ucell_ranks_caps_to_n_genes_and_caches():
     assert dense[0, 3] == 0   # D rank 4 == maxRank -> dropped
     # identical call returns the SAME cached object
     assert a._ucell_ranks("X", 1500) is ranks
+
+
+def test_ucell_up_only_scores():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    r = a.ucell_score_values(["A", "B"], [], layer="X", max_rank=1500, w_neg=1.0)
+    # Cell0: ranks A=1,B=2 -> u=1.0 ; Cell1: ranks A=4,B=3 -> u=0.2
+    assert np.allclose(r["values"], [1.0, 0.2])
+    assert r["n_up_used"] == 2 and r["n_down_used"] == 0
+
+
+def test_ucell_up_and_down_subtracts_and_clips():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    r = a.ucell_score_values(["A", "B"], ["D"], layer="X", max_rank=1500, w_neg=1.0)
+    # u_p=[1.0,0.2]; u_n(D)=[0,1]; max(u_p-u_n,0)=[1.0, 0.0]
+    assert np.allclose(r["values"], [1.0, 0.0])
+    assert r["n_down_used"] == 1
+
+
+def test_ucell_down_only_is_zero():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    r = a.ucell_score_values([], ["D"], layer="X", max_rank=1500, w_neg=1.0)
+    assert np.allclose(r["values"], [0.0, 0.0])
+    assert r["n_up_used"] == 0
+
+
+def test_ucell_skips_missing_genes():
+    a = DataAdaptor("x.h5ad", adata=_adata())
+    r = a.ucell_score_values(["A", "B", "ZZZ"], [], layer="X", max_rank=1500)
+    assert r["n_up_used"] == 2          # ZZZ filtered out
+    assert np.allclose(r["values"], [1.0, 0.2])

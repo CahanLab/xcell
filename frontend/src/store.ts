@@ -581,6 +581,29 @@ export interface LegendPanelState {
   minimized: boolean
 }
 
+// A pinned, movable/resizable snapshot of the embedding view, frozen at the
+// moment the user clicked the snapshot button. Stores the *displayed* geometry
+// (draw-ordered positions + resolved RGB per point) plus cluster-label
+// centroids, so it can be re-rendered crisply into a 2D canvas at any size
+// without a second WebGL context or a re-fetch. Typed arrays are packed
+// (points = [x,y,...], colors = [r,g,b,...]) and live only in memory.
+export interface EmbeddingSnapshot {
+  id: string
+  slotKey: string        // 'single' | 'primary' | 'secondary' — plot it came from
+  title: string          // description of the coloring at capture time
+  points: Float32Array   // data-space positions, draw order (top-of-stack last)
+  colors: Uint8Array     // per-point RGB, parallel to points
+  bounds: { minX: number; minY: number; maxX: number; maxY: number }
+  labels: { text: string; x: number; y: number }[] // data-space centroids
+  bg: string             // background hex at capture time
+  pointSize: number      // base point size at capture time
+  x: number              // panel left within the plot container (px)
+  y: number              // panel top within the plot container (px)
+  w: number              // canvas width (px)
+  h: number              // canvas height (px)
+  minimized: boolean
+}
+
 interface AppState {
   // Data (flat per-dataset fields — backward compat)
   schema: Schema | null
@@ -724,6 +747,10 @@ interface AppState {
   // Movable/minimizable floating legend panels, keyed by panel id. Absent x/y
   // means the panel sits at its default corner; finite x/y means user-dragged.
   legendPanels: Record<string, LegendPanelState>
+
+  // Pinned embedding snapshots (movable/resizable frozen mini-views). Ordered
+  // by creation; each tagged with the slot it was captured from.
+  embeddingSnapshots: EmbeddingSnapshot[]
 
   // Categorical .obs column whose category names are overlaid at cluster
   // centroids on the embedding (null = no labels). Labels render on whichever
@@ -917,6 +944,14 @@ interface AppState {
   setLegendPanelPos: (id: string, x: number, y: number) => void
   toggleLegendPanelMinimized: (id: string) => void
 
+  // Pinned embedding snapshots
+  addEmbeddingSnapshot: (snapshot: EmbeddingSnapshot) => void
+  updateEmbeddingSnapshot: (
+    id: string,
+    patch: Partial<Pick<EmbeddingSnapshot, 'x' | 'y' | 'w' | 'h' | 'minimized' | 'title'>>,
+  ) => void
+  removeEmbeddingSnapshot: (id: string) => void
+
   // Embedding categorical-label overlay
   setEmbeddingLabelColumn: (column: string | null) => void
   loadDatasetIntoSlot: (slot: DatasetSlot, schema: Schema) => void
@@ -1074,6 +1109,7 @@ export const useStore = create<AppState>((set, get) => {
     },
     activeSlot: 'primary' as DatasetSlot,
     legendPanels: {},
+    embeddingSnapshots: [],
     embeddingLabelColumn: null,
 
     // === Per-dataset actions (dual-write) ===
@@ -1686,6 +1722,19 @@ export const useStore = create<AppState>((set, get) => {
             minimized: !(s.legendPanels[id]?.minimized ?? false),
           },
         },
+      })),
+
+    addEmbeddingSnapshot: (snapshot) =>
+      set((s) => ({ embeddingSnapshots: [...s.embeddingSnapshots, snapshot] })),
+    updateEmbeddingSnapshot: (id, patch) =>
+      set((s) => ({
+        embeddingSnapshots: s.embeddingSnapshots.map((snap) =>
+          snap.id === id ? { ...snap, ...patch } : snap,
+        ),
+      })),
+    removeEmbeddingSnapshot: (id) =>
+      set((s) => ({
+        embeddingSnapshots: s.embeddingSnapshots.filter((snap) => snap.id !== id),
       })),
 
     setEmbeddingLabelColumn: (column) => set({ embeddingLabelColumn: column }),

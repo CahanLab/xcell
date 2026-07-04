@@ -3,6 +3,7 @@ import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
 import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, ColorScale, DatasetSlot, DrawTool, SelectionTool } from '../store'
+import { SnapshotLayer } from './SnapshotPanel'
 
 interface ScatterPlotProps {
   slot?: DatasetSlot
@@ -566,6 +567,11 @@ export default function ScatterPlot({
   const drawTool = useStore((state) => state.drawTool) as DrawTool
   const selectionTool = useStore((state) => state.selectionTool) as SelectionTool
   const embeddingLabelColumn = useStore((state) => state.embeddingLabelColumn)
+  const addEmbeddingSnapshot = useStore((state) => state.addEmbeddingSnapshot)
+
+  // Snapshots are tagged by which plot captured them ('single' for the
+  // single-plot layout, or the dual-layout slot).
+  const slotKey = slot ?? 'single'
 
   // Create a Set for fast lookup of selected indices
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
@@ -1326,6 +1332,69 @@ export default function ScatterPlot({
       .map((k) => ({ label: k, data: [median(xs[k]), median(ys[k])] as [number, number] }))
   }, [showCategoryLabels, colorBy, embedding])
 
+  // Freeze the currently displayed plot into a pinned snapshot: capture each
+  // visible cell's draw-ordered position and *resolved* color (via the same
+  // getColor used by deck.gl), plus any cluster-label centroids, then hand it
+  // to the store as a movable/resizable panel. Cheap to build (one pass over
+  // the visible cells) and self-contained, so it survives later re-colorings.
+  const captureSnapshot = useCallback(() => {
+    const n = data.length
+    const points = new Float32Array(n * 2)
+    const colors = new Uint8Array(n * 3)
+    for (let i = 0; i < n; i++) {
+      const d = data[i]
+      points[i * 2] = d.position[0]
+      points[i * 2 + 1] = d.position[1]
+      const c = getColor(d)
+      colors[i * 3] = c[0]
+      colors[i * 3 + 1] = c[1]
+      colors[i * 3 + 2] = c[2]
+    }
+
+    // Describe the coloring so the pinned panel is self-explanatory.
+    let title: string
+    if (colorMode === 'expression' && expressionData) {
+      title = expressionData.gene
+        ?? (expressionData.genes && expressionData.genes.length
+          ? `${expressionData.genes.length} genes`
+          : 'Expression')
+    } else if (colorMode === 'bivariate') {
+      title = 'Bivariate'
+    } else if (colorBy) {
+      title = colorBy.name
+    } else {
+      title = embedding.name
+    }
+
+    const labels = categoryLabelData.map((c) => ({ text: c.label, x: c.data[0], y: c.data[1] }))
+
+    // Default geometry: compact panel pinned near the top-right of the plot,
+    // cascading down as snapshots accumulate so they don't land exactly atop
+    // one another.
+    const w = 240
+    const h = 200
+    const rect = containerRef.current?.getBoundingClientRect()
+    const existing = useStore.getState().embeddingSnapshots.filter((s) => s.slotKey === slotKey).length
+    const cascade = existing * 26
+    const x = rect ? Math.max(8, rect.width - w - 12) : 12
+    const maxY = rect ? Math.max(8, rect.height - (h + 26) - 12) : 40 + cascade
+    const y = Math.max(8, Math.min(40 + cascade, maxY))
+
+    addEmbeddingSnapshot({
+      id: `snap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      slotKey,
+      title,
+      points,
+      colors,
+      bounds: { minX: bounds.minX, minY: bounds.minY, maxX: bounds.maxX, maxY: bounds.maxY },
+      labels,
+      bg: displayPreferences.backgroundColor,
+      pointSize: displayPreferences.pointSize,
+      x, y, w, h,
+      minimized: false,
+    })
+  }, [data, getColor, categoryLabelData, bounds, displayPreferences, colorMode, expressionData, colorBy, embedding.name, slotKey, addEmbeddingSnapshot])
+
   const categoryLabelScreen = useMemo(() => {
     if (categoryLabelData.length === 0) return [] as { label: string; x: number; y: number }[]
     const screen = dataToScreen(categoryLabelData.map((c) => c.data))
@@ -1744,6 +1813,38 @@ export default function ScatterPlot({
             : 'Quilt Mode: Drag to move, Shift+drag to rotate (Esc to re-select)'}
         </div>
       )}
+
+      {/* Snapshot button (top-right) — pins a frozen, movable/resizable
+          mini-view of the current coloring so it stays visible while the user
+          explores other genes/sets. */}
+      <button
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); captureSnapshot() }}
+        title="Pin a snapshot of the current embedding view (movable & resizable)"
+        style={{
+          position: 'absolute',
+          top: 8,
+          right: 8,
+          zIndex: 13,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          padding: '5px 9px',
+          fontSize: 12,
+          fontWeight: 600,
+          color: '#cbd5e1',
+          backgroundColor: 'rgba(22, 33, 62, 0.9)',
+          border: '1px solid rgba(255,255,255,0.12)',
+          borderRadius: 6,
+          cursor: 'pointer',
+        }}
+      >
+        <span style={{ color: '#4ecdc4', fontSize: 13 }}>◈</span>
+        Snapshot
+      </button>
+
+      {/* Pinned snapshots for this plot */}
+      <SnapshotLayer slotKey={slotKey} />
     </div>
   )
 }

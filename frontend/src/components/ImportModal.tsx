@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useStore } from '../store'
 
 const styles = {
@@ -92,6 +92,43 @@ interface ParsedGeneList {
   name: string
   genes: string[]          // up / positive
   genesDown?: string[]     // down / negative
+  folder?: string          // optional sub-group (JSON only)
+}
+
+// A curated gene-set bundle shipped with xcell (read-only library).
+interface LibrarySet {
+  name: string
+  genes: string[]
+  genesDown?: string[]
+  folder?: string
+}
+interface LibraryBundle {
+  id: string
+  name: string
+  description: string
+  count: number
+  sets: LibrarySet[]
+}
+
+// Split a flat list of sets into per-folder groups plus the ungrouped
+// remainder. Used when materialising a JSON file / bundle into folders: sets
+// tagged with the same `folder` land together, matching the file's intent.
+function groupByFolder<T extends { folder?: string }>(
+  sets: T[],
+): { ungrouped: T[]; folders: { name: string; sets: T[] }[] } {
+  const ungrouped: T[] = []
+  const order: string[] = []
+  const byFolder = new Map<string, T[]>()
+  for (const s of sets) {
+    const f = s.folder
+    if (f) {
+      if (!byFolder.has(f)) { byFolder.set(f, []); order.push(f) }
+      byFolder.get(f)!.push(s)
+    } else {
+      ungrouped.push(s)
+    }
+  }
+  return { ungrouped, folders: order.map((name) => ({ name, sets: byFolder.get(name)! })) }
 }
 
 interface ParsedFile {
@@ -220,7 +257,8 @@ function parseJSON(text: string): ParsedGeneList[] {
     const up = splitUp.up
     const down = [...splitUp.down, ...downRaw.map((g) => g.replace(/[-+]$/, ''))]
     if (up.length + down.length > 0) {
-      lists.push({ name: obj.name, genes: up, genesDown: down.length ? down : undefined })
+      const folder = typeof obj.folder === 'string' && obj.folder.trim() ? obj.folder.trim() : undefined
+      lists.push({ name: obj.name, genes: up, genesDown: down.length ? down : undefined, folder })
     }
   }
   return lists
@@ -293,13 +331,45 @@ export default function ImportModal() {
   const [parsedFiles, setParsedFiles] = useState<ParsedFile[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [bundles, setBundles] = useState<LibraryBundle[]>([])
+  const [loadedBundleIds, setLoadedBundleIds] = useState<Set<string>>(new Set())
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Fetch the shipped gene-set library when the modal opens (lazy — no cost
+  // until the user actually opens Import). Failure is silent: the section
+  // simply doesn't render.
+  useEffect(() => {
+    if (!isImportModalOpen) return
+    let cancelled = false
+    fetch('/api/gene_sets/library')
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        if (!cancelled && Array.isArray(data?.bundles)) setBundles(data.bundles as LibraryBundle[])
+      })
+      .catch(() => { /* no library / offline → hide the section */ })
+    return () => { cancelled = true }
+  }, [isImportModalOpen])
 
   const handleClose = useCallback(() => {
     setImportModalOpen(false)
     setParsedFiles([])
     setError(null)
+    setLoadedBundleIds(new Set())
   }, [setImportModalOpen])
+
+  // Load a shipped bundle into the user's editable Manual sets. Sets tagged
+  // with a `folder` group into their own folder; the rest go into a folder
+  // named after the bundle. The modal stays open so several can be loaded.
+  const handleLoadBundle = useCallback((bundle: LibraryBundle) => {
+    const { ungrouped, folders } = groupByFolder(bundle.sets)
+    if (ungrouped.length > 0) {
+      addFolderToCategory('manual', bundle.name, ungrouped)
+    }
+    for (const grp of folders) {
+      addFolderToCategory('manual', grp.name, grp.sets)
+    }
+    setLoadedBundleIds((prev) => new Set(prev).add(bundle.id))
+  }, [addFolderToCategory])
 
   const processFiles = useCallback((files: FileList) => {
     setError(null)
@@ -351,14 +421,19 @@ export default function ImportModal() {
 
   const handleImport = useCallback(() => {
     for (const pf of parsedFiles) {
-      const folderName = pf.filename.replace(/\.\w+$/, '')
-      if (pf.geneLists.length === 1) {
-        // Single list: add directly without folder
-        const gl = pf.geneLists[0]
+      const fileName = pf.filename.replace(/\.\w+$/, '')
+      const { ungrouped, folders } = groupByFolder(pf.geneLists)
+      // Ungrouped sets: a lone one is added directly; several wrap in a
+      // folder named after the file (unchanged legacy behavior). Any sets
+      // tagged with a `folder` become their own folders alongside.
+      if (ungrouped.length === 1 && folders.length === 0) {
+        const gl = ungrouped[0]
         addGeneSetToCategory('manual', gl.name, gl.genes, gl.genesDown)
-      } else {
-        // Multiple lists: wrap in folder
-        addFolderToCategory('manual', folderName, pf.geneLists)
+      } else if (ungrouped.length > 0) {
+        addFolderToCategory('manual', fileName, ungrouped)
+      }
+      for (const grp of folders) {
+        addFolderToCategory('manual', grp.name, grp.sets)
       }
     }
     handleClose()
@@ -413,6 +488,68 @@ export default function ImportModal() {
           {error && (
             <div style={{ marginTop: '12px', fontSize: '12px', color: '#e94560' }}>
               {error}
+            </div>
+          )}
+
+          {/* Bundled gene-set libraries shipped with xcell. Loaded on demand
+              into the user's editable Manual sets. */}
+          {bundles.length > 0 && (
+            <div style={{ marginTop: '20px' }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px',
+              }}>
+                <div style={{ flex: 1, height: 1, backgroundColor: '#0f3460' }} />
+                <span style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  or load a bundled library
+                </span>
+                <div style={{ flex: 1, height: 1, backgroundColor: '#0f3460' }} />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {bundles.map((b) => {
+                  const loaded = loadedBundleIds.has(b.id)
+                  return (
+                    <div
+                      key={b.id}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '12px',
+                        padding: '10px 14px',
+                        backgroundColor: '#0a0f1a',
+                        border: '1px solid #0f3460',
+                        borderRadius: '8px',
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#eee' }}>
+                          {b.name}
+                          <span style={{ fontSize: '11px', fontWeight: 400, color: '#888', marginLeft: '8px' }}>
+                            {b.count} set{b.count !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                        {b.description && (
+                          <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
+                            {b.description}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => handleLoadBundle(b)}
+                        style={{
+                          ...styles.button,
+                          padding: '6px 14px',
+                          fontSize: '12px',
+                          backgroundColor: loaded ? 'transparent' : '#0f3460',
+                          color: loaded ? '#4ecdc4' : '#eee',
+                          border: '1px solid ' + (loaded ? '#4ecdc4' : '#0f3460'),
+                          flexShrink: 0,
+                        }}
+                        title={loaded ? 'Loaded into Manual — click to add again' : 'Load this library into your Manual gene sets'}
+                      >
+                        {loaded ? '✓ Loaded' : 'Load'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )}
 

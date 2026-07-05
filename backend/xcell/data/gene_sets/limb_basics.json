@@ -1,0 +1,258 @@
+{
+  "name": "Limb Development Basics",
+  "description": "Marker gene sets for embryonic mouse limb cell types, tissues, and positional identity.",
+  "sets": [
+    {
+      "name": "high",
+      "genes": [
+        "Actb",
+        "H19",
+        "Tubb5"
+      ]
+    },
+    {
+      "name": "chondrocyte",
+      "genes": [
+        "Col2a1",
+        "Wwp2",
+        "Col9a3"
+      ]
+    },
+    {
+      "name": "myotome",
+      "genes": [
+        "Pax3",
+        "Pax7",
+        "Cdh15",
+        "Mrln",
+        "Itga4",
+        "Igfbp3"
+      ]
+    },
+    {
+      "name": "IZ",
+      "genes": [
+        "Trps1",
+        "Gdf5",
+        "Tgfbi",
+        "Sfrp2",
+        "Jun"
+      ]
+    },
+    {
+      "name": "myoblast",
+      "genes": [
+        "Myog",
+        "Myh3",
+        "Ttn",
+        "Tnnt1",
+        "Tpm2",
+        "Cdh15"
+      ]
+    },
+    {
+      "name": "tendon",
+      "genes": [
+        "Scx",
+        "Tnmd",
+        "Fmod"
+      ]
+    },
+    {
+      "name": "NCC",
+      "genes": [
+        "Mpz",
+        "Sox10"
+      ]
+    },
+    {
+      "name": "hindlimb",
+      "genes": [
+        "Tbx4",
+        "Pitx1",
+        "Hoxc10"
+      ]
+    },
+    {
+      "name": "early_limb",
+      "genes": [
+        "Tbx15",
+        "Prrx1",
+        "Tbx18",
+        "Mecom"
+      ]
+    },
+    {
+      "name": "skin",
+      "genes": [
+        "Perp",
+        "Krt18",
+        "Krt14",
+        "Krt5",
+        "Epcam",
+        "Cdh1"
+      ]
+    },
+    {
+      "name": "distal",
+      "genes": [
+        "Hoxd13",
+        "Hoxa11os",
+        "Hoxd12"
+      ],
+      "folder": "positional"
+    },
+    {
+      "name": "proximal",
+      "genes": [
+        "Meis1",
+        "Meis2",
+        "Pbx1"
+      ],
+      "folder": "positional"
+    },
+    {
+      "name": "medial",
+      "genes": [
+        "Hoxa11"
+      ],
+      "folder": "positional"
+    },
+    {
+      "name": "digit_4",
+      "genes": [
+        "Eomes",
+        "Tmem178b"
+      ],
+      "folder": "positional"
+    },
+    {
+      "name": "posterior",
+      "genes": [
+        "Hand2",
+        "Shh",
+        "Grem1"
+      ],
+      "folder": "positional"
+    },
+    {
+      "name": "anterior",
+      "genes": [
+        "Alx4",
+        "Asb4",
+        "Lhx9"
+      ],
+      "folder": "positional"
+    },
+    {
+      "name": "rbc",
+      "genes": [
+        "Hbb-y",
+        "Hba-x",
+        "Hbb-bh1"
+      ]
+    },
+    {
+      "name": "endothelial",
+      "genes": [
+        "Pecam1",
+        "Cdh5",
+        "Kdr",
+        "Flt1"
+      ]
+    },
+    {
+      "name": "neural",
+      "genes": [
+        "Ina",
+        "Elavl3",
+        "Elavl2",
+        "Mapt",
+        "Pou3f2",
+        "Sox3"
+      ]
+    },
+    {
+      "name": "schwann",
+      "genes": [
+        "Mpz",
+        "Spon1",
+        "Cdh6"
+      ]
+    },
+    {
+      "name": "AER",
+      "genes": [
+        "Fgf8",
+        "Lmo7",
+        "Bambi",
+        "Igfbpl1",
+        "Dlx1"
+      ]
+    },
+    {
+      "name": "dermis",
+      "genes": [
+        "Cct6a",
+        "Twist1"
+      ]
+    },
+    {
+      "name": "interdigit",
+      "genes": [
+        "Aldh1a2",
+        "Msx1",
+        "Plk2",
+        "Adamts5",
+        "Dipk2a",
+        "Cyp26b1",
+        "Lhx9"
+      ]
+    },
+    {
+      "name": "perichondrium_inner",
+      "genes": [
+        "Ibsp",
+        "Sp7",
+        "Alpl",
+        "Ifitm5",
+        "Sgms2",
+        "Smpd3",
+        "Dmp1"
+      ]
+    },
+    {
+      "name": "perichondrium_outer",
+      "genes": [
+        "Col8a2",
+        "Ptprv",
+        "Eln"
+      ]
+    },
+    {
+      "name": "perichondrium_Mmp9",
+      "genes": [
+        "Acp5",
+        "Mmp9",
+        "Ccl9"
+      ]
+    },
+    {
+      "name": "phc",
+      "genes": [
+        "Pth1r",
+        "Ihh"
+      ]
+    },
+    {
+      "name": "hc",
+      "genes": [
+        "Col10a1",
+        "Mmp13",
+        "Gpx3",
+        "Itgb3",
+        "Cp"
+      ]
+    }
+  ]
+}

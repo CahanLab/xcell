@@ -16,6 +16,7 @@ from xcell.adaptor import DataAdaptor, combine_spatial_h5ads
 from xcell.task_manager import task_manager
 from xcell import config as user_config
 from xcell import gene_set_store
+from xcell import gene_set_library
 
 router = APIRouter(prefix="/api")
 
@@ -601,6 +602,17 @@ def put_gene_sets_state(request: GeneSetsPutRequest):
         return {"status": "ok"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/gene_sets/library")
+def get_gene_sets_library():
+    """List the curated gene-set bundles shipped with xcell (read-only).
+
+    Files live in ``xcell/data/gene_sets/*.json``. The frontend shows these in
+    the Import dialog; the user loads a bundle into their own editable sets on
+    demand — this endpoint never mutates the user's gene-set state.
+    """
+    return {"bundles": gene_set_library.list_bundles()}
 
 
 @router.get("/config/defaults")

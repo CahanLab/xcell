@@ -34,4 +34,4 @@ where = ["."]
 include = ["xcell*"]
 
 [tool.setuptools.package-data]
-xcell = ["data/*.h5ad"]
+xcell = ["data/*.h5ad", "data/gene_sets/*.json"]

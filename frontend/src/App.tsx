@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, DatasetSlot } from './store'
+import { meanOf, convexHull, type ShapeAffine } from './utils/shapeTransform'
 import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, appendDataset, fetchGeneMask } from './hooks/useData'
 import ScatterPlot, { BIVARIATE_COLORMAPS, getBivariateColor, resolveCategoryPalette } from './components/ScatterPlot'
 import GenePanel from './components/GenePanel'
@@ -705,6 +706,7 @@ export default function App() {
     setError,
     displayLayer,
     setDisplayLayer,
+    transformShapesForEmbedding,
   } = useStore()
 
   // Available expression layers for the in-plot Source matrix dropdown.
@@ -917,8 +919,27 @@ export default function App() {
   }, [showDrawMenu, showSelectMenu, showAdjustMenu, showFileMenu])
 
 
-  const handleTransformEmbedding = useCallback(async (opts: { rotation_degrees?: number; reflect_x?: boolean; reflect_y?: boolean }) => {
+  // Whole-embedding transform. Drawn shapes on the embedding travel with the
+  // cells (all cells move, so every shape moves) using the same reflect→rotate
+  // math around the all-cells centroid. `preCoords` is the cells' pre-transform
+  // positions, passed by the in-plot drag (which has already moved the cells
+  // client-side); when present we move shapes immediately so they stay locked to
+  // the already-moved cells, otherwise we move them once the backend result lands.
+  const handleTransformEmbedding = useCallback(async (
+    opts: { rotation_degrees?: number; reflect_x?: boolean; reflect_y?: boolean },
+    preCoords?: [number, number][],
+  ) => {
     if (!selectedEmbedding) return
+    const coords = preCoords ?? embedding?.coordinates
+    const moveShapes = coords && coords.length > 0
+      ? () => transformShapesForEmbedding(selectedEmbedding, {
+          centroid: meanOf(coords),
+          rotationDegrees: opts.rotation_degrees,
+          reflectX: opts.reflect_x,
+          reflectY: opts.reflect_y,
+        })
+      : null
+    if (preCoords && moveShapes) moveShapes()
     try {
       const response = await fetch(appendDataset(`/api/embedding/${selectedEmbedding}/transform`), {
         method: 'POST',
@@ -931,15 +952,22 @@ export default function App() {
       }
       const data = await response.json()
       setEmbedding(data)
+      if (!preCoords && moveShapes) moveShapes()
     } catch (err) {
       console.error('Transform embedding failed:', err)
     }
-  }, [selectedEmbedding, setEmbedding])
+  }, [selectedEmbedding, setEmbedding, embedding, transformShapesForEmbedding])
 
-  const handleRotateEmbedding = useCallback((rotationDegrees: number) => {
-    handleTransformEmbedding({ rotation_degrees: rotationDegrees })
+  const handleRotateEmbedding = useCallback((rotationDegrees: number, preCoords?: [number, number][]) => {
+    handleTransformEmbedding({ rotation_degrees: rotationDegrees }, preCoords)
   }, [handleTransformEmbedding])
 
+  // Subset ("quilt") transform. Only shapes overlaying the moved cells travel
+  // with them, using the same transform around the subset centroid. Membership
+  // and centroid are computed from the cells' PRE-transform positions — for an
+  // in-plot drag those come via `preCoords` (the client-side preview has already
+  // moved the store coords), otherwise from the current coordinates (toolbar /
+  // flip / arrow-nudge, where cells haven't moved yet).
   const handleTransformEmbeddingSubset = useCallback(async (opts: {
     rotation_degrees?: number
     reflect_x?: boolean
@@ -947,8 +975,26 @@ export default function App() {
     translate_x?: number
     translate_y?: number
     cell_indices: number[]
-  }) => {
+  }, preCoords?: [number, number][]) => {
     if (!selectedEmbedding) return
+    const coords = preCoords ?? embedding?.coordinates
+    let moveShapes: (() => void) | null = null
+    if (coords && coords.length > 0 && opts.cell_indices.length > 0) {
+      const subset = opts.cell_indices.map((i) => coords[i]).filter(Boolean) as [number, number][]
+      if (subset.length > 0) {
+        const affine: ShapeAffine = {
+          centroid: meanOf(subset),
+          rotationDegrees: opts.rotation_degrees,
+          reflectX: opts.reflect_x,
+          reflectY: opts.reflect_y,
+          translateX: opts.translate_x,
+          translateY: opts.translate_y,
+        }
+        const hull = convexHull(subset)
+        moveShapes = () => transformShapesForEmbedding(selectedEmbedding, affine, hull)
+      }
+    }
+    if (preCoords && moveShapes) moveShapes()
     try {
       const response = await fetch(appendDataset(`/api/embedding/${selectedEmbedding}/transform`), {
         method: 'POST',
@@ -962,10 +1008,11 @@ export default function App() {
       const data = await response.json()
       setEmbedding(data)
       setQuiltUndoDepth(data.undo_depth ?? 0)
+      if (!preCoords && moveShapes) moveShapes()
     } catch (err) {
       console.error('Transform embedding subset failed:', err)
     }
-  }, [selectedEmbedding, setEmbedding, setQuiltUndoDepth])
+  }, [selectedEmbedding, setEmbedding, setQuiltUndoDepth, embedding, transformShapesForEmbedding])
 
   const handleLineDrawn = useCallback((points: [number, number][]) => {
     if (!selectedEmbedding) return

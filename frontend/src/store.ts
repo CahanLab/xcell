@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/shapeTransform'
 
 export interface Schema {
   n_cells: number
@@ -880,6 +881,11 @@ interface AppState {
   setLineVisibility: (id: string, visible: boolean) => void
   projectSelectedCellsOntoLine: (lineId: string) => void  // Project currently selected cells onto a specific line
   clearLineProjections: (lineId: string) => void
+  // Move drawn shapes/lines together with the cells they overlay when those cells
+  // are transformed. Applies `affine` to every line on `embeddingName`; if `hull`
+  // (the convex hull of a moved cell subset) is given, only lines overlapping it
+  // are moved. `affine.centroid` must be the cells' pre-transform centroid.
+  transformShapesForEmbedding: (embeddingName: string, affine: ShapeAffine, hull?: [number, number][]) => void
 
   // Import modal actions
   setImportModalOpen: (open: boolean) => void
@@ -2098,6 +2104,25 @@ export const useStore = create<AppState>((set, get) => {
           l.id === lineId ? { ...l, projections: [] } : l
         ),
       }))),
+
+    transformShapesForEmbedding: (embeddingName, affine, hull) =>
+      set(dsUpdateFn((state) => {
+        let changed = false
+        const next = state.drawnLines.map((l) => {
+          if (l.embeddingName !== embeddingName) return l
+          // For subset (quilt) transforms, only move shapes overlaying the moved
+          // region. Projections store position-along-line / distance, which are
+          // invariant under the rigid transform, so they carry over unchanged.
+          if (hull && !shapeOverlapsHull(l.smoothedPoints || l.points, hull)) return l
+          changed = true
+          return {
+            ...l,
+            points: transformPoints(l.points, affine),
+            smoothedPoints: l.smoothedPoints ? transformPoints(l.smoothedPoints, affine) : null,
+          }
+        })
+        return changed ? { drawnLines: next } : {}
+      })),
 
     // Import modal actions (global)
     setImportModalOpen: (open) => set({ isImportModalOpen: open }),

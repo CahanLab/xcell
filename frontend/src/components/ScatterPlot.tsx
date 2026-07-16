@@ -3,6 +3,7 @@ import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
 import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, ColorScale, DatasetSlot, DrawTool, SelectionTool } from '../store'
+import { transformPoints, meanOf, convexHull, shapeOverlapsHull, type Pt } from '../utils/shapeTransform'
 import { SnapshotLayer } from './SnapshotPanel'
 
 interface ScatterPlotProps {
@@ -17,7 +18,7 @@ interface ScatterPlotProps {
   selectedCellIndices: number[]
   onSelectionComplete: (indices: number[], additive: boolean) => void
   onLineDrawn: (points: [number, number][]) => void
-  onTransformEmbedding: (rotationDegrees: number) => void
+  onTransformEmbedding: (rotationDegrees: number, preCoords?: [number, number][]) => void
   onTransformEmbeddingSubset: (opts: {
     rotation_degrees?: number
     reflect_x?: boolean
@@ -25,7 +26,7 @@ interface ScatterPlotProps {
     translate_x?: number
     translate_y?: number
     cell_indices: number[]
-  }) => void
+  }, preCoords?: [number, number][]) => void
 }
 
 // Base palette for categorical data (d3 category10). Beyond 10 categories we
@@ -543,6 +544,21 @@ export default function ScatterPlot({
   const quiltRotateStartAngle = useRef(0)
   const quiltAccumulatedRotation = useRef(0)
 
+  // Live preview of drawn shapes following the cells during a transform drag.
+  // `base` (centroid + affected shape ids) is snapshotted once at drag-start from
+  // pre-transform coordinates so per-frame updates only vary the rotation/offset.
+  // `affectedIds === null` means "all shapes on this embedding" (whole-embedding
+  // adjust); a Set means the subset overlapping the moved cells (quilt). Cleared
+  // on release, at which point the committed geometry in the store takes over.
+  const shapePreviewBase = useRef<{ centroid: Pt; affectedIds: Set<string> | null } | null>(null)
+  const [shapePreview, setShapePreview] = useState<{
+    centroid: Pt
+    affectedIds: Set<string> | null
+    rotationDegrees?: number
+    translateX?: number
+    translateY?: number
+  } | null>(null)
+
   // Get display preferences, cell masking, sort state, and drawn lines from store
   // When a `slot` prop is provided, read from datasets[slot] instead of flat top-level fields
   const displayPreferences = useStore((state) =>
@@ -839,6 +855,21 @@ export default function ScatterPlot({
     return [dataX, dataY]
   }, [viewState])
 
+  // Which shapes overlay a to-be-moved cell subset (so they should travel with
+  // it). Uses the convex hull of the subset's current (pre-transform) positions.
+  const computeAffectedShapeIds = useCallback((indices: number[]): Set<string> => {
+    const affected = new Set<string>()
+    if (indices.length === 0) return affected
+    const subset = indices.map((i) => embedding.coordinates[i]).filter(Boolean) as [number, number][]
+    if (subset.length < 3) return affected
+    const hull = convexHull(subset)
+    for (const l of drawnLines) {
+      if (l.embeddingName !== embedding.name) continue
+      if (shapeOverlapsHull(l.smoothedPoints || l.points, hull)) affected.add(l.id)
+    }
+    return affected
+  }, [embedding, drawnLines])
+
   // Handle lasso, line drawing, adjust rotation, and quilt mode
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (interactionMode === 'lasso') {
@@ -879,6 +910,8 @@ export default function ScatterPlot({
       accumulatedRotation.current = 0
       rotatePivotScreen.current = { x: screenCx, y: screenCy }
       preRotationCoords.current = coords.map(c => [c[0], c[1]] as [number, number])
+      // Whole-embedding rotate: every shape on this embedding follows (affectedIds=null).
+      shapePreviewBase.current = { centroid: [cx, cy], affectedIds: null }
       setActiveRotationDeg(0)
     } else if (interactionMode === 'quilt') {
       if (quiltPhase === 'lasso') {
@@ -909,15 +942,19 @@ export default function ScatterPlot({
           quiltRotateStartAngle.current = angle
           quiltAccumulatedRotation.current = 0
           quiltPreTransformCoords.current = coords.map(c => [c[0], c[1]] as [number, number])
+          shapePreviewBase.current = { centroid: [cx, cy], affectedIds: computeAffectedShapeIds(indices) }
         } else {
           // Plain drag: translate selected cells
           isDraggingQuilt.current = true
           quiltDragStartData.current = point
           quiltPreTransformCoords.current = embedding.coordinates.map(c => [c[0], c[1]] as [number, number])
+          const selIdx = quiltSelectedIndices.current
+          const subset = selIdx.map(i => embedding.coordinates[i]).filter(Boolean) as [number, number][]
+          shapePreviewBase.current = { centroid: subset.length ? meanOf(subset) : [0, 0], affectedIds: computeAffectedShapeIds(selIdx) }
         }
       }
     }
-  }, [interactionMode, selectionTool, drawTool, screenToData, embedding.coordinates, quiltPhase, viewState])
+  }, [interactionMode, selectionTool, drawTool, screenToData, embedding.coordinates, quiltPhase, viewState, computeAffectedShapeIds])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     // Track cursor for click-based draw tool preview
@@ -943,6 +980,7 @@ export default function ScatterPlot({
       }
       accumulatedRotation.current = totalDegrees
       setActiveRotationDeg(totalDegrees)
+      if (shapePreviewBase.current) setShapePreview({ ...shapePreviewBase.current, rotationDegrees: totalDegrees })
 
       // Apply rotation client-side from the pre-rotation snapshot
       const theta = (totalDegrees * Math.PI) / 180
@@ -984,6 +1022,7 @@ export default function ScatterPlot({
         const totalDelta = currentAngle - quiltRotateStartAngle.current
         const totalDegrees = -(totalDelta * 180) / Math.PI
         quiltAccumulatedRotation.current = totalDegrees
+        if (shapePreviewBase.current) setShapePreview({ ...shapePreviewBase.current, rotationDegrees: totalDegrees })
 
         const theta = (totalDegrees * Math.PI) / 180
         const cosT = Math.cos(theta)
@@ -1006,6 +1045,7 @@ export default function ScatterPlot({
         if (!point) return
         const dx = point[0] - quiltDragStartData.current[0]
         const dy = point[1] - quiltDragStartData.current[1]
+        if (shapePreviewBase.current) setShapePreview({ ...shapePreviewBase.current, translateX: dx, translateY: dy })
 
         // Build new coordinates: translate only selected, keep others unchanged
         const selectedSet = new Set(indices)
@@ -1037,11 +1077,14 @@ export default function ScatterPlot({
     if (isRotating.current) {
       isRotating.current = false
       const totalDeg = accumulatedRotation.current
+      const preCoords = preRotationCoords.current
       preRotationCoords.current = null
       rotatePivotScreen.current = null
+      shapePreviewBase.current = null
+      setShapePreview(null)
       setActiveRotationDeg(null)
       if (Math.abs(totalDeg) > 0.1) {
-        onTransformEmbedding(totalDeg)
+        onTransformEmbedding(totalDeg, preCoords ?? undefined)
       }
       return
     }
@@ -1051,19 +1094,25 @@ export default function ScatterPlot({
       if (isRotatingQuilt.current) {
         isRotatingQuilt.current = false
         const totalDeg = quiltAccumulatedRotation.current
+        const preCoords = quiltPreTransformCoords.current
         quiltPreTransformCoords.current = null
+        shapePreviewBase.current = null
+        setShapePreview(null)
         if (Math.abs(totalDeg) > 0.1) {
           onTransformEmbeddingSubset({
             rotation_degrees: totalDeg,
             cell_indices: quiltSelectedIndices.current,
-          })
+          }, preCoords ?? undefined)
         }
         return
       }
       if (isDraggingQuilt.current && quiltDragStartData.current) {
         isDraggingQuilt.current = false
+        const preCoords = quiltPreTransformCoords.current
+        shapePreviewBase.current = null
+        setShapePreview(null)
         const point = screenToData(e.clientX, e.clientY)
-        if (point && quiltPreTransformCoords.current) {
+        if (point && preCoords) {
           const dx = point[0] - quiltDragStartData.current[0]
           const dy = point[1] - quiltDragStartData.current[1]
           quiltDragStartData.current = null
@@ -1073,7 +1122,7 @@ export default function ScatterPlot({
               translate_x: dx,
               translate_y: dy,
               cell_indices: quiltSelectedIndices.current,
-            })
+            }, preCoords ?? undefined)
           } else {
             // Click with no significant movement in transform phase: clear selection, return to lasso
             onSelectionComplete([], false)
@@ -1276,7 +1325,17 @@ export default function ScatterPlot({
     return drawnLines
       .filter((line) => line.embeddingName === embedding.name && line.visible)
       .map((line) => {
-        const points = line.smoothedPoints || line.points
+        const basePoints = line.smoothedPoints || line.points
+        // While a transform drag is in progress, preview this shape following the
+        // cells it overlays (non-persistent — the committed geometry lands on release).
+        const points = shapePreview && (shapePreview.affectedIds === null || shapePreview.affectedIds.has(line.id))
+          ? transformPoints(basePoints, {
+              centroid: shapePreview.centroid,
+              rotationDegrees: shapePreview.rotationDegrees,
+              translateX: shapePreview.translateX,
+              translateY: shapePreview.translateY,
+            })
+          : basePoints
         if (points.length < 2) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId, strokeColor: line.strokeColor || '#4ecdc4', strokeWidth: line.strokeWidth || 2, fillColor: line.fillColor || null, closed: line.closed || false }
         const screenPoints = dataToScreen(points)
         if (screenPoints.length === 0) return { id: line.id, name: line.name, path: '', isActive: line.id === activeLineId, strokeColor: line.strokeColor || '#4ecdc4', strokeWidth: line.strokeWidth || 2, fillColor: line.fillColor || null, closed: line.closed || false }
@@ -1294,7 +1353,7 @@ export default function ScatterPlot({
           closed: line.closed || false,
         }
       })
-  }, [drawnLines, activeLineId, dataToScreen, embedding.name])
+  }, [drawnLines, activeLineId, dataToScreen, embedding.name, shapePreview])
 
   // Categorical text labels overlaid at cluster centroids. Active when this
   // plot is colored by the column the user chose to label. Centroids use the

@@ -1812,6 +1812,78 @@ def scanpy_embedding_from_obs(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class ScoreGeneSetsMatrixRequest(BaseModel):
+    sets: list[dict[str, Any]]  # [{name, genes:[...]}]
+    per_gene_norm: str = "zscore_mad"
+    per_gene_clip: float = 0.0
+    aggregation: str = "mean"
+    obsm_name: str = "geneset_scores"
+    layer: str | None = None
+    transform: str | None = None
+    overwrite: bool = False
+
+
+@router.post("/scanpy/score_gene_sets_matrix")
+def scanpy_score_gene_sets_matrix(
+    request: ScoreGeneSetsMatrixRequest, dataset: str | None = Query(None)
+):
+    """Score every gene set in a folder into one .obsm matrix (mean pipeline)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.score_gene_sets_matrix(
+            sets=request.sets,
+            per_gene_norm=request.per_gene_norm,
+            per_gene_clip=request.per_gene_clip,
+            aggregation=request.aggregation,
+            obsm_name=request.obsm_name,
+            layer=request.layer,
+            transform=request.transform,
+            overwrite=request.overwrite,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class ObsmColumnRequest(BaseModel):
+    obsm_name: str
+    column: str
+
+
+@router.post("/obsm/column")
+def obsm_column(request: ObsmColumnRequest, dataset: str | None = Query(None)):
+    """Per-cell values of a named column of an .obsm matrix (for coloring by score)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.get_obsm_column(request.obsm_name, request.column)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class EmbeddingFromObsmRequest(BaseModel):
+    obsm_name: str
+    col_x: str
+    col_y: str
+    log_axes: str = "none"
+    name: str | None = None
+
+
+@router.post("/scanpy/embedding_from_obsm")
+def scanpy_embedding_from_obsm(
+    request: EmbeddingFromObsmRequest, dataset: str | None = Query(None)
+):
+    """Build a 2-D embedding from two columns of an .obsm matrix (e.g. two scores)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.create_obsm_embedding(
+            obsm_name=request.obsm_name, col_x=request.col_x, col_y=request.col_y,
+            log_axes=request.log_axes, name=request.name,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 class SumCountsRequest(BaseModel):
     pattern: str
     match_mode: str = "prefix"

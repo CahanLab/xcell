@@ -633,6 +633,36 @@ export function useDataActions() {
     }
   }, [clearSelectedGenes, layoutMode, activeSlot, patchSlotState])
 
+  // Color cells by a single column of a gene-set score matrix (.obsm). Feeds the
+  // same continuous-color pipeline as gene-set coloring.
+  const colorByScore = useCallback(
+    async (obsmName: string, column: string) => {
+      setLoading(true)
+      try {
+        const data = await fetchJson<{ values: (number | null)[]; min: number; max: number }>(
+          appendDataset(`${API_BASE}/obsm/column`),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ obsm_name: obsmName, column }),
+          },
+        )
+        setExpressionData({ values: data.values, min: data.min, max: data.max })
+        setSelectedGenes([])
+        setSelectedGeneSetName(column)
+        setColorMode('expression')
+        setSelectedColorColumn(null)
+      } catch (err) {
+        setError((err as Error).message)
+        setExpressionData(null)
+        setColorMode('none')
+      } finally {
+        setLoading(false)
+      }
+    },
+    [setLoading, setError, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn],
+  )
+
   const colorByBivariate = useCallback(
     async (genes1: string[], genes2: string[]) => {
       if (genes1.length === 0 || genes2.length === 0) {
@@ -835,6 +865,7 @@ export function useDataActions() {
     selectColorColumn,
     colorByGene,
     colorByGenes,
+    colorByScore,
     clearExpressionColor,
     colorByBivariate,
     clearBivariateColor,

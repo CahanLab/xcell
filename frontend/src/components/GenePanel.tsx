@@ -8,6 +8,7 @@ import CombineGeneSetsModal from './CombineGeneSetsModal'
 import BivariateAxisPicker, { AxisKind, resolveBivariateAxis } from './BivariateAxisPicker'
 import ImportModal from './ImportModal'
 import { UcellScoreModal } from './UcellScoreModal'
+import { ScoreGeneSetsModal } from './ScoreGeneSetsModal'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -1162,6 +1163,7 @@ function GeneSetFolderComponent({
   allowAddSet?: boolean
 }) {
   const { toggleFolderExpanded, removeFolder, toggleFolderPinned, renameFolder, addGeneSetToFolder, moveGeneSetToFolder, reorderFolder } = useStore()
+  const setScoreGeneSetsSource = useStore((s) => s.setScoreGeneSetsSource)
 
   const [isEditing, setIsEditing] = useState(false)
   const [editName, setEditName] = useState(folder.name)
@@ -1383,38 +1385,31 @@ function GeneSetFolderComponent({
             ✕
           </button>
           <OverflowMenu
-            items={
-              categoryType === 'manual'
-                ? [
-                    {
-                      label: folder.pinned ? 'Unpin folder' : 'Pin folder to top',
-                      onClick: () => toggleFolderPinned(categoryType, folder.id),
-                    },
-                    {
-                      label: 'Export ▸',
-                      children: [
-                        {
-                          label: 'JSON',
-                          onClick: () => exportFolderAsJson(folder.name, pinSort(folder.geneSets)),
-                        },
-                        {
-                          label: 'GMT',
-                          onClick: () => exportFolderAsGmt(folder.name, pinSort(folder.geneSets)),
-                        },
-                        {
-                          label: 'CSV',
-                          onClick: () => exportFolderAsCsv(folder.name, pinSort(folder.geneSets)),
-                        },
-                      ],
-                    },
-                  ]
-                : [
-                    {
-                      label: folder.pinned ? 'Unpin folder' : 'Pin folder to top',
-                      onClick: () => toggleFolderPinned(categoryType, folder.id),
-                    },
-                  ]
-            }
+            items={[
+              ...(folder.geneSets.length > 0
+                ? [{
+                    label: 'Score sets…',
+                    onClick: () => setScoreGeneSetsSource({
+                      folderName: folder.name,
+                      sets: folder.geneSets.map((gs) => ({ name: gs.name, genes: gs.genes })),
+                    }),
+                  }]
+                : []),
+              {
+                label: folder.pinned ? 'Unpin folder' : 'Pin folder to top',
+                onClick: () => toggleFolderPinned(categoryType, folder.id),
+              },
+              ...(categoryType === 'manual'
+                ? [{
+                    label: 'Export ▸',
+                    children: [
+                      { label: 'JSON', onClick: () => exportFolderAsJson(folder.name, pinSort(folder.geneSets)) },
+                      { label: 'GMT', onClick: () => exportFolderAsGmt(folder.name, pinSort(folder.geneSets)) },
+                      { label: 'CSV', onClick: () => exportFolderAsCsv(folder.name, pinSort(folder.geneSets)) },
+                    ],
+                  }]
+                : []),
+            ]}
           />
         </div>
         <span style={styles.categoryExpander}>{folder.expanded ? '▼' : '▶'}</span>
@@ -1705,10 +1700,13 @@ export function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetC
 export default function GenePanel() {
   const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen } = useStore()
   const selectedCellIndices = useStore((s) => s.selectedCellIndices)
-  const { colorByGene, colorByGenes, clearExpressionColor, colorByBivariate, clearBivariateColor, addGeneSetHighlight, addCellSetHighlight, removeHighlightLayer, updateHighlightLayer, clearHighlightOverlay } = useDataActions()
+  const { colorByGene, colorByGenes, colorByScore, clearExpressionColor, colorByBivariate, clearBivariateColor, addGeneSetHighlight, addCellSetHighlight, removeHighlightLayer, updateHighlightLayer, clearHighlightOverlay } = useDataActions()
+  const scoreMatrices = useStore((s) => s.schema?.score_matrices)
   const { summaries: obsSummaries } = useObsSummaries()
   const ucellScoreSource = useStore((s) => s.ucellScoreSource)
   const setUcellScoreSource = useStore((s) => s.setUcellScoreSource)
+  const scoreGeneSetsSource = useStore((s) => s.scoreGeneSetsSource)
+  const setScoreGeneSetsSource = useStore((s) => s.setScoreGeneSetsSource)
   const refreshObsSummaries = useStore((s) => s.refreshObsSummaries)
   const [ucellNotice, setUcellNotice] = useState<string | null>(null)
 
@@ -1947,6 +1945,14 @@ export default function GenePanel() {
           window.setTimeout(() => setUcellNotice(null), 6000)
         }}
       />
+      <ScoreGeneSetsModal
+        source={scoreGeneSetsSource}
+        onClose={() => setScoreGeneSetsSource(null)}
+        onScored={(msg) => {
+          setUcellNotice(msg)
+          window.setTimeout(() => setUcellNotice(null), 6000)
+        }}
+      />
       {ucellNotice && (
         <div style={{
           position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)',
@@ -2045,6 +2051,32 @@ export default function GenePanel() {
             <button style={styles.addButton} onClick={handleCreateFolder}>
               Add
             </button>
+          </div>
+        )}
+
+        {/* Gene-set score matrices (.obsm) — click a score to color cells by it. */}
+        {scoreMatrices && Object.keys(scoreMatrices).length > 0 && (
+          <div style={{ marginBottom: '10px' }}>
+            <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>
+              Gene-set scores
+            </div>
+            {Object.entries(scoreMatrices).map(([slot, cols]) => (
+              <div key={slot} style={{ marginBottom: '6px' }}>
+                <div style={{ fontSize: '11px', color: '#7fb3a8' }} title={`.obsm['${slot}']`}>◈ {slot}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '3px' }}>
+                  {cols.map((col) => (
+                    <button
+                      key={col}
+                      onClick={() => colorByScore(slot, col)}
+                      title={`Color cells by ${col}`}
+                      style={{ fontSize: '11px', padding: '2px 8px', background: '#0f3460', color: '#cfe', border: '1px solid #1a1a2e', borderRadius: '10px', cursor: 'pointer' }}
+                    >
+                      {col}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         )}
 

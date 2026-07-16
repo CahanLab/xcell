@@ -7,6 +7,7 @@ export interface Schema {
   embeddings: string[]
   obs_columns: string[]
   obs_dtypes: Record<string, string>
+  score_matrices?: Record<string, string[]>  // gene-set score matrices in .obsm → their column (set) names
   filename?: string
 }
 
@@ -216,6 +217,13 @@ export type SelectByExpressionSource =
 // Target for the "Score with UCell" modal (one or more directional sets).
 export interface UcellScoreSource {
   sets: { name: string; up: string[]; down: string[] }[]
+}
+
+// Target for the "Score sets" modal — a whole gene-set folder scored (mean
+// pipeline) into one .obsm matrix.
+export interface ScoreGeneSetsSource {
+  folderName: string
+  sets: { name: string; genes: string[] }[]
 }
 
 // Color mode: what determines cell colors
@@ -662,6 +670,7 @@ interface AppState {
   } | null
   selectByExpressionSource: SelectByExpressionSource | null
   ucellScoreSource: UcellScoreSource | null
+  scoreGeneSetsSource: ScoreGeneSetsSource | null
 
   // Line association state
   lineAssociationResult: LineAssociationResult | null
@@ -851,6 +860,7 @@ interface AppState {
   } | null) => void
   setSelectByExpressionSource: (src: SelectByExpressionSource | null) => void
   setUcellScoreSource: (src: UcellScoreSource | null) => void
+  setScoreGeneSetsSource: (src: ScoreGeneSetsSource | null) => void
 
   // Line association actions
   setLineAssociationResult: (result: LineAssociationResult | null) => void
@@ -1068,6 +1078,7 @@ export const useStore = create<AppState>((set, get) => {
     clusterModalSourceSet: null,
     selectByExpressionSource: null,
     ucellScoreSource: null,
+    scoreGeneSetsSource: null,
     lineAssociationResult: null,
     isLineAssociationLoading: false,
     isLineAssociationModalOpen: false,
@@ -1785,6 +1796,7 @@ export const useStore = create<AppState>((set, get) => {
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
     setUcellScoreSource: (src) => set({ ucellScoreSource: src }),
+    setScoreGeneSetsSource: (src) => set({ scoreGeneSetsSource: src }),
 
     // Line association actions (global)
     setLineAssociationResult: (result) => set({ lineAssociationResult: result }),

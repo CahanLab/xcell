@@ -483,6 +483,15 @@ class DataAdaptor:
             else:
                 obs_dtypes[col] = "string"
 
+        # Gene-set score matrices (registered in .uns) → their column (set) names,
+        # so the UI can offer columns for color-by-score and embed-from-two-scores.
+        score_matrices: dict[str, list[str]] = {}
+        reg = self.adata.uns.get('xcell_score_matrices')
+        if isinstance(reg, dict):
+            for slot, meta in reg.items():
+                if slot in self.adata.obsm and isinstance(meta, dict) and 'columns' in meta:
+                    score_matrices[str(slot)] = [str(c) for c in meta['columns']]
+
         return {
             "n_cells": self.n_cells,
             "n_genes": self.n_genes,
@@ -494,6 +503,7 @@ class DataAdaptor:
             "embeddings": embeddings,
             "obs_columns": obs_columns,
             "obs_dtypes": obs_dtypes,
+            "score_matrices": score_matrices,
             "filename": self.filepath.name,
         }
 
@@ -552,6 +562,182 @@ class DataAdaptor:
         if log_axes in ('y', 'both'):
             if np.nanmin(y) < 0:
                 raise ValueError(f"log requires non-negative values; '{col_y}' has negatives")
+            y = np.log1p(y)
+        if name:
+            key = name if name.startswith('X_') else f'X_{name}'
+        else:
+            key = f'X_{col_x}_vs_{col_y}'
+        if key in self.adata.obsm:
+            raise ValueError(f"embedding '{key}' already exists")
+        self.adata.obsm[key] = np.column_stack([x, y]).astype(float)
+        return {"embedding_name": key, "n_cells": self.n_cells}
+
+    def score_gene_sets_matrix(
+        self,
+        sets: list[dict[str, Any]],
+        per_gene_norm: str = 'zscore_mad',
+        per_gene_clip: float = 0.0,
+        aggregation: str = 'mean',
+        obsm_name: str = 'geneset_scores',
+        layer: str | None = None,
+        transform: str | None = None,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Score every gene set in a folder into one ``.obsm`` matrix.
+
+        Each set is scored with the same mean pipeline used for coloring
+        (``_aggregate_gene_set_scores``: per-gene normalize across cells → aggregate
+        across genes per cell), honoring the active gene mask exactly like
+        ``get_multi_gene_expression`` (via ``_filter_to_visible``). Kept sets are
+        stacked column-wise into ``adata.obsm[obsm_name]`` (n_cells × n_kept_sets),
+        and the column→set names plus scoring params are recorded in
+        ``adata.uns['xcell_score_matrices'][obsm_name]`` (``.obsm`` arrays are
+        unnamed, so the registry is how columns resolve back to set names).
+
+        Args:
+            sets: list of ``{"name": str, "genes": [str, ...]}``.
+            per_gene_norm/per_gene_clip/aggregation: mean-pipeline params.
+            obsm_name: destination ``.obsm`` slot (auto-named upstream, editable).
+            layer/transform: source resolution, same rules as coloring.
+            overwrite: replace an existing slot of the same name.
+
+        Returns dict with obsm_name, columns (kept set names in order), n_cells,
+        n_sets, skipped (list of {name, reason}), and per_column stats.
+
+        Raises ValueError on a bad/duplicate name or if no set could be scored.
+        """
+        if not obsm_name or not isinstance(obsm_name, str):
+            raise ValueError("obsm_name must be a non-empty string")
+        if obsm_name in self.adata.obsm and not overwrite:
+            raise ValueError(f"obsm slot '{obsm_name}' already exists (pass overwrite=True to replace)")
+
+        # Source matrix — identical resolution to get_multi_gene_expression.
+        if layer is not None and layer != 'X':
+            source_matrix = self._resolve_source_matrix(layer)
+        elif transform == 'log1p':
+            source_matrix = self.normalized_adata.X
+        else:
+            source_matrix = self.adata.X
+
+        columns: list[str] = []
+        cols_data: list[np.ndarray] = []
+        skipped: list[dict[str, Any]] = []
+        per_column: dict[str, Any] = {}
+        for s in sets:
+            name = str(s.get('name'))
+            genes = list(s.get('genes') or [])
+            valid = [g for g in genes if g in self.adata.var.index]
+            valid, n_masked = self._filter_to_visible(valid)
+            if len(valid) == 0:
+                skipped.append({"name": name, "reason": "no usable genes (missing or masked)"})
+                continue
+            scores = self._aggregate_gene_set_scores(
+                genes=valid,
+                source_matrix=source_matrix,
+                per_gene_norm=per_gene_norm,
+                per_gene_clip=per_gene_clip,
+                aggregation=aggregation,
+            )
+            columns.append(name)
+            cols_data.append(np.asarray(scores, dtype=np.float64))
+            valid_scores = scores[~np.isnan(scores)]
+            per_column[name] = {
+                "min": float(np.min(valid_scores)) if valid_scores.size else 0.0,
+                "max": float(np.max(valid_scores)) if valid_scores.size else 0.0,
+                "n_genes_used": len(valid),
+                "n_masked_excluded": int(n_masked),
+            }
+
+        if not columns:
+            raise ValueError("No sets could be scored (every set had no usable genes)")
+
+        self.adata.obsm[obsm_name] = np.column_stack(cols_data).astype(np.float64)
+
+        reg = self.adata.uns.get('xcell_score_matrices')
+        reg = dict(reg) if isinstance(reg, dict) else {}
+        reg[obsm_name] = {
+            "columns": list(columns),
+            "per_gene_norm": per_gene_norm,
+            "per_gene_clip": per_gene_clip,
+            "aggregation": aggregation,
+            "layer": layer,
+        }
+        self.adata.uns['xcell_score_matrices'] = reg
+
+        return {
+            "obsm_name": obsm_name,
+            "columns": columns,
+            "n_cells": self.n_cells,
+            "n_sets": len(columns),
+            "skipped": skipped,
+            "per_column": per_column,
+        }
+
+    def _score_matrix_columns(self, obsm_name: str) -> list[str] | None:
+        """Registered column (set) names for a score matrix, or None."""
+        reg = self.adata.uns.get('xcell_score_matrices')
+        if not isinstance(reg, dict):
+            return None
+        meta = reg.get(obsm_name)
+        if not isinstance(meta, dict) or 'columns' not in meta:
+            return None
+        return [str(c) for c in meta['columns']]
+
+    def _resolve_obsm_column_index(self, obsm_name: str, column: str) -> int:
+        """Column index for a named (registry) or integer-string column."""
+        if obsm_name not in self.adata.obsm:
+            raise KeyError(f"obsm '{obsm_name}' not found")
+        cols = self._score_matrix_columns(obsm_name)
+        if cols is not None and str(column) in cols:
+            return cols.index(str(column))
+        try:
+            idx = int(column)
+        except (TypeError, ValueError):
+            raise KeyError(f"column '{column}' not found in obsm '{obsm_name}'")
+        n = self.adata.obsm[obsm_name].shape[1]
+        if idx < 0 or idx >= n:
+            raise KeyError(f"column index {idx} out of range for obsm '{obsm_name}'")
+        return idx
+
+    def get_obsm_column(self, obsm_name: str, column: str) -> dict[str, Any]:
+        """Per-cell values of a named column of an ``.obsm`` matrix (for coloring)."""
+        idx = self._resolve_obsm_column_index(obsm_name, column)
+        vals = np.asarray(self.adata.obsm[obsm_name][:, idx], dtype=np.float64)
+        valid = vals[~np.isnan(vals)]
+        return {
+            "obsm_name": obsm_name,
+            "column": str(column),
+            "values": [float(v) if not np.isnan(v) else None for v in vals],
+            "min": float(np.min(valid)) if valid.size else 0.0,
+            "max": float(np.max(valid)) if valid.size else 0.0,
+        }
+
+    def create_obsm_embedding(
+        self, obsm_name: str, col_x: str, col_y: str,
+        log_axes: str = 'none', name: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a 2-D embedding from two columns of an ``.obsm`` matrix.
+
+        Mirrors ``create_obs_embedding`` but sources the axes from named columns
+        of ``adata.obsm[obsm_name]`` (e.g. two gene-set scores). Writes a
+        2-column ``adata.obsm[X_<name>]``.
+        """
+        if obsm_name not in self.adata.obsm:
+            raise ValueError(f"obsm '{obsm_name}' not found")
+        if log_axes not in ('none', 'x', 'y', 'both'):
+            raise ValueError(f"log_axes must be none/x/y/both, got {log_axes!r}")
+        ix = self._resolve_obsm_column_index(obsm_name, col_x)
+        iy = self._resolve_obsm_column_index(obsm_name, col_y)
+        arr = self.adata.obsm[obsm_name]
+        x = np.asarray(arr[:, ix], dtype=float)
+        y = np.asarray(arr[:, iy], dtype=float)
+        if log_axes in ('x', 'both'):
+            if np.nanmin(x) < 0:
+                raise ValueError(f"log requires non-negative values; column '{col_x}' has negatives")
+            x = np.log1p(x)
+        if log_axes in ('y', 'both'):
+            if np.nanmin(y) < 0:
+                raise ValueError(f"log requires non-negative values; column '{col_y}' has negatives")
             y = np.log1p(y)
         if name:
             key = name if name.startswith('X_') else f'X_{name}'

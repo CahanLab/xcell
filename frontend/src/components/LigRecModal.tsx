@@ -14,7 +14,7 @@
  * launcher in ScanpyModal, and the isLigRecModalOpen state in store.ts.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { useStore } from '../store'
+import { useStore, cfgDefault } from '../store'
 import { appendDataset, pollTask } from '../hooks/useData'
 
 const API_BASE = '/api'
@@ -79,10 +79,10 @@ export default function LigRecModal() {
   const [radius, setRadius] = useState('')
   const [nPerm, setNPerm] = useState('')
   const [minCells, setMinCells] = useState('')
-  const [pThresh, setPThresh] = useState('0.05')
-  const [maxPairs, setMaxPairs] = useState('400')
-  const [signalType, setSignalType] = useState<'both' | 'diffusion' | 'contact'>('both')
-  const [recepSmooth, setRecepSmooth] = useState(false)
+  const [pThresh, setPThresh] = useState(() => String(cfgDefault(['ligrec', 'p_thresh'], '0.05')))
+  const [maxPairs, setMaxPairs] = useState(() => String(cfgDefault(['ligrec', 'max_pairs'], '400')))
+  const [signalType, setSignalType] = useState<'both' | 'diffusion' | 'contact'>(() => cfgDefault(['ligrec', 'signal_type'], 'both' as 'both' | 'diffusion' | 'contact'))
+  const [recepSmooth, setRecepSmooth] = useState(() => cfgDefault(['ligrec', 'recep_smooth'], false))
   const [sectionCol, setSectionCol] = useState('')
   const [geneSubset, setGeneSubset] = useState('')
   const [sectionOptions, setSectionOptions] = useState<string[]>([])
@@ -92,7 +92,7 @@ export default function LigRecModal() {
   const [error, setError] = useState<string | null>(null)
   const [prep, setPrep] = useState<PrepareResult | null>(null)
   const [checked, setChecked] = useState<Set<string>>(new Set())
-  const [writeSig, setWriteSig] = useState(false)
+  const [writeSig, setWriteSig] = useState(() => cfgDefault(['ligrec', 'write_sig'], false))
   const [progress, setProgress] = useState<{ frac: number; message: string; startedAt: number; now: number } | null>(null)
   const [reusedPrior, setReusedPrior] = useState(false)
 

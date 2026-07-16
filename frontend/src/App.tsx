@@ -755,20 +755,24 @@ export default function App() {
   // Fetch user-editable config defaults once on mount. Failures are silent —
   // consumers fall back to their hardcoded defaults if the config is missing.
   const setUserConfig = useStore((s) => s.setUserConfig)
-  const applyDisplayDefaultsFromConfig = useStore((s) => s.applyDisplayDefaultsFromConfig)
+  const applyConfigDefaults = useStore((s) => s.applyConfigDefaults)
   useEffect(() => {
+    // Normally main.tsx has already loaded the config before render; only retry
+    // here if that pre-render load failed (e.g. backend wasn't ready yet).
+    if (Object.keys(useStore.getState().userConfig).length > 0) return
     fetch('/api/config/defaults')
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
       .then((data) => {
         if (data && typeof data.config === 'object' && data.config !== null) {
           setUserConfig(data.config as Record<string, unknown>)
-          // Push the `display:` overrides into every slot's displayPreferences
-          // immediately so the very first frame shows the user's defaults.
-          applyDisplayDefaultsFromConfig()
+          // Push config defaults into store state (display prefs, line smoothing)
+          // immediately so the very first frame reflects them. Modal params read
+          // config lazily via cfgDefault(...) when each modal opens.
+          applyConfigDefaults()
         }
       })
       .catch(() => { /* no config file → use hardcoded defaults */ })
-  }, [setUserConfig, applyDisplayDefaultsFromConfig])
+  }, [setUserConfig, applyConfigDefaults])
 
   // Hydrate gene-set state from the backend once on mount. Keeps gene sets
   // alive across accidental browser reloads (server-lifetime persistence).

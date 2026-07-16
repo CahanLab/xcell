@@ -1,41 +1,46 @@
 """User-editable configuration for xcell defaults.
 
 Loads a YAML or JSON file at startup and exposes the parsed dict via
-``get_user_config()``. The file is intentionally a single source of truth
+``get_user_config()``. The config is intentionally a single source of truth
 that both backend and frontend read — the frontend fetches it through
 ``GET /api/config/defaults`` and merges the values into its modal param
-defaults.
+defaults and display preferences.
 
-Discovery order (first hit wins):
-  1. ``$XCELL_CONFIG_PATH`` — explicit override (full path)
-  2. ``~/.xcell/config.yaml``
-  3. ``~/.xcell/config.yml``
-  4. ``~/.xcell/config.json``
+Two layers are merged (deep, key-by-key; the override wins at each leaf):
 
-Missing file is not an error — defaults then fall back to the hardcoded
-values baked into routes / ScanpyModal.
+  1. Base — ``xcell/config.yaml`` shipped with the repo. This gives every
+     UI-adjustable parameter a default, so a fresh checkout already reflects
+     the project's chosen defaults with no per-user setup.
+  2. Override — the first user config found, deep-merged over the base:
+       a. ``$XCELL_CONFIG_PATH`` — explicit path (wins over the home files)
+       b. ``~/.xcell/config.yaml``
+       c. ``~/.xcell/config.yml``
+       d. ``~/.xcell/config.json``
 
-Shape (loose — unknown keys are just ignored by whichever consumer reads
-them, so adding a new override never breaks startup):
+Because it is a deep merge, a user's file only needs the keys they want to
+change — every other key still comes from the shipped base. Missing user
+config is not an error (the base defaults apply); a missing base file is not
+an error either (consumers fall back to hardcoded defaults). Unknown keys are
+ignored by whichever consumer reads them, so adding a new override never
+breaks startup.
+
+Shape (loose):
 
     scanpy:
       <function_name>:
         <param_name>: <value>
+    display:
+      <param_name>: <value>
     line_association:
       <param_name>: <value>
 
-Example ~/.xcell/config.yaml::
+Example ~/.xcell/config.yaml (override only the keys you care about)::
 
     scanpy:
       filter_cells:
         min_genes: 15
-      filter_genes:
-        min_cells: 10
-      neighbors:
-        n_neighbors: 20
-    line_association:
-      n_spline_knots: 7
-      fdr_threshold: 0.1
+    display:
+      point_size: 2
 """
 from __future__ import annotations
 
@@ -50,12 +55,33 @@ _CONFIG_PATH: Path | None = None
 _CONFIG_ERROR: str | None = None
 
 
+def _repo_default_path() -> Path:
+    """The config.yaml shipped alongside this module (the base defaults)."""
+    return Path(__file__).parent / "config.yaml"
+
+
 def _candidate_paths() -> list[Path]:
+    """User override locations, highest precedence first (first existing wins)."""
     override = os.environ.get("XCELL_CONFIG_PATH")
     if override:
         return [Path(override).expanduser()]
     home = Path.home() / ".xcell"
     return [home / "config.yaml", home / "config.yml", home / "config.json"]
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge ``override`` onto ``base``.
+
+    Nested dicts merge key-by-key; any non-dict value in ``override`` (including
+    lists and ``None``) replaces the corresponding base value outright.
+    """
+    result: dict[str, Any] = dict(base)
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
 
 
 def _parse(path: Path) -> dict[str, Any]:
@@ -80,29 +106,47 @@ def _parse(path: Path) -> dict[str, Any]:
 
 
 def load_user_config() -> dict[str, Any]:
-    """Load user config. Safe to call more than once; result is cached."""
+    """Load config (shipped base deep-merged with the user override).
+
+    Safe to call more than once; result is cached.
+    """
     global _USER_CONFIG, _CONFIG_PATH, _CONFIG_ERROR
     if _USER_CONFIG is not None:
         return _USER_CONFIG
 
+    # Base layer: the config.yaml shipped with the repo. Always tried first so
+    # every UI-adjustable parameter has a default even with no user config.
+    base: dict[str, Any] = {}
+    base_error: str | None = None
+    base_path = _repo_default_path()
+    if base_path.exists():
+        try:
+            base = _parse(base_path)
+            print(f"[xcell.config] Loaded shipped defaults from {base_path}")
+        except Exception as e:
+            base_error = str(e)
+            print(f"[xcell.config] Failed to parse shipped defaults {base_path}: {e}")
+
+    # Override layer: the first user config found, deep-merged over the base so a
+    # partial user file overrides individual keys without dropping shipped defaults.
+    override: dict[str, Any] = {}
+    override_path: Path | None = None
+    override_error: str | None = None
     for candidate in _candidate_paths():
         if candidate.exists():
+            override_path = candidate
             try:
-                _USER_CONFIG = _parse(candidate)
-                _CONFIG_PATH = candidate
-                _CONFIG_ERROR = None
+                override = _parse(candidate)
                 print(f"[xcell.config] Loaded user config from {candidate}")
-                return _USER_CONFIG
             except Exception as e:
-                _USER_CONFIG = {}
-                _CONFIG_PATH = candidate
-                _CONFIG_ERROR = str(e)
+                override_error = str(e)
                 print(f"[xcell.config] Failed to parse {candidate}: {e}")
-                return _USER_CONFIG
+            break
 
-    _USER_CONFIG = {}
-    _CONFIG_PATH = None
-    _CONFIG_ERROR = None
+    _USER_CONFIG = _deep_merge(base, override)
+    # Surface the user override path/error when present, else the shipped base.
+    _CONFIG_PATH = override_path or (base_path if base_path.exists() else None)
+    _CONFIG_ERROR = override_error or base_error
     return _USER_CONFIG
 
 

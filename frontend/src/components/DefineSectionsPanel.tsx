@@ -18,7 +18,7 @@
  */
 
 import { useState } from 'react'
-import { useStore } from '../store'
+import { useStore, cfgDefault } from '../store'
 import { createAnnotation, addLabelToAnnotation, labelCells, refreshSchema } from '../hooks/useData'
 
 export default function DefineSectionsPanel() {
@@ -34,7 +34,7 @@ export default function DefineSectionsPanel() {
   const refreshObsSummaries = useStore((s) => s.refreshObsSummaries)
 
   const [phase, setPhase] = useState<'setup' | 'drawing'>('setup')
-  const [columnName, setColumnName] = useState('section')
+  const [columnName, setColumnName] = useState(() => cfgDefault(['define_sections', 'column_name'], 'section'))
   const [regionName, setRegionName] = useState('')
   const [added, setAdded] = useState<{ name: string; count: number }[]>([])
   const [busy, setBusy] = useState(false)

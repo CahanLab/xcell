@@ -177,6 +177,14 @@ export function userConfigGet<T>(cfg: Record<string, unknown>, path: string[], f
   return (cursor === undefined ? fallback : (cursor as T))
 }
 
+// Convenience for modal `useState` initializers: read a config default from the
+// live store's userConfig. The config is fetched once at app launch (App.tsx),
+// so by the time any modal opens it is populated; a missing key yields `fallback`.
+//   const [topN, setTopN] = useState(() => cfgDefault(['marker_genes', 'top_n'], 100))
+export function cfgDefault<T>(path: string[], fallback: T): T {
+  return userConfigGet(useStore.getState().userConfig, path, fallback)
+}
+
 // Differential expression types
 export interface DiffExpGene {
   gene: string
@@ -537,6 +545,7 @@ export function displayPreferencesFromConfig(
   if (gsa !== undefined) out.geneSetAggregation = gsa as GeneSetAggregation
   const gsm = str(d.gene_set_scoring_method)
   if (gsm === 'mean' || gsm === 'ucell') out.geneSetScoringMethod = gsm
+  if (typeof d.show_grid === 'boolean') out.showGrid = d.show_grid
   return out
 }
 
@@ -903,7 +912,7 @@ interface AppState {
   // Apply the `display:` section of the user config to all dataset slots and
   // the flat top-level mirror. Called once after the config is fetched at
   // startup so the very first frame already reflects user defaults.
-  applyDisplayDefaultsFromConfig: () => void
+  applyConfigDefaults: () => void
 
   // Scanpy modal actions
   setScanpyModalOpen: (open: boolean) => void
@@ -2137,25 +2146,36 @@ export const useStore = create<AppState>((set, get) => {
 
     setUserConfig: (config) => set({ userConfig: config }),
 
-    applyDisplayDefaultsFromConfig: () => {
+    applyConfigDefaults: () => {
       const state = get()
+      const patch: Partial<AppState> = {}
+
+      // Display preferences (applied to both slots + top-level).
       const overrides = displayPreferencesFromConfig(state.userConfig)
-      if (Object.keys(overrides).length === 0) return
-      const newDatasets = {
-        ...state.datasets,
-        primary: {
-          ...state.datasets.primary,
-          displayPreferences: { ...state.datasets.primary.displayPreferences, ...overrides },
-        },
-        secondary: {
-          ...state.datasets.secondary,
-          displayPreferences: { ...state.datasets.secondary.displayPreferences, ...overrides },
-        },
+      if (Object.keys(overrides).length > 0) {
+        patch.datasets = {
+          ...state.datasets,
+          primary: {
+            ...state.datasets.primary,
+            displayPreferences: { ...state.datasets.primary.displayPreferences, ...overrides },
+          },
+          secondary: {
+            ...state.datasets.secondary,
+            displayPreferences: { ...state.datasets.secondary.displayPreferences, ...overrides },
+          },
+        }
+        patch.displayPreferences = { ...state.displayPreferences, ...overrides }
       }
-      set({
-        datasets: newDatasets,
-        displayPreferences: { ...state.displayPreferences, ...overrides },
-      })
+
+      // Line smoothing params (global store state, read by smoothLine + the UI).
+      const ls = state.lineSmoothingParams
+      const windowSize = userConfigGet(state.userConfig, ['line_smoothing', 'window_size'], ls.windowSize)
+      const iterations = userConfigGet(state.userConfig, ['line_smoothing', 'iterations'], ls.iterations)
+      if (windowSize !== ls.windowSize || iterations !== ls.iterations) {
+        patch.lineSmoothingParams = { ...ls, windowSize, iterations }
+      }
+
+      if (Object.keys(patch).length > 0) set(patch)
     },
 
     // Scanpy modal actions

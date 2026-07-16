@@ -19,7 +19,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import { useStore, GeneSet, GeneSetCategoryType } from '../store'
+import { useStore, GeneSet, GeneSetCategoryType, cfgDefault } from '../store'
 import { appendDataset, pollTask } from '../hooks/useData'
 
 const API_BASE = '/api'
@@ -91,10 +91,10 @@ export default function MultiContourModal() {
   const [phase, setPhase] = useState<Phase>('select')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [sources, setSources] = useState<Source[]>([])
-  const [contourLevels, setContourLevels] = useState(3)
+  const [contourLevels, setContourLevels] = useState(() => cfgDefault(['contour', 'contour_levels'], 3))
   const [gridRes, setGridRes] = useState<string>('')
   const [smoothSigma, setSmoothSigma] = useState<string>('')
-  const [logTransform, setLogTransform] = useState(false) // default off
+  const [logTransform, setLogTransform] = useState(() => cfgDefault(['contour', 'log_transform'], false))
   const [columnName, setColumnName] = useState('') // single path; blank = auto
 
   const [busy, setBusy] = useState(false)
@@ -102,9 +102,9 @@ export default function MultiContourModal() {
 
   const [prep, setPrep] = useState<PrepareResult | null>(null)
   const [cutoffs, setCutoffs] = useState<Record<string, number>>({})
-  const [profileK, setProfileK] = useState(15)
-  const [outName, setOutName] = useState('tissue')
-  const [saveQc, setSaveQc] = useState(false)
+  const [profileK, setProfileK] = useState(() => cfgDefault(['contour', 'profile_k'], 15))
+  const [outName, setOutName] = useState(() => cfgDefault(['contour', 'out_name'], 'tissue'))
+  const [saveQc, setSaveQc] = useState(() => cfgDefault(['contour', 'save_qc'], false))
   const [doneResult, setDoneResult] = useState<DoneResult | null>(null)
 
   const [obsColumns, setObsColumns] = useState<string[]>([])

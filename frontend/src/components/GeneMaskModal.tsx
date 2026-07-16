@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useStore } from '../store'
+import { useStore, cfgDefault } from '../store'
 import { MESSAGES } from '../messages'
 import {
   applyGeneMask,
@@ -21,7 +21,7 @@ export default function GeneMaskModal() {
   const [applying, setApplying] = useState(false)
   const [columnValues, setColumnValues] = useState<BooleanColumnValuesResponse | null>(null)
   const [states, setStates] = useState<Record<string, ColumnState>>({})
-  const [combineMode, setCombineMode] = useState<'or' | 'and'>('or')
+  const [combineMode, setCombineMode] = useState<'or' | 'and'>(() => cfgDefault(['gene_mask', 'combine_mode'], 'or' as 'or' | 'and'))
 
   // Close on Escape
   useEffect(() => {

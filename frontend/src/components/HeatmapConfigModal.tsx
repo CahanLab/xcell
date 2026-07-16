@@ -13,7 +13,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { useStore, HeatmapConfig, GeneSet, GeneSetCategoryType } from '../store'
+import { useStore, HeatmapConfig, GeneSet, GeneSetCategoryType, cfgDefault } from '../store'
 
 const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial', 'marker_genes', 'line_association']
 const CATEGORY_NAMES: Record<GeneSetCategoryType, string> = {
@@ -68,12 +68,12 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     () => new Set(config?.selectedGeneSets.map((gs) => nonEmptySets.find((s) => s.name === gs.name && s.genes.length === gs.genes.length)?.id || '').filter(Boolean))
   )
-  const [cellOrdering, setCellOrdering] = useState<HeatmapConfig['cellOrdering']>(config?.cellOrdering ?? 'none')
+  const [cellOrdering, setCellOrdering] = useState<HeatmapConfig['cellOrdering']>(config?.cellOrdering ?? cfgDefault(['heatmap', 'cell_ordering'], 'none' as HeatmapConfig['cellOrdering']))
   const [obsColumn, setObsColumn] = useState<string | null>(config?.obsColumn ?? null)
   const [lineName, setLineName] = useState<string | null>(config?.lineName ?? null)
-  const [geneOrdering, setGeneOrdering] = useState<HeatmapConfig['geneOrdering']>(config?.geneOrdering ?? 'as_provided')
-  const [aggregateGeneSets, setAggregateGeneSets] = useState(config?.aggregateGeneSets ?? false)
-  const [nBins, setNBins] = useState(config?.nBins ?? 300)
+  const [geneOrdering, setGeneOrdering] = useState<HeatmapConfig['geneOrdering']>(config?.geneOrdering ?? cfgDefault(['heatmap', 'gene_ordering'], 'as_provided' as HeatmapConfig['geneOrdering']))
+  const [aggregateGeneSets, setAggregateGeneSets] = useState(config?.aggregateGeneSets ?? cfgDefault(['heatmap', 'aggregate_gene_sets'], false))
+  const [nBins, setNBins] = useState(config?.nBins ?? cfgDefault(['heatmap', 'n_bins'], 300))
 
   // Get categorical obs columns for ordering
   const categoricalColumns = schema

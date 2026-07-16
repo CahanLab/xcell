@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useStore } from '../store'
+import { useStore, cfgDefault } from '../store'
 import { runClusterGeneSet, useObsSummaries, appendDataset } from '../hooks/useData'
 import type { AutoClusterDiagnostics } from '../hooks/useData'
 
@@ -24,17 +24,17 @@ export default function ClusterGeneSetModal() {
   const addFolderToCategory = useStore((s) => s.addFolderToCategory)
   const { summaries } = useObsSummaries()
 
-  const [method, setMethod] = useState<Method>('auto')
-  const [k, setK] = useState(3)
-  const [eps, setEps] = useState(0.3)
-  const [minSamples, setMinSamples] = useState(3)
-  const [metric, setMetric] = useState<'bicor' | 'pearson' | 'spearman'>('bicor')
-  const [minGenes, setMinGenes] = useState(5)
-  const [mergeThreshold, setMergeThreshold] = useState(0.8)
-  const [purityThreshold, setPurityThreshold] = useState(0.5)
-  const [minModuleCorr, setMinModuleCorr] = useState(0.2)
-  const [cellContext, setCellContext] = useState<CellContext>('all')
-  const [useGeneMask, setUseGeneMask] = useState(false)
+  const [method, setMethod] = useState<Method>(() => cfgDefault(['cluster_gene_sets', 'method'], 'auto' as Method))
+  const [k, setK] = useState(() => cfgDefault(['cluster_gene_sets', 'k'], 3))
+  const [eps, setEps] = useState(() => cfgDefault(['cluster_gene_sets', 'eps'], 0.3))
+  const [minSamples, setMinSamples] = useState(() => cfgDefault(['cluster_gene_sets', 'min_samples'], 3))
+  const [metric, setMetric] = useState<'bicor' | 'pearson' | 'spearman'>(() => cfgDefault(['cluster_gene_sets', 'metric'], 'bicor' as 'bicor' | 'pearson' | 'spearman'))
+  const [minGenes, setMinGenes] = useState(() => cfgDefault(['cluster_gene_sets', 'min_genes'], 5))
+  const [mergeThreshold, setMergeThreshold] = useState(() => cfgDefault(['cluster_gene_sets', 'merge_threshold'], 0.8))
+  const [purityThreshold, setPurityThreshold] = useState(() => cfgDefault(['cluster_gene_sets', 'purity_threshold'], 0.5))
+  const [minModuleCorr, setMinModuleCorr] = useState(() => cfgDefault(['cluster_gene_sets', 'min_module_corr'], 0.2))
+  const [cellContext, setCellContext] = useState<CellContext>(() => cfgDefault(['cluster_gene_sets', 'cell_context'], 'all' as CellContext))
+  const [useGeneMask, setUseGeneMask] = useState(() => cfgDefault(['cluster_gene_sets', 'use_gene_mask'], false))
   const [layer, setLayer] = useState<string>('X')
   const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
   const [annotationColumn, setAnnotationColumn] = useState<string>('')

@@ -1,0 +1,257 @@
+# xcell default configuration — ships with the repo.
+#
+# This file is the BASE layer of defaults for every parameter a user can adjust
+# in the UI. It is loaded at backend startup and served to the frontend at
+# GET /api/config/defaults, which applies it on launch.
+#
+# To change defaults for yourself without editing the repo, create
+# ~/.xcell/config.yaml (or .yml/.json), or point $XCELL_CONFIG_PATH at a file.
+# That file is DEEP-MERGED on top of this one, so you only list the keys you
+# want to change — every other default here still applies.
+#
+# Value notes:
+#   - Keys are snake_case; values match the UI control (numbers, booleans, or the
+#     exact option string a dropdown expects).
+#   - null / '' mean "unset" (the app leaves the field blank or auto-derives it).
+#   - Select fields that read "true"/"false" are quoted strings, not booleans.
+#   - Restart the backend after editing to pick up changes.
+
+# ---------------------------------------------------------------------------
+# Display (Display panel). Applied to the plot immediately at launch.
+# ---------------------------------------------------------------------------
+display:
+  point_size: 1                     # slider 0.5–10
+  point_opacity: 0.85               # slider 0.1–1
+  background_color: '#ffffff'       # hex color (white)
+  color_scale: reds                 # viridis|plasma|magma|inferno|cividis|coolwarm|blues|reds|sunset|ocean|grape|mint
+  bivariate_colormap: default       # default|pinkgreen|orangepurple
+  expression_transform: none        # none|log1p
+  clip_percentile: 0.0              # color-ramp clip %, 0–5
+  gene_set_per_gene_norm: zscore_mad   # none|zscore_mad|zscore_sd|minmax|rank
+  gene_set_per_gene_clip: 1.0       # only used when norm = minmax; 0–5
+  gene_set_aggregation: mean        # mean|median|sum|max
+  gene_set_scoring_method: mean     # mean|ucell
+  show_grid: false
+
+# ---------------------------------------------------------------------------
+# Line/shape smoothing (Shapes panel → smooth).
+# ---------------------------------------------------------------------------
+line_smoothing:
+  window_size: 5                    # moving-average window (odd, 3–21)
+  iterations: 2                     # passes (1–10)
+
+# ---------------------------------------------------------------------------
+# Line/shape → gene association (Shapes panel).
+# ---------------------------------------------------------------------------
+line_association:
+  test_variable: position           # position|distance
+  n_spline_knots: 5                 # 2–20
+  fdr_threshold: 0.05               # 0.001–0.5
+  top_n: 50                         # 10–500
+  cluster_genes: false
+
+# ---------------------------------------------------------------------------
+# Analyze → Scanpy pipeline. Keys are the scanpy function name, then its params.
+# ---------------------------------------------------------------------------
+scanpy:
+  # --- Preprocess ---
+  calculate_qc_metrics:
+    qc_vars: null
+    log1p: 'true'                   # 'true'|'false'
+    percent_top: null
+  exclude_genes:
+    gene_names: null
+    patterns: '^mt-, ^Gm\d+, ^Rps, ^Rpl'
+  filter_cells:
+    min_counts: null
+    max_counts: null
+    min_genes: 10
+    max_genes: null
+  filter_genes:
+    min_counts: null
+    max_counts: null
+    min_cells: 10
+    max_cells: null
+  normalize_total:
+    target_sum: 10000
+  # log1p: no parameters
+  highly_variable_genes:
+    n_top_genes: 2000
+    min_mean: 0.0125
+    max_mean: 6
+    min_disp: 0.5
+    flavor: cell_ranger             # seurat|cell_ranger|seurat_v3
+  smooth:
+    graph_key: ''
+    source_layer: X
+    output_layer: smoothed
+    n_steps: 1
+    self_loop_weight: 1.0
+
+  # --- Cell analysis ---
+  embedding_from_obs:
+    col_x: null
+    col_y: null
+    log_axes: none                  # none|x|y|both
+    name: null
+  pca:
+    n_comps: 50
+    svd_solver: arpack              # arpack|randomized|auto
+    gene_subset: null
+  neighbors:
+    use_rep: X_pca
+    n_neighbors: 15
+    n_pcs: null
+    metric: euclidean               # euclidean|cosine|manhattan
+  umap:
+    min_dist: 0.5
+    spread: 1.0
+    n_components: 2
+  leiden:
+    resolution: 0.5
+    key_added: leiden
+
+  # --- Gene analysis ---
+  add_var_boolean:
+    name: mt
+    pattern: '^mt-'
+    match_mode: regex               # prefix|regex
+  build_gene_graph:
+    n_pcs: null
+    scale: 'true'                   # 'true'|'false'
+    n_neighbors: 15
+    metric: euclidean               # euclidean|cosine
+    gene_subset: highly_variable
+  gene_pca:
+    n_comps: null
+    scale: 'true'
+    use_kneedle: 'true'
+    max_comps: 100
+    gene_subset: highly_variable
+    layer: X
+  gene_neighbors:
+    basis: expression               # gene_pca|expression
+    n_neighbors: 10
+    metric: euclidean               # euclidean|cosine|pearson
+    gene_subset: highly_variable
+    scale: 'true'
+    layer: X
+  find_similar_genes:
+    gene: ''
+    n_neighbors: 10
+    use: connectivities             # connectivities|distances
+  cluster_genes:
+    resolution: 2.0
+    key_added: gmod
+
+  # --- Spatial analysis ---
+  spatial_neighbors:
+    n_neighs: 6
+    coord_type: ''                  # ''|grid|generic
+    delaunay: 'false'               # 'true'|'false'
+    section_col: ''
+  spatial_autocorr:
+    mode: moran                     # moran|geary
+    n_perms: 100
+    pval_threshold: 0.05
+    n_jobs: 1
+    gene_subset: highly_variable
+
+  # --- Multi-genome ---
+  sum_counts_by_pattern:
+    pattern: 'GRCh38_'
+    match_mode: prefix              # prefix|regex
+    obs_name: null
+    layer: counts
+  assign_species:
+    count_columns: 'GRCh38_counts, mm10_counts'
+    labels: null
+    obs_name: species
+    threshold: 0.9
+
+# ---------------------------------------------------------------------------
+# Marker genes modal.
+# ---------------------------------------------------------------------------
+marker_genes:
+  top_n: 100
+  min_in_group_fraction: ''         # e.g. 0.25 (blank = unset)
+  max_out_group_fraction: ''        # e.g. 0.75
+  min_fold_change: ''               # e.g. 2.0
+
+# ---------------------------------------------------------------------------
+# Differential expression modal.
+# ---------------------------------------------------------------------------
+diff_exp:
+  top_n: 100
+  method: wilcoxon                  # wilcoxon|t-test|t-test_overestim_var|logreg
+  corr_method: benjamini-hochberg   # benjamini-hochberg|bonferroni
+  min_fold_change: ''
+  min_in_group_fraction: ''
+  max_out_group_fraction: ''
+  max_pval_adj: ''
+
+# ---------------------------------------------------------------------------
+# Cluster gene sets modal.
+# ---------------------------------------------------------------------------
+cluster_gene_sets:
+  method: auto                      # auto|hierarchical|kmeans|dbscan
+  k: 3                              # kmeans/hierarchical
+  eps: 0.3                          # dbscan
+  min_samples: 3                    # dbscan
+  metric: bicor                     # bicor|pearson|spearman
+  min_genes: 5                      # auto
+  merge_threshold: 0.8              # auto
+  purity_threshold: 0.5             # auto
+  min_module_corr: 0.2              # auto
+  cell_context: all                 # all|selection|annotation
+  use_gene_mask: false
+
+# ---------------------------------------------------------------------------
+# Heatmap config modal.
+# ---------------------------------------------------------------------------
+heatmap:
+  cell_ordering: none               # none|category|line_position|line_distance|category_then_position
+  gene_ordering: as_provided        # as_provided|peak_position
+  aggregate_gene_sets: false
+  n_bins: 300
+
+# ---------------------------------------------------------------------------
+# Tissue contour modal. (grid_res / smooth_sigma are auto-suggested per dataset.)
+# ---------------------------------------------------------------------------
+contour:
+  contour_levels: 3
+  log_transform: false
+  profile_k: 15
+  out_name: tissue
+  save_qc: false
+
+# ---------------------------------------------------------------------------
+# Ligand–receptor modal. (radius / n_perm / min_cells are auto-suggested.)
+# ---------------------------------------------------------------------------
+ligrec:
+  p_thresh: '0.05'
+  max_pairs: '400'
+  signal_type: both                 # both|diffusion|contact
+  recep_smooth: false
+  write_sig: false
+
+# ---------------------------------------------------------------------------
+# Gene mask modal.
+# ---------------------------------------------------------------------------
+gene_mask:
+  combine_mode: or                  # or|and
+
+# ---------------------------------------------------------------------------
+# Select-by-expression modal. (Thresholds lo/hi are derived from the data.)
+# ---------------------------------------------------------------------------
+select_by_expression:
+  mode: above                       # above|below|between|outside
+  action: updateSelection
+  sub_action: replace
+  label_context: selection          # selection|all
+
+# ---------------------------------------------------------------------------
+# Define sections panel.
+# ---------------------------------------------------------------------------
+define_sections:
+  column_name: section

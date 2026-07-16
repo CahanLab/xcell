@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { useStore } from '../store'
+import { useStore, cfgDefault } from '../store'
 import { useObsSummaries, runMarkerGenes, MarkerGenesGroupResult, appendDataset } from '../hooks/useData'
 
 const styles = {
@@ -230,11 +230,11 @@ export default function MarkerGenesModal() {
 
   // Config state
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set())
-  const [topN, setTopN] = useState(100)
+  const [topN, setTopN] = useState(() => cfgDefault(['marker_genes', 'top_n'], 100))
   const [showAdvanced, setShowAdvanced] = useState(false)
-  const [minInGroupFraction, setMinInGroupFraction] = useState('')
-  const [maxOutGroupFraction, setMaxOutGroupFraction] = useState('')
-  const [minFoldChange, setMinFoldChange] = useState('')
+  const [minInGroupFraction, setMinInGroupFraction] = useState(() => String(cfgDefault(['marker_genes', 'min_in_group_fraction'], '')))
+  const [maxOutGroupFraction, setMaxOutGroupFraction] = useState(() => String(cfgDefault(['marker_genes', 'max_out_group_fraction'], '')))
+  const [minFoldChange, setMinFoldChange] = useState(() => String(cfgDefault(['marker_genes', 'min_fold_change'], '')))
 
   // Gene subset state
   const [booleanColumns, setBooleanColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])

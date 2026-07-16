@@ -1,5 +1,5 @@
 import { useCallback, useState, useEffect } from 'react'
-import { useStore, DiffExpGene } from '../store'
+import { useStore, DiffExpGene, cfgDefault } from '../store'
 import { useDiffExp, DiffExpParams, appendDataset } from '../hooks/useData'
 
 const styles = {
@@ -294,7 +294,7 @@ export default function DiffExpModal() {
     clearComparison,
   } = useStore()
   const { runComparison } = useDiffExp()
-  const [topN, setTopN] = useState(100)
+  const [topN, setTopN] = useState(() => cfgDefault(['diff_exp', 'top_n'], 100))
   const [showParams, setShowParams] = useState(false)
 
   // Gene subset state
@@ -316,14 +316,14 @@ export default function DiffExpModal() {
   }, [isDiffExpModalOpen])
 
   // rank_genes_groups params
-  const [method, setMethod] = useState('wilcoxon')
-  const [corrMethod, setCorrMethod] = useState('benjamini-hochberg')
+  const [method, setMethod] = useState(() => cfgDefault(['diff_exp', 'method'], 'wilcoxon'))
+  const [corrMethod, setCorrMethod] = useState(() => cfgDefault(['diff_exp', 'corr_method'], 'benjamini-hochberg'))
 
   // filter_rank_genes_groups params
-  const [minFoldChange, setMinFoldChange] = useState('')
-  const [minInGroupFraction, setMinInGroupFraction] = useState('')
-  const [maxOutGroupFraction, setMaxOutGroupFraction] = useState('')
-  const [maxPvalAdj, setMaxPvalAdj] = useState('')
+  const [minFoldChange, setMinFoldChange] = useState(() => String(cfgDefault(['diff_exp', 'min_fold_change'], '')))
+  const [minInGroupFraction, setMinInGroupFraction] = useState(() => String(cfgDefault(['diff_exp', 'min_in_group_fraction'], '')))
+  const [maxOutGroupFraction, setMaxOutGroupFraction] = useState(() => String(cfgDefault(['diff_exp', 'max_out_group_fraction'], '')))
+  const [maxPvalAdj, setMaxPvalAdj] = useState(() => String(cfgDefault(['diff_exp', 'max_pval_adj'], '')))
 
   const handleClose = useCallback(() => {
     setDiffExpModalOpen(false)

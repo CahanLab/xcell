@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { MESSAGES } from '../messages'
-import { useStore } from '../store'
+import { useStore, cfgDefault } from '../store'
 import {
   createAnnotation,
   addLabelToAnnotation,
@@ -98,7 +98,7 @@ export default function SelectByExpressionModal() {
     return computeHistogram(expressionData.values)
   }, [expressionData])
 
-  const [mode, setMode] = useState<ThresholdMode>('above')
+  const [mode, setMode] = useState<ThresholdMode>(() => cfgDefault(['select_by_expression', 'mode'], 'above' as ThresholdMode))
   const [lo, setLo] = useState<number>(0)
   const [hi, setHi] = useState<number>(0)
 
@@ -151,8 +151,8 @@ export default function SelectByExpressionModal() {
   const setDiffExpModalOpen = useStore((s) => s.setDiffExpModalOpen)
   const refreshObsSummaries = useStore((s) => s.refreshObsSummaries)
 
-  const [action, setAction] = useState<Action>('updateSelection')
-  const [subAction, setSubAction] = useState<SubAction>('replace')
+  const [action, setAction] = useState<Action>(() => cfgDefault(['select_by_expression', 'action'], 'updateSelection' as Action))
+  const [subAction, setSubAction] = useState<SubAction>(() => cfgDefault(['select_by_expression', 'sub_action'], 'replace' as SubAction))
 
   // When the existing selection goes empty, force sub-action back to 'replace'.
   useEffect(() => {
@@ -195,7 +195,7 @@ export default function SelectByExpressionModal() {
   const [highLabel, setHighLabel] = useState<string>(MESSAGES.selectByExpression.defaultHighLabel)
   const [lowLabel, setLowLabel] = useState<string>(MESSAGES.selectByExpression.defaultLowLabel)
   type LabelContext = 'selection' | 'all'
-  const [labelContext, setLabelContext] = useState<LabelContext>('selection')
+  const [labelContext, setLabelContext] = useState<LabelContext>(() => cfgDefault(['select_by_expression', 'label_context'], 'selection' as LabelContext))
 
   // When the existing selection becomes empty, force context to 'all'.
   useEffect(() => {

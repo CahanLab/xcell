@@ -1322,8 +1322,13 @@ export default function ScatterPlot({
 
   // Filter and convert stored lines to SVG paths (only for current embedding and visible)
   const storedLinePaths = useMemo(() => {
+    const viewDimX = embedding.dim_x ?? 0
+    const viewDimY = embedding.dim_y ?? 1
     return drawnLines
-      .filter((line) => line.embeddingName === embedding.name && line.visible)
+      // Only show lines drawn on the columns currently in view (a line on a
+      // different .obsm column pair lives in a different coordinate space).
+      .filter((line) => line.embeddingName === embedding.name && line.visible
+        && (line.dimX ?? 0) === viewDimX && (line.dimY ?? 1) === viewDimY)
       .map((line) => {
         const basePoints = line.smoothedPoints || line.points
         // While a transform drag is in progress, preview this shape following the
@@ -1353,7 +1358,7 @@ export default function ScatterPlot({
           closed: line.closed || false,
         }
       })
-  }, [drawnLines, activeLineId, dataToScreen, embedding.name, shapePreview])
+  }, [drawnLines, activeLineId, dataToScreen, embedding.name, embedding.dim_x, embedding.dim_y, shapePreview])
 
   // Categorical text labels overlaid at cluster centroids. Active when this
   // plot is colored by the column the user chose to label. Centroids use the

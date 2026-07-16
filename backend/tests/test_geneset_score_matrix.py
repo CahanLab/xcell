@@ -107,21 +107,22 @@ def test_get_obsm_column_unknown_raises():
         a.get_obsm_column("scores", "nonexistent")
 
 
-# --- create_obsm_embedding --------------------------------------------------
+# --- viewing score-matrix columns as an embedding (dim selection) -----------
 
-def test_embedding_from_two_columns():
+def test_score_matrix_is_selectable_multidim_embedding():
     a = _adaptor()
     a.score_gene_sets_matrix(SETS, per_gene_norm="none", obsm_name="scores")
-    res = a.create_obsm_embedding("scores", "progenitorState", "differentiatedState",
-                                  name="prog_vs_diff")
-    key = res["embedding_name"]
-    assert key in a.adata.obsm
-    emb = a.adata.obsm[key]
-    assert emb.shape == (a.n_cells, 2)
-    np.testing.assert_allclose(emb[:, 0], a.adata.obsm["scores"][:, 0], rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(emb[:, 1], a.adata.obsm["scores"][:, 1], rtol=1e-6, atol=1e-6)
-    # shows up as a selectable embedding in the schema
-    assert key in a.get_schema()["embeddings"]
+    schema = a.get_schema()
+    assert "scores" in schema["embeddings"]
+    assert schema["embedding_dims"]["scores"] == 3
+    # default view = first two columns
+    emb = a.get_embedding("scores")
+    np.testing.assert_allclose([c[0] for c in emb["coordinates"]], a.adata.obsm["scores"][:, 0], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose([c[1] for c in emb["coordinates"]], a.adata.obsm["scores"][:, 1], rtol=1e-6, atol=1e-6)
+    # pick columns 0 and 2 (progenitorState × cellCycle)
+    emb2 = a.get_embedding("scores", dim_x=0, dim_y=2)
+    assert (emb2["dim_x"], emb2["dim_y"]) == (0, 2)
+    np.testing.assert_allclose([c[1] for c in emb2["coordinates"]], a.adata.obsm["scores"][:, 2], rtol=1e-6, atol=1e-6)
 
 
 def test_schema_lists_score_matrix_columns():

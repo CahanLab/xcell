@@ -37,6 +37,7 @@ export function ScoreGeneSetsModal({ source, onClose, onScored }: Props) {
   const displayLayer = useStore((s) => s.displayLayer)
   const setSelectedEmbedding = useStore((s) => s.setSelectedEmbedding)
   const setEmbedding = useStore((s) => s.setEmbedding)
+  const setEmbeddingDims = useStore((s) => s.setEmbeddingDims)
 
   const [perGeneNorm, setPerGeneNorm] = useState<GeneSetPerGeneNorm>(dp.geneSetPerGeneNorm)
   const [perGeneClip, setPerGeneClip] = useState<number>(dp.geneSetPerGeneClip)
@@ -47,11 +48,9 @@ export function ScoreGeneSetsModal({ source, onClose, onScored }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<ScoreResult | null>(null)
 
-  // Embed-from-two-scores picker (success step).
+  // View-two-scores picker (success step).
   const [colX, setColX] = useState('')
   const [colY, setColY] = useState('')
-  const [embName, setEmbName] = useState('')
-  const [embBusy, setEmbBusy] = useState(false)
 
   useEffect(() => {
     if (!source) return
@@ -62,7 +61,7 @@ export function ScoreGeneSetsModal({ source, onClose, onScored }: Props) {
     setOverwrite(false)
     setError(null)
     setResult(null)
-    setColX(''); setColY(''); setEmbName('')
+    setColX(''); setColY('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source])
 
@@ -102,28 +101,18 @@ export function ScoreGeneSetsModal({ source, onClose, onScored }: Props) {
     } finally { setBusy(false) }
   }
 
-  const createEmbedding = async () => {
+  // View the score matrix with the two chosen columns as X/Y. No new .obsm slot —
+  // the matrix itself is the embedding; the column picker (beside the embedding
+  // selector) also lets the user switch which two scores are shown afterward.
+  const viewScores = () => {
     if (!result || !colX || !colY) return
-    setEmbBusy(true); setError(null)
-    try {
-      const resp = await fetch(appendDataset('/api/scanpy/embedding_from_obsm'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          obsm_name: result.obsm_name, col_x: colX, col_y: colY,
-          name: embName.trim() || undefined,
-        }),
-      })
-      if (!resp.ok) throw new Error((await resp.json()).detail || 'Embedding failed')
-      const data = await resp.json()
-      await refreshSchema()
-      setEmbedding(null)
-      setSelectedEmbedding(data.embedding_name)
-      onScored(`Created embedding '${data.embedding_name}' — draw a line to find correlated genes`)
-      onClose()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally { setEmbBusy(false) }
+    const xi = result.columns.indexOf(colX)
+    const yi = result.columns.indexOf(colY)
+    setEmbeddingDims(result.obsm_name, xi >= 0 ? xi : 0, yi >= 0 ? yi : 1)
+    setEmbedding(null)
+    setSelectedEmbedding(result.obsm_name)
+    onScored(`Viewing ${colX} × ${colY} — draw a line to find correlated genes`)
+    onClose()
   }
 
   const label: React.CSSProperties = { display: 'block', margin: '10px 0 4px', color: '#bbb', fontSize: 12 }
@@ -194,14 +183,15 @@ export function ScoreGeneSetsModal({ source, onClose, onScored }: Props) {
                 </select>
               </label>
             </div>
-            <label style={label}>Embedding name (optional)
-              <input type="text" style={control} placeholder={`X_${colX}_vs_${colY}`} value={embName} onChange={(e) => setEmbName(e.target.value)} />
-            </label>
+            <p style={{ color: '#888', fontSize: 11, margin: '6px 0 0' }}>
+              Views these two score columns as the embedding. Use the “Axes” picker beside the
+              embedding selector to switch columns later.
+            </p>
             {error && <div style={{ color: '#ff6b6b', margin: '10px 0 0' }}>{error}</div>}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-              <button onClick={onClose} disabled={embBusy}>Done</button>
-              <button onClick={createEmbedding} disabled={embBusy || !colX || !colY} style={primaryBtn}>
-                {embBusy ? 'Creating…' : 'Create embedding'}
+              <button onClick={onClose}>Done</button>
+              <button onClick={viewScores} disabled={!colX || !colY} style={primaryBtn}>
+                View scores
               </button>
             </div>
           </>

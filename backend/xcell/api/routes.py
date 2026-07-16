@@ -371,20 +371,20 @@ def get_schema(dataset: str | None = Query(None)):
 
 
 @router.get("/embedding/{name}")
-def get_embedding(name: str, dataset: str | None = Query(None)):
-    """Get embedding coordinates by name.
+def get_embedding(
+    name: str,
+    dim_x: int = Query(0),
+    dim_y: int = Query(1),
+    dataset: str | None = Query(None),
+):
+    """Get embedding coordinates by name, viewing two chosen .obsm columns.
 
-    Args:
-        name: Name of the embedding (e.g., 'X_umap', 'X_pca')
-
-    Returns:
-        JSON object containing:
-        - name: The embedding name
-        - coordinates: Array of [x, y] coordinate pairs
+    dim_x / dim_y (default 0, 1) pick which columns of a >2-dimensional matrix
+    (PCA, gene-set scores) are shown as x / y.
     """
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.get_embedding(name)
+        return adaptor.get_embedding(name, dim_x=dim_x, dim_y=dim_y)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -396,6 +396,8 @@ class TransformEmbeddingRequest(BaseModel):
     cell_indices: list[int] | None = None
     translate_x: float = 0.0
     translate_y: float = 0.0
+    dim_x: int = 0
+    dim_y: int = 1
 
 
 @router.post("/embedding/{name}/transform")
@@ -421,17 +423,24 @@ def transform_embedding(name: str, request: TransformEmbeddingRequest, dataset: 
             cell_indices=request.cell_indices,
             translate_x=request.translate_x,
             translate_y=request.translate_y,
+            dim_x=request.dim_x,
+            dim_y=request.dim_y,
         )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/embedding/{name}/undo")
-def undo_transform_embedding(name: str, dataset: str | None = Query(None)):
-    """Undo the last quilt transform for an embedding."""
+def undo_transform_embedding(
+    name: str,
+    dim_x: int = Query(0),
+    dim_y: int = Query(1),
+    dataset: str | None = Query(None),
+):
+    """Undo the last transform for an embedding (returns the requested dims view)."""
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.undo_transform_embedding(name)
+        return adaptor.undo_transform_embedding(name, dim_x=dim_x, dim_y=dim_y)
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1207,6 +1216,10 @@ class LineData(BaseModel):
     embeddingName: str
     points: list[list[float]]
     smoothedPoints: list[list[float]] | None = None
+    # Which two .obsm columns of `embeddingName` the line was drawn against, so
+    # projection/association use the same axes the user saw (default first two).
+    dimX: int = 0
+    dimY: int = 1
 
 
 class SetLinesRequest(BaseModel):
@@ -1276,7 +1289,7 @@ def debug_line_projection(line_name: str, dataset: str | None = Query(None)):
     if embedding_name not in adaptor.adata.obsm:
         raise HTTPException(status_code=400, detail=f"Embedding '{embedding_name}' not found")
 
-    coords = adaptor.adata.obsm[embedding_name][:, :2]
+    coords = adaptor._line_view_coords(line)
 
     # Compute projections
     positions, distances = adaptor._project_cells_onto_line(line_points, coords)
@@ -1858,30 +1871,6 @@ def obsm_column(request: ObsmColumnRequest, dataset: str | None = Query(None)):
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-
-class EmbeddingFromObsmRequest(BaseModel):
-    obsm_name: str
-    col_x: str
-    col_y: str
-    log_axes: str = "none"
-    name: str | None = None
-
-
-@router.post("/scanpy/embedding_from_obsm")
-def scanpy_embedding_from_obsm(
-    request: EmbeddingFromObsmRequest, dataset: str | None = Query(None)
-):
-    """Build a 2-D embedding from two columns of an .obsm matrix (e.g. two scores)."""
-    adaptor = get_adaptor(dataset)
-    try:
-        return adaptor.create_obsm_embedding(
-            obsm_name=request.obsm_name, col_x=request.col_x, col_y=request.col_y,
-            log_axes=request.log_axes, name=request.name,
-        )
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 class SumCountsRequest(BaseModel):

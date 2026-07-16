@@ -2,6 +2,16 @@
 
 Date: 2026-07-16
 
+> **Revision (same day):** the "embed from two scores" step no longer materializes
+> a new 2-column `.obsm` embedding (`embedding_from_obsm`, since removed). Instead
+> the score matrix itself is a selectable embedding, and a **column picker** beside
+> the embedding selector chooses which two `.obsm` columns are viewed (default first
+> two). This is fully general — it also views other PCA PCs — and the chosen columns
+> are the real coordinates everywhere: `get_embedding(name, dim_x, dim_y)`,
+> transforms/undo, and line projection/association all operate on the viewed columns
+> (a drawn line records the `dimX`/`dimY` it was drawn on). See
+> `test_embedding_dims.py`.
+
 ## Goal
 
 Let a user score every gene set in a gene-set folder at once, store the results

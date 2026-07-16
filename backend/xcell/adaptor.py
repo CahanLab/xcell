@@ -464,12 +464,15 @@ class DataAdaptor:
             - obs_columns: List of cell metadata column names from .obs
             - obs_dtypes: Dictionary mapping column names to their dtypes
         """
-        # Get embedding names (keys in obsm that are 2D array-likes)
+        # Get embedding names (keys in obsm that are 2D array-likes) and how many
+        # columns each has (so the UI can offer a column picker for >2-dim ones).
         embeddings = []
+        embedding_dims: dict[str, int] = {}
         for key in self.adata.obsm.keys():
             arr = self.adata.obsm[key]
             if hasattr(arr, 'shape') and len(arr.shape) == 2 and arr.shape[1] >= 2:
                 embeddings.append(key)
+                embedding_dims[key] = int(arr.shape[1])
 
         # Get obs column info
         obs_columns = list(self.adata.obs.columns)
@@ -501,22 +504,50 @@ class DataAdaptor:
                 else self.n_genes
             ),
             "embeddings": embeddings,
+            "embedding_dims": embedding_dims,
             "obs_columns": obs_columns,
             "obs_dtypes": obs_dtypes,
             "score_matrices": score_matrices,
             "filename": self.filepath.name,
         }
 
-    def get_embedding(self, name: str) -> dict[str, Any]:
-        """Get embedding coordinates by name.
+    def _clamp_dims(self, name: str, dim_x: int, dim_y: int) -> tuple[int, int]:
+        """Validate/clamp a requested (dim_x, dim_y) column pair for an .obsm matrix.
+
+        Out-of-range indices fall back to 0 / 1 so a stale request (e.g. after the
+        data changed) degrades to the first two columns instead of erroring.
+        """
+        arr = self.adata.obsm[name]
+        ncols = arr.shape[1] if getattr(arr, 'ndim', 1) == 2 else 1
+        dx = int(dim_x) if 0 <= int(dim_x) < ncols else 0
+        dy = int(dim_y) if 0 <= int(dim_y) < ncols else min(1, ncols - 1)
+        return dx, dy
+
+    def _view_coords(self, name: str, dim_x: int = 0, dim_y: int = 1) -> np.ndarray:
+        """The two chosen columns of an .obsm matrix as an (n_cells, 2) float array."""
+        dx, dy = self._clamp_dims(name, dim_x, dim_y)
+        return np.asarray(self.adata.obsm[name][:, [dx, dy]], dtype=np.float64)
+
+    def _line_view_coords(self, line: dict[str, Any]) -> np.ndarray:
+        """Embedding coordinates for a drawn line, on the columns it was drawn on.
+
+        A line records which two .obsm columns (``dimX``/``dimY``, default 0/1) it
+        was drawn against, so projection/association use the same axes the user saw.
+        """
+        name = line.get('embeddingName', '')
+        return self._view_coords(name, int(line.get('dimX', 0)), int(line.get('dimY', 1)))
+
+    def get_embedding(self, name: str, dim_x: int = 0, dim_y: int = 1) -> dict[str, Any]:
+        """Get embedding coordinates by name, viewing two chosen columns.
 
         Args:
             name: Name of the embedding (e.g., 'X_umap', 'X_pca')
+            dim_x, dim_y: Which .obsm columns to use as x / y (default first two).
+                For a >2-column matrix (PCA, gene-set scores) this lets the caller
+                view any pair of columns. Out-of-range values fall back to 0 / 1.
 
         Returns:
-            Dictionary containing:
-            - name: The embedding name
-            - coordinates: List of [x, y] coordinate pairs
+            Dictionary with: name, coordinates (list of [x, y]), dim_x, dim_y.
 
         Raises:
             KeyError: If embedding name not found in .obsm
@@ -524,15 +555,14 @@ class DataAdaptor:
         if name not in self.adata.obsm:
             raise KeyError(f"Embedding '{name}' not found. Available: {list(self.adata.obsm.keys())}")
 
-        coords = self.adata.obsm[name]
+        dx, dy = self._clamp_dims(name, dim_x, dim_y)
+        coords_2d = self.adata.obsm[name][:, [dx, dy]]
 
-        # Take first 2 dimensions for visualization
-        coords_2d = coords[:, :2]
-
-        # Convert to list for JSON serialization
         return {
             "name": name,
             "coordinates": coords_2d.tolist(),
+            "dim_x": dx,
+            "dim_y": dy,
         }
 
     def create_obs_embedding(
@@ -712,42 +742,6 @@ class DataAdaptor:
             "max": float(np.max(valid)) if valid.size else 0.0,
         }
 
-    def create_obsm_embedding(
-        self, obsm_name: str, col_x: str, col_y: str,
-        log_axes: str = 'none', name: str | None = None,
-    ) -> dict[str, Any]:
-        """Build a 2-D embedding from two columns of an ``.obsm`` matrix.
-
-        Mirrors ``create_obs_embedding`` but sources the axes from named columns
-        of ``adata.obsm[obsm_name]`` (e.g. two gene-set scores). Writes a
-        2-column ``adata.obsm[X_<name>]``.
-        """
-        if obsm_name not in self.adata.obsm:
-            raise ValueError(f"obsm '{obsm_name}' not found")
-        if log_axes not in ('none', 'x', 'y', 'both'):
-            raise ValueError(f"log_axes must be none/x/y/both, got {log_axes!r}")
-        ix = self._resolve_obsm_column_index(obsm_name, col_x)
-        iy = self._resolve_obsm_column_index(obsm_name, col_y)
-        arr = self.adata.obsm[obsm_name]
-        x = np.asarray(arr[:, ix], dtype=float)
-        y = np.asarray(arr[:, iy], dtype=float)
-        if log_axes in ('x', 'both'):
-            if np.nanmin(x) < 0:
-                raise ValueError(f"log requires non-negative values; column '{col_x}' has negatives")
-            x = np.log1p(x)
-        if log_axes in ('y', 'both'):
-            if np.nanmin(y) < 0:
-                raise ValueError(f"log requires non-negative values; column '{col_y}' has negatives")
-            y = np.log1p(y)
-        if name:
-            key = name if name.startswith('X_') else f'X_{name}'
-        else:
-            key = f'X_{col_x}_vs_{col_y}'
-        if key in self.adata.obsm:
-            raise ValueError(f"embedding '{key}' already exists")
-        self.adata.obsm[key] = np.column_stack([x, y]).astype(float)
-        return {"embedding_name": key, "n_cells": self.n_cells}
-
     def _match_var_names(self, pattern: str, match_mode: str = 'prefix') -> np.ndarray:
         """Boolean mask over var_names matching a prefix or regex."""
         import re
@@ -892,37 +886,30 @@ class DataAdaptor:
         cell_indices: list[int] | None = None,
         translate_x: float = 0.0,
         translate_y: float = 0.0,
+        dim_x: int = 0,
+        dim_y: int = 1,
     ) -> dict[str, Any]:
         """Apply rotation, reflection, and/or translation to an embedding in-place.
 
+        Operates on the two currently-viewed columns (``dim_x``, ``dim_y``; default
+        the first two) so a transform matches whatever the user is looking at.
         Transforms are applied around the centroid (of the subset if cell_indices
         is provided, otherwise of all cells): reflections first, then rotation,
         then translation.
-
-        Args:
-            name: Name of the embedding in .obsm
-            rotation_degrees: Counter-clockwise rotation angle in degrees
-            reflect_x: If True, negate y-coordinates (reflect about x-axis)
-            reflect_y: If True, negate x-coordinates (reflect about y-axis)
-            cell_indices: Optional list of cell indices to transform (subset mode).
-                          If None, all cells are transformed.
-            translate_x: Translation offset along x-axis
-            translate_y: Translation offset along y-axis
-
-        Returns:
-            Updated embedding dict (same format as get_embedding)
         """
         if name not in self.adata.obsm:
             raise KeyError(f"Embedding '{name}' not found. Available: {list(self.adata.obsm.keys())}")
+        dx, dy = self._clamp_dims(name, dim_x, dim_y)
+        cols = [dx, dy]
 
         if cell_indices is not None:
-            # Snapshot for undo before quilt transform
+            # Snapshot the affected columns for undo (records which columns).
             stack = self._embedding_undo_stacks.setdefault(name, [])
-            stack.append(np.array(self.adata.obsm[name][:, :2], copy=True))
+            stack.append((dx, dy, np.array(self.adata.obsm[name][:, cols], copy=True)))
 
             # Subset mode: only transform specified cells
             idx = np.array(cell_indices, dtype=int)
-            coords = np.array(self.adata.obsm[name][idx, :2], dtype=np.float64)
+            coords = np.array(self.adata.obsm[name][np.ix_(idx, cols)], dtype=np.float64)
             centroid = coords.mean(axis=0)
 
             coords -= centroid
@@ -945,10 +932,10 @@ class DataAdaptor:
             coords[:, 1] += translate_y
 
             # Write back only the subset
-            self.adata.obsm[name][idx, :2] = coords
+            self.adata.obsm[name][np.ix_(idx, cols)] = coords
         else:
-            # Full-embedding mode (original behavior)
-            coords = np.array(self.adata.obsm[name][:, :2], dtype=np.float64)
+            # Full-embedding mode
+            coords = np.array(self.adata.obsm[name][:, cols], dtype=np.float64)
             centroid = coords.mean(axis=0)
 
             coords -= centroid
@@ -971,38 +958,37 @@ class DataAdaptor:
                 coords[:, 0] += translate_x
                 coords[:, 1] += translate_y
 
-            self.adata.obsm[name][:, :2] = coords
+            self.adata.obsm[name][:, cols] = coords
 
         # Clear normalized cache (it may share obsm references)
         self._normalized_adata = None
         self._ucell_rank_cache = {}
         self._ucell_rank_cache_adata_id = None
 
-        result = self.get_embedding(name)
+        result = self.get_embedding(name, dim_x=dx, dim_y=dy)
         result["undo_depth"] = len(self._embedding_undo_stacks.get(name, []))
         return result
 
-    def undo_transform_embedding(self, name: str) -> dict[str, Any]:
-        """Undo the last quilt transform for an embedding.
+    def undo_transform_embedding(self, name: str, dim_x: int = 0, dim_y: int = 1) -> dict[str, Any]:
+        """Undo the last transform for an embedding.
 
-        Pops the most recent snapshot from the undo stack and restores the
-        embedding coordinates.
-
-        Args:
-            name: Name of the embedding in .obsm
-
-        Returns:
-            Updated embedding dict with undo_depth
+        Pops the most recent snapshot (which records the columns it captured) and
+        restores those columns. Returns the view at the requested dims.
         """
         stack = self._embedding_undo_stacks.get(name, [])
         if not stack:
             raise ValueError(f"No undo history for embedding '{name}'")
-        coords = stack.pop()
-        self.adata.obsm[name][:, :2] = coords
+        snap = stack.pop()
+        # Back-compat: older snapshots were bare arrays (columns 0,1).
+        if isinstance(snap, tuple):
+            sdx, sdy, coords = snap
+        else:
+            sdx, sdy, coords = 0, 1, snap
+        self.adata.obsm[name][:, [sdx, sdy]] = coords
         self._normalized_adata = None
         self._ucell_rank_cache = {}
         self._ucell_rank_cache_adata_id = None
-        result = self.get_embedding(name)
+        result = self.get_embedding(name, dim_x=dim_x, dim_y=dim_y)
         result["undo_depth"] = len(stack)
         return result
 
@@ -2530,7 +2516,7 @@ class DataAdaptor:
             if embedding_name not in self.adata.obsm:
                 continue
 
-            coords = self.adata.obsm[embedding_name][:, :2]
+            coords = self._line_view_coords(line)
 
             # Use smoothed points if available, otherwise raw points
             line_points = line.get('smoothedPoints') or line.get('points', [])
@@ -3063,7 +3049,7 @@ class DataAdaptor:
             raise ValueError("Line must have at least 2 points")
 
         # Get embedding coordinates
-        coords = self.adata.obsm[embedding_name][:, :2]
+        coords = self._line_view_coords(line)
 
         # Project cells onto line
         positions, distances = self._project_cells_onto_line(line_points, coords)
@@ -3246,7 +3232,7 @@ class DataAdaptor:
             if len(line_points) < 2:
                 raise ValueError(f"Line '{line_name}' must have at least 2 points")
 
-            coords = self.adata.obsm[embedding_name][:, :2]
+            coords = self._line_view_coords(line)
 
             # Project all cells onto the line
             positions, distances = self._project_cells_onto_line(line_points, coords)
@@ -3403,7 +3389,7 @@ class DataAdaptor:
             raise ValueError("Line must have at least 2 points")
 
         # Get embedding coordinates
-        coords = self.adata.obsm[embedding_name][:, :2]
+        coords = self._line_view_coords(line)
 
         # Project all cells onto line
         positions, distances = self._project_cells_onto_line(line_points, coords)

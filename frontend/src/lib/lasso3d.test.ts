@@ -21,8 +21,12 @@ describe('pointsInLassoScreen', () => {
     expect(pointsInLassoScreen(coords, z, square, vp)).toEqual([0])
   })
 
-  it('returns empty when polygon has < 3 vertices', () => {
-    const coords: [number, number][] = [[1, 1]]
-    expect(pointsInLassoScreen(coords, [0], [[0, 0], [1, 1]], identityViewport)).toEqual([])
+  it('short-circuits before projecting when polygon has < 3 vertices', () => {
+    let calls = 0
+    const spyViewport = { project: (c: number[]) => { calls++; return [c[0], c[1]] } }
+    const coords: [number, number][] = [[1, 1], [2, 2]]
+    const result = pointsInLassoScreen(coords, [0, 0], [[0, 0], [1, 1]], spyViewport)
+    expect(result).toEqual([])
+    expect(calls).toBe(0)
   })
 })

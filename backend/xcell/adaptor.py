@@ -523,6 +523,13 @@ class DataAdaptor:
         dy = int(dim_y) if 0 <= int(dim_y) < ncols else min(1, ncols - 1)
         return dx, dy
 
+    def _clamp_one_dim(self, name: str, dim: int) -> int:
+        """Clamp a single .obsm column index into [0, ncols-1] (fallback 0)."""
+        arr = self.adata.obsm[name]
+        ncols = arr.shape[1] if getattr(arr, 'ndim', 1) == 2 else 1
+        d = int(dim)
+        return d if 0 <= d < ncols else 0
+
     def _view_coords(self, name: str, dim_x: int = 0, dim_y: int = 1) -> np.ndarray:
         """The two chosen columns of an .obsm matrix as an (n_cells, 2) float array."""
         dx, dy = self._clamp_dims(name, dim_x, dim_y)
@@ -537,7 +544,8 @@ class DataAdaptor:
         name = line.get('embeddingName', '')
         return self._view_coords(name, int(line.get('dimX', 0)), int(line.get('dimY', 1)))
 
-    def get_embedding(self, name: str, dim_x: int = 0, dim_y: int = 1) -> dict[str, Any]:
+    def get_embedding(self, name: str, dim_x: int = 0, dim_y: int = 1,
+                      dim_z: int | None = None) -> dict[str, Any]:
         """Get embedding coordinates by name, viewing two chosen columns.
 
         Args:
@@ -545,9 +553,14 @@ class DataAdaptor:
             dim_x, dim_y: Which .obsm columns to use as x / y (default first two).
                 For a >2-column matrix (PCA, gene-set scores) this lets the caller
                 view any pair of columns. Out-of-range values fall back to 0 / 1.
+            dim_z: Optional third .obsm column to view as z. When provided, the
+                result additionally has "z" (list[float], one per cell) and
+                "dim_z" (the clamped column index). When None, the result is
+                unchanged from the 2-D case.
 
         Returns:
-            Dictionary with: name, coordinates (list of [x, y]), dim_x, dim_y.
+            Dictionary with: name, coordinates (list of [x, y]), dim_x, dim_y,
+            and (when dim_z is not None) z, dim_z.
 
         Raises:
             KeyError: If embedding name not found in .obsm
@@ -558,12 +571,17 @@ class DataAdaptor:
         dx, dy = self._clamp_dims(name, dim_x, dim_y)
         coords_2d = self.adata.obsm[name][:, [dx, dy]]
 
-        return {
+        result = {
             "name": name,
             "coordinates": coords_2d.tolist(),
             "dim_x": dx,
             "dim_y": dy,
         }
+        if dim_z is not None:
+            dz = self._clamp_one_dim(name, dim_z)
+            result["z"] = np.asarray(self.adata.obsm[name][:, dz], dtype=float).tolist()
+            result["dim_z"] = dz
+        return result
 
     def create_obs_embedding(
         self, col_x: str, col_y: str, log_axes: str = 'none',

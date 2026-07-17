@@ -4,7 +4,7 @@ import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
 import { Figure, FigurePanel as PanelType, HighlightLayer, HighlightSource, useStore } from '../store'
 import { appendDataset } from '../hooks/useData'
-import { getColorFromScale, getBivariateColor, resolveCategoryPalette, hexToRgb } from './ScatterPlot'
+import { getColorFromScale, getBivariateColor, resolveCategoryPalette, hexToRgb } from '../lib/cellColors'
 
 // Build a per-cell weight function for a HighlightLayer. Mirrors the
 // `layerWeightFn` in ScatterPlot.tsx (kept inline here to avoid leaking

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useStore, ColorScale, ExpressionTransform, BivariateColormap, GeneSetPerGeneNorm, GeneSetAggregation } from '../store'
-import { getBivariateColor } from './ScatterPlot'
+import { getBivariateColor } from '../lib/cellColors'
 
 const styles = {
   container: {

@@ -375,16 +375,18 @@ def get_embedding(
     name: str,
     dim_x: int = Query(0),
     dim_y: int = Query(1),
+    dim_z: int | None = Query(None),
     dataset: str | None = Query(None),
 ):
-    """Get embedding coordinates by name, viewing two chosen .obsm columns.
+    """Get embedding coordinates by name, viewing two (or three, via dim_z) .obsm columns.
 
     dim_x / dim_y (default 0, 1) pick which columns of a >2-dimensional matrix
-    (PCA, gene-set scores) are shown as x / y.
+    (PCA, gene-set scores) are shown as x / y. dim_z is optional; when provided
+    the response additionally includes a "z" array and "dim_z".
     """
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.get_embedding(name, dim_x=dim_x, dim_y=dim_y)
+        return adaptor.get_embedding(name, dim_x=dim_x, dim_y=dim_y, dim_z=dim_z)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

@@ -14,6 +14,7 @@ import {
   DatasetSlot,
 } from '../store'
 import { useCellColor } from '../lib/cellColors'
+import { pointsInLassoScreen } from '../lib/lasso3d'
 
 // 3D sibling of ScatterPlot: renders the embedding as an orbitable point cloud
 // using deck.gl's OrbitView. Deliberately mirrors ScatterPlot's ScatterplotLayer
@@ -49,6 +50,7 @@ export default function ScatterPlot3D({
   colorMode,
   interactionMode,
   selectedCellIndices,
+  onSelectionComplete,
 }: Props) {
   // Read display prefs / mask from the per-slot dataset when a slot is given,
   // else the flat top-level fields — same selector pattern as ScatterPlot.
@@ -145,10 +147,71 @@ export default function ScatterPlot3D({
 
   // Y is the orbit axis (points spin around vertical); perspective projection.
   const view = useMemo(() => new OrbitView({ id: 'main', orbitAxis: 'Y', fovy: 50 }), [])
+
+  // Lasso selection — mirrors the 2D freehand lasso predicate: interaction mode
+  // 'lasso' with the freehand ('lasso') selection tool active (polygon tool is a
+  // 2D-only click affordance, not implemented here).
+  const selectionTool = useStore((state) => state.selectionTool)
+  const lassoActive = interactionMode === 'lasso' && selectionTool === 'lasso'
   // Orbit only in navigate ('pan') mode — same predicate the 2D controller uses.
-  const orbitEnabled = interactionMode === 'pan'
+  // Extend with !lassoActive so a lasso drag never orbits (pan ≠ lasso already,
+  // so this is defensive; keeps orbit ON in pan mode).
+  const orbitEnabled = interactionMode === 'pan' && !lassoActive
 
   const [hover, setHover] = useState<{ x: number; y: number; index: number } | null>(null)
+
+  // Freehand lasso polygon in CANVAS-RELATIVE pixels (top-left origin) — the SAME
+  // space deck.gl's viewport.project returns, so the point-in-polygon test lines
+  // up exactly with what's on screen. containerRef wraps the deck canvas; its
+  // getBoundingClientRect gives both the rect (for clientX/Y → canvas px) and the
+  // width/height fed to makeViewport.
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [lassoPts, setLassoPts] = useState<[number, number][]>([])
+  const isLassoing = useRef(false)
+
+  const toCanvasPoint = (e: React.PointerEvent): [number, number] | null => {
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return null
+    return [e.clientX - rect.left, e.clientY - rect.top]
+  }
+
+  const handleLassoDown = (e: React.PointerEvent) => {
+    if (!lassoActive) return
+    const p = toCanvasPoint(e)
+    if (!p) return
+    isLassoing.current = true
+    setLassoPts([p])
+    // Capture so a drag that leaves the canvas still streams move/up events here.
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+  }
+
+  const handleLassoMove = (e: React.PointerEvent) => {
+    if (!lassoActive || !isLassoing.current) return
+    const p = toCanvasPoint(e)
+    if (!p) return
+    setLassoPts((prev) => [...prev, p])
+  }
+
+  const finishLasso = (e: React.PointerEvent) => {
+    if (!isLassoing.current) return
+    isLassoing.current = false
+    e.currentTarget.releasePointerCapture?.(e.pointerId)
+    const pts = lassoPts
+    // Need ≥3 vertices AND a live camera to build a viewport.
+    if (pts.length >= 3 && viewState && containerRef.current) {
+      const { width, height } = containerRef.current.getBoundingClientRect()
+      // Build a viewport from the CURRENT camera using the SAME view instance deck
+      // renders with (fovy/orbitAxis identical), so project() output pixel space ===
+      // the lasso polygon pixel space (both canvas-relative, top-left origin).
+      const viewport = view.makeViewport({ width, height, viewState: viewState as never })
+      if (viewport) {
+        const idx = pointsInLassoScreen(embedding.coordinates, embedding.z ?? [], pts, viewport)
+        // Shift = add to existing selection (mirrors 2D).
+        onSelectionComplete(idx, e.shiftKey)
+      }
+    }
+    setLassoPts([])
+  }
 
   // Constructed inline each render (like ScatterPlot's `layers`); deck.gl
   // reconciles via `id` + updateTriggers, and fresh closures keep getColor/
@@ -194,7 +257,13 @@ export default function ScatterPlot3D({
   if (!viewState) return null
 
   return (
-    <div style={{ position: 'absolute', inset: 0, backgroundColor: displayPreferences.backgroundColor }}>
+    <div
+      ref={containerRef}
+      style={{ position: 'absolute', inset: 0, backgroundColor: displayPreferences.backgroundColor }}
+      onPointerDown={handleLassoDown}
+      onPointerMove={handleLassoMove}
+      onPointerUp={finishLasso}
+    >
       <DeckGL
         views={view}
         viewState={viewState}
@@ -204,8 +273,31 @@ export default function ScatterPlot3D({
         onHover={(info: PickingInfo) =>
           setHover(info.index >= 0 ? { x: info.x, y: info.y, index: info.index } : null)}
         style={{ position: 'absolute', width: '100%', height: '100%', background: 'transparent' }}
-        getCursor={() => (orbitEnabled ? 'grab' : 'default')}
+        getCursor={() => (lassoActive ? 'crosshair' : orbitEnabled ? 'grab' : 'default')}
       />
+
+      {/* Freehand lasso outline — SVG over the canvas, canvas-relative px, so it
+          traces exactly where the pointer went. Same styling as the 2D lasso. */}
+      {lassoActive && lassoPts.length > 1 && (
+        <svg
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+            zIndex: 10,
+          }}
+        >
+          <polygon
+            points={lassoPts.map((p) => `${p[0]},${p[1]}`).join(' ')}
+            fill="rgba(233, 69, 96, 0.2)"
+            stroke="#e94560"
+            strokeWidth={2}
+            strokeDasharray="5,5"
+          />
+        </svg>
+      )}
       {hover && (
         <div
           style={{

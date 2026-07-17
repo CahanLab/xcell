@@ -60,6 +60,10 @@ export default function ScatterPlot3D({
   const activeCellMask = useStore((state) =>
     slot ? state.datasets[slot].activeCellMask : state.activeCellMask
   )
+  // Which column the user chose to label at cluster centroids (global toggle,
+  // same store field the 2D ScatterPlot reads). Labels show only when THIS
+  // plot is colored by that column.
+  const embeddingLabelColumn = useStore((state) => state.embeddingLabelColumn)
 
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
 
@@ -144,6 +148,50 @@ export default function ScatterPlot3D({
     if (selectedSet.has(index)) return selectedRadius
     return baseRadius
   }
+
+  // Categorical text labels overlaid at cluster centroids. Mirrors the 2D
+  // ScatterPlot predicate exactly: active only when this plot is colored (in
+  // metadata mode) by the categorical column the user chose to label.
+  const showCategoryLabels =
+    colorMode === 'metadata' &&
+    !!colorBy &&
+    colorBy.dtype === 'category' &&
+    colorBy.name === embeddingLabelColumn
+
+  // Each category's 3D centroid (mean of x/y from `coordinates` + z), grouped
+  // by category the same way 2D does. Memoized on [colorBy, embedding] so it
+  // recomputes only when the coloring column or embedding changes — NOT on
+  // every orbit (projection to screen happens per-render below, cheaply).
+  const categoryCentroids3D = useMemo(() => {
+    if (!showCategoryLabels || !colorBy?.categories) {
+      return [] as { label: string; x: number; y: number; z: number }[]
+    }
+    const coords = embedding.coordinates
+    const zArr = embedding.z ?? []
+    const values = colorBy.values
+    const cats = colorBy.categories
+    // Running sums per category name → mean centroid in one pass.
+    const sums: Record<string, { x: number; y: number; z: number; n: number }> = {}
+    const n = Math.min(coords.length, values.length)
+    for (let i = 0; i < n; i++) {
+      const v = values[i]
+      if (v === null || v === undefined) continue
+      // Categorical .obs values arrive as numeric codes indexing `categories`.
+      const name = typeof v === 'number' ? (cats[v] ?? String(v)) : String(v)
+      if (name === 'unassigned' || name === 'nan' || name === 'NaN') continue
+      const s = (sums[name] ||= { x: 0, y: 0, z: 0, n: 0 })
+      s.x += coords[i][0]
+      s.y += coords[i][1]
+      s.z += zArr[i] ?? 0
+      s.n += 1
+    }
+    return Object.keys(sums)
+      .filter((k) => sums[k].n > 0)
+      .map((k) => {
+        const s = sums[k]
+        return { label: k, x: s.x / s.n, y: s.y / s.n, z: s.z / s.n }
+      })
+  }, [showCategoryLabels, colorBy, embedding])
 
   // Y is the orbit axis (points spin around vertical); perspective projection.
   const view = useMemo(() => new OrbitView({ id: 'main', orbitAxis: 'Y', fovy: 50 }), [])
@@ -256,6 +304,28 @@ export default function ScatterPlot3D({
 
   if (!viewState) return null
 
+  // Project each category centroid to screen for the label overlay. Computed
+  // every render (not memoized): orbiting fires setViewState → re-render, so
+  // recomputing here makes the labels track the camera each frame. Uses the
+  // SAME `view` instance deck renders with, so pixel space === the canvas.
+  const projectedLabels: { label: string; x: number; y: number }[] = []
+  if (categoryCentroids3D.length > 0 && containerRef.current) {
+    const { width, height } = containerRef.current.getBoundingClientRect()
+    const viewport = view.makeViewport({ width, height, viewState: viewState as never })
+    if (viewport) {
+      for (const c of categoryCentroids3D) {
+        const [sx, sy, sz] = viewport.project([c.x, c.y, c.z])
+        // Cull behind-camera / clipped: deck's project returns a depth `sz` that
+        // falls outside [0,1] when the point is behind the near plane. Also cull
+        // non-finite projections and anything off the canvas.
+        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue
+        if (sz < 0 || sz > 1) continue
+        if (sx < 0 || sx > width || sy < 0 || sy > height) continue
+        projectedLabels.push({ label: c.label, x: sx, y: sy })
+      }
+    }
+  }
+
   return (
     <div
       ref={containerRef}
@@ -298,6 +368,30 @@ export default function ScatterPlot3D({
           />
         </svg>
       )}
+      {/* Categorical labels at cluster centroids, projected from 3D each frame
+          so they track the orbit. White bold text with a dark halo (text-shadow
+          mirrors the 2D SVG stroke halo) for legibility over any background. */}
+      {projectedLabels.map((c) => (
+        <div
+          key={c.label}
+          style={{
+            position: 'absolute',
+            left: c.x,
+            top: c.y,
+            transform: 'translate(-50%, -50%)',
+            pointerEvents: 'none',
+            fontSize: 13,
+            fontWeight: 700,
+            color: '#fff',
+            textShadow:
+              '-1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 0 3px #000',
+            whiteSpace: 'nowrap',
+            zIndex: 15,
+          }}
+        >
+          {c.label}
+        </div>
+      ))}
       {hover && (
         <div
           style={{

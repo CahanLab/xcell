@@ -299,7 +299,16 @@ export default function ScatterPlot3D({
     },
     // With binary data, accessors are called as (undefined, { index, ... }); the
     // buffer is in cell order so info.index is the cell index directly.
-    getFillColor: (_obj: unknown, info: { index: number }) => getColor({ index: info.index }),
+    getFillColor: (_obj: unknown, info: { index: number }) => {
+      const i = info.index
+      // Hide masked cells when the user turned them off. getRadius returns 0 for
+      // these, but radiusMinPixels:1 floors that to a 1px dot, so radius alone
+      // can't hide them — zero the alpha here too to make them truly invisible.
+      if (showMaskedCells === false && activeCellMask !== null && !activeCellMask[i]) {
+        return [0, 0, 0, 0]
+      }
+      return getColor({ index: i })
+    },
     getRadius: (_obj: unknown, info: { index: number }) => getRadius(info.index),
     // Constant screen-space size like 2D — robust across wildly varying
     // embedding coordinate scales (PCA vs UMAP). billboard keeps discs circular
@@ -319,7 +328,7 @@ export default function ScatterPlot3D({
     updateTriggers: {
       // Mirror useCellColor's deps so deck.gl rebuilds the GPU color buffer
       // whenever the color function changes (same set ScatterPlot keys on).
-      getFillColor: [colorBy, expressionData, bivariateData, highlightLayers, colorMode, selectedSet, displayPreferences, activeCellMask],
+      getFillColor: [colorBy, expressionData, bivariateData, highlightLayers, colorMode, selectedSet, displayPreferences, activeCellMask, showMaskedCells],
       getRadius: [selectedCellIndices, displayPreferences.pointSize, activeCellMask, showMaskedCells],
     },
   })

@@ -40,6 +40,30 @@ def test_get_embedding_out_of_range_clamps():
     assert (d['dim_x'], d['dim_y']) == (0, 1)
 
 
+def test_get_embedding_with_dim_z():
+    a = _a(); pca = a.adata.obsm['X_pca']
+    d = a.get_embedding('X_pca', dim_x=0, dim_y=1, dim_z=2)
+    assert (d['dim_x'], d['dim_y'], d['dim_z']) == (0, 1, 2)
+    assert len(d['z']) == pca.shape[0]
+    np.testing.assert_allclose(d['z'], pca[:, 2])
+    # x/y unchanged alongside z
+    np.testing.assert_allclose([c[0] for c in d['coordinates']], pca[:, 0])
+
+
+def test_get_embedding_dim_z_none_is_unchanged():
+    a = _a()
+    d = a.get_embedding('X_pca', dim_x=0, dim_y=1)  # dim_z defaults to None
+    assert 'z' not in d and 'dim_z' not in d
+    assert set(d.keys()) == {'name', 'coordinates', 'dim_x', 'dim_y'}
+
+
+def test_get_embedding_dim_z_out_of_range_clamps():
+    a = _a()
+    d = a.get_embedding('X_pca', dim_x=0, dim_y=1, dim_z=99)
+    assert d['dim_z'] == 0  # clamps into range
+    assert 'z' in d
+
+
 def test_schema_embedding_dims():
     a = _a(); s = a.get_schema()
     assert s['embedding_dims']['X_pca'] == 4

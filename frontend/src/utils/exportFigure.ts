@@ -1,5 +1,5 @@
 import { Figure } from '../store'
-import { hexToRgb } from '../components/ScatterPlot'
+import { hexToRgb } from '../lib/cellColors'
 
 // Composite all FigurePanel deck.gl canvases plus the figure-level styling
 // (background, titles) into a single PNG. We read pixels directly from each

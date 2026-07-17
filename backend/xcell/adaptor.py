@@ -464,12 +464,15 @@ class DataAdaptor:
             - obs_columns: List of cell metadata column names from .obs
             - obs_dtypes: Dictionary mapping column names to their dtypes
         """
-        # Get embedding names (keys in obsm that are 2D array-likes)
+        # Get embedding names (keys in obsm that are 2D array-likes) and how many
+        # columns each has (so the UI can offer a column picker for >2-dim ones).
         embeddings = []
+        embedding_dims: dict[str, int] = {}
         for key in self.adata.obsm.keys():
             arr = self.adata.obsm[key]
             if hasattr(arr, 'shape') and len(arr.shape) == 2 and arr.shape[1] >= 2:
                 embeddings.append(key)
+                embedding_dims[key] = int(arr.shape[1])
 
         # Get obs column info
         obs_columns = list(self.adata.obs.columns)
@@ -483,6 +486,15 @@ class DataAdaptor:
             else:
                 obs_dtypes[col] = "string"
 
+        # Gene-set score matrices (registered in .uns) → their column (set) names,
+        # so the UI can offer columns for color-by-score and embed-from-two-scores.
+        score_matrices: dict[str, list[str]] = {}
+        reg = self.adata.uns.get('xcell_score_matrices')
+        if isinstance(reg, dict):
+            for slot, meta in reg.items():
+                if slot in self.adata.obsm and isinstance(meta, dict) and 'columns' in meta:
+                    score_matrices[str(slot)] = [str(c) for c in meta['columns']]
+
         return {
             "n_cells": self.n_cells,
             "n_genes": self.n_genes,
@@ -492,21 +504,50 @@ class DataAdaptor:
                 else self.n_genes
             ),
             "embeddings": embeddings,
+            "embedding_dims": embedding_dims,
             "obs_columns": obs_columns,
             "obs_dtypes": obs_dtypes,
+            "score_matrices": score_matrices,
             "filename": self.filepath.name,
         }
 
-    def get_embedding(self, name: str) -> dict[str, Any]:
-        """Get embedding coordinates by name.
+    def _clamp_dims(self, name: str, dim_x: int, dim_y: int) -> tuple[int, int]:
+        """Validate/clamp a requested (dim_x, dim_y) column pair for an .obsm matrix.
+
+        Out-of-range indices fall back to 0 / 1 so a stale request (e.g. after the
+        data changed) degrades to the first two columns instead of erroring.
+        """
+        arr = self.adata.obsm[name]
+        ncols = arr.shape[1] if getattr(arr, 'ndim', 1) == 2 else 1
+        dx = int(dim_x) if 0 <= int(dim_x) < ncols else 0
+        dy = int(dim_y) if 0 <= int(dim_y) < ncols else min(1, ncols - 1)
+        return dx, dy
+
+    def _view_coords(self, name: str, dim_x: int = 0, dim_y: int = 1) -> np.ndarray:
+        """The two chosen columns of an .obsm matrix as an (n_cells, 2) float array."""
+        dx, dy = self._clamp_dims(name, dim_x, dim_y)
+        return np.asarray(self.adata.obsm[name][:, [dx, dy]], dtype=np.float64)
+
+    def _line_view_coords(self, line: dict[str, Any]) -> np.ndarray:
+        """Embedding coordinates for a drawn line, on the columns it was drawn on.
+
+        A line records which two .obsm columns (``dimX``/``dimY``, default 0/1) it
+        was drawn against, so projection/association use the same axes the user saw.
+        """
+        name = line.get('embeddingName', '')
+        return self._view_coords(name, int(line.get('dimX', 0)), int(line.get('dimY', 1)))
+
+    def get_embedding(self, name: str, dim_x: int = 0, dim_y: int = 1) -> dict[str, Any]:
+        """Get embedding coordinates by name, viewing two chosen columns.
 
         Args:
             name: Name of the embedding (e.g., 'X_umap', 'X_pca')
+            dim_x, dim_y: Which .obsm columns to use as x / y (default first two).
+                For a >2-column matrix (PCA, gene-set scores) this lets the caller
+                view any pair of columns. Out-of-range values fall back to 0 / 1.
 
         Returns:
-            Dictionary containing:
-            - name: The embedding name
-            - coordinates: List of [x, y] coordinate pairs
+            Dictionary with: name, coordinates (list of [x, y]), dim_x, dim_y.
 
         Raises:
             KeyError: If embedding name not found in .obsm
@@ -514,15 +555,14 @@ class DataAdaptor:
         if name not in self.adata.obsm:
             raise KeyError(f"Embedding '{name}' not found. Available: {list(self.adata.obsm.keys())}")
 
-        coords = self.adata.obsm[name]
+        dx, dy = self._clamp_dims(name, dim_x, dim_y)
+        coords_2d = self.adata.obsm[name][:, [dx, dy]]
 
-        # Take first 2 dimensions for visualization
-        coords_2d = coords[:, :2]
-
-        # Convert to list for JSON serialization
         return {
             "name": name,
             "coordinates": coords_2d.tolist(),
+            "dim_x": dx,
+            "dim_y": dy,
         }
 
     def create_obs_embedding(
@@ -561,6 +601,146 @@ class DataAdaptor:
             raise ValueError(f"embedding '{key}' already exists")
         self.adata.obsm[key] = np.column_stack([x, y]).astype(float)
         return {"embedding_name": key, "n_cells": self.n_cells}
+
+    def score_gene_sets_matrix(
+        self,
+        sets: list[dict[str, Any]],
+        per_gene_norm: str = 'zscore_mad',
+        per_gene_clip: float = 0.0,
+        aggregation: str = 'mean',
+        obsm_name: str = 'geneset_scores',
+        layer: str | None = None,
+        transform: str | None = None,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Score every gene set in a folder into one ``.obsm`` matrix.
+
+        Each set is scored with the same mean pipeline used for coloring
+        (``_aggregate_gene_set_scores``: per-gene normalize across cells → aggregate
+        across genes per cell), honoring the active gene mask exactly like
+        ``get_multi_gene_expression`` (via ``_filter_to_visible``). Kept sets are
+        stacked column-wise into ``adata.obsm[obsm_name]`` (n_cells × n_kept_sets),
+        and the column→set names plus scoring params are recorded in
+        ``adata.uns['xcell_score_matrices'][obsm_name]`` (``.obsm`` arrays are
+        unnamed, so the registry is how columns resolve back to set names).
+
+        Args:
+            sets: list of ``{"name": str, "genes": [str, ...]}``.
+            per_gene_norm/per_gene_clip/aggregation: mean-pipeline params.
+            obsm_name: destination ``.obsm`` slot (auto-named upstream, editable).
+            layer/transform: source resolution, same rules as coloring.
+            overwrite: replace an existing slot of the same name.
+
+        Returns dict with obsm_name, columns (kept set names in order), n_cells,
+        n_sets, skipped (list of {name, reason}), and per_column stats.
+
+        Raises ValueError on a bad/duplicate name or if no set could be scored.
+        """
+        if not obsm_name or not isinstance(obsm_name, str):
+            raise ValueError("obsm_name must be a non-empty string")
+        if obsm_name in self.adata.obsm and not overwrite:
+            raise ValueError(f"obsm slot '{obsm_name}' already exists (pass overwrite=True to replace)")
+
+        # Source matrix — identical resolution to get_multi_gene_expression.
+        if layer is not None and layer != 'X':
+            source_matrix = self._resolve_source_matrix(layer)
+        elif transform == 'log1p':
+            source_matrix = self.normalized_adata.X
+        else:
+            source_matrix = self.adata.X
+
+        columns: list[str] = []
+        cols_data: list[np.ndarray] = []
+        skipped: list[dict[str, Any]] = []
+        per_column: dict[str, Any] = {}
+        for s in sets:
+            name = str(s.get('name'))
+            genes = list(s.get('genes') or [])
+            valid = [g for g in genes if g in self.adata.var.index]
+            valid, n_masked = self._filter_to_visible(valid)
+            if len(valid) == 0:
+                skipped.append({"name": name, "reason": "no usable genes (missing or masked)"})
+                continue
+            scores = self._aggregate_gene_set_scores(
+                genes=valid,
+                source_matrix=source_matrix,
+                per_gene_norm=per_gene_norm,
+                per_gene_clip=per_gene_clip,
+                aggregation=aggregation,
+            )
+            columns.append(name)
+            cols_data.append(np.asarray(scores, dtype=np.float64))
+            valid_scores = scores[~np.isnan(scores)]
+            per_column[name] = {
+                "min": float(np.min(valid_scores)) if valid_scores.size else 0.0,
+                "max": float(np.max(valid_scores)) if valid_scores.size else 0.0,
+                "n_genes_used": len(valid),
+                "n_masked_excluded": int(n_masked),
+            }
+
+        if not columns:
+            raise ValueError("No sets could be scored (every set had no usable genes)")
+
+        self.adata.obsm[obsm_name] = np.column_stack(cols_data).astype(np.float64)
+
+        reg = self.adata.uns.get('xcell_score_matrices')
+        reg = dict(reg) if isinstance(reg, dict) else {}
+        reg[obsm_name] = {
+            "columns": list(columns),
+            "per_gene_norm": per_gene_norm,
+            "per_gene_clip": per_gene_clip,
+            "aggregation": aggregation,
+            "layer": layer,
+        }
+        self.adata.uns['xcell_score_matrices'] = reg
+
+        return {
+            "obsm_name": obsm_name,
+            "columns": columns,
+            "n_cells": self.n_cells,
+            "n_sets": len(columns),
+            "skipped": skipped,
+            "per_column": per_column,
+        }
+
+    def _score_matrix_columns(self, obsm_name: str) -> list[str] | None:
+        """Registered column (set) names for a score matrix, or None."""
+        reg = self.adata.uns.get('xcell_score_matrices')
+        if not isinstance(reg, dict):
+            return None
+        meta = reg.get(obsm_name)
+        if not isinstance(meta, dict) or 'columns' not in meta:
+            return None
+        return [str(c) for c in meta['columns']]
+
+    def _resolve_obsm_column_index(self, obsm_name: str, column: str) -> int:
+        """Column index for a named (registry) or integer-string column."""
+        if obsm_name not in self.adata.obsm:
+            raise KeyError(f"obsm '{obsm_name}' not found")
+        cols = self._score_matrix_columns(obsm_name)
+        if cols is not None and str(column) in cols:
+            return cols.index(str(column))
+        try:
+            idx = int(column)
+        except (TypeError, ValueError):
+            raise KeyError(f"column '{column}' not found in obsm '{obsm_name}'")
+        n = self.adata.obsm[obsm_name].shape[1]
+        if idx < 0 or idx >= n:
+            raise KeyError(f"column index {idx} out of range for obsm '{obsm_name}'")
+        return idx
+
+    def get_obsm_column(self, obsm_name: str, column: str) -> dict[str, Any]:
+        """Per-cell values of a named column of an ``.obsm`` matrix (for coloring)."""
+        idx = self._resolve_obsm_column_index(obsm_name, column)
+        vals = np.asarray(self.adata.obsm[obsm_name][:, idx], dtype=np.float64)
+        valid = vals[~np.isnan(vals)]
+        return {
+            "obsm_name": obsm_name,
+            "column": str(column),
+            "values": [float(v) if not np.isnan(v) else None for v in vals],
+            "min": float(np.min(valid)) if valid.size else 0.0,
+            "max": float(np.max(valid)) if valid.size else 0.0,
+        }
 
     def _match_var_names(self, pattern: str, match_mode: str = 'prefix') -> np.ndarray:
         """Boolean mask over var_names matching a prefix or regex."""
@@ -706,37 +886,30 @@ class DataAdaptor:
         cell_indices: list[int] | None = None,
         translate_x: float = 0.0,
         translate_y: float = 0.0,
+        dim_x: int = 0,
+        dim_y: int = 1,
     ) -> dict[str, Any]:
         """Apply rotation, reflection, and/or translation to an embedding in-place.
 
+        Operates on the two currently-viewed columns (``dim_x``, ``dim_y``; default
+        the first two) so a transform matches whatever the user is looking at.
         Transforms are applied around the centroid (of the subset if cell_indices
         is provided, otherwise of all cells): reflections first, then rotation,
         then translation.
-
-        Args:
-            name: Name of the embedding in .obsm
-            rotation_degrees: Counter-clockwise rotation angle in degrees
-            reflect_x: If True, negate y-coordinates (reflect about x-axis)
-            reflect_y: If True, negate x-coordinates (reflect about y-axis)
-            cell_indices: Optional list of cell indices to transform (subset mode).
-                          If None, all cells are transformed.
-            translate_x: Translation offset along x-axis
-            translate_y: Translation offset along y-axis
-
-        Returns:
-            Updated embedding dict (same format as get_embedding)
         """
         if name not in self.adata.obsm:
             raise KeyError(f"Embedding '{name}' not found. Available: {list(self.adata.obsm.keys())}")
+        dx, dy = self._clamp_dims(name, dim_x, dim_y)
+        cols = [dx, dy]
 
         if cell_indices is not None:
-            # Snapshot for undo before quilt transform
+            # Snapshot the affected columns for undo (records which columns).
             stack = self._embedding_undo_stacks.setdefault(name, [])
-            stack.append(np.array(self.adata.obsm[name][:, :2], copy=True))
+            stack.append((dx, dy, np.array(self.adata.obsm[name][:, cols], copy=True)))
 
             # Subset mode: only transform specified cells
             idx = np.array(cell_indices, dtype=int)
-            coords = np.array(self.adata.obsm[name][idx, :2], dtype=np.float64)
+            coords = np.array(self.adata.obsm[name][np.ix_(idx, cols)], dtype=np.float64)
             centroid = coords.mean(axis=0)
 
             coords -= centroid
@@ -759,10 +932,10 @@ class DataAdaptor:
             coords[:, 1] += translate_y
 
             # Write back only the subset
-            self.adata.obsm[name][idx, :2] = coords
+            self.adata.obsm[name][np.ix_(idx, cols)] = coords
         else:
-            # Full-embedding mode (original behavior)
-            coords = np.array(self.adata.obsm[name][:, :2], dtype=np.float64)
+            # Full-embedding mode
+            coords = np.array(self.adata.obsm[name][:, cols], dtype=np.float64)
             centroid = coords.mean(axis=0)
 
             coords -= centroid
@@ -785,38 +958,37 @@ class DataAdaptor:
                 coords[:, 0] += translate_x
                 coords[:, 1] += translate_y
 
-            self.adata.obsm[name][:, :2] = coords
+            self.adata.obsm[name][:, cols] = coords
 
         # Clear normalized cache (it may share obsm references)
         self._normalized_adata = None
         self._ucell_rank_cache = {}
         self._ucell_rank_cache_adata_id = None
 
-        result = self.get_embedding(name)
+        result = self.get_embedding(name, dim_x=dx, dim_y=dy)
         result["undo_depth"] = len(self._embedding_undo_stacks.get(name, []))
         return result
 
-    def undo_transform_embedding(self, name: str) -> dict[str, Any]:
-        """Undo the last quilt transform for an embedding.
+    def undo_transform_embedding(self, name: str, dim_x: int = 0, dim_y: int = 1) -> dict[str, Any]:
+        """Undo the last transform for an embedding.
 
-        Pops the most recent snapshot from the undo stack and restores the
-        embedding coordinates.
-
-        Args:
-            name: Name of the embedding in .obsm
-
-        Returns:
-            Updated embedding dict with undo_depth
+        Pops the most recent snapshot (which records the columns it captured) and
+        restores those columns. Returns the view at the requested dims.
         """
         stack = self._embedding_undo_stacks.get(name, [])
         if not stack:
             raise ValueError(f"No undo history for embedding '{name}'")
-        coords = stack.pop()
-        self.adata.obsm[name][:, :2] = coords
+        snap = stack.pop()
+        # Back-compat: older snapshots were bare arrays (columns 0,1).
+        if isinstance(snap, tuple):
+            sdx, sdy, coords = snap
+        else:
+            sdx, sdy, coords = 0, 1, snap
+        self.adata.obsm[name][:, [sdx, sdy]] = coords
         self._normalized_adata = None
         self._ucell_rank_cache = {}
         self._ucell_rank_cache_adata_id = None
-        result = self.get_embedding(name)
+        result = self.get_embedding(name, dim_x=dim_x, dim_y=dim_y)
         result["undo_depth"] = len(stack)
         return result
 
@@ -2344,7 +2516,7 @@ class DataAdaptor:
             if embedding_name not in self.adata.obsm:
                 continue
 
-            coords = self.adata.obsm[embedding_name][:, :2]
+            coords = self._line_view_coords(line)
 
             # Use smoothed points if available, otherwise raw points
             line_points = line.get('smoothedPoints') or line.get('points', [])
@@ -2877,7 +3049,7 @@ class DataAdaptor:
             raise ValueError("Line must have at least 2 points")
 
         # Get embedding coordinates
-        coords = self.adata.obsm[embedding_name][:, :2]
+        coords = self._line_view_coords(line)
 
         # Project cells onto line
         positions, distances = self._project_cells_onto_line(line_points, coords)
@@ -3060,7 +3232,7 @@ class DataAdaptor:
             if len(line_points) < 2:
                 raise ValueError(f"Line '{line_name}' must have at least 2 points")
 
-            coords = self.adata.obsm[embedding_name][:, :2]
+            coords = self._line_view_coords(line)
 
             # Project all cells onto the line
             positions, distances = self._project_cells_onto_line(line_points, coords)
@@ -3217,7 +3389,7 @@ class DataAdaptor:
             raise ValueError("Line must have at least 2 points")
 
         # Get embedding coordinates
-        coords = self.adata.obsm[embedding_name][:, :2]
+        coords = self._line_view_coords(line)
 
         # Project all cells onto line
         positions, distances = self._project_cells_onto_line(line_points, coords)

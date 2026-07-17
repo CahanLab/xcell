@@ -112,17 +112,22 @@ export function useSchema() {
 
 export function useEmbedding() {
   const { selectedEmbedding, embedding, setEmbedding, setLoading, setError } = useStore()
+  // Which two .obsm columns to view for the selected embedding (default 0,1).
+  const dims = useStore((s) => (selectedEmbedding ? s.embeddingDims[selectedEmbedding] : undefined))
+  const dimX = dims?.x ?? 0
+  const dimY = dims?.y ?? 1
 
   useEffect(() => {
     if (!selectedEmbedding) return
-    if (embedding?.name === selectedEmbedding) return // Already loaded
+    // Already loaded at these dims?
+    if (embedding?.name === selectedEmbedding && (embedding?.dim_x ?? 0) === dimX && (embedding?.dim_y ?? 1) === dimY) return
 
     setLoading(true)
-    fetchJson<EmbeddingData>(appendDataset(`${API_BASE}/embedding/${selectedEmbedding}`))
+    fetchJson<EmbeddingData>(appendDataset(`${API_BASE}/embedding/${selectedEmbedding}?dim_x=${dimX}&dim_y=${dimY}`))
       .then(setEmbedding)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
-  }, [selectedEmbedding, embedding, setEmbedding, setLoading, setError])
+  }, [selectedEmbedding, embedding, dimX, dimY, setEmbedding, setLoading, setError])
 
   return embedding
 }
@@ -633,6 +638,36 @@ export function useDataActions() {
     }
   }, [clearSelectedGenes, layoutMode, activeSlot, patchSlotState])
 
+  // Color cells by a single column of a gene-set score matrix (.obsm). Feeds the
+  // same continuous-color pipeline as gene-set coloring.
+  const colorByScore = useCallback(
+    async (obsmName: string, column: string) => {
+      setLoading(true)
+      try {
+        const data = await fetchJson<{ values: (number | null)[]; min: number; max: number }>(
+          appendDataset(`${API_BASE}/obsm/column`),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ obsm_name: obsmName, column }),
+          },
+        )
+        setExpressionData({ values: data.values, min: data.min, max: data.max })
+        setSelectedGenes([])
+        setSelectedGeneSetName(column)
+        setColorMode('expression')
+        setSelectedColorColumn(null)
+      } catch (err) {
+        setError((err as Error).message)
+        setExpressionData(null)
+        setColorMode('none')
+      } finally {
+        setLoading(false)
+      }
+    },
+    [setLoading, setError, setExpressionData, setSelectedGenes, setSelectedGeneSetName, setColorMode, setSelectedColorColumn],
+  )
+
   const colorByBivariate = useCallback(
     async (genes1: string[], genes2: string[]) => {
       if (genes1.length === 0 || genes2.length === 0) {
@@ -835,6 +870,7 @@ export function useDataActions() {
     selectColorColumn,
     colorByGene,
     colorByGenes,
+    colorByScore,
     clearExpressionColor,
     colorByBivariate,
     clearBivariateColor,
@@ -1625,10 +1661,12 @@ export interface LineAssociationParams {
 }
 
 // Sync lines to backend
-async function syncLinesToBackend(lines: { name: string; embeddingName: string; points: [number, number][]; smoothedPoints: [number, number][] | null }[], slot?: DatasetSlot) {
+async function syncLinesToBackend(lines: { name: string; embeddingName: string; dimX?: number; dimY?: number; points: [number, number][]; smoothedPoints: [number, number][] | null }[], slot?: DatasetSlot) {
   const payload = lines.map((line) => ({
     name: line.name,
     embeddingName: line.embeddingName,
+    dimX: line.dimX ?? 0,
+    dimY: line.dimY ?? 1,
     points: line.points,
     smoothedPoints: line.smoothedPoints,
   }))
@@ -1859,13 +1897,15 @@ export interface CreateLineEmbeddingResult {
 
 export async function createLineEmbedding(
   params: CreateLineEmbeddingParams,
-  lines: { name: string; embeddingName: string; points: [number, number][]; smoothedPoints: [number, number][] | null }[],
+  lines: { name: string; embeddingName: string; dimX?: number; dimY?: number; points: [number, number][]; smoothedPoints: [number, number][] | null }[],
   slot?: DatasetSlot
 ): Promise<CreateLineEmbeddingResult> {
   // First sync lines to backend
   const payload = lines.map((line) => ({
     name: line.name,
     embeddingName: line.embeddingName,
+    dimX: line.dimX ?? 0,
+    dimY: line.dimY ?? 1,
     points: line.points,
     smoothedPoints: line.smoothedPoints,
   }))

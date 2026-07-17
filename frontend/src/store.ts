@@ -7,12 +7,16 @@ export interface Schema {
   embeddings: string[]
   obs_columns: string[]
   obs_dtypes: Record<string, string>
+  score_matrices?: Record<string, string[]>  // gene-set score matrices in .obsm → their column (set) names
+  embedding_dims?: Record<string, number>  // embedding name → number of .obsm columns (for the column picker)
   filename?: string
 }
 
 export interface EmbeddingData {
   name: string
   coordinates: [number, number][]
+  dim_x?: number  // which .obsm columns these coordinates came from
+  dim_y?: number
 }
 
 export interface ObsColumnData {
@@ -218,6 +222,13 @@ export interface UcellScoreSource {
   sets: { name: string; up: string[]; down: string[] }[]
 }
 
+// Target for the "Score sets" modal — a whole gene-set folder scored (mean
+// pipeline) into one .obsm matrix.
+export interface ScoreGeneSetsSource {
+  folderName: string
+  sets: { name: string; genes: string[] }[]
+}
+
 // Color mode: what determines cell colors
 export type ColorMode = 'none' | 'metadata' | 'expression' | 'bivariate'
 
@@ -232,6 +243,8 @@ export interface DrawnLine {
   id: string
   name: string
   embeddingName: string  // Which embedding this was drawn on
+  dimX: number  // Which two .obsm columns of embeddingName this was drawn against
+  dimY: number  // (so it renders/associates on the same axes; default 0,1)
   points: [number, number][]  // Raw points in data coordinates
   smoothedPoints: [number, number][] | null  // Smoothed version (if applied)
   visible: boolean  // Whether to display on the embedding
@@ -662,6 +675,7 @@ interface AppState {
   } | null
   selectByExpressionSource: SelectByExpressionSource | null
   ucellScoreSource: UcellScoreSource | null
+  scoreGeneSetsSource: ScoreGeneSetsSource | null
 
   // Line association state
   lineAssociationResult: LineAssociationResult | null
@@ -687,6 +701,7 @@ interface AppState {
   // Drawn lines/shapes for trajectory analysis
   drawnLines: DrawnLine[]
   activeLineId: string | null  // Currently selected line for editing/smoothing
+  embeddingDims: Record<string, { x: number; y: number }>  // per-embedding chosen .obsm columns to view (default 0,1)
   lineSmoothingParams: LineSmoothingParams
   drawTool: DrawTool  // Currently selected draw tool
   selectionTool: SelectionTool  // Currently selected selection tool
@@ -851,6 +866,7 @@ interface AppState {
   } | null) => void
   setSelectByExpressionSource: (src: SelectByExpressionSource | null) => void
   setUcellScoreSource: (src: UcellScoreSource | null) => void
+  setScoreGeneSetsSource: (src: ScoreGeneSetsSource | null) => void
 
   // Line association actions
   setLineAssociationResult: (result: LineAssociationResult | null) => void
@@ -884,6 +900,7 @@ interface AppState {
   addLine: (name: string, points: [number, number][], embeddingName: string, drawType?: DrawTool, closed?: boolean) => void
   removeLine: (id: string) => void
   setActiveLine: (id: string | null) => void
+  setEmbeddingDims: (embeddingName: string, x: number, y: number) => void
   renameLine: (id: string, name: string) => void
   smoothLine: (id: string) => void
   setLineSmoothingParams: (params: Partial<LineSmoothingParams>) => void
@@ -894,7 +911,7 @@ interface AppState {
   // are transformed. Applies `affine` to every line on `embeddingName`; if `hull`
   // (the convex hull of a moved cell subset) is given, only lines overlapping it
   // are moved. `affine.centroid` must be the cells' pre-transform centroid.
-  transformShapesForEmbedding: (embeddingName: string, affine: ShapeAffine, hull?: [number, number][]) => void
+  transformShapesForEmbedding: (embeddingName: string, affine: ShapeAffine, hull?: [number, number][], viewDims?: { x: number; y: number }) => void
 
   // Import modal actions
   setImportModalOpen: (open: boolean) => void
@@ -1068,6 +1085,7 @@ export const useStore = create<AppState>((set, get) => {
     clusterModalSourceSet: null,
     selectByExpressionSource: null,
     ucellScoreSource: null,
+    scoreGeneSetsSource: null,
     lineAssociationResult: null,
     isLineAssociationLoading: false,
     isLineAssociationModalOpen: false,
@@ -1081,6 +1099,7 @@ export const useStore = create<AppState>((set, get) => {
     bivariateSortReversed: false,
     drawnLines: [],
     activeLineId: null,
+    embeddingDims: {},
     lineSmoothingParams: {
       windowSize: 5,
       iterations: 2,
@@ -1785,6 +1804,7 @@ export const useStore = create<AppState>((set, get) => {
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
     setUcellScoreSource: (src) => set({ ucellScoreSource: src }),
+    setScoreGeneSetsSource: (src) => set({ scoreGeneSetsSource: src }),
 
     // Line association actions (global)
     setLineAssociationResult: (result) => set({ lineAssociationResult: result }),
@@ -1931,10 +1951,17 @@ export const useStore = create<AppState>((set, get) => {
 
     addLine: (name, points, embeddingName, drawType, closed) => {
       const id = `line_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      // Record which two .obsm columns are currently in view, so the line is
+      // rendered and associated on the same axes it was drawn on.
+      const emb = get().embedding
+      const dimX = emb?.name === embeddingName ? (emb?.dim_x ?? 0) : 0
+      const dimY = emb?.name === embeddingName ? (emb?.dim_y ?? 1) : 1
       const newLine: DrawnLine = {
         id,
         name,
         embeddingName,
+        dimX,
+        dimY,
         points,
         smoothedPoints: null,
         visible: true,
@@ -1978,6 +2005,8 @@ export const useStore = create<AppState>((set, get) => {
 
     // Global-only line actions
     setActiveLine: (id) => set({ activeLineId: id }),
+    setEmbeddingDims: (embeddingName, x, y) =>
+      set((state) => ({ embeddingDims: { ...state.embeddingDims, [embeddingName]: { x, y } } })),
 
     // Per-dataset line actions
     renameLine: (id, name) =>
@@ -2114,11 +2143,14 @@ export const useStore = create<AppState>((set, get) => {
         ),
       }))),
 
-    transformShapesForEmbedding: (embeddingName, affine, hull) =>
+    transformShapesForEmbedding: (embeddingName, affine, hull, viewDims) =>
       set(dsUpdateFn((state) => {
         let changed = false
         const next = state.drawnLines.map((l) => {
           if (l.embeddingName !== embeddingName) return l
+          // Only move lines drawn on the columns being transformed — a line on a
+          // different column pair lives in a different coordinate space.
+          if (viewDims && ((l.dimX ?? 0) !== viewDims.x || (l.dimY ?? 1) !== viewDims.y)) return l
           // For subset (quilt) transforms, only move shapes overlaying the moved
           // region. Projections store position-along-line / distance, which are
           // invariant under the rigid transform, so they carry over unchanged.

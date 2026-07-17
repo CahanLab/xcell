@@ -661,6 +661,42 @@ function BivariateLegend({
   )
 }
 
+// Column picker for a multi-dimensional embedding (>2 .obsm columns, e.g. PCA or
+// a gene-set score matrix). Choosing X/Y sets which two columns are viewed; the
+// chosen columns are the real coordinates for coloring, drawing lines, and
+// transforms. Hidden for ordinary 2-column embeddings.
+function DimensionPicker() {
+  const selectedEmbedding = useStore((s) => s.selectedEmbedding)
+  const embeddingDims = useStore((s) => s.embeddingDims)
+  const setEmbeddingDims = useStore((s) => s.setEmbeddingDims)
+  const schema = useStore((s) => s.schema)
+  if (!selectedEmbedding || !schema) return null
+  const ncols = schema.embedding_dims?.[selectedEmbedding] ?? 2
+  if (ncols <= 2) return null
+  const cur = embeddingDims[selectedEmbedding] ?? { x: 0, y: 1 }
+  const names = schema.score_matrices?.[selectedEmbedding]
+  const isPca = /pca/i.test(selectedEmbedding)
+  const label = (i: number) => names?.[i] ?? (isPca ? `PC${i + 1}` : `dim ${i + 1}`)
+  const opts = Array.from({ length: ncols }, (_, i) => i)
+  const sel: React.CSSProperties = {
+    padding: '3px 6px', fontSize: '11px', backgroundColor: '#0f3460', color: '#eee',
+    border: '1px solid #1a1a2e', borderRadius: '4px', maxWidth: 150,
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+      title="Choose which two columns of this multi-dimensional embedding to view as X and Y">
+      <span style={{ fontSize: '11px', color: '#888' }}>Axes:</span>
+      <select style={sel} value={cur.x} onChange={(e) => setEmbeddingDims(selectedEmbedding, Number(e.target.value), cur.y)}>
+        {opts.map((i) => <option key={i} value={i}>{label(i)}</option>)}
+      </select>
+      <span style={{ fontSize: '11px', color: '#888' }}>×</span>
+      <select style={sel} value={cur.y} onChange={(e) => setEmbeddingDims(selectedEmbedding, cur.x, Number(e.target.value))}>
+        {opts.map((i) => <option key={i} value={i}>{label(i)}</option>)}
+      </select>
+    </div>
+  )
+}
+
 export default function App() {
   const {
     isLoading,
@@ -858,7 +894,9 @@ export default function App() {
   const handleQuiltUndo = useCallback(async () => {
     if (!selectedEmbedding) return
     try {
-      const response = await fetch(appendDataset(`/api/embedding/${selectedEmbedding}/undo`), {
+      const dimX = embedding?.dim_x ?? 0
+      const dimY = embedding?.dim_y ?? 1
+      const response = await fetch(appendDataset(`/api/embedding/${selectedEmbedding}/undo?dim_x=${dimX}&dim_y=${dimY}`), {
         method: 'POST',
       })
       if (!response.ok) return
@@ -870,7 +908,7 @@ export default function App() {
     } catch (err) {
       console.error('Quilt undo failed:', err)
     }
-  }, [selectedEmbedding, setEmbedding, setQuiltUndoDepth, clearSelection, setQuiltPhase])
+  }, [selectedEmbedding, embedding, setEmbedding, setQuiltUndoDepth, clearSelection, setQuiltPhase])
 
   // Handle escape key to exit lasso/draw/quilt mode, and Ctrl/Cmd+Z for quilt undo
   useEffect(() => {
@@ -935,20 +973,21 @@ export default function App() {
   ) => {
     if (!selectedEmbedding) return
     const coords = preCoords ?? embedding?.coordinates
+    const viewDims = { x: embedding?.dim_x ?? 0, y: embedding?.dim_y ?? 1 }
     const moveShapes = coords && coords.length > 0
       ? () => transformShapesForEmbedding(selectedEmbedding, {
           centroid: meanOf(coords),
           rotationDegrees: opts.rotation_degrees,
           reflectX: opts.reflect_x,
           reflectY: opts.reflect_y,
-        })
+        }, undefined, viewDims)
       : null
     if (preCoords && moveShapes) moveShapes()
     try {
       const response = await fetch(appendDataset(`/api/embedding/${selectedEmbedding}/transform`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(opts),
+        body: JSON.stringify({ ...opts, dim_x: embedding?.dim_x ?? 0, dim_y: embedding?.dim_y ?? 1 }),
       })
       if (!response.ok) {
         const err = await response.json().catch(() => ({ detail: response.statusText }))
@@ -995,7 +1034,8 @@ export default function App() {
           translateY: opts.translate_y,
         }
         const hull = convexHull(subset)
-        moveShapes = () => transformShapesForEmbedding(selectedEmbedding, affine, hull)
+        const viewDims = { x: embedding?.dim_x ?? 0, y: embedding?.dim_y ?? 1 }
+        moveShapes = () => transformShapesForEmbedding(selectedEmbedding, affine, hull, viewDims)
       }
     }
     if (preCoords && moveShapes) moveShapes()
@@ -1003,7 +1043,7 @@ export default function App() {
       const response = await fetch(appendDataset(`/api/embedding/${selectedEmbedding}/transform`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(opts),
+        body: JSON.stringify({ ...opts, dim_x: embedding?.dim_x ?? 0, dim_y: embedding?.dim_y ?? 1 }),
       })
       if (!response.ok) {
         const err = await response.json().catch(() => ({ detail: response.statusText }))
@@ -2078,6 +2118,7 @@ export default function App() {
                                     </option>
                                   ))}
                                 </select>
+                                <DimensionPicker />
                               </div>
                             )}
                             {interactionMode === 'adjust' && (

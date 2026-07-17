@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useStore } from '../store'
+import { convertGeneList, type CaseConvention } from '../lib/caseConvention'
 
 const styles = {
   overlay: {
@@ -333,6 +334,7 @@ export default function ImportModal() {
   const [error, setError] = useState<string | null>(null)
   const [bundles, setBundles] = useState<LibraryBundle[]>([])
   const [loadedBundleIds, setLoadedBundleIds] = useState<Set<string>>(new Set())
+  const [caseConvention, setCaseConvention] = useState<CaseConvention>('none')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Fetch the shipped gene-set library when the modal opens (lazy — no cost
@@ -355,13 +357,15 @@ export default function ImportModal() {
     setParsedFiles([])
     setError(null)
     setLoadedBundleIds(new Set())
+    setCaseConvention('none')
   }, [setImportModalOpen])
 
   // Load a shipped bundle into the user's editable Manual sets. Sets tagged
   // with a `folder` group into their own folder; the rest go into a folder
   // named after the bundle. The modal stays open so several can be loaded.
   const handleLoadBundle = useCallback((bundle: LibraryBundle) => {
-    const { ungrouped, folders } = groupByFolder(bundle.sets)
+    const converted = bundle.sets.map((s) => convertGeneList(s, caseConvention))
+    const { ungrouped, folders } = groupByFolder(converted)
     if (ungrouped.length > 0) {
       addFolderToCategory('manual', bundle.name, ungrouped)
     }
@@ -369,7 +373,7 @@ export default function ImportModal() {
       addFolderToCategory('manual', grp.name, grp.sets)
     }
     setLoadedBundleIds((prev) => new Set(prev).add(bundle.id))
-  }, [addFolderToCategory])
+  }, [addFolderToCategory, caseConvention])
 
   const processFiles = useCallback((files: FileList) => {
     setError(null)
@@ -422,7 +426,8 @@ export default function ImportModal() {
   const handleImport = useCallback(() => {
     for (const pf of parsedFiles) {
       const fileName = pf.filename.replace(/\.\w+$/, '')
-      const { ungrouped, folders } = groupByFolder(pf.geneLists)
+      const converted = pf.geneLists.map((gl) => convertGeneList(gl, caseConvention))
+      const { ungrouped, folders } = groupByFolder(converted)
       // Ungrouped sets: a lone one is added directly; several wrap in a
       // folder named after the file (unchanged legacy behavior). Any sets
       // tagged with a `folder` become their own folders alongside.
@@ -437,7 +442,7 @@ export default function ImportModal() {
       }
     }
     handleClose()
-  }, [parsedFiles, addFolderToCategory, addGeneSetToCategory, handleClose])
+  }, [parsedFiles, addFolderToCategory, addGeneSetToCategory, handleClose, caseConvention])
 
   if (!isImportModalOpen) return null
 
@@ -484,6 +489,49 @@ export default function ImportModal() {
             onChange={handleFileSelect}
             style={{ display: 'none' }}
           />
+
+          {/* Case-convention selector. Most orthologous human/mouse genes share
+              a symbol but differ by case; converting imported symbols to the
+              loaded data's convention lets a cross-species set score through the
+              existing exact-match paths. Applies to both uploads and bundles. */}
+          <div style={{ marginTop: '16px' }}>
+            <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '8px' }}>
+              Convert gene symbols to match your data:
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {([
+                { value: 'none' as const, label: 'Leave as-is', hint: 'no change' },
+                { value: 'human' as const, label: 'Human', hint: 'UPPERCASE · COL1A1' },
+                { value: 'mouse' as const, label: 'Mouse', hint: 'Title case · Col1a1' },
+              ]).map((opt) => {
+                const active = caseConvention === opt.value
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => setCaseConvention(opt.value)}
+                    title={opt.hint}
+                    style={{
+                      ...styles.button,
+                      flex: 1,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '2px',
+                      padding: '8px 10px',
+                      backgroundColor: active ? 'rgba(78, 205, 196, 0.12)' : '#0a0f1a',
+                      color: active ? '#4ecdc4' : '#ccc',
+                      border: '1px solid ' + (active ? '#4ecdc4' : '#0f3460'),
+                    }}
+                  >
+                    <span style={{ fontWeight: 600 }}>{opt.label}</span>
+                    <span style={{ fontSize: '10px', color: active ? '#4ecdc4' : '#777' }}>
+                      {opt.hint}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
 
           {error && (
             <div style={{ marginTop: '12px', fontSize: '12px', color: '#e94560' }}>

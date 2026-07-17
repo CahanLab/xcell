@@ -745,6 +745,7 @@ export default function App() {
     selectedGenes,
     selectedGeneSetName,
     interactionMode,
+    viewMode,
     selectedCellIndices,
     setInteractionMode,
     setSelectedCellIndices,
@@ -1550,6 +1551,10 @@ export default function App() {
                 )}
               </div>
 
+              {/* Draw + Adjust are 2D-only tools; hide them in 3D so they can't
+                  set a non-pan interactionMode that would freeze the orbit view. */}
+              {viewMode !== '3d' && (
+              <>
               <div style={{ position: 'relative', display: 'inline-flex' }}>
                 <button
                   style={{
@@ -1779,6 +1784,8 @@ export default function App() {
                   </div>
                 )}
               </div>
+              </>
+              )}
 
               <button
                 style={styles.toolButton}

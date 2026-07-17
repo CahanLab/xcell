@@ -60,10 +60,24 @@ export default function ScatterPlot3D({
   const activeCellMask = useStore((state) =>
     slot ? state.datasets[slot].activeCellMask : state.activeCellMask
   )
+  // When false, masked (inactive) cells are hidden entirely (2D drops them from
+  // the render set; here we hide them via getRadius → 0, see below).
+  const showMaskedCells = useStore((state) =>
+    slot ? state.datasets[slot].showMaskedCells : state.showMaskedCells
+  )
   // Which column the user chose to label at cluster centroids (global toggle,
   // same store field the 2D ScatterPlot reads). Labels show only when THIS
   // plot is colored by that column.
   const embeddingLabelColumn = useStore((state) => state.embeddingLabelColumn)
+
+  // Force exactly one re-render after mount. projectedLabels (computed in the
+  // render body) is guarded by containerRef.current, which is still null on the
+  // first render — the ref only attaches at commit. Without this nudge, labels
+  // stay empty until the user orbits/hovers. One tick paints them on entry.
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    forceTick((t) => t + 1)
+  }, [])
 
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
 
@@ -144,7 +158,12 @@ export default function ScatterPlot3D({
   const selectedRadius = baseRadius + 2
   const maskedRadius = Math.max(1, baseRadius / 3) // 1/3 size for masked cells
   const getRadius = (index: number): number => {
-    if (activeCellMask !== null && !activeCellMask[index]) return maskedRadius
+    if (activeCellMask !== null && !activeCellMask[index]) {
+      // Hide masked cells entirely when the user turned them off (radius 0 =
+      // invisible and effectively unpickable). Keeps the position buffer intact
+      // so buffer index === cell index for coloring / picking / lasso.
+      return showMaskedCells === false ? 0 : maskedRadius
+    }
     if (selectedSet.has(index)) return selectedRadius
     return baseRadius
   }
@@ -196,15 +215,15 @@ export default function ScatterPlot3D({
   // Y is the orbit axis (points spin around vertical); perspective projection.
   const view = useMemo(() => new OrbitView({ id: 'main', orbitAxis: 'Y', fovy: 50 }), [])
 
-  // Lasso selection — mirrors the 2D freehand lasso predicate: interaction mode
-  // 'lasso' with the freehand ('lasso') selection tool active (polygon tool is a
-  // 2D-only click affordance, not implemented here).
-  const selectionTool = useStore((state) => state.selectionTool)
-  const lassoActive = interactionMode === 'lasso' && selectionTool === 'lasso'
-  // Orbit only in navigate ('pan') mode — same predicate the 2D controller uses.
-  // Extend with !lassoActive so a lasso drag never orbits (pan ≠ lasso already,
-  // so this is defensive; keeps orbit ON in pan mode).
-  const orbitEnabled = interactionMode === 'pan' && !lassoActive
+  // Lasso selection — ANY lasso interaction mode drives a freehand loop in 3D.
+  // The 2D polygon sub-tool is a click affordance that simply doesn't apply here,
+  // so we don't gate on selectionTool: treating every lasso-mode drag as freehand
+  // avoids a dead state when the user last picked the polygon sub-tool.
+  const lassoActive = interactionMode === 'lasso'
+  // Orbit whenever NOT actively lassoing. Any non-lasso interactionMode (pan,
+  // draw, adjust, quilt, …) still orbits, so the 3D view can never freeze — 2D-only
+  // tools are hidden in 3D anyway, but this keeps the camera robust regardless.
+  const orbitEnabled = !lassoActive
 
   const [hover, setHover] = useState<{ x: number; y: number; index: number } | null>(null)
 
@@ -298,7 +317,7 @@ export default function ScatterPlot3D({
       // Mirror useCellColor's deps so deck.gl rebuilds the GPU color buffer
       // whenever the color function changes (same set ScatterPlot keys on).
       getFillColor: [colorBy, expressionData, bivariateData, highlightLayers, colorMode, selectedSet, displayPreferences, activeCellMask],
-      getRadius: [selectedCellIndices, displayPreferences.pointSize, activeCellMask],
+      getRadius: [selectedCellIndices, displayPreferences.pointSize, activeCellMask, showMaskedCells],
     },
   })
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, DatasetSlot } from './store'
 import { meanOf, convexHull, type ShapeAffine } from './utils/shapeTransform'
 import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, appendDataset, fetchGeneMask } from './hooks/useData'
-import ScatterPlot from './components/ScatterPlot'
+import EmbeddingPlot from './components/EmbeddingPlot'
 import { BIVARIATE_COLORMAPS, getBivariateColor, resolveCategoryPalette } from './lib/cellColors'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
@@ -671,8 +671,15 @@ function DimensionPicker() {
   const embeddingDims = useStore((s) => s.embeddingDims)
   const setEmbeddingDims = useStore((s) => s.setEmbeddingDims)
   const schema = useStore((s) => s.schema)
+  const viewMode = useStore((s) => s.viewMode)
+  const setViewMode = useStore((s) => s.setViewMode)
+  // Never stay in 3D on an embedding that can't support a third axis. Run the
+  // guard as an effect (not during render) so we don't set state mid-render.
+  const ncols = selectedEmbedding && schema ? (schema.embedding_dims?.[selectedEmbedding] ?? 2) : 2
+  useEffect(() => {
+    if (ncols <= 2 && viewMode === '3d') setViewMode('2d')
+  }, [ncols, viewMode, setViewMode])
   if (!selectedEmbedding || !schema) return null
-  const ncols = schema.embedding_dims?.[selectedEmbedding] ?? 2
   if (ncols <= 2) return null
   const cur = embeddingDims[selectedEmbedding] ?? { x: 0, y: 1 }
   const names = schema.score_matrices?.[selectedEmbedding]
@@ -683,17 +690,45 @@ function DimensionPicker() {
     padding: '3px 6px', fontSize: '11px', backgroundColor: '#0f3460', color: '#eee',
     border: '1px solid #1a1a2e', borderRadius: '4px', maxWidth: 150,
   }
+  const is3D = viewMode === '3d'
+  // Default Z to column 2 (first non-X/Y column) when one isn't chosen yet.
+  const curZ = cur.z ?? 2
+  // When 2D, don't persist a z dim (keeps embedding.z absent for the 2D path).
+  const zArg = is3D ? curZ : undefined
+  const toggle3D = () => {
+    if (is3D) {
+      setViewMode('2d')
+    } else {
+      setEmbeddingDims(selectedEmbedding, cur.x, cur.y, curZ)
+      setViewMode('3d')
+    }
+  }
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
-      title="Choose which two columns of this multi-dimensional embedding to view as X and Y">
+      title="Choose which columns of this multi-dimensional embedding to view (and toggle 3D)">
       <span style={{ fontSize: '11px', color: '#888' }}>Axes:</span>
-      <select style={sel} value={cur.x} onChange={(e) => setEmbeddingDims(selectedEmbedding, Number(e.target.value), cur.y)}>
+      <select style={sel} value={cur.x} onChange={(e) => setEmbeddingDims(selectedEmbedding, Number(e.target.value), cur.y, zArg)}>
         {opts.map((i) => <option key={i} value={i}>{label(i)}</option>)}
       </select>
       <span style={{ fontSize: '11px', color: '#888' }}>×</span>
-      <select style={sel} value={cur.y} onChange={(e) => setEmbeddingDims(selectedEmbedding, cur.x, Number(e.target.value))}>
+      <select style={sel} value={cur.y} onChange={(e) => setEmbeddingDims(selectedEmbedding, cur.x, Number(e.target.value), zArg)}>
         {opts.map((i) => <option key={i} value={i}>{label(i)}</option>)}
       </select>
+      {is3D && (
+        <>
+          <span style={{ fontSize: '11px', color: '#888' }}>×</span>
+          <select style={sel} value={curZ} onChange={(e) => setEmbeddingDims(selectedEmbedding, cur.x, cur.y, Number(e.target.value))}>
+            {opts.map((i) => <option key={i} value={i}>{label(i)}</option>)}
+          </select>
+        </>
+      )}
+      <button
+        style={{ ...sel, cursor: 'pointer', backgroundColor: is3D ? '#2a6f97' : '#0f3460' }}
+        onClick={toggle3D}
+        title="Toggle 3D view"
+      >
+        {is3D ? '3D ✓' : '3D'}
+      </button>
     </div>
   )
 }
@@ -1900,7 +1935,7 @@ export default function App() {
                     >
                       {datasets.primary.embedding ? (
                         <>
-                          <ScatterPlot
+                          <EmbeddingPlot
                             slot="primary"
                             embedding={datasets.primary.embedding}
                             colorBy={datasets.primary.colorBy}
@@ -1987,7 +2022,7 @@ export default function App() {
                     >
                       {datasets.secondary.embedding ? (
                         <>
-                          <ScatterPlot
+                          <EmbeddingPlot
                             slot="secondary"
                             embedding={datasets.secondary.embedding}
                             colorBy={datasets.secondary.colorBy}
@@ -2066,7 +2101,7 @@ export default function App() {
                   <>
                     {embedding && (
                       <>
-                        <ScatterPlot
+                        <EmbeddingPlot
                           embedding={embedding}
                           colorBy={colorBy}
                           expressionData={expressionData}

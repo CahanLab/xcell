@@ -17,6 +17,8 @@ export interface EmbeddingData {
   coordinates: [number, number][]
   dim_x?: number  // which .obsm columns these coordinates came from
   dim_y?: number
+  z?: number[]      // third .obsm column, present only when viewing in 3D
+  dim_z?: number
 }
 
 export interface ObsColumnData {
@@ -701,7 +703,7 @@ interface AppState {
   // Drawn lines/shapes for trajectory analysis
   drawnLines: DrawnLine[]
   activeLineId: string | null  // Currently selected line for editing/smoothing
-  embeddingDims: Record<string, { x: number; y: number }>  // per-embedding chosen .obsm columns to view (default 0,1)
+  embeddingDims: Record<string, { x: number; y: number; z?: number }>  // per-embedding chosen .obsm columns to view (default 0,1)
   lineSmoothingParams: LineSmoothingParams
   drawTool: DrawTool  // Currently selected draw tool
   selectionTool: SelectionTool  // Currently selected selection tool
@@ -760,6 +762,9 @@ interface AppState {
 
   // Layout mode (single vs side-by-side dual scatter)
   layoutMode: LayoutMode
+
+  // Embedding view mode: 2D scatter (default) or 3D (uses a third .obsm dim)
+  viewMode: '2d' | '3d'
 
   // Quilt mode phase
   quiltPhase: 'lasso' | 'transform'
@@ -900,7 +905,7 @@ interface AppState {
   addLine: (name: string, points: [number, number][], embeddingName: string, drawType?: DrawTool, closed?: boolean) => void
   removeLine: (id: string) => void
   setActiveLine: (id: string | null) => void
-  setEmbeddingDims: (embeddingName: string, x: number, y: number) => void
+  setEmbeddingDims: (embeddingName: string, x: number, y: number, z?: number) => void
   renameLine: (id: string, name: string) => void
   smoothLine: (id: string) => void
   setLineSmoothingParams: (params: Partial<LineSmoothingParams>) => void
@@ -968,6 +973,9 @@ interface AppState {
 
   // Layout mode actions
   setLayoutMode: (mode: LayoutMode) => void
+
+  // Embedding view mode action
+  setViewMode: (m: '2d' | '3d') => void
 
   // Multi-dataset actions
   setActiveSlot: (slot: DatasetSlot) => void
@@ -1131,6 +1139,9 @@ export const useStore = create<AppState>((set, get) => {
 
     // Layout mode
     layoutMode: 'single' as LayoutMode,
+
+    // Embedding view mode
+    viewMode: '2d' as '2d' | '3d',
 
     // Quilt mode phase
     quiltPhase: 'lasso' as const,
@@ -2005,8 +2016,8 @@ export const useStore = create<AppState>((set, get) => {
 
     // Global-only line actions
     setActiveLine: (id) => set({ activeLineId: id }),
-    setEmbeddingDims: (embeddingName, x, y) =>
-      set((state) => ({ embeddingDims: { ...state.embeddingDims, [embeddingName]: { x, y } } })),
+    setEmbeddingDims: (embeddingName, x, y, z) =>
+      set((state) => ({ embeddingDims: { ...state.embeddingDims, [embeddingName]: { x, y, z } } })),
 
     // Per-dataset line actions
     renameLine: (id, name) =>
@@ -2401,6 +2412,9 @@ export const useStore = create<AppState>((set, get) => {
 
     // Layout mode actions
     setLayoutMode: (mode) => set({ layoutMode: mode }),
+
+    // Embedding view mode action
+    setViewMode: (m) => set({ viewMode: m }),
 
     // Multi-dataset actions
     setActiveSlot: (slot) => {

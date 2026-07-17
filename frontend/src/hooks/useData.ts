@@ -114,20 +114,27 @@ export function useEmbedding() {
   const { selectedEmbedding, embedding, setEmbedding, setLoading, setError } = useStore()
   // Which two .obsm columns to view for the selected embedding (default 0,1).
   const dims = useStore((s) => (selectedEmbedding ? s.embeddingDims[selectedEmbedding] : undefined))
+  const viewMode = useStore((s) => s.viewMode)
   const dimX = dims?.x ?? 0
   const dimY = dims?.y ?? 1
+  const dimZ = viewMode === '3d' ? (dims?.z ?? null) : null
 
   useEffect(() => {
     if (!selectedEmbedding) return
     // Already loaded at these dims?
-    if (embedding?.name === selectedEmbedding && (embedding?.dim_x ?? 0) === dimX && (embedding?.dim_y ?? 1) === dimY) return
+    const loadedZ = embedding?.dim_z ?? null
+    if (embedding?.name === selectedEmbedding
+        && (embedding?.dim_x ?? 0) === dimX
+        && (embedding?.dim_y ?? 1) === dimY
+        && loadedZ === dimZ) return
 
     setLoading(true)
-    fetchJson<EmbeddingData>(appendDataset(`${API_BASE}/embedding/${selectedEmbedding}?dim_x=${dimX}&dim_y=${dimY}`))
+    const zq = dimZ != null ? `&dim_z=${dimZ}` : ''
+    fetchJson<EmbeddingData>(appendDataset(`${API_BASE}/embedding/${selectedEmbedding}?dim_x=${dimX}&dim_y=${dimY}${zq}`))
       .then(setEmbedding)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
-  }, [selectedEmbedding, embedding, dimX, dimY, setEmbedding, setLoading, setError])
+  }, [selectedEmbedding, embedding, dimX, dimY, dimZ, setEmbedding, setLoading, setError])
 
   return embedding
 }

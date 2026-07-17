@@ -70,15 +70,6 @@ export default function ScatterPlot3D({
   // plot is colored by that column.
   const embeddingLabelColumn = useStore((state) => state.embeddingLabelColumn)
 
-  // Force exactly one re-render after mount. projectedLabels (computed in the
-  // render body) is guarded by containerRef.current, which is still null on the
-  // first render — the ref only attaches at commit. Without this nudge, labels
-  // stay empty until the user orbits/hovers. One tick paints them on entry.
-  const [, forceTick] = useState(0)
-  useEffect(() => {
-    forceTick((t) => t + 1)
-  }, [])
-
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
 
   // Exact same argument object ScatterPlot passes to useCellColor.
@@ -152,6 +143,18 @@ export default function ScatterPlot3D({
       maxZoom: 10,
     })
   }, [embedding.name, bounds, viewState])
+
+  // Force a re-render right after viewState first becomes non-null. Until then
+  // the component returns null (no container), so containerRef.current is still
+  // null when projectedLabels is first computed in the render body — the ref
+  // only attaches once the container commits. Keying on `viewState === null`
+  // fires this the moment the container exists (true -> false, once), painting
+  // labels on entry instead of waiting for the first orbit/hover. It does not
+  // re-fire during orbiting (viewState stays non-null).
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    forceTick((t) => t + 1)
+  }, [viewState === null])
 
   // Radius derivation mirrors ScatterPlot exactly so 2D and 3D point sizes match.
   const baseRadius = displayPreferences.pointSize

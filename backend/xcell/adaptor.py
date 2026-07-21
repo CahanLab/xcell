@@ -851,6 +851,259 @@ class DataAdaptor:
         self.adata.obs[obs_name] = sums.astype(float)
         return {"obs_name": obs_name, "n_genes_matched": n_matched}
 
+    def _species_prefix_candidates(self) -> list[str]:
+        """Per-gene genome-prefix candidate, aligned to var_names ('' if none).
+
+        CellRanger multi-genome references prefix every symbol with the genome
+        name followed by a run of underscores ("GRCh38_A1BG", "mm10___Xkr4").
+        The match is non-greedy so the shortest leading token wins, and the
+        lookahead keeps a trailing "ABC_" from swallowing the whole name.
+        """
+        import re
+        rx = re.compile(r'^(.+?_+)(?=.)')
+        out = []
+        for n in self.adata.var_names:
+            m = rx.match(str(n))
+            out.append(m.group(1) if m else '')
+        return out
+
+    def detect_species_prefixes(self, min_fraction: float = 0.01) -> dict[str, Any]:
+        """Report the genome/species prefixes present on var_names. Read-only.
+
+        A candidate counts as a genome only if it covers at least
+        ``min_fraction`` of genes (and at least 2), so ordinary symbols that
+        merely contain an underscore (MT_ND1, HLA_A) are not mistaken for one.
+
+        Returns {"prefixes": [{"prefix", "label", "n_genes"}, ...],
+        "n_unprefixed": int}, prefixes ordered by gene count descending.
+        """
+        from collections import Counter
+        cands = self._species_prefix_candidates()
+        threshold = max(2, int(np.ceil(min_fraction * len(cands))))
+        tally = Counter(c for c in cands if c)
+        kept = {p: n for p, n in tally.items()
+                if n >= threshold and p.rstrip('_')}
+        prefixes = [{"prefix": p, "label": p.rstrip('_'), "n_genes": int(n)}
+                    for p, n in sorted(kept.items(), key=lambda kv: (-kv[1], kv[0]))]
+        return {
+            "prefixes": prefixes,
+            "n_unprefixed": int(sum(1 for c in cands if c not in kept)),
+        }
+
+    def _assign_species_prefixes(self, prefixes: list[str], labels: list[str]):
+        """Match each gene to the longest prefix it starts with.
+
+        Longest-wins matters when one genome's prefix is a prefix of another's
+        ("mm10_" vs "mm10___"), which decides how much gets stripped.
+        """
+        order = sorted(range(len(prefixes)), key=lambda i: -len(prefixes[i]))
+        matched_prefix, matched_label = [], []
+        for n in self.adata.var_names:
+            name = str(n)
+            hit = ''
+            lab = ''
+            for i in order:
+                if name.startswith(prefixes[i]) and len(name) > len(prefixes[i]):
+                    hit, lab = prefixes[i], labels[i]
+                    break
+            matched_prefix.append(hit)
+            matched_label.append(lab)
+        return matched_prefix, matched_label
+
+    def rename_genes(
+        self, pattern: str, replacement: str = '', match_mode: str = 'regex',
+        make_unique: bool = False,
+    ) -> dict[str, Any]:
+        """Find/replace across gene symbols. An empty replacement strips the
+        match — the usual way to drop a species prefix ('^mm10___').
+
+        match_mode 'regex' applies re.sub (so ^ anchors and \\1 backreferences
+        work); 'literal' replaces the pattern as plain text everywhere it
+        occurs. Originals are preserved in .var['gene_symbol_original'] the
+        first time a rename happens.
+
+        Refuses when the result would collide two genes onto one name (unless
+        ``make_unique``), since that silently merges genes in every downstream
+        lookup. Raises ValueError if nothing matches, so typos are loud.
+        """
+        import re
+        if not pattern:
+            raise ValueError("pattern must be non-empty")
+        if match_mode not in ('regex', 'literal'):
+            raise ValueError("match_mode must be 'regex' or 'literal'")
+
+        old_names = [str(n) for n in self.adata.var_names]
+        if match_mode == 'regex':
+            try:
+                rx = re.compile(pattern)
+            except re.error as e:
+                raise ValueError(f"invalid regex '{pattern}': {e}")
+            new_names = [rx.sub(replacement, n) for n in old_names]
+        else:
+            new_names = [n.replace(pattern, replacement) for n in old_names]
+
+        changed = [(o, n) for o, n in zip(old_names, new_names) if o != n]
+        if not changed:
+            raise ValueError(f"no gene names match {match_mode} '{pattern}'")
+
+        blank = [o for o, n in zip(old_names, new_names) if not n]
+        if blank:
+            raise ValueError(
+                f"the replacement would leave {len(blank)} gene(s) with an "
+                f"empty name (e.g. {blank[0]}) — narrow the pattern")
+
+        dupes = pd.Index(new_names)
+        dupes = dupes[dupes.duplicated()].unique().tolist()
+        if dupes and not make_unique:
+            shown = ', '.join(map(str, dupes[:5]))
+            more = f" (+{len(dupes) - 5} more)" if len(dupes) > 5 else ""
+            raise ValueError(
+                f"renaming would create {len(dupes)} duplicate gene name(s): "
+                f"{shown}{more}. Narrow the pattern, or pass make_unique to "
+                f"disambiguate.")
+
+        # Keep the true originals: never overwrite on a repeat rename.
+        if 'gene_symbol_original' not in self.adata.var.columns:
+            self.adata.var['gene_symbol_original'] = old_names
+        index_name = self.adata.var.index.name
+        # swap_var_index names the index after a column it then drops, so the
+        # name we just re-created a column for can collide. h5ad cannot store
+        # an index whose name is also a column with different values.
+        if index_name in self.adata.var.columns:
+            index_name = None
+        self.adata.var.index = pd.Index(new_names)
+        self.adata.var.index.name = index_name
+        if dupes:
+            self.adata.var_names_make_unique()
+        # The normalized copy still carries the old names; drop it. The UCell
+        # rank cache is keyed by position, not name, and the matrix is
+        # untouched by a rename, so it stays valid.
+        self._normalized_adata = None
+
+        return {
+            "n_renamed": len(changed),
+            "n_genes": len(new_names),
+            "n_duplicates": len(dupes),
+            "examples": [{"before": o, "after": n} for o, n in changed[:5]],
+        }
+
+    def add_var_species_column(
+        self, species_column: str = 'species', prefixes=None, labels=None,
+        min_fraction: float = 0.01, unknown_label: str = 'unknown',
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Annotate each gene with its species/genome in a .var column.
+
+        The column is derived from CellRanger-style prefixes on var_names
+        unless ``prefixes`` (comma-separated or list) names them explicitly.
+        An existing column is kept as-is unless ``overwrite``, so re-running
+        is safe.
+
+        Run this before stripping prefixes with rename_genes: once species
+        lives in .var, sum_counts_by_species keeps working on bare symbols.
+        """
+        detected = self.detect_species_prefixes(min_fraction)
+        if prefixes is None:
+            prefix_list = [p["prefix"] for p in detected["prefixes"]]
+        else:
+            if isinstance(prefixes, str):
+                prefixes = [p.strip() for p in prefixes.split(',') if p.strip()]
+            prefix_list = list(prefixes)
+            if not prefix_list:
+                raise ValueError("prefixes must be non-empty when provided")
+
+        if labels is None:
+            label_list = [p.rstrip('_') for p in prefix_list]
+        else:
+            if isinstance(labels, str):
+                labels = [s.strip() for s in labels.split(',') if s.strip()]
+            label_list = list(labels)
+            if len(label_list) != len(prefix_list):
+                raise ValueError(
+                    f"labels ({len(label_list)}) must match the number of "
+                    f"prefixes ({len(prefix_list)})")
+
+        matched_prefix, matched_label = self._assign_species_prefixes(
+            prefix_list, label_list)
+
+        if prefixes is not None:
+            unmatched = [p for p in prefix_list if p not in set(matched_prefix)]
+            if unmatched:
+                raise ValueError(
+                    f"no genes start with prefix(es): {', '.join(unmatched)}")
+
+        derive = overwrite or species_column not in self.adata.var.columns
+        if derive:
+            if not prefix_list:
+                raise ValueError(
+                    "no species prefix found on gene names — pass prefixes "
+                    "explicitly, or the symbols may already be stripped")
+            assigned = np.array(
+                [lab or unknown_label for lab in matched_label], dtype=object)
+            cats = [c for c in (list(dict.fromkeys(label_list)) + [unknown_label])
+                    if c in set(assigned.tolist())]
+            self.adata.var[species_column] = pd.Categorical(assigned, categories=cats)
+
+        col = self.adata.var[species_column].astype(str)
+        counts = {k: int(v) for k, v in col.value_counts().items() if v}
+        return {
+            "species_column": species_column,
+            "counts": counts,
+            "derived": bool(derive),
+            "prefixes": detected["prefixes"],
+            "n_unknown": int(counts.get(unknown_label, 0)),
+        }
+
+    def sum_counts_by_species(
+        self, species_column: str = 'species', layer: str = 'counts',
+        suffix: str = '_counts', include_unknown: bool = False,
+        unknown_label: str = 'unknown',
+    ) -> dict[str, Any]:
+        """Sum per-cell UMIs for each species in a .var species column.
+
+        Writes one .obs column per species ("GRCh38_counts", "mm10_counts"),
+        which feed straight into assign_species. Unlike sum_counts_by_pattern
+        this reads the .var annotation instead of re-matching gene names, so it
+        still works once the genome prefixes have been stripped.
+        """
+        import scipy.sparse as sp
+        var = self.adata.var
+        if species_column not in var.columns:
+            raise ValueError(
+                f"var column '{species_column}' not found — "
+                f"run add_var_species_column first")
+        col = var[species_column].astype(str)
+        src = layer if layer else 'counts'
+        M = (self.adata.layers[src]
+             if (src != 'X' and src in self.adata.layers) else self.adata.X)
+
+        series = var[species_column]
+        if isinstance(series.dtype, pd.CategoricalDtype):
+            ordered = [str(c) for c in series.cat.categories]
+        else:
+            ordered = [str(c) for c in pd.unique(col)]
+
+        obs_columns: list[str] = []
+        n_genes: dict[str, int] = {}
+        for lab in ordered:
+            if lab == unknown_label and not include_unknown:
+                continue
+            mask = (col == lab).to_numpy()
+            if not mask.any():
+                continue
+            sub = M[:, mask]
+            sums = (np.asarray(sub.sum(axis=1)).ravel() if sp.issparse(sub)
+                    else np.asarray(sub).sum(axis=1).ravel())
+            name = f"{lab}{suffix}"
+            self.adata.obs[name] = sums.astype(float)
+            obs_columns.append(name)
+            n_genes[lab] = int(mask.sum())
+
+        if not obs_columns:
+            raise ValueError(
+                f"no species to count in .var['{species_column}']")
+        return {"obs_columns": obs_columns, "n_genes": n_genes, "layer": src}
+
     def assign_species(
         self, count_columns, labels=None, obs_name: str = 'species',
         threshold: float = 0.9,
@@ -2568,6 +2821,13 @@ class DataAdaptor:
 
         # Work with a copy to avoid modifying the live data
         adata_export = self.adata.copy()
+
+        # h5ad refuses to write a frame whose index.name is also a column with
+        # different values. The name is cosmetic, so drop it rather than let a
+        # whole export fail; the column keeps its data either way.
+        for frame in (adata_export.var, adata_export.obs):
+            if frame.index.name in frame.columns:
+                frame.index.name = None
 
         if not self._drawn_lines:
             return adata_export

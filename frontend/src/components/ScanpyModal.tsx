@@ -334,6 +334,17 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
   gene_analysis: {
     label: 'Genes',
     functions: {
+      rename_genes: {
+        label: 'Rename genes',
+        description: 'Find and replace across gene symbols. Leave the replacement blank to strip the match — the usual way to drop a species prefix like mm10___. Originals are kept in .var.gene_symbol_original.',
+        prerequisites: [],
+        params: [
+          { name: 'pattern', label: 'Find', type: 'text', default: '^(GRCh38|mm10)_+', description: 'Regex (e.g. ^mm10___ to anchor at the start) or plain text in literal mode' },
+          { name: 'replacement', label: 'Replace with', type: 'text', default: '', description: 'Blank strips the match. Regex mode supports backreferences (\\1).' },
+          { name: 'match_mode', label: 'Match mode', type: 'select', default: 'regex', options: ['regex', 'literal'], description: 'literal treats the pattern as plain text (no ^ . * special meaning)' },
+          { name: 'make_unique', label: 'Make duplicates unique', type: 'select', default: 'false', options: ['false', 'true'], description: 'Only if the rename would collide two genes onto one name — otherwise it refuses' },
+        ],
+      },
       add_var_boolean: {
         label: 'Add boolean column',
         description: 'Flag genes whose names match a prefix/regex as a boolean .var column (e.g. mt from ^mt-, or a species). Usable as a QC var.',
@@ -455,9 +466,41 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
   multigenome: {
     label: 'Multi-genome',
     functions: {
+      detect_species_prefixes: {
+        label: 'Detect species prefixes',
+        description: 'Preview the CellRanger genome prefixes on your gene names (e.g. GRCh38_, mm10___) and how many genes carry each. Read-only — changes nothing.',
+        prerequisites: [],
+        params: [
+          { name: 'min_fraction', label: 'Min gene fraction', type: 'number', default: 0.01, description: 'Minimum share of genes a prefix must cover to count as a genome (keeps MT_ND1-style symbols from matching)' },
+        ],
+      },
+      add_var_species_column: {
+        label: 'Add species column (.var)',
+        description: 'Label each gene with its species in a .var column, derived from the genome prefix. Run this before stripping prefixes (Genes → Rename genes) so species counting keeps working on bare symbols.',
+        prerequisites: [],
+        params: [
+          { name: 'species_column', label: 'Output column', type: 'text', default: 'species', description: 'New categorical .var column (kept as-is if it already exists)' },
+          { name: 'prefixes', label: 'Prefixes (optional)', type: 'text', default: null, description: 'Comma-separated, e.g. GRCh38_, mm10___. Blank auto-detects.' },
+          { name: 'labels', label: 'Labels (optional)', type: 'text', default: null, description: 'Comma-separated species names aligned to the prefixes (e.g. human, mouse)' },
+          { name: 'min_fraction', label: 'Min gene fraction', type: 'number', default: 0.01, description: 'Detection threshold; ignored when prefixes are given' },
+          { name: 'unknown_label', label: 'Unknown label', type: 'text', default: 'unknown', description: 'Label for genes carrying no genome prefix' },
+          { name: 'overwrite', label: 'Overwrite existing column', type: 'select', default: 'false', options: ['false', 'true'], description: 'Re-derive even if the column already exists' },
+        ],
+      },
+      sum_counts_by_species: {
+        label: 'Sum species counts (from .var)',
+        description: 'Sum UMIs per species per cell using the .var species column, writing one .obs column per species. Works after prefixes are stripped. Feed the result into Assign species.',
+        prerequisites: [],
+        params: [
+          { name: 'species_column', label: 'Species column (.var)', type: 'text', default: 'species', description: 'The .var column added by "Add species column"' },
+          { name: 'layer', label: 'Source matrix', type: 'layer_select', default: 'counts', description: 'Counts layer to sum (falls back to .X)' },
+          { name: 'suffix', label: 'Column suffix', type: 'text', default: '_counts', description: 'Appended to each species label to name its .obs column' },
+          { name: 'include_unknown', label: 'Include unknown genes', type: 'select', default: 'false', options: ['false', 'true'], description: 'Also write a counts column for genes with no genome prefix' },
+        ],
+      },
       sum_counts_by_pattern: {
-        label: 'Sum species counts',
-        description: 'Sum counts of genes whose names match a prefix or regex into a new .obs column (e.g. GRCh38_ for human, mm10_ for mouse in a PDX).',
+        label: 'Sum species counts (by name)',
+        description: 'Sum counts of genes whose names match a prefix or regex into a new .obs column (e.g. GRCh38_ for human, mm10_ for mouse in a PDX). Breaks once prefixes are stripped — prefer the .var version above.',
         prerequisites: [],
         params: [
           { name: 'pattern', label: 'Gene-name pattern', type: 'text', default: 'GRCh38_', description: 'Prefix (e.g. GRCh38_) or regex (e.g. ^mm10)' },
@@ -827,7 +870,7 @@ export default function ScanpyModal() {
 
   // Load layer + graph lists when any function that consumes them is selected.
   useEffect(() => {
-    const needsLayers = ['smooth', 'gene_pca', 'gene_neighbors', 'build_gene_graph', 'sum_counts_by_pattern'].includes(selectedFunction)
+    const needsLayers = ['smooth', 'gene_pca', 'gene_neighbors', 'build_gene_graph', 'sum_counts_by_pattern', 'sum_counts_by_species'].includes(selectedFunction)
     const needsGraphs = ['smooth'].includes(selectedFunction)
     if (!needsLayers && !needsGraphs) return
     if (needsLayers) {
@@ -1203,7 +1246,34 @@ export default function ScanpyModal() {
 
       // Build result message
       let message = 'Completed successfully'
-      if (data.n_genes_removed !== undefined && data.removed_genes) {
+      if (data.prefixes !== undefined && data.species_column === undefined) {
+        // detect_species_prefixes — read-only preview
+        const found = (data.prefixes as { prefix: string; n_genes: number }[]) || []
+        message = found.length === 0
+          ? 'No genome prefixes detected — gene symbols already look unprefixed.'
+          : `Found ${found.length} genome prefix${found.length === 1 ? '' : 'es'}: ` +
+            `${found.map((p) => `${p.prefix} (${p.n_genes.toLocaleString()} genes)`).join(', ')}` +
+            `${data.n_unprefixed ? `; ${Number(data.n_unprefixed).toLocaleString()} unprefixed` : ''}`
+      } else if (data.species_column !== undefined) {
+        // add_var_species_column
+        const counts = Object.entries((data.counts as Record<string, number>) || {})
+          .map(([k, v]) => `${k} ${v.toLocaleString()}`).join(', ')
+        const kept = data.derived ? '' : ' (existing column kept — use Overwrite to re-derive)'
+        message = `.var["${data.species_column}"]: ${counts}${kept}.`
+      } else if (data.n_renamed !== undefined) {
+        // rename_genes
+        const eg = (data.examples as { before: string; after: string }[]) || []
+        const preview = eg.map((e) => `${e.before} → ${e.after}`).join(', ')
+        const dup = data.n_duplicates
+          ? ` ${Number(data.n_duplicates).toLocaleString()} collision(s) made unique.`
+          : ''
+        message = `Renamed ${Number(data.n_renamed).toLocaleString()} of ${Number(data.n_genes).toLocaleString()} genes: ${preview}${eg.length < Number(data.n_renamed) ? '...' : ''}${dup}`
+      } else if (data.obs_columns !== undefined && data.n_genes !== undefined) {
+        // sum_counts_by_species
+        const per = Object.entries((data.n_genes as Record<string, number>) || {})
+          .map(([k, v]) => `${k} ${v.toLocaleString()} genes`).join(', ')
+        message = `Wrote ${(data.obs_columns as string[]).join(', ')} from ${per}. Feed these into "Assign species".`
+      } else if (data.n_genes_removed !== undefined && data.removed_genes) {
         // exclude_genes — show some removed names
         const preview = data.removed_genes.slice(0, 5).join(', ')
         message = `Removed ${data.n_genes_removed} genes (${data.n_genes_before} → ${data.n_genes_after}): ${preview}${data.n_genes_removed > 5 ? '...' : ''}`
@@ -1317,7 +1387,7 @@ export default function ScanpyModal() {
       addScanpyAction(actionRecord)
 
       // Refresh schema if data shape may have changed
-      if (['filter_genes', 'exclude_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize', 'embedding_from_obs', 'sum_counts_by_pattern', 'assign_species', 'add_var_boolean', 'calculate_qc_metrics'].includes(selectedFunction)) {
+      if (['filter_genes', 'exclude_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize', 'embedding_from_obs', 'sum_counts_by_pattern', 'sum_counts_by_species', 'add_var_species_column', 'rename_genes', 'assign_species', 'add_var_boolean', 'calculate_qc_metrics'].includes(selectedFunction)) {
         await refreshSchema()
         // Also refresh obs summaries so Cell Manager shows new/updated columns (e.g. leiden clusters, contour levels)
         refreshObsSummaries()

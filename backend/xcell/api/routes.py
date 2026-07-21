@@ -1919,6 +1919,93 @@ def scanpy_assign_species(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class DetectSpeciesPrefixesRequest(BaseModel):
+    min_fraction: float = 0.01
+
+
+@router.post("/scanpy/detect_species_prefixes")
+def scanpy_detect_species_prefixes(
+    request: DetectSpeciesPrefixesRequest, dataset: str | None = Query(None)
+):
+    """Report CellRanger genome prefixes on gene names. Read-only preview."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.detect_species_prefixes(min_fraction=request.min_fraction)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class AddVarSpeciesColumnRequest(BaseModel):
+    species_column: str = "species"
+    prefixes: str | None = None  # comma-separated, optional (auto-detect)
+    labels: str | None = None  # comma-separated, optional
+    min_fraction: float = 0.01
+    unknown_label: str = "unknown"
+    overwrite: bool = False
+
+
+@router.post("/scanpy/add_var_species_column")
+def scanpy_add_var_species_column(
+    request: AddVarSpeciesColumnRequest, dataset: str | None = Query(None)
+):
+    """Add a species .var column derived from genome prefixes on gene names."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.add_var_species_column(
+            species_column=request.species_column, prefixes=request.prefixes,
+            labels=request.labels, min_fraction=request.min_fraction,
+            unknown_label=request.unknown_label, overwrite=request.overwrite,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class RenameGenesRequest(BaseModel):
+    pattern: str
+    replacement: str = ""
+    match_mode: str = "regex"
+    make_unique: bool = False
+
+
+@router.post("/scanpy/rename_genes")
+def scanpy_rename_genes(
+    request: RenameGenesRequest, dataset: str | None = Query(None)
+):
+    """Find/replace across gene symbols; an empty replacement strips the match."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.rename_genes(
+            pattern=request.pattern, replacement=request.replacement,
+            match_mode=request.match_mode, make_unique=request.make_unique,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class SumCountsBySpeciesRequest(BaseModel):
+    species_column: str = "species"
+    layer: str = "counts"
+    suffix: str = "_counts"
+    include_unknown: bool = False
+    unknown_label: str = "unknown"
+
+
+@router.post("/scanpy/sum_counts_by_species")
+def scanpy_sum_counts_by_species(
+    request: SumCountsBySpeciesRequest, dataset: str | None = Query(None)
+):
+    """Sum per-cell UMIs per species using the .var species column."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.sum_counts_by_species(
+            species_column=request.species_column, layer=request.layer,
+            suffix=request.suffix, include_unknown=request.include_unknown,
+            unknown_label=request.unknown_label,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 class AddVarBooleanRequest(BaseModel):
     name: str
     pattern: str

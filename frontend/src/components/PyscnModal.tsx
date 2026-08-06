@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { appendDataset, pollTask, refreshSchema, useObsSummaries } from '../hooks/useData'
 import { useStore } from '../store'
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './LayerScaleInfo'
+import { datasetIdentity } from '../lib/datasetIdentity'
 
 /**
  * PySingleCellNet cell-type classification.
@@ -117,6 +118,11 @@ export default function PyscnModal() {
   const setOpen = useStore((s) => s.setPyscnModalOpen)
   const selectColorColumn = useStore((s) => s.setSelectedColorColumn)
   const setColorMode = useStore((s) => s.setColorMode)
+  const activeSlot = useStore((s) => s.activeSlot)
+  const schema = useStore((s) => s.schema)
+  // Everything below describes one specific dataset. Loading a different file —
+  // including into the slot already selected — invalidates all of it.
+  const dataset = datasetIdentity(activeSlot, schema)
   const { refresh: refreshObs } = useObsSummaries()
 
   const [tab, setTab] = useState<'classify' | 'train'>('classify')
@@ -147,6 +153,16 @@ export default function PyscnModal() {
   const [sourceScale, setSourceScale] = useState('auto')
   const [trainResult, setTrainResult] = useState<TrainResult | null>(null)
 
+  // Drop anything computed against a dataset that is no longer loaded. Results
+  // and the gene-coverage inspection are the dangerous ones: left on screen
+  // they describe the wrong data while looking authoritative.
+  useEffect(() => {
+    setResult(null)
+    setTrainResult(null)
+    setInspection(null)
+    setError(null)
+  }, [dataset])
+
   useEffect(() => {
     if (!isOpen) return
     setError(null)
@@ -154,12 +170,24 @@ export default function PyscnModal() {
       .then((r) => r.json())
       .then((s: Status) => {
         setStatus(s)
-        if (s.categorical_obs?.length && !groupby) setGroupby(s.categorical_obs[0])
+        // Keep the current choices only if they still exist here.
+        const names = (s.layers ?? []).map((l) => l.name)
+        setLayer((cur) => (names.includes(cur) ? cur : 'X'))
+        const cats = s.categorical_obs ?? []
+        setGroupby((cur) => (cats.includes(cur) ? cur : (cats[0] ?? '')))
       })
       .catch((e) => setError(String(e)))
-    // groupby is a seed-once default; re-running on its change would fight the user.
+  }, [isOpen, dataset])
+
+  // Re-check the classifier against the new data rather than making the user
+  // remember to. The path is still valid; only what it was measured against
+  // changed.
+  useEffect(() => {
+    if (!isOpen || !path.trim() || inspection) return
+    inspect()
+    // `inspect` is stable per path; re-running on `inspection` would loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen])
+  }, [isOpen, dataset])
 
   useEffect(() => {
     if (!isOpen) return
@@ -278,6 +306,18 @@ export default function PyscnModal() {
           </h3>
           <span style={{ fontSize: 11, color: dark.faint }}>
             {status?.available ? `v${status.version}` : 'not installed'}
+          </span>
+        </div>
+
+        {/* Which dataset this acts on. With two slots loaded and results that
+            persist on screen, "what am I about to classify?" must never be a
+            guess. */}
+        <div style={{ fontSize: 11, color: dark.sub, marginTop: 4 }}>
+          <span style={{ color: dark.faint }}>Dataset: </span>
+          <code style={{ color: dark.text }}>{schema?.filename ?? '—'}</code>
+          <span style={{ color: dark.faint }}>
+            {' '}({activeSlot}
+            {schema ? `, ${schema.n_cells.toLocaleString()} cells` : ''})
           </span>
         </div>
 

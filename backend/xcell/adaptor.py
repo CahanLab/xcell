@@ -486,14 +486,15 @@ class DataAdaptor:
             else:
                 obs_dtypes[col] = "string"
 
-        # Gene-set score matrices (registered in .uns) → their column (set) names,
-        # so the UI can offer columns for color-by-score and embed-from-two-scores.
+        # Score matrices → their column names, so the UI can offer columns for
+        # color-by-score and embed-from-two-scores. Sources are the xcell
+        # registry in .uns and any .obsm stored as a labelled DataFrame (how
+        # PySingleCellNet and friends write theirs).
         score_matrices: dict[str, list[str]] = {}
-        reg = self.adata.uns.get('xcell_score_matrices')
-        if isinstance(reg, dict):
-            for slot, meta in reg.items():
-                if slot in self.adata.obsm and isinstance(meta, dict) and 'columns' in meta:
-                    score_matrices[str(slot)] = [str(c) for c in meta['columns']]
+        for key in self.adata.obsm.keys():
+            cols = self._score_matrix_columns(str(key))
+            if cols:
+                score_matrices[str(key)] = cols
 
         return {
             "n_cells": self.n_cells,
@@ -530,10 +531,22 @@ class DataAdaptor:
         d = int(dim)
         return d if 0 <= d < ncols else 0
 
+    def _obsm_array(self, name: str) -> np.ndarray:
+        """An .obsm entry as a positionally-indexable float array.
+
+        DataFrames land in .obsm whenever a tool that labels its columns wrote
+        them (PySingleCellNet's SCN_score, for one). Everything downstream of
+        here indexes by column number, so unwrap once at the boundary.
+        """
+        arr = self.adata.obsm[name]
+        if isinstance(arr, pd.DataFrame):
+            return arr.to_numpy(dtype=np.float64, copy=False)
+        return np.asarray(arr)
+
     def _view_coords(self, name: str, dim_x: int = 0, dim_y: int = 1) -> np.ndarray:
         """The two chosen columns of an .obsm matrix as an (n_cells, 2) float array."""
         dx, dy = self._clamp_dims(name, dim_x, dim_y)
-        return np.asarray(self.adata.obsm[name][:, [dx, dy]], dtype=np.float64)
+        return np.asarray(self._obsm_array(name)[:, [dx, dy]], dtype=np.float64)
 
     def _line_view_coords(self, line: dict[str, Any]) -> np.ndarray:
         """Embedding coordinates for a drawn line, on the columns it was drawn on.
@@ -568,8 +581,9 @@ class DataAdaptor:
         if name not in self.adata.obsm:
             raise KeyError(f"Embedding '{name}' not found. Available: {list(self.adata.obsm.keys())}")
 
+        arr = self._obsm_array(name)
         dx, dy = self._clamp_dims(name, dim_x, dim_y)
-        coords_2d = self.adata.obsm[name][:, [dx, dy]]
+        coords_2d = arr[:, [dx, dy]]
 
         result = {
             "name": name,
@@ -579,7 +593,7 @@ class DataAdaptor:
         }
         if dim_z is not None:
             dz = self._clamp_one_dim(name, dim_z)
-            result["z"] = np.asarray(self.adata.obsm[name][:, dz], dtype=float).tolist()
+            result["z"] = np.asarray(arr[:, dz], dtype=float).tolist()
             result["dim_z"] = dz
         return result
 
@@ -722,14 +736,28 @@ class DataAdaptor:
         }
 
     def _score_matrix_columns(self, obsm_name: str) -> list[str] | None:
-        """Registered column (set) names for a score matrix, or None."""
+        """Registered column (set) names for a score matrix, or None.
+
+        Falls back to a DataFrame's own column labels when the matrix carries
+        them. Matrices written by other tools arrive that way — PySingleCellNet
+        stores ``obsm['SCN_score']`` as a DataFrame of per-class scores — and
+        those names are just as authoritative as the xcell registry's.
+        """
         reg = self.adata.uns.get('xcell_score_matrices')
-        if not isinstance(reg, dict):
-            return None
-        meta = reg.get(obsm_name)
-        if not isinstance(meta, dict) or 'columns' not in meta:
-            return None
-        return [str(c) for c in meta['columns']]
+        if isinstance(reg, dict):
+            meta = reg.get(obsm_name)
+            if isinstance(meta, dict) and 'columns' in meta:
+                return [str(c) for c in meta['columns']]
+        arr = self.adata.obsm.get(obsm_name)
+        if isinstance(arr, pd.DataFrame):
+            return [str(c) for c in arr.columns]
+        return None
+
+    def _obsm_values(self, obsm_name: str, idx: int) -> np.ndarray:
+        """One column of an .obsm matrix as a float array, DataFrame or not."""
+        arr = self.adata.obsm[obsm_name]
+        col = arr.iloc[:, idx] if isinstance(arr, pd.DataFrame) else arr[:, idx]
+        return np.asarray(col, dtype=np.float64)
 
     def _resolve_obsm_column_index(self, obsm_name: str, column: str) -> int:
         """Column index for a named (registry) or integer-string column."""
@@ -750,7 +778,7 @@ class DataAdaptor:
     def get_obsm_column(self, obsm_name: str, column: str) -> dict[str, Any]:
         """Per-cell values of a named column of an ``.obsm`` matrix (for coloring)."""
         idx = self._resolve_obsm_column_index(obsm_name, column)
-        vals = np.asarray(self.adata.obsm[obsm_name][:, idx], dtype=np.float64)
+        vals = self._obsm_values(obsm_name, idx)
         valid = vals[~np.isnan(vals)]
         return {
             "obsm_name": obsm_name,
@@ -7940,3 +7968,360 @@ class DataAdaptor:
             'gene_subset_type': subset_type,
             'n_genes_tested': work_adata.n_vars,
         }
+
+    # ------------------------------------------------------------------
+    # PySingleCellNet cell-type classification (optional dependency)
+    # ------------------------------------------------------------------
+
+    def pyscn_status(self) -> dict[str, Any]:
+        """Whether PySingleCellNet is importable, plus this dataset's context.
+
+        The UI calls this on modal open to decide between showing the feature
+        and showing install instructions, and to pre-fill the pickers.
+        """
+        from xcell import pyscn
+
+        status = dict(pyscn.availability())
+        status['n_cells'] = self.n_cells
+        status['n_genes'] = self.n_genes
+        status['layers'] = self.list_layers()
+        status['categorical_obs'] = [
+            c for c in self.adata.obs.columns
+            if pd.api.types.is_categorical_dtype(self.adata.obs[c].dtype)
+        ]
+        status['existing_runs'] = sorted(
+            (self.adata.uns.get('pyscn') or {}).keys()
+        ) if isinstance(self.adata.uns.get('pyscn'), dict) else []
+        return status
+
+    def pyscn_inspect_classifier(self, path: str) -> dict[str, Any]:
+        """Describe a classifier file and how well it fits this dataset.
+
+        Deliberately available whether or not PySingleCellNet is installed —
+        unpickling and comparing gene lists needs only sklearn — so a user can
+        check a classifier against their data before committing to the install.
+
+        Raises:
+            ValueError: The file is missing or is not a classifier.
+        """
+        from xcell import pyscn
+
+        clf, meta = pyscn.load_classifier(path)
+        return {
+            'classifier': meta,
+            'gene_overlap': pyscn.assess_gene_overlap(self.adata.var_names, clf),
+            'colors': pyscn.classifier_colors_hex(clf),
+        }
+
+    def prepare_pyscn_classify(
+        self,
+        path: str,
+        *,
+        key: str = 'SCN',
+        layer: str | None = None,
+        case_insensitive: bool = False,
+        categorize: bool = True,
+        quantile: float = 0.05,
+        chunk_size: int = 20_000,
+    ) -> tuple[Any, Any]:
+        """Classify this dataset's cells against a trained PySCN classifier.
+
+        Returns the ``(compute_fn, apply_fn)`` pair the task manager expects.
+        Validation happens here, synchronously, so a bad classifier or a
+        missing layer is a 400 rather than a failed background task.
+
+        The forest runs on a copy narrowed to the classifier's genes, so the
+        live AnnData is untouched until ``apply_fn``.
+
+        Args:
+            path: Path to the pickled classifier.
+            key: Prefix for everything written — ``<key>_class_argmax``,
+                ``<key>_class_score``, ``<key>_class_type`` in .obs and
+                ``<key>_score`` in .obsm. Re-running under a different key
+                keeps both results side by side.
+            layer: Expression source; None reads .X. The top-scoring-pair
+                transform is invariant to per-cell monotone rescaling, so
+                counts / CPM / log-normalized all behave identically — but
+                z-scored data does not, which the UI warns about.
+            case_insensitive: Match gene symbols ignoring case.
+            categorize: Also derive ``<key>_class_type``
+                (Singular / Ambiguous / None / Rand).
+            quantile: Per-class score quantile used as the threshold, as in
+                PySCN's ``comp_ct_thresh``.
+            chunk_size: Cells per prediction call.
+
+        Raises:
+            ValueError: Bad classifier, missing layer, or no gene overlap.
+        """
+        from xcell import pyscn
+
+        # Fail fast, on the request thread.
+        pyscn.import_pyscn()
+        clf, meta = pyscn.load_classifier(path)
+        if not str(key).strip():
+            raise ValueError("key must be a non-empty name")
+        key = str(key).strip()
+        overlap = pyscn.assess_gene_overlap(self.adata.var_names, clf)
+        query = pyscn.build_query_adata(
+            self.adata, clf, layer=layer, case_insensitive=case_insensitive,
+        )
+        colors = pyscn.classifier_colors_hex(clf)
+        snap_path, snap_key = str(path), key
+        snap_cat, snap_q, snap_chunk = bool(categorize), float(quantile), int(chunk_size)
+
+        def compute_fn(report=None):
+            def progress(frac, message=None):
+                if report is not None:
+                    report(frac, message)
+
+            progress(0.02, 'Running the random forest…')
+            scores = pyscn.classify_scores(
+                query, clf, chunk_size=snap_chunk, progress=progress,
+            )
+            return {
+                'scores': scores,
+                'classes': [str(c) for c in scores.columns],
+                'colors': colors,
+                'gene_overlap': overlap,
+                'key': snap_key,
+                'categorize': snap_cat,
+                'quantile': snap_q,
+                'classifier_path': snap_path,
+                'layer': layer or 'X',
+                'classifier': meta,
+            }
+
+        return compute_fn, self._apply_pyscn_result
+
+    def _apply_pyscn_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Write a classification into .obs / .obsm / .uns and summarize it.
+
+        Results are stored the way xcell already stores score matrices — a
+        float array in .obsm plus a column-name entry in
+        ``uns['xcell_score_matrices']`` — so the existing "color by score" and
+        "embed from two scores" UI picks them up with no new plumbing. Colors
+        from the classifier go to ``uns['<column>_colors']``, scanpy's
+        convention, which xcell's category palette already prefers over its
+        generated one.
+        """
+        from xcell import pyscn
+
+        scores = result['scores']
+        key = result['key']
+        classes = [str(c) for c in result['classes']]
+
+        summary = pyscn.summarize_scores(scores)
+        labels = summary['labels']
+
+        argmax_col = f'{key}_class_argmax'
+        score_col = f'{key}_class_score'
+        type_col = f'{key}_class_type'
+        obsm_key = f'{key}_score'
+
+        # Order categories the way the classifier does, keeping only those
+        # actually called — an unused class in the legend is noise.
+        present = [c for c in classes if c in set(labels)]
+        self.adata.obs[argmax_col] = pd.Categorical(
+            labels, categories=present, ordered=False,
+        )
+        self.adata.obs[score_col] = np.asarray(summary['confidence'], dtype=np.float32)
+
+        colors = result.get('colors') or {}
+        self.adata.uns[f'{argmax_col}_colors'] = [
+            colors.get(c, '#808080') for c in present
+        ]
+
+        thresholds: dict[str, float] = {}
+        class_types: list[str] = []
+        if result.get('categorize'):
+            thresholds = pyscn.compute_thresholds(
+                scores, labels, quantile=result.get('quantile', 0.05),
+            )
+            class_types = pyscn.derive_class_types(scores, labels, thresholds)
+            present_types = [t for t in pyscn.CLASS_TYPE_ORDER if t in set(class_types)]
+            self.adata.obs[type_col] = pd.Categorical(
+                class_types, categories=present_types, ordered=True,
+            )
+            self.adata.uns[f'{type_col}_colors'] = [
+                pyscn.CLASS_TYPE_COLORS[t] for t in present_types
+            ]
+
+        self.adata.obsm[obsm_key] = scores.to_numpy(dtype=np.float64, copy=True)
+        reg = self.adata.uns.get('xcell_score_matrices')
+        reg = dict(reg) if isinstance(reg, dict) else {}
+        reg[obsm_key] = {
+            'columns': classes,
+            'source': 'pyscn',
+            'layer': result.get('layer', 'X'),
+        }
+        self.adata.uns['xcell_score_matrices'] = reg
+
+        runs = self.adata.uns.get('pyscn')
+        runs = dict(runs) if isinstance(runs, dict) else {}
+        runs[key] = {
+            'classifier_path': result.get('classifier_path'),
+            'classes': classes,
+            'gene_overlap': result['gene_overlap'],
+            'thresholds': thresholds,
+            'quantile': result.get('quantile', 0.05),
+            'layer': result.get('layer', 'X'),
+            'obs_columns': [argmax_col, score_col] + ([type_col] if class_types else []),
+            'obsm_key': obsm_key,
+        }
+        self.adata.uns['pyscn'] = runs
+
+        # Composition, sorted by prevalence — the first thing anyone wants to
+        # see after a classification run.
+        counts = pd.Series(labels).value_counts()
+        conf = pd.Series(summary['confidence'], dtype=float)
+        composition = [
+            {
+                'name': str(name),
+                'n_cells': int(n),
+                'frac': float(n / len(labels)) if labels else 0.0,
+                'mean_score': float(conf[pd.Series(labels) == name].mean()),
+                'color': colors.get(str(name), '#808080'),
+                'threshold': thresholds.get(str(name)),
+            }
+            for name, n in counts.items()
+        ]
+
+        type_counts = pd.Series(class_types).value_counts() if class_types else pd.Series(dtype=int)
+        out = {
+            'key': key,
+            'n_cells': len(labels),
+            'classes': classes,
+            'composition': composition,
+            'class_types': [
+                {
+                    'name': str(t),
+                    'n_cells': int(type_counts.get(t, 0)),
+                    'frac': float(type_counts.get(t, 0) / len(class_types)),
+                    'color': pyscn.CLASS_TYPE_COLORS.get(str(t), '#808080'),
+                }
+                for t in pyscn.CLASS_TYPE_ORDER if type_counts.get(t, 0) > 0
+            ],
+            'gene_overlap': result['gene_overlap'],
+            'obs_columns': [argmax_col, score_col] + ([type_col] if class_types else []),
+            'argmax_column': argmax_col,
+            'score_column': score_col,
+            'type_column': type_col if class_types else None,
+            'obsm_key': obsm_key,
+            'thresholds': thresholds,
+            'classifier': result.get('classifier'),
+        }
+
+        self._log_action('pyscn_classify', {
+            'classifier_path': result.get('classifier_path'),
+            'key': key,
+            'layer': result.get('layer', 'X'),
+        }, {
+            'n_cells': out['n_cells'],
+            'n_classes': len(classes),
+            'gene_overlap': result['gene_overlap']['frac_found'],
+        })
+        return out
+
+    def prepare_pyscn_train(
+        self,
+        groupby: str,
+        out_path: str,
+        *,
+        n_cells_per_type: int | None = None,
+        n_top_genes: int = 30,
+        n_top_gene_pairs: int = 40,
+        n_trees: int = 1000,
+        n_rand: int | None = None,
+        n_comps: int = 30,
+        layer: str | None = None,
+    ) -> tuple[Any, Any]:
+        """Train a classifier on this dataset's labels and write it to disk.
+
+        Follows the PySCN quickstart: balance cells per type, normalize, pick
+        highly variable genes, then ``tl.train_classifier``. Preprocessing runs
+        on a copy, so training never mutates the loaded dataset — the training
+        scale PySCN wants (log-normalized) is often not the scale the user is
+        exploring in.
+
+        Args:
+            groupby: Categorical .obs column holding the cell type labels.
+            out_path: Where to write the pickled classifier.
+            n_cells_per_type: Cap per label, for class balance. None uses every
+                cell, which biases the forest toward abundant types.
+            n_top_genes, n_top_gene_pairs, n_trees, n_rand, n_comps: PySCN
+                training parameters, same meanings as upstream.
+            layer: Source counts; None reads .X.
+
+        Raises:
+            ValueError: Missing package, bad column, too few labels/cells, or
+                an unwritable output path.
+        """
+        from xcell import pyscn
+
+        pyscn.import_pyscn()
+
+        if groupby not in self.adata.obs.columns:
+            raise ValueError(f"obs column '{groupby}' not found")
+        labels = self.adata.obs[groupby]
+        n_labels = int(pd.Series(labels).nunique(dropna=True))
+        if n_labels < 2:
+            raise ValueError(
+                f"'{groupby}' has {n_labels} distinct label(s); training needs "
+                "at least 2 cell types."
+            )
+        if layer not in (None, '', 'X') and layer not in self.adata.layers:
+            raise ValueError(
+                f"Layer '{layer}' not found. Available: "
+                f"['X'] + {sorted(self.adata.layers.keys())}"
+            )
+
+        # PySCN cannot encode a gene whose symbol contains '_'. Training drops
+        # those; if that leaves nothing, say so now rather than after the user
+        # waits through a forest fit.
+        usable = self.n_genes - len(pyscn.underscore_gene_names(self.adata.var_names))
+        if usable < pyscn.MIN_TRAINING_GENES:
+            raise ValueError(
+                f"Only {usable} of this dataset's {self.n_genes} gene symbols "
+                "are free of underscores. PySingleCellNet encodes gene pairs "
+                "as 'geneA_geneB' and splits on '_', so genes whose own names "
+                "contain one cannot be used. Rename them (Genes panel → "
+                "rename gene symbols) and train again."
+            )
+
+        out = Path(out_path).expanduser()
+        if out.suffix not in ('.pkl', '.pickle'):
+            out = out.with_suffix('.pkl')
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise ValueError(f"Cannot write to {out.parent}: {e}")
+
+        # Copy now, on the request thread, so the background job can never see
+        # a half-mutated AnnData.
+        train_src = self.adata.copy()
+        snap = {
+            'groupby': groupby, 'out': out, 'n_cells_per_type': n_cells_per_type,
+            'n_top_genes': int(n_top_genes), 'n_top_gene_pairs': int(n_top_gene_pairs),
+            'n_trees': int(n_trees), 'n_rand': n_rand, 'n_comps': int(n_comps),
+            'layer': layer,
+        }
+
+        def compute_fn(report=None):
+            def progress(frac, message=None):
+                if report is not None:
+                    report(frac, message)
+
+            return pyscn.train_and_save(train_src, snap, progress)
+
+        def apply_fn(result):
+            self._log_action('pyscn_train', {
+                'groupby': snap['groupby'],
+                'out_path': str(snap['out']),
+                'n_trees': snap['n_trees'],
+            }, {
+                'n_classes': len(result['classifier']['cell_type_classes']),
+                'n_cells_used': result['n_cells_used'],
+            })
+            return result
+
+        return compute_fn, apply_fn

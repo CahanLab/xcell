@@ -3088,3 +3088,100 @@ def cluster_gene_set_route(req: ClusterGeneSetRequest, dataset: str | None = Que
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"clusters": clusters}
+
+
+# --- PySingleCellNet cell-type classification (optional dependency) ---
+
+class PyscnInspectRequest(BaseModel):
+    path: str
+
+
+class PyscnClassifyRequest(BaseModel):
+    path: str
+    key: str = 'SCN'
+    layer: str | None = None
+    case_insensitive: bool = False
+    categorize: bool = True
+    quantile: float = 0.05
+
+
+class PyscnTrainRequest(BaseModel):
+    groupby: str
+    out_path: str
+    n_cells_per_type: int | None = 100
+    n_top_genes: int = 30
+    n_top_gene_pairs: int = 40
+    n_trees: int = 1000
+    n_rand: int | None = None
+    n_comps: int = 30
+    layer: str | None = None
+
+
+@router.get("/pyscn/status")
+def pyscn_status(dataset: str | None = Query(None)):
+    """Whether PySingleCellNet is installed, plus this dataset's pickers.
+
+    Always 200 — "not installed" is a state the UI renders, not an error.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.pyscn_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/pyscn/inspect_classifier")
+def pyscn_inspect_classifier(request: PyscnInspectRequest, dataset: str | None = Query(None)):
+    """Describe a classifier pickle and how well its genes cover this dataset."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.pyscn_inspect_classifier(request.path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/pyscn/classify", status_code=202)
+def pyscn_classify(request: PyscnClassifyRequest, dataset: str | None = Query(None)):
+    """Classify cells against a trained classifier (cancellable background task)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_pyscn_classify(
+            request.path,
+            key=request.key,
+            layer=request.layer,
+            case_insensitive=request.case_insensitive,
+            categorize=request.categorize,
+            quantile=request.quantile,
+        )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/pyscn/train", status_code=202)
+def pyscn_train(request: PyscnTrainRequest, dataset: str | None = Query(None)):
+    """Train a classifier from this dataset's labels (cancellable background task)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_pyscn_train(
+            request.groupby,
+            request.out_path,
+            n_cells_per_type=request.n_cells_per_type,
+            n_top_genes=request.n_top_genes,
+            n_top_gene_pairs=request.n_top_gene_pairs,
+            n_trees=request.n_trees,
+            n_rand=request.n_rand,
+            n_comps=request.n_comps,
+            layer=request.layer,
+        )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

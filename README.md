@@ -104,7 +104,15 @@ In the **first** terminal:
 
 ```bash
 pixi run backend  # FastAPI on http://localhost:8000
+                  # (or `pixi run -e pyscn backend` if you installed that environment)
 ```
+
+**Wait for it to print `Application startup complete.`** before using the app.
+The very first start in a freshly installed environment can take **up to a
+minute** — Python is compiling caches for the whole scientific stack — versus a
+few seconds on later starts. During that window the port is already open but
+not answering, so requests hang rather than failing fast; the frontend will
+report the backend as "still starting up".
 
 In the **second** terminal:
 

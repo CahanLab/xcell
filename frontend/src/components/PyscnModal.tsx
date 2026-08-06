@@ -3,6 +3,7 @@ import { appendDataset, pollTask, refreshSchema, useObsSummaries } from '../hook
 import { useStore } from '../store'
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './LayerScaleInfo'
 import { datasetIdentity } from '../lib/datasetIdentity'
+import FileBrowser from './FileBrowser'
 
 /**
  * PySingleCellNet cell-type classification.
@@ -135,6 +136,7 @@ export default function PyscnModal() {
   const [path, setPath] = useState('')
   const [inspection, setInspection] = useState<Inspection | null>(null)
   const [inspecting, setInspecting] = useState(false)
+  const [browsing, setBrowsing] = useState(false)
   const [layer, setLayer] = useState('X')
   const [resultKey, setResultKey] = useState('SCN')
   const [caseInsensitive, setCaseInsensitive] = useState(false)
@@ -196,14 +198,16 @@ export default function PyscnModal() {
     return () => window.removeEventListener('keydown', onKey)
   }, [isOpen, busy, setOpen])
 
-  const inspect = useCallback(async () => {
-    if (!path.trim()) return
+  // Takes the path explicitly so the file browser can inspect a selection
+  // immediately, without waiting for the `path` state update to land.
+  const inspectPath = useCallback(async (target: string) => {
+    if (!target.trim()) return
     setInspecting(true); setError(null); setInspection(null)
     try {
       const resp = await fetch(appendDataset('/api/pyscn/inspect_classifier'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: path.trim() }),
+        body: JSON.stringify({ path: target.trim() }),
       })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.detail || 'Could not read that classifier')
@@ -215,7 +219,9 @@ export default function PyscnModal() {
     } finally {
       setInspecting(false)
     }
-  }, [path])
+  }, [])
+
+  const inspect = useCallback(() => inspectPath(path), [inspectPath, path])
 
   const runTask = useCallback(async (url: string, body: unknown) => {
     setBusy(true); setError(null); setProgress({ frac: 0, message: 'Starting…' })
@@ -367,10 +373,36 @@ export default function PyscnModal() {
                 placeholder="/path/to/classifier.pkl"
                 style={{ ...inputStyle, flex: 1 }}
               />
+              <button
+                onClick={() => setBrowsing((b) => !b)}
+                style={{ ...ghostButton, color: browsing ? dark.accent : dark.sub }}
+                title="Browse the filesystem for a .pkl classifier"
+              >
+                Browse
+              </button>
               <button onClick={inspect} disabled={!path.trim() || inspecting} style={ghostButton}>
                 {inspecting ? 'Reading…' : 'Inspect'}
               </button>
             </div>
+
+            {browsing && (
+              <div style={{ marginTop: 8 }}>
+                <FileBrowser
+                  kind="classifier"
+                  selectedPath={path}
+                  emptyMessage="No folders or .pkl files here"
+                  onError={setError}
+                  onSelect={(p) => {
+                    // Picking a file is the whole intent — read it immediately
+                    // rather than making the user press Inspect as well.
+                    setPath(p)
+                    setInspection(null)
+                    setBrowsing(false)
+                    inspectPath(p)
+                  }}
+                />
+              </div>
+            )}
 
             {inspection && (
               <>

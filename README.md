@@ -394,8 +394,11 @@ pixi run -e pyscn backend
 Without it the panel explains how to install rather than failing — and you can
 still *inspect* a classifier against your data, which needs only scikit-learn.
 
-**Classify** — point the dialog at a pickled classifier and press **Inspect**
-before running anything. It reports the classifier (cell types, gene pairs,
+**Classify** — point the dialog at a pickled classifier, either by pasting a
+path or with **Browse** (the same filesystem picker as File → Load, filtered to
+`.pkl`/`.pickle` and remembering where you keep them). Selecting one inspects it
+straight away; a pasted path needs **Inspect**. Either way, look at what it
+reports before running anything. It reports the classifier (cell types, gene pairs,
 trees) and, more importantly, **how much of its gene set your data actually
 has**. This matters because PySingleCellNet fills genes it can't find with
 zeros: a poorly matched query still returns confident-looking scores rather than

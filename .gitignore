@@ -8,6 +8,12 @@ CHANGELOG.md
 # Visium HD feature_slice conversion cache (written next to source data)
 *.xcell.square_*.h5ad
 
+# Trained PySingleCellNet classifiers. The Cell Typing → Train tab writes these,
+# and a relative output path lands them in backend/. They are model artifacts,
+# often hundreds of MB.
+*.pkl
+*.pickle
+
 # Python
 __pycache__/
 *.pyc

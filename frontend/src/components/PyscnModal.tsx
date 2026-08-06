@@ -3,7 +3,8 @@ import { appendDataset, pollTask, refreshSchema, useObsSummaries } from '../hook
 import { useStore } from '../store'
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './LayerScaleInfo'
 import { datasetIdentity } from '../lib/datasetIdentity'
-import FileBrowser from './FileBrowser'
+import FileBrowser, { type BrowseEntry } from './FileBrowser'
+import { composeSavePath, splitSavePath } from '../lib/savePath'
 
 /**
  * PySingleCellNet cell-type classification.
@@ -153,6 +154,11 @@ export default function PyscnModal() {
   const [nTrees, setNTrees] = useState(1000)
   const [nComps, setNComps] = useState(30)
   const [sourceScale, setSourceScale] = useState('auto')
+  // Save-as picker: the directory comes from navigation, the name from typing.
+  const [savingBrowse, setSavingBrowse] = useState(false)
+  const [saveDir, setSaveDir] = useState('')
+  const [saveName, setSaveName] = useState('classifier.pkl')
+  const [dirEntries, setDirEntries] = useState<BrowseEntry[]>([])
   const [trainResult, setTrainResult] = useState<TrainResult | null>(null)
 
   // Drop anything computed against a dataset that is no longer loaded. Results
@@ -297,6 +303,12 @@ export default function PyscnModal() {
   // The scale verdict already rides along on /api/pyscn/status's layer list,
   // so the Train tab can name what auto-detect will do without another call.
   const detectedScale = selectedLayer?.scale
+
+  // Training silently overwrites; say so before the run rather than after.
+  const willOverwrite = useMemo(() => {
+    const target = composeSavePath(saveDir, saveName)
+    return !!target && dirEntries.some((e) => e.type === 'file' && e.path === target)
+  }, [saveDir, saveName, dirEntries])
 
   if (!isOpen) return null
 
@@ -579,12 +591,74 @@ export default function PyscnModal() {
             )}
 
             <label style={labelStyle}>Save classifier to</label>
-            <input
-              value={outPath}
-              onChange={(e) => setOutPath(e.target.value)}
-              placeholder="/path/to/my_classifier.pkl"
-              style={inputStyle}
-            />
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                value={outPath}
+                onChange={(e) => {
+                  setOutPath(e.target.value)
+                  // Keep the picker in step with a hand-typed path, so opening
+                  // it later lands in the right folder.
+                  const { dir, name } = splitSavePath(e.target.value)
+                  if (dir) setSaveDir(dir)
+                  if (name) setSaveName(name)
+                }}
+                placeholder="/path/to/my_classifier.pkl"
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button
+                onClick={() => setSavingBrowse((b) => !b)}
+                style={{ ...ghostButton, color: savingBrowse ? dark.accent : dark.sub }}
+                title="Choose a folder to save the classifier in"
+              >
+                Browse
+              </button>
+            </div>
+
+            {savingBrowse && (
+              <div style={{ marginTop: 8, padding: 8, background: dark.inset, borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: dark.faint, marginBottom: 6 }}>
+                  Pick the folder to save into. Existing classifiers are listed so
+                  you can see what is already there — click one to reuse its name.
+                </div>
+                <FileBrowser
+                  kind="classifier"
+                  height={190}
+                  emptyMessage="No folders or existing .pkl files here"
+                  onError={setError}
+                  onNavigate={(dir, entries) => {
+                    setSaveDir(dir)
+                    setDirEntries(entries)
+                    setOutPath(composeSavePath(dir, saveName))
+                  }}
+                  onSelect={(p) => {
+                    // Clicking an existing file means "overwrite this one".
+                    const { dir, name } = splitSavePath(p)
+                    setSaveDir(dir)
+                    setSaveName(name)
+                    setOutPath(p)
+                  }}
+                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+                  <span style={{ ...labelStyle, margin: 0, whiteSpace: 'nowrap' }}>File name</span>
+                  <input
+                    value={saveName}
+                    onChange={(e) => {
+                      setSaveName(e.target.value)
+                      setOutPath(composeSavePath(saveDir, e.target.value))
+                    }}
+                    placeholder="my_classifier.pkl"
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <button onClick={() => setSavingBrowse(false)} style={ghostButton}>Done</button>
+                </div>
+                {willOverwrite && (
+                  <div style={{ ...noticeStyle, background: 'rgba(233,162,59,0.14)', color: '#f0c987' }}>
+                    <code>{saveName}</code> already exists in this folder and will
+                    be overwritten.
+                  </div>
+                )}
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
               <NumField label="cells / type" value={nCellsPerType} onChange={setNCellsPerType}

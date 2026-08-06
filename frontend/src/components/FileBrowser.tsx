@@ -41,6 +41,7 @@ export default function FileBrowser({
   selectedPath,
   onSelect,
   onError,
+  onNavigate,
   emptyMessage = 'No folders or matching files here',
   height = 240,
 }: {
@@ -48,6 +49,12 @@ export default function FileBrowser({
   selectedPath?: string
   onSelect: (path: string) => void
   onError?: (message: string | null) => void
+  /**
+   * Fires on every successful navigation with the directory now shown and its
+   * contents. A "save as" caller needs the directory (that is what the user is
+   * choosing) and the listing (to warn before clobbering an existing file).
+   */
+  onNavigate?: (dir: string, entries: BrowseEntry[]) => void
   emptyMessage?: string
   height?: number
 }) {
@@ -56,6 +63,10 @@ export default function FileBrowser({
   const [shortcuts, setShortcuts] = useState<{ name: string; path: string }[]>([])
   const [loading, setLoading] = useState(false)
   const lastDir = useRef<string | null>(localStorage.getItem(lastDirKey(kind)))
+  // Held in a ref so a caller passing an inline callback doesn't restart
+  // navigation on every render.
+  const onNavigateRef = useRef(onNavigate)
+  onNavigateRef.current = onNavigate
 
   const browse = useCallback(async (dirPath?: string) => {
     setLoading(true)
@@ -75,6 +86,7 @@ export default function FileBrowser({
       lastDir.current = data.current
       localStorage.setItem(lastDirKey(kind), data.current)
       onError?.(null)
+      onNavigateRef.current?.(data.current, data.entries)
     } catch (err) {
       // A directory that vanished or is unreadable shouldn't strand the user
       // in an empty pane with no way back.

@@ -1384,9 +1384,13 @@ export interface ObsSummary {
   name: string
   dtype: 'category' | 'numeric' | 'string'
   categories?: CategoryValue[]
-  min?: number
-  max?: number
-  mean?: number
+  // null, not just absent: a numeric column with no usable values (all NaN)
+  // has no min/max/mean, and JSON cannot carry NaN. Typing these as plain
+  // optional numbers let `x !== undefined` pass a null straight into
+  // `.toFixed()`, which is exactly how the Continuous panel used to crash.
+  min?: number | null
+  max?: number | null
+  mean?: number | null
 }
 
 // Hook for fetching all obs summaries

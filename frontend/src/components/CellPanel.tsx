@@ -732,6 +732,11 @@ interface ContinuousColumnProps {
   onRename: (newName: string) => void
 }
 
+/** One statistic for display; an em dash when there is no value to show. */
+function formatStat(v: number | null | undefined): string {
+  return v == null ? '\u2014' : v.toFixed(2)
+}
+
 function ContinuousColumn({ summary, displayName, isActive, onColorBy, onHide, onRename }: ContinuousColumnProps) {
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -829,11 +834,20 @@ function ContinuousColumn({ summary, displayName, isActive, onColorBy, onHide, o
         </button>
       </div>
       <div style={styles.continuousInfo}>
-        <span style={styles.rangeLabel}>
-          Range: {summary.min?.toFixed(2)} - {summary.max?.toFixed(2)}
-        </span>
-        {summary.mean !== undefined && (
-          <span>Mean: {summary.mean.toFixed(2)}</span>
+        {/* A column can be entirely NaN — a QC metric computed on a subset, or
+            a field one batch of a merged dataset lacks. Saying so beats
+            rendering "Range:  - " with nothing between the dashes. */}
+        {summary.min == null && summary.max == null ? (
+          <span style={styles.rangeLabel}>No numeric values</span>
+        ) : (
+          <>
+            <span style={styles.rangeLabel}>
+              Range: {formatStat(summary.min)} - {formatStat(summary.max)}
+            </span>
+            {summary.mean != null && (
+              <span>Mean: {summary.mean.toFixed(2)}</span>
+            )}
+          </>
         )}
       </div>
     </div>

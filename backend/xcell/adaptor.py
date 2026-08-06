@@ -5251,8 +5251,18 @@ class DataAdaptor:
         populate "Source matrix" dropdowns on Gene PCA / Gene Neighbors /
         Cluster Genes — picking a non-default layer routes the computation
         through ``adata.layers[layer]`` instead of ``adata.X``.
+
+        Each entry also carries a ``scale`` block from :mod:`xcell.layer_scale`
+        saying whether the matrix looks like raw counts, library-size
+        normalized values, log-transformed values, or z-scores — plus the
+        evidence behind that call and any provenance recorded by scanpy or by
+        xcell's own preprocessing history. Datasets rarely document which of
+        these they hold, and picking the wrong source silently corrupts
+        anything rank- or count-based downstream.
         """
         from scipy.sparse import issparse
+
+        from xcell import layer_scale as ls
 
         out: list[dict[str, Any]] = []
         n_obs, n_var = self.adata.shape
@@ -5261,12 +5271,18 @@ class DataAdaptor:
             sparse_flag = issparse(mat)
             nnz = int(mat.nnz) if sparse_flag else int(np.count_nonzero(mat))
             density = nnz / max(n_obs * n_var, 1)
+            scale = ls.assess_matrix_scale(mat)
+            scale['provenance'] = (
+                ls.provenance_from_adata(self.adata, name)
+                + ls.provenance_from_history(self._action_history, name)
+            )
             return {
                 'name': name,
                 'shape': list(mat.shape),
                 'nnz': nnz,
                 'density': float(density),
                 'sparse': bool(sparse_flag),
+                'scale': scale,
             }
 
         out.append({**_info('X', self.adata.X), 'is_default': True})

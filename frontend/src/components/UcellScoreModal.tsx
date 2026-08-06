@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { appendDataset } from '../hooks/useData'
+import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './LayerScaleInfo'
 
 export interface UcellTarget {
   sets: { name: string; up: string[]; down: string[] }[]
@@ -12,7 +13,7 @@ interface Props {
 }
 
 export function UcellScoreModal({ target, onClose, onScored }: Props) {
-  const [layers, setLayers] = useState<string[]>(['X'])
+  const [layers, setLayers] = useState<LayerInfo[]>([])
   const [layer, setLayer] = useState('counts')
   const [maxRank, setMaxRank] = useState(1500)
   const [wNeg, setWNeg] = useState(1.0)
@@ -25,14 +26,17 @@ export function UcellScoreModal({ target, onClose, onScored }: Props) {
     fetch(appendDataset('/api/scanpy/layers'))
       .then((r) => r.json())
       .then((d) => {
-        const names: string[] = (d.layers ?? []).map((l: { name: string }) => l.name)
-        setLayers(names.length ? names : ['X'])
+        const list: LayerInfo[] = d.layers ?? []
+        setLayers(list)
+        const names = list.map((l) => l.name)
         setLayer(names.includes('counts') ? 'counts' : 'X')
       })
-      .catch(() => setLayers(['X']))
+      .catch(() => setLayers([{ name: 'X', density: 0 }]))
   }, [target])
 
   if (!target) return null
+
+  const selectedLayer = layers.find((l) => l.name === layer)
 
   const run = async () => {
     setBusy(true); setError(null)
@@ -68,12 +72,24 @@ export function UcellScoreModal({ target, onClose, onScored }: Props) {
           {target.sets.length} set{target.sets.length > 1 ? 's' : ''} →
           writes <code>UCell_&lt;name&gt;</code> obs column(s).
         </p>
-        <label style={{ display: 'block', margin: '8px 0' }}>Source layer
+        <div style={{ margin: '8px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span>Source layer</span>
+            <LayerScaleBadge layer={selectedLayer} />
+          </div>
           <select value={layer} onChange={(e) => setLayer(e.target.value)}
-            style={{ width: '100%', marginTop: 4 }}>
-            {layers.map((l) => <option key={l} value={l}>{l}</option>)}
+            style={{ width: '100%' }}>
+            {layers.map((l) => <option key={l.name} value={l.name}>{layerOptionLabel(l)}</option>)}
           </select>
-        </label>
+          {selectedLayer?.scale?.verdict === 'z_scored' && (
+            <div style={{ marginTop: 6, padding: '6px 8px', fontSize: 11, lineHeight: 1.4,
+              color: '#ffb3bd', background: 'rgba(233,69,96,0.15)', borderRadius: 4 }}>
+              This layer looks scaled / z-scored. UCell ranks genes within each cell,
+              so centered values give scores that are not comparable to the usual
+              0–1 range. Pick a counts or log-normalized layer instead.
+            </div>
+          )}
+        </div>
         <label style={{ display: 'block', margin: '8px 0' }}>maxRank
           <input type="number" value={maxRank} min={1}
             onChange={(e) => setMaxRank(Math.max(1, parseInt(e.target.value) || 1500))}

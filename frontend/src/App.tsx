@@ -20,6 +20,7 @@ import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import SelectByExpressionModal from './components/SelectByExpressionModal'
 import GeneMaskModal from './components/GeneMaskModal'
+import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './components/LayerScaleInfo'
 import { MESSAGES } from './messages'
 
 const styles = {
@@ -787,7 +788,7 @@ export default function App() {
   // layers are per-dataset (e.g. 'smoothed' may exist in primary but not
   // secondary). Also refetched after a Smooth (or other layer-producing) op
   // by depending on the active slot's scanpyActionHistory length.
-  const [availableLayers, setAvailableLayers] = useState<{ name: string; density: number }[]>([])
+  const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
   const activeSchemaSig = datasets[activeSlot]?.schema ? `${datasets[activeSlot].schema!.n_cells}` : ''
   const activeHistoryLen = datasets[activeSlot]?.scanpyActionHistory?.length ?? 0
   useEffect(() => {
@@ -2124,27 +2125,34 @@ export default function App() {
                         />
 
                         {/* Embedding + Source matrix selectors — bottom left.
-                            Source matrix appears whenever the dataset has any
-                            non-X layer to choose from (e.g. after Smooth). */}
-                        {schema && (schema.embeddings.length > 1 || availableLayers.length > 1 || interactionMode === 'adjust' || interactionMode === 'quilt') && (
+                            The Source row renders as soon as any matrix is
+                            known, even when .X is the only one: its label and
+                            ⓘ badge are how you find out whether the data you
+                            are looking at is raw counts or already normalized,
+                            which a single-layer dataset needs just as much. */}
+                        {schema && (schema.embeddings.length > 1 || availableLayers.length > 0 || interactionMode === 'adjust' || interactionMode === 'quilt') && (
                           <FloatingPanel id="view-controls" title="View" defaultCorner={{ bottom: 20, left: 20 }}>
                             <div style={{ display: 'flex', flexDirection: 'column' as const, alignItems: 'flex-start', gap: '6px' }}>
-                            {availableLayers.length > 1 && (
+                            {availableLayers.length > 0 && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 <span style={styles.embeddingLabel}>Source:</span>
                                 <select
                                   style={styles.embeddingSelect}
                                   value={displayLayer || 'X'}
                                   onChange={(e) => setDisplayLayer(e.target.value)}
+                                  disabled={availableLayers.length < 2}
                                   title="Read gene expression from this matrix. Default .X; pick a smoothed layer (from Preprocess → Smooth) to inspect denoised values."
                                 >
                                   {availableLayers.map((L) => (
                                     <option key={L.name} value={L.name}>
-                                      {L.name === 'X' ? '.X (default)' : L.name}
-                                      {L.density > 0 ? ` — ${(L.density * 100).toFixed(1)}% dense` : ''}
+                                      {layerOptionLabel(L)}
+                                      {L.density > 0 ? ` · ${(L.density * 100).toFixed(1)}% dense` : ''}
                                     </option>
                                   ))}
                                 </select>
+                                <LayerScaleBadge
+                                  layer={availableLayers.find((L) => L.name === (displayLayer || 'X'))}
+                                />
                               </div>
                             )}
                             {schema.embeddings.length > 1 && (

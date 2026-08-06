@@ -429,7 +429,10 @@ such graph, so it reports those cells as **Ambiguous** rather than guessing.
 
 **Train** builds a classifier from a categorical `.obs` column — balancing cells
 per type, preprocessing on a private copy so your loaded dataset is never
-modified — writes the `.pkl`, and hands it straight to the Classify tab.
+modified — writes the `.pkl`, and hands it straight to the Classify tab. Its
+**Browse** picks the destination folder and lists the classifiers already there,
+so you can see what you have, reuse a name, or be warned before overwriting one;
+a name without an extension gets `.pkl`.
 
 How it preprocesses depends on what scale your reference is already on, which it
 detects (see "Which scale is my data on?" above) and shows in a **Scale of that

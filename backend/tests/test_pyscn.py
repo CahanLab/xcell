@@ -592,3 +592,191 @@ def test_training_refuses_when_every_gene_has_an_underscore(tmp_path):
     assert 'underscore' in msg.lower()
     # Point at the fix rather than just the failure.
     assert 'rename' in msg.lower()
+
+
+# --------------------------------------------------------------------------
+# Training on data that is already normalized / logged
+#
+# Plenty of reference datasets are distributed only as log-normalized values.
+# Running normalize_total + log1p over those again produces log1p(scale(log1p(x))),
+# which distorts the fold changes that drive marker-gene selection and makes
+# seurat_v3 HVG (which requires integer counts) meaningless. xcell decides what
+# preprocessing is still owed from the detected scale of the source matrix.
+# --------------------------------------------------------------------------
+
+def test_training_plan_for_raw_counts_does_everything():
+    p = pyscn.training_plan('raw_counts')
+    assert (p['normalize'], p['log1p']) == (True, True)
+    # seurat_v3 is the right flavor only when real counts are available.
+    assert p['hvg_flavor'] == 'seurat_v3'
+    assert p['snapshot_counts'] is True
+
+
+def test_training_plan_for_linear_normalized_logs_but_does_not_renormalize():
+    p = pyscn.training_plan('normalized_linear')
+    assert (p['normalize'], p['log1p']) == (False, True)
+    assert p['hvg_flavor'] == 'seurat'
+    assert p['snapshot_counts'] is False
+
+
+@pytest.mark.parametrize('verdict', ['log_normalized', 'log_transformed'])
+def test_training_plan_leaves_log_scale_data_alone(verdict):
+    p = pyscn.training_plan(verdict)
+    assert (p['normalize'], p['log1p']) == (False, False)
+    assert p['hvg_flavor'] == 'seurat'
+    assert p['snapshot_counts'] is False
+    assert 'already' in p['reason'].lower()
+
+
+def test_training_plan_is_conservative_when_the_scale_is_unrecognized():
+    """Unknown means unknown: don't transform, but say the guess was made."""
+    p = pyscn.training_plan('unknown')
+    assert (p['normalize'], p['log1p']) == (False, False)
+    assert p['uncertain'] is True
+
+
+@pytest.mark.parametrize('verdict,explains', [
+    # Each refusal must say what is wrong with *that* scale specifically —
+    # a generic "cannot train" leaves the user with no next step.
+    ('z_scored', 'top-scoring-pair'),
+    ('binary', 'rank two genes'),
+    ('empty', 'no non-zero values'),
+])
+def test_training_plan_refuses_scales_that_cannot_be_trained_on(verdict, explains):
+    with pytest.raises(ValueError) as exc:
+        pyscn.training_plan(verdict)
+    assert explains in str(exc.value)
+
+
+def test_training_plan_accepts_an_explicit_override():
+    """Detection is a heuristic; the user gets the last word."""
+    p = pyscn.training_plan('raw_counts', override='log_normalized')
+    assert (p['normalize'], p['log1p']) == (False, False)
+    assert p['source_scale'] == 'log_normalized'
+    assert p['overridden'] is True
+
+
+def _lognorm_adata(n_genes=200, n_cells=120, seed=0):
+    """A reference distributed the way many public ones are: log-normalized only."""
+    rng = np.random.default_rng(seed)
+    counts = np.vstack([
+        rng.poisson(np.where(np.arange(n_genes) // 50 == t, 30, 2), size=(n_cells // 2, n_genes))
+        for t in range(2)
+    ]).astype(np.float32)
+    sums = counts.sum(axis=1, keepdims=True)
+    sums[sums == 0] = 1
+    x = np.log1p(counts / sums * 1e4).astype(np.float32)
+    ad = anndata.AnnData(X=csr_matrix(x))
+    ad.var_names = [f'Gene{i}' for i in range(n_genes)]
+    ad.obs_names = [f'c{i}' for i in range(ad.n_obs)]
+    ad.obs['celltype'] = pd.Categorical(['a'] * (n_cells // 2) + ['b'] * (n_cells // 2))
+    return ad
+
+
+def test_lognormalized_input_is_detected_as_such():
+    """Guard the assumption the training plan rests on."""
+    from xcell import layer_scale
+    ad = _lognorm_adata()
+    assert layer_scale.assess_matrix_scale(ad.X)['verdict'] == 'log_normalized'
+
+
+@needs_pyscn
+def test_training_on_lognormalized_data_does_not_transform_again(tmp_path):
+    a = DataAdaptor('x.h5ad', adata=_lognorm_adata())
+    c, ap = a.prepare_pyscn_train(
+        'celltype', str(tmp_path / 'c.pkl'), n_cells_per_type=None,
+        n_trees=50, n_comps=10,
+    )
+    res = ap(c(lambda f, message=None: None))
+    prep = res['preprocessing']
+    assert prep['source_scale'] == 'log_normalized'
+    assert (prep['normalize'], prep['log1p']) == (False, False)
+    # A 'counts' layer built from log values would be a lie that seurat_v3
+    # would then silently consume.
+    assert prep['snapshot_counts'] is False
+    assert prep['hvg_flavor'] == 'seurat'
+
+
+@needs_pyscn
+def test_training_on_raw_counts_still_normalizes(tmp_path):
+    ad = _adata(genes=[f'Gene{i}' for i in range(200)], n_cells=120)
+    ad.obs['celltype'] = pd.Categorical(['a'] * 60 + ['b'] * 60)
+    a = DataAdaptor('x.h5ad', adata=ad)
+    c, ap = a.prepare_pyscn_train(
+        'celltype', str(tmp_path / 'c.pkl'), n_cells_per_type=None,
+        n_trees=50, n_comps=10,
+    )
+    res = ap(c(lambda f, message=None: None))
+    prep = res['preprocessing']
+    assert prep['source_scale'] == 'raw_counts'
+    assert (prep['normalize'], prep['log1p']) == (True, True)
+
+
+@needs_pyscn
+def test_a_classifier_trained_on_lognormalized_data_works(tmp_path):
+    """The point of not double-transforming: the classifier must still classify."""
+    ad = _lognorm_adata()
+    a = DataAdaptor('x.h5ad', adata=ad)
+    out_path = str(tmp_path / 'c.pkl')
+    c, ap = a.prepare_pyscn_train(
+        'celltype', out_path, n_cells_per_type=None, n_trees=100, n_comps=10,
+    )
+    ap(c(lambda f, message=None: None))
+    cc, ca = a.prepare_pyscn_classify(out_path, key='SCN')
+    ca(cc(lambda f, message=None: None))
+    predicted = a.adata.obs['SCN_class_argmax'].astype(str).to_numpy()
+    truth = ad.obs['celltype'].astype(str).to_numpy()
+    assert (predicted == truth).mean() > 0.9
+
+
+@needs_pyscn
+def test_explicit_scale_override_reaches_training(tmp_path):
+    a = DataAdaptor('x.h5ad', adata=_lognorm_adata())
+    c, ap = a.prepare_pyscn_train(
+        'celltype', str(tmp_path / 'c.pkl'), n_cells_per_type=None,
+        n_trees=50, n_comps=10, source_scale='normalized_linear',
+    )
+    res = ap(c(lambda f, message=None: None))
+    assert res['preprocessing']['overridden'] is True
+    assert res['preprocessing']['log1p'] is True
+
+
+def test_training_refuses_a_z_scored_source(tmp_path):
+    rng = np.random.default_rng(0)
+    x = rng.normal(0, 1, (60, 200)).astype(np.float32)
+    ad = anndata.AnnData(X=csr_matrix(x))
+    ad.var_names = [f'Gene{i}' for i in range(200)]
+    ad.obs['celltype'] = pd.Categorical(['a'] * 30 + ['b'] * 30)
+    a = DataAdaptor('x.h5ad', adata=ad)
+    with pytest.raises(ValueError) as exc:
+        a.prepare_pyscn_train('celltype', str(tmp_path / 'c.pkl'))
+    assert 'scaled' in str(exc.value).lower() or 'z-scored' in str(exc.value).lower()
+
+
+@needs_pyscn
+def test_pair_features_are_invariant_to_per_cell_monotone_transforms():
+    """Pins down what double-transforming does and does not break.
+
+    normalize_total scales each cell by a positive constant and log1p is
+    monotone, so neither changes the ordering of two genes *within* a cell —
+    which is the only thing the top-scoring-pair transform reads. The features
+    are therefore identical, and the harm of re-normalizing an already
+    log-normalized reference is confined to gene selection (rank_genes_groups,
+    PCA/dendrogram, HVG), not to how a cell is scored.
+
+    If this ever fails, the reasoning behind `training_plan` needs revisiting.
+    """
+    from pySingleCellNet.tools.classifier import _query_transform
+
+    rng = np.random.default_rng(0)
+    genes = [f'G{i}' for i in range(30)]
+    counts = pd.DataFrame(rng.poisson(8, (50, 30)).astype(float), columns=genes)
+    pairs = np.array([f'G{a}_G{b}' for a in range(10) for b in range(10, 14)])
+
+    cpm = counts.div(counts.sum(axis=1), axis=0) * 1e4
+    lognorm = np.log1p(cpm)
+    double_logged = np.log1p(lognorm.div(lognorm.sum(axis=1), axis=0) * 1e4)
+
+    base = _query_transform(counts, pairs)
+    assert base.equals(_query_transform(lognorm, pairs))
+    assert base.equals(_query_transform(double_logged, pairs))

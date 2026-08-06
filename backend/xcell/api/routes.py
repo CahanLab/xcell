@@ -3115,6 +3115,8 @@ class PyscnTrainRequest(BaseModel):
     n_rand: int | None = None
     n_comps: int = 30
     layer: str | None = None
+    # None auto-detects via xcell.layer_scale; set explicitly to override.
+    source_scale: str | None = None
 
 
 @router.get("/pyscn/status")
@@ -3178,6 +3180,7 @@ def pyscn_train(request: PyscnTrainRequest, dataset: str | None = Query(None)):
             n_rand=request.n_rand,
             n_comps=request.n_comps,
             layer=request.layer,
+            source_scale=request.source_scale,
         )
         task_id = task_manager.submit(compute_fn, apply_fn)
         return {"task_id": task_id, "status": "running"}

@@ -425,9 +425,27 @@ none did (thresholds are self-calibrated per class, as in PySingleCellNet's
 such graph, so it reports those cells as **Ambiguous** rather than guessing.
 
 **Train** builds a classifier from a categorical `.obs` column — balancing cells
-per type, normalizing, and selecting variable genes on a private copy, so your
-loaded dataset is never modified — writes the `.pkl`, and hands it straight to
-the Classify tab.
+per type, preprocessing on a private copy so your loaded dataset is never
+modified — writes the `.pkl`, and hands it straight to the Classify tab.
+
+How it preprocesses depends on what scale your reference is already on, which it
+detects (see "Which scale is my data on?" above) and shows in a **Scale of that
+matrix** dropdown you can override:
+
+| Source scale | What training does |
+|---|---|
+| raw counts | `normalize_total` → `log1p` → HVG (`seurat_v3` on counts) |
+| normalized, not logged | `log1p` → HVG (`seurat`) |
+| already log-normalized | nothing → HVG (`seurat`) |
+| scaled / z-scored | refused — see below |
+
+This matters because many public references are distributed *only* as
+log-normalized values. Normalizing and logging those again distorts the marker
+ranking that picks the gene pairs. The result panel states exactly what was
+applied, so you can check it rather than trust it.
+
+Training refuses a z-scored source outright: per-gene centering reorders genes
+within a cell, which is precisely what the pair transform reads.
 
 > **Gene names with underscores.** PySingleCellNet encodes each gene pair as the
 > string `geneA_geneB` and decodes it by splitting on `_`, so symbols containing

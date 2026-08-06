@@ -566,6 +566,109 @@ CLASS_TYPE_COLORS = {
 # Training
 # --------------------------------------------------------------------------
 
+# What preprocessing each source scale still needs before `train_classifier`.
+#
+# PySCN wants log-normalized values with `var['highly_variable']` set. Plenty of
+# public references are distributed *only* as log-normalized data, and running
+# normalize_total + log1p over those again yields log1p(scale(log1p(x))) — which
+# compresses the fold changes that drive marker-gene selection, and makes the
+# seurat_v3 HVG flavor (which requires integer counts) operate on nonsense.
+#
+# Scope of the damage, measured rather than assumed: the top-scoring-pair
+# features are *bit-identical* under a double log, because normalize_total and
+# log1p are both per-cell monotone and the transform only ever compares two
+# genes within one cell (see test_pair_features_are_invariant_...). What changes
+# is gene *selection* — rank_genes_groups, the PCA/dendrogram used to find
+# similar cell types, and HVG — plus a seurat_v3 call handed a 'counts' layer
+# that actually holds log values, which is invalid input for that flavor.
+# So this is a correctness problem in which genes get picked, not in how a cell
+# is scored once they are; its practical effect depends on the dataset.
+_TRAINING_PLANS: dict[str, dict[str, Any]] = {
+    'raw_counts': {
+        'normalize': True, 'log1p': True,
+        'hvg_flavor': 'seurat_v3', 'snapshot_counts': True,
+        'reason': 'Source is raw counts — normalizing library size and applying log1p.',
+    },
+    'normalized_linear': {
+        'normalize': False, 'log1p': True,
+        'hvg_flavor': 'seurat', 'snapshot_counts': False,
+        'reason': 'Source is already library-size normalized — applying log1p only.',
+    },
+    'log_normalized': {
+        'normalize': False, 'log1p': False,
+        'hvg_flavor': 'seurat', 'snapshot_counts': False,
+        'reason': 'Source is already log-normalized — using it as-is.',
+    },
+    'log_transformed': {
+        'normalize': False, 'log1p': False,
+        'hvg_flavor': 'seurat', 'snapshot_counts': False,
+        'reason': (
+            'Source is already on a log scale — using it as-is. Library sizes '
+            'were never equalized, so marker selection may be depth-biased.'
+        ),
+    },
+    'unknown': {
+        'normalize': False, 'log1p': False,
+        'hvg_flavor': 'seurat', 'snapshot_counts': False,
+        'uncertain': True,
+        'reason': (
+            'Could not identify the scale of the source matrix. Leaving it '
+            'untransformed, since transforming already-processed data is the '
+            'worse error. Set the scale explicitly if you know it.'
+        ),
+    },
+}
+
+# Scales no amount of preprocessing makes trainable.
+_UNTRAINABLE = {
+    'z_scored': (
+        'The source matrix looks scaled / z-scored. Per-gene centering reorders '
+        'genes within a cell, which is exactly what the top-scoring-pair '
+        'transform reads, so a classifier trained on it would be meaningless. '
+        'Train from counts or log-normalized values instead.'
+    ),
+    'binary': (
+        'The source matrix is binary (presence/absence). Gene-pair comparisons '
+        'cannot rank two genes that are both 0 or both 1, so there is nothing '
+        'for the classifier to learn.'
+    ),
+    'empty': 'The source matrix has no non-zero values.',
+}
+
+
+def training_plan(verdict: str, override: str | None = None) -> dict[str, Any]:
+    """Decide what preprocessing a source matrix still needs before training.
+
+    Args:
+        verdict: A :mod:`xcell.layer_scale` verdict for the source matrix.
+        override: A user-supplied scale that wins over ``verdict``. Detection is
+            a heuristic run on sampled values; whoever produced the data knows
+            better, so they get the last word.
+
+    Returns:
+        Dict with ``normalize``, ``log1p``, ``hvg_flavor``, ``snapshot_counts``,
+        ``reason``, ``source_scale``, ``overridden``, and ``uncertain``.
+
+    Raises:
+        ValueError: The scale cannot be trained on at all, or the override is
+            not a recognized scale.
+    """
+    scale = override or verdict
+    if override and override not in _TRAINING_PLANS and override not in _UNTRAINABLE:
+        raise ValueError(
+            f"Unknown source scale '{override}'. Expected one of: "
+            f"{', '.join(sorted(_TRAINING_PLANS))}."
+        )
+    if scale in _UNTRAINABLE:
+        raise ValueError(_UNTRAINABLE[scale])
+
+    plan = dict(_TRAINING_PLANS.get(scale, _TRAINING_PLANS['unknown']))
+    plan.setdefault('uncertain', False)
+    plan['source_scale'] = scale
+    plan['detected_scale'] = verdict
+    plan['overridden'] = bool(override and override != verdict)
+    return plan
+
 def train_and_save(adata, params: dict[str, Any], progress) -> dict[str, Any]:
     """Balance, normalize, find HVGs, train, and pickle the classifier.
 
@@ -640,19 +743,32 @@ def train_and_save(adata, params: dict[str, Any], progress) -> dict[str, Any]:
             "cannot represent. Rename those genes and train again."
         )
 
-    progress(0.15, 'Normalizing and selecting variable genes…')
-    adata.layers['counts'] = adata.X.copy()
-    sc.pp.normalize_total(adata)
-    sc.pp.log1p(adata)
+    plan = params['plan']
+    progress(0.15, plan['reason'])
+
+    # Only call it 'counts' when it really is counts — a log-valued layer under
+    # that name is a lie seurat_v3 would silently consume.
+    if plan['snapshot_counts']:
+        adata.layers['counts'] = adata.X.copy()
+    if plan['normalize']:
+        sc.pp.normalize_total(adata)
+    if plan['log1p']:
+        sc.pp.log1p(adata)
+
     n_hvg = min(2000, max(200, adata.n_vars - 1))
+    hvg_flavor = plan['hvg_flavor']
     try:
-        sc.pp.highly_variable_genes(
-            adata, n_top_genes=n_hvg, flavor='seurat_v3', layer='counts',
-        )
+        if hvg_flavor == 'seurat_v3':
+            sc.pp.highly_variable_genes(
+                adata, n_top_genes=n_hvg, flavor='seurat_v3', layer='counts',
+            )
+        else:
+            sc.pp.highly_variable_genes(adata, n_top_genes=n_hvg, flavor='seurat')
     except Exception:
-        # seurat_v3 needs integer counts and enough genes; fall back to the
-        # default flavor on the already-logged matrix rather than failing.
-        sc.pp.highly_variable_genes(adata, n_top_genes=n_hvg)
+        # HVG is finicky about gene count and dispersion; falling back to
+        # "everything is variable" still trains, just with less gene pre-filtering.
+        adata.var['highly_variable'] = True
+        hvg_flavor = 'none (fallback)'
 
     progress(0.3, 'Training the random forest…')
     n_comps = min(int(params['n_comps']), min(adata.shape) - 1)
@@ -685,6 +801,7 @@ def train_and_save(adata, params: dict[str, Any], progress) -> dict[str, Any]:
         'groupby': groupby,
         'dropped_labels': too_small,
         'n_genes_dropped_underscore': len(dropped_underscore),
+        'preprocessing': {**plan, 'hvg_flavor': hvg_flavor},
         'training_counts': [
             {'name': str(k), 'n_cells': int(v)} for k, v in train_counts.items()
         ],

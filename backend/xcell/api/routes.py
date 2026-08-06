@@ -91,16 +91,36 @@ def _resolve_cell_context(
     raise HTTPException(status_code=400, detail=f"Unknown cell_context: {context}")
 
 
+#: Which file extensions each browse `kind` surfaces. Directories are always
+#: listed so navigation works the same way whatever you are looking for.
+BROWSE_KINDS = {
+    'data': ('.h5ad', '.h5', '.rds'),
+    'classifier': ('.pkl', '.pickle'),
+}
+
+
 @router.get("/browse")
-def browse_filesystem(path: str | None = None):
-    """List directories and .h5ad/.h5/.rds files at the given path.
+def browse_filesystem(path: str | None = None, kind: str = 'data'):
+    """List directories and files of interest at the given path.
 
     Args:
         path: Directory path to list. Defaults to the user's home directory.
+        kind: Which files to surface — 'data' (default) for loadable datasets,
+            including 10x matrix folders and file trios, or 'classifier' for
+            pickled PySingleCellNet classifiers. Everything else is hidden;
+            listing a home directory's worth of unrelated files would bury
+            the handful that matter.
 
     Returns:
-        JSON object with current path, parent path, and entries (dirs + h5ad/h5 files).
+        JSON object with current path, parent path, and entries (dirs + files).
     """
+    if kind not in BROWSE_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown kind '{kind}'. Expected one of: {', '.join(sorted(BROWSE_KINDS))}.",
+        )
+    suffixes = BROWSE_KINDS[kind]
+
     if path:
         directory = Path(path).expanduser().resolve()
     else:
@@ -114,6 +134,8 @@ def browse_filesystem(path: str | None = None):
     entries = []
     try:
         import re
+        # 10x matrix folders and file trios are datasets; irrelevant otherwise.
+        detect_10x = kind == 'data'
         # Collect all filenames for trio detection
         all_names = {item.name for item in directory.iterdir() if item.is_file()}
         # Track prefixes that form complete trios so we don't also list them as raw files
@@ -142,15 +164,15 @@ def browse_filesystem(path: str | None = None):
                 has_matrix = bool(children & {'matrix.mtx', 'matrix.mtx.gz'})
                 has_barcodes = bool(children & {'barcodes.tsv', 'barcodes.tsv.gz'})
                 has_features = bool(children & {'features.tsv', 'features.tsv.gz', 'genes.tsv', 'genes.tsv.gz'})
-                if has_matrix and has_barcodes and has_features:
+                if detect_10x and has_matrix and has_barcodes and has_features:
                     entries.append({"name": item.name, "type": "10x_mtx", "path": str(item)})
                 else:
                     entries.append({"name": item.name, "type": "directory", "path": str(item)})
-            elif item.name in trio_matrix_names:
+            elif detect_10x and item.name in trio_matrix_names:
                 # Prefixed 10x file trio (e.g. GSM1234_matrix.mtx.gz with companions)
                 prefix = re.match(r'^(.+)_matrix\.mtx', item.name).group(1)
                 entries.append({"name": prefix, "type": "10x_mtx_trio", "path": str(item)})
-            elif item.suffix in ('.h5ad', '.h5', '.rds'):
+            elif item.suffix in suffixes:
                 try:
                     size = item.stat().st_size
                 except OSError:

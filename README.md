@@ -82,6 +82,19 @@ This reads `pixi.lock`, so every platform gets identical, reproducible versions.
 The first run downloads several hundred MB and can take a few minutes — that's
 normal. You only do this once (or after pulling updates).
 
+**Optional:** cell type classification needs
+[PySingleCellNet](https://github.com/CahanLab/PySingleCellNet), which is kept
+out of the default environment because it pulls in a large extra stack. If you
+want it, install the `pyscn` environment instead and launch the backend from it
+(step 5 becomes `pixi run -e pyscn backend`):
+
+```bash
+pixi install -e pyscn
+```
+
+Everything else works the same either way — without it, the Cell Typing panel
+shows install instructions rather than failing.
+
 ### 5. Launch
 
 XCell runs as two processes: a Python backend and a JavaScript frontend. You'll
@@ -181,6 +194,32 @@ All adjustments persist on the backend and are saved on h5ad export.
   1. **Normalize Total** — normalize counts per cell
   2. **Log1p** — log-transform the data
   3. **Highly Variable Genes** — identify informative genes
+
+### Which scale is my data on?
+
+Datasets rarely document what was already done to them, and the answer matters:
+running **Normalize Total** on already-normalized data is a no-op that looks
+fine, and rank-based methods (UCell, cell typing) quietly misbehave on z-scored
+values.
+
+The **Source** dropdown in the **View** box (bottom-left of the plot) names the
+scale of each matrix inline — `.X (default) — log-normalized`, `counts — raw
+counts` — and the small **ⓘ** next to it opens the reasoning:
+
+- the **verdict** and how confident it is
+- **what the file records** — `uns['log1p']` left by scanpy, xcell's own
+  Normalize Total / Log1p / Smooth history, and whether the `counts` layer was
+  in the original file or inferred by xcell at load time
+- **what the numbers say** — value range, whether they're integers, whether
+  every cell sums to the same total (the fingerprint of `normalize_total`), and
+  the same check after undoing `log1p`
+- the raw statistics behind all of it
+
+Possible verdicts are *raw counts*, *normalized (linear)*, *log-normalized*,
+*log-transformed* (log scale, but library sizes were never equalized — or genes
+were subset afterwards), *scaled / z-scored*, and *binary*. The same badge
+appears next to the layer picker in the UCell and Cell Typing dialogs, which
+warn outright if you point them at a z-scored layer.
 
 ### 5. Run Cell Analysis
 
@@ -327,6 +366,69 @@ Typical workflow for "find DEGs by expression state in a region": lasso a region
   1. **Build Gene Graph** — compute gene-gene similarity
   2. **Cluster Genes** — group genes by expression pattern
 
+### Cell type classification (PySingleCellNet)
+
+The **Cell Typing** toolbar button annotates cells with
+[PySingleCellNet](https://github.com/CahanLab/PySingleCellNet), which votes a
+random forest over *top-scoring gene pairs* — "is gene A above gene B in this
+cell?". Because that question is asked within each cell, it is unaffected by
+per-cell rescaling: raw counts, CPM, and log-normalized data all give the same
+answer. Per-*gene* scaling is not safe, which is why the dialog warns if you
+pick a z-scored layer.
+
+This is an **optional dependency**. Install it with:
+
+```bash
+pixi install -e pyscn      # then run the backend from that environment:
+pixi run -e pyscn backend
+```
+
+Without it the panel explains how to install rather than failing — and you can
+still *inspect* a classifier against your data, which needs only scikit-learn.
+
+**Classify** — point the dialog at a pickled classifier and press **Inspect**
+before running anything. It reports the classifier (cell types, gene pairs,
+trees) and, more importantly, **how much of its gene set your data actually
+has**. This matters because PySingleCellNet fills genes it can't find with
+zeros: a poorly matched query still returns confident-looking scores rather than
+an error. Coverage is banded ok / warning / error, missing symbols are listed,
+and a pure `ACTB` vs `Actb` casing difference is recognized as such and offers a
+one-click case-insensitive match instead of reporting 0% overlap.
+
+Running it writes, for a result prefix `SCN`:
+
+| Where | What |
+|---|---|
+| `obs['SCN_class_argmax']` | the cell type call, colored with the classifier's own palette |
+| `obs['SCN_class_score']` | the winning vote proportion — how confident that call is |
+| `obs['SCN_class_type']` | *Singular* / *Ambiguous* / *None* / *Rand* (optional) |
+| `obsm['SCN_score']` | the full cells × types score matrix |
+
+The results panel shows the composition and call quality, with buttons to color
+by any of them. The score matrix appears in the Gene Manager under **◈
+SCN_score**, so you can color by a single cell type's score, and in the
+embedding dropdown, so you can plot two cell types against each other.
+Re-running under a different prefix keeps both results side by side.
+
+*Singular* means exactly one cell type scored above its threshold, *None* means
+none did (thresholds are self-calibrated per class, as in PySingleCellNet's
+`comp_ct_thresh`). PySingleCellNet further splits the multi-type case into
+*Intermediate* and *Hybrid* using a graph of cell-type relatedness; xcell has no
+such graph, so it reports those cells as **Ambiguous** rather than guessing.
+
+**Train** builds a classifier from a categorical `.obs` column — balancing cells
+per type, normalizing, and selecting variable genes on a private copy, so your
+loaded dataset is never modified — writes the `.pkl`, and hands it straight to
+the Classify tab.
+
+> **Gene names with underscores.** PySingleCellNet encodes each gene pair as the
+> string `geneA_geneB` and decodes it by splitting on `_`, so symbols containing
+> an underscore cannot be represented. Training excludes them and tells you how
+> many; if too few genes remain it stops and says so. The bundled
+> `toy_spatial.h5ad` is exactly this case — its genes are all named `Mesen_1`
+> and friends — so use a dataset with conventional symbols, or rename them
+> first.
+
 ### 12. Spatial Contouring
 
 Open the **Analyze** modal → **Spatial** → **Contour** → **Open Contour tool…**.
@@ -460,6 +562,8 @@ Most changes you make in a session survive on the backend process: deleted cells
 - **Cell Manager** — browse/color by metadata, mask/delete cells
 - **Gene Manager** — search genes, create gene sets, import gene lists
 - **Scanpy integration** — run preprocessing, cell analysis (PCA, Neighbors, UMAP, Leiden), gene analysis, spatial analysis (contourize), and differential expression directly in the browser. Long-running operations (gene neighbors, spatial neighbors, spatial autocorrelation, contourize, line gene association) can be cancelled mid-run without corrupting session data.
+- **Cell type classification** — annotate cells with [PySingleCellNet](https://github.com/CahanLab/PySingleCellNet) (optional dependency; `pixi install -e pyscn`). Apply a trained classifier, or train one from a labelled `.obs` column. Gene coverage against the classifier is checked *before* the run, since unmatched genes are silently zero-filled and would otherwise yield confident-looking nonsense. Results land as a colored cell-type call, a per-cell confidence, an optional Singular/Ambiguous/None/Rand quality call, and a full cells × types score matrix you can color by or plot as an embedding.
+- **Expression scale detection** — every matrix (`.X` and each layer) is classified from its own values as raw counts, normalized, log-normalized, log-transformed, z-scored, or binary, so you always know what scale you're looking at. The verdict shows inline in the Source dropdown; an **ⓘ** opens the evidence and any provenance recorded by scanpy or by xcell's own preprocessing history.
 - **Trajectory analysis** — draw lines and associate genes with spatial trajectories
 - **Quilt mode** — lasso and rearrange tissue pieces: drag to translate, shift+drag to rotate, flip to reflect selected cell subsets
 - **Display settings** — adjust point size, opacity, colormaps, bivariate coloring, and an optional coordinate grid behind the plot (with data-coordinate tick labels along the bottom/left axes for visual reference and troubleshooting)
@@ -477,10 +581,15 @@ xcell/
 │   │   ├── main.py          # FastAPI app entry point
 │   │   ├── adaptor.py       # DataAdaptor class (wraps AnnData)
 │   │   ├── diffexp.py       # Differential expression
+│   │   ├── layer_scale.py   # Counts vs normalized vs logged detection
+│   │   ├── pyscn.py         # PySingleCellNet adapter (optional dep)
+│   │   ├── ligrec.py        # Ligand-receptor spatial signaling
+│   │   ├── task_manager.py  # Cancellable background jobs
 │   │   ├── data/
 │   │   │   └── toy_spatial.h5ad  # Bundled toy dataset
 │   │   └── api/
 │   │       └── routes.py    # REST API endpoints
+│   ├── tests/               # pytest suite (pixi run -e dev pytest)
 │   └── pyproject.toml       # Python dependencies
 ├── frontend/
 │   ├── src/
@@ -496,6 +605,8 @@ xcell/
 │   │   │   ├── LineAssociationModal.tsx # Trajectory analysis
 │   │   │   ├── DisplaySettings.tsx    # Visualization settings
 │   │   │   ├── ShapeManager.tsx       # Shape/selection tools
+│   │   │   ├── PyscnModal.tsx         # Cell typing (classify / train)
+│   │   │   ├── LayerScaleInfo.tsx     # Expression-scale badge + popover
 │   │   │   └── ImportModal.tsx        # Gene list import
 │   │   └── hooks/
 │   │       └── useData.ts    # Data fetching hooks

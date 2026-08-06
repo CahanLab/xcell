@@ -20,6 +20,7 @@ import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import SelectByExpressionModal from './components/SelectByExpressionModal'
 import GeneMaskModal from './components/GeneMaskModal'
+import PyscnModal from './components/PyscnModal'
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './components/LayerScaleInfo'
 import { MESSAGES } from './messages'
 
@@ -764,6 +765,7 @@ export default function App() {
     selectionTool,
     setSelectionTool,
     setScanpyModalOpen,
+    setPyscnModalOpen,
     centerPanelView,
     setCenterPanelView,
     setEmbedding,
@@ -1796,6 +1798,14 @@ export default function App() {
                 Analyze
               </button>
 
+              <button
+                style={styles.toolButton}
+                onClick={() => setPyscnModalOpen(true)}
+                title="Classify cells by type with PySingleCellNet, or train a classifier from labelled data"
+              >
+                Cell Typing
+              </button>
+
               <DisplaySettings />
             </>
           )}
@@ -2322,6 +2332,7 @@ export default function App() {
       <DiffExpModal />
       <LineAssociationModal />
       <ScanpyModal />
+      <PyscnModal />
       <MultiContourModal />
       <LigRecModal />
       <DefineSectionsPanel />

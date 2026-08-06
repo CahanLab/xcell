@@ -65,6 +65,20 @@ cwd = "backend"
 pytest = ">=7.0"
 httpx = ">=0.25"
 
+[feature.pyscn.pypi-dependencies]
+# Optional: cell-type classification (the "Cell Typing" toolbar button).
+# Kept out of the default environment because it drags in a large ML +
+# plotting stack that most xcell users never touch. Install with:
+#
+#   pixi install -e pyscn && pixi run -e pyscn backend
+#
+# The backend detects it at runtime; without it the Cell Typing panel shows
+# install instructions instead of failing.
+pySingleCellNet = "*"
+
 [environments]
 default = { features = [], solve-group = "default" }
 dev = { features = ["dev"], solve-group = "default" }
+# Own solve group: PySCN's dependency closure must not constrain the
+# environments everyone else uses.
+pyscn = { features = ["dev", "pyscn"], solve-group = "pyscn" }

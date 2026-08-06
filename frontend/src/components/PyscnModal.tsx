@@ -78,8 +78,21 @@ interface ClassifyResult {
   obsm_key: string
 }
 
+interface Preprocessing {
+  source_scale: string
+  detected_scale: string
+  normalize: boolean
+  log1p: boolean
+  hvg_flavor: string
+  snapshot_counts: boolean
+  overridden: boolean
+  uncertain: boolean
+  reason: string
+}
+
 interface TrainResult {
   path: string
+  preprocessing: Preprocessing
   classifier: ClassifierMeta
   n_cells_used: number
   groupby: string
@@ -131,6 +144,7 @@ export default function PyscnModal() {
   const [nTopGenePairs, setNTopGenePairs] = useState(40)
   const [nTrees, setNTrees] = useState(1000)
   const [nComps, setNComps] = useState(30)
+  const [sourceScale, setSourceScale] = useState('auto')
   const [trainResult, setTrainResult] = useState<TrainResult | null>(null)
 
   useEffect(() => {
@@ -228,12 +242,13 @@ export default function PyscnModal() {
         n_trees: nTrees,
         n_comps: nComps,
         layer: layer === 'X' ? null : layer,
+        source_scale: sourceScale === 'auto' ? null : sourceScale,
       }) as unknown as TrainResult
       setTrainResult(res)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [runTask, groupby, outPath, nCellsPerType, nTopGenes, nTopGenePairs, nTrees, nComps, layer])
+  }, [runTask, groupby, outPath, nCellsPerType, nTopGenes, nTopGenePairs, nTrees, nComps, layer, sourceScale])
 
   const colorBy = useCallback((column: string) => {
     selectColorColumn(column)
@@ -245,6 +260,9 @@ export default function PyscnModal() {
     () => status?.layers?.find((l) => l.name === layer),
     [status, layer],
   )
+  // The scale verdict already rides along on /api/pyscn/status's layer list,
+  // so the Train tab can name what auto-detect will do without another call.
+  const detectedScale = selectedLayer?.scale
 
   if (!isOpen) return null
 
@@ -463,10 +481,30 @@ export default function PyscnModal() {
                 <option key={l.name} value={l.name}>{layerOptionLabel(l)}</option>
               ))}
             </select>
+            <label style={labelStyle}>Scale of that matrix</label>
+            <select value={sourceScale} onChange={(e) => setSourceScale(e.target.value)}
+              style={inputStyle}>
+              <option value="auto">
+                Auto-detect{detectedScale ? ` — ${detectedScale.label}` : ''}
+              </option>
+              <option value="raw_counts">Raw counts — normalize, then log1p</option>
+              <option value="normalized_linear">Normalized, not logged — log1p only</option>
+              <option value="log_normalized">Already log-normalized — use as-is</option>
+              <option value="log_transformed">Already log-scaled — use as-is</option>
+            </select>
             <div style={{ color: dark.faint, fontSize: 10, marginTop: 4, lineHeight: 1.45 }}>
-              Training normalizes and log-transforms a private copy, so pick the
-              matrix closest to raw counts. The loaded dataset is not modified.
+              Decides what preprocessing is still owed. A reference distributed
+              as log-normalized values must not be normalized and logged again —
+              that distorts the marker ranking used to pick gene pairs. All of
+              this happens on a private copy; the loaded dataset is not modified.
             </div>
+            {sourceScale === 'auto' && detectedScale?.verdict === 'unknown' && (
+              <div style={{ ...noticeStyle, background: 'rgba(233,162,59,0.14)', color: '#f0c987' }}>
+                The scale of this matrix could not be identified. Training will
+                leave it untransformed, which is the safer guess — set it
+                explicitly above if you know what it is.
+              </div>
+            )}
 
             <label style={labelStyle}>Save classifier to</label>
             <input
@@ -625,6 +663,20 @@ function TrainResultView({
       <div style={{ ...noticeStyle, background: 'rgba(78,205,196,0.12)', color: '#9be7d8' }}>
         Trained on {result.n_cells_used.toLocaleString()} cells across{' '}
         {result.classifier.cell_type_classes.length} types.
+      </div>
+      <div style={sectionStyle}>
+        <div style={sectionTitle}>Preprocessing applied</div>
+        <div style={{ color: dark.text, fontSize: 11, lineHeight: 1.45 }}>
+          {result.preprocessing.reason}
+        </div>
+        <div style={{ color: dark.faint, fontSize: 10, marginTop: 3 }}>
+          detected <code>{result.preprocessing.detected_scale}</code>
+          {result.preprocessing.overridden
+            && <> · overridden to <code>{result.preprocessing.source_scale}</code></>}
+          {' '}· normalize_total {result.preprocessing.normalize ? 'yes' : 'no'}
+          {' '}· log1p {result.preprocessing.log1p ? 'yes' : 'no'}
+          {' '}· HVG {result.preprocessing.hvg_flavor}
+        </div>
       </div>
       <div style={sectionStyle}>
         <div style={sectionTitle}>Saved to</div>

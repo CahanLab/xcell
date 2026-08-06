@@ -8234,6 +8234,7 @@ class DataAdaptor:
         n_rand: int | None = None,
         n_comps: int = 30,
         layer: str | None = None,
+        source_scale: str | None = None,
     ) -> tuple[Any, Any]:
         """Train a classifier on this dataset's labels and write it to disk.
 
@@ -8250,7 +8251,12 @@ class DataAdaptor:
                 cell, which biases the forest toward abundant types.
             n_top_genes, n_top_gene_pairs, n_trees, n_rand, n_comps: PySCN
                 training parameters, same meanings as upstream.
-            layer: Source counts; None reads .X.
+            layer: Source matrix; None reads .X.
+            source_scale: Override the detected scale of that matrix
+                ('raw_counts', 'normalized_linear', 'log_normalized',
+                'log_transformed'). None auto-detects. This decides what
+                preprocessing is still owed — a reference distributed as
+                log-normalized values must not be normalized and logged again.
 
         Raises:
             ValueError: Missing package, bad column, too few labels/cells, or
@@ -8296,6 +8302,16 @@ class DataAdaptor:
         except Exception as e:
             raise ValueError(f"Cannot write to {out.parent}: {e}")
 
+        # Decide the preprocessing plan here, synchronously, so an untrainable
+        # source scale (z-scored, binary) is a 400 rather than a failed task.
+        from xcell import layer_scale as ls
+
+        source = (
+            self.adata.X if layer in (None, '', 'X') else self.adata.layers[layer]
+        )
+        detected = ls.assess_matrix_scale(source)['verdict']
+        plan = pyscn.training_plan(detected, override=source_scale)
+
         # Copy now, on the request thread, so the background job can never see
         # a half-mutated AnnData.
         train_src = self.adata.copy()
@@ -8303,7 +8319,7 @@ class DataAdaptor:
             'groupby': groupby, 'out': out, 'n_cells_per_type': n_cells_per_type,
             'n_top_genes': int(n_top_genes), 'n_top_gene_pairs': int(n_top_gene_pairs),
             'n_trees': int(n_trees), 'n_rand': n_rand, 'n_comps': int(n_comps),
-            'layer': layer,
+            'layer': layer, 'plan': plan,
         }
 
         def compute_fn(report=None):
@@ -8318,9 +8334,11 @@ class DataAdaptor:
                 'groupby': snap['groupby'],
                 'out_path': str(snap['out']),
                 'n_trees': snap['n_trees'],
+                'source_scale': plan['source_scale'],
             }, {
                 'n_classes': len(result['classifier']['cell_type_classes']),
                 'n_cells_used': result['n_cells_used'],
+                'preprocessing': result['preprocessing']['reason'],
             })
             return result
 

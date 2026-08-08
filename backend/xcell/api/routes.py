@@ -3461,3 +3461,190 @@ def export_analysis_record(request: RecordExportRequest, dataset: str | None = Q
         "markdown": markdown,
         "counts": report_counts(record),
     }
+
+
+# =========================================================================
+# Localize — predicting spatial coordinates from a spatial reference
+# =========================================================================
+
+def _resolve_reference(slot: str | None, query_slot: str | None) -> DataAdaptor:
+    """Resolve the spatial reference, which is a *different* slot to the query.
+
+    The only place in the API where two datasets are resolved at once. Mapping a
+    dataset onto itself would return each cell's own coordinate and look
+    flawless, so it is refused rather than allowed to mislead.
+    """
+    reference_slot = slot or 'secondary'
+    if reference_slot == (query_slot or 'primary'):
+        raise HTTPException(
+            status_code=400,
+            detail='The spatial reference must be a different dataset from the '
+                   'one being localized.',
+        )
+    return get_adaptor(reference_slot)
+
+
+@router.get("/localize/suggest")
+def localize_suggest(
+    reference: str | None = Query(None),
+    gene_subset: str | None = Query(None),
+    dataset: str | None = Query(None),
+):
+    """What can act as a spatial reference, and how well it would match.
+
+    The gene-overlap preview is the point: proceeding on a handful of shared
+    genes yields a map that looks smooth and means nothing, and the user should
+    learn that before committing to a run rather than after.
+    """
+    query = get_adaptor(dataset)
+    references = []
+    for slot, adaptor in _adaptors.items():
+        spatial_key = adaptor._get_spatial_key()
+        references.append({
+            "slot": slot,
+            "filename": str(adaptor.filepath.name),
+            "n_cells": int(adaptor.n_cells),
+            "n_genes": int(adaptor.n_genes),
+            "has_spatial": spatial_key is not None,
+            "spatial_key": spatial_key,
+            "is_query": slot == (dataset or "primary"),
+        })
+
+    out: dict[str, Any] = {
+        "references": references,
+        # k ~ sqrt(n) is the usual rule of thumb, bounded to stay interpretable.
+        "suggested_k": int(max(5, min(50, round(query.n_cells ** 0.5)))),
+    }
+
+    if reference:
+        try:
+            ref = _resolve_reference(reference, dataset)
+            bundle = ref.spatial_reference_bundle(gene_subset=gene_subset)
+            out["overlap"] = query.localize_gene_overlap(bundle)
+            out["reference_sections"] = [
+                c for c, d in ref.get_schema()["obs_dtypes"].items() if d == "category"
+            ]
+        except HTTPException:
+            raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return out
+
+
+class LocalizeRequest(BaseModel):
+    reference: str = "secondary"
+    k: int = 15
+    metric: str = "correlation"
+    transform: str = "zscore"
+    aggregation: str = "weighted_mean"
+    min_confidence: float = 0.0
+    gene_subset: str | list[str] | dict[str, Any] | None = None
+    section_col: str | None = None
+    layer: str | None = None
+    reference_layer: str | None = None
+    key_added: str = "X_spatial_pred"
+    dataset: str | None = None
+
+
+@router.post("/localize/prepare", status_code=202)
+def localize_prepare(request: LocalizeRequest, dataset: str | None = Query(None)):
+    """Predict spatial coordinates for the query from a spatial reference."""
+    query_slot = request.dataset or dataset
+    query = get_adaptor(query_slot)
+    reference = _resolve_reference(request.reference, query_slot)
+    try:
+        bundle = reference.spatial_reference_bundle(
+            gene_subset=request.gene_subset,
+            layer=request.reference_layer,
+            section_col=request.section_col,
+        )
+        compute_fn, apply_fn = query.prepare_localize(
+            bundle,
+            k=request.k,
+            metric=request.metric,
+            transform=request.transform,
+            aggregation=request.aggregation,
+            min_confidence=request.min_confidence,
+            layer=request.layer,
+            key_added=request.key_added,
+        )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class LocalizeCrossValidateRequest(BaseModel):
+    reference: str = "secondary"
+    k: int = 15
+    metric: str = "correlation"
+    transform: str = "zscore"
+    aggregation: str = "weighted_mean"
+    holdout_fraction: float = 0.2
+    gene_subset: str | list[str] | dict[str, Any] | None = None
+    section_col: str | None = None
+    layer: str | None = None
+    groupby: str | None = None
+    seed: int = 0
+
+
+@router.post("/localize/cross_validate", status_code=202)
+def localize_cross_validate(
+    request: LocalizeCrossValidateRequest, dataset: str | None = Query(None),
+):
+    """Hold out part of the reference and predict it from the rest.
+
+    A measurement, not an analysis step: it writes nothing. The result carries
+    ``same_platform: true`` because there is no platform gap to cross within one
+    dataset, so the number is an upper bound on what the real mapping achieves.
+    """
+    reference = get_adaptor(request.reference)
+    try:
+        compute_fn, apply_fn = reference.prepare_localize_cross_validation(
+            k=request.k,
+            metric=request.metric,
+            transform=request.transform,
+            aggregation=request.aggregation,
+            holdout_fraction=request.holdout_fraction,
+            gene_subset=request.gene_subset,
+            layer=request.layer,
+            section_col=request.section_col,
+            groupby=request.groupby,
+            seed=request.seed,
+        )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class LocalizeEvaluateRequest(BaseModel):
+    predicted_key: str = "X_spatial_pred"
+    truth_key: str = "spatial_true"
+    groupby: str | None = None
+    confidence_column: str | None = None
+
+
+@router.post("/localize/evaluate")
+def localize_evaluate(
+    request: LocalizeEvaluateRequest, dataset: str | None = Query(None),
+):
+    """Score a prediction against coordinates already known to be true."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.evaluate_localization(
+            request.predicted_key,
+            request.truth_key,
+            groupby=request.groupby,
+            confidence_column=request.confidence_column,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

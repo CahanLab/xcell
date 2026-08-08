@@ -19,6 +19,26 @@ from .analysis_record import AnalysisRecord
 from .diffexp import compute_diffexp
 
 
+def _nullable(arr: np.ndarray) -> list:
+    """Coordinates as nested lists, with non-finite values as ``None``.
+
+    NaN is a real value in an embedding — ``run_pca`` / ``run_umap`` on a cell
+    selection leave inactive cells NaN, and Localize leaves unplaceable cells
+    NaN rather than inventing a position. It is not valid JSON, though, and
+    starlette serializes strictly, so returning it raised
+    ``ValueError: Out of range float values are not JSON compliant`` and the
+    embedding could not be displayed at all. ``null`` is the honest wire
+    representation of "this cell has no position".
+    """
+    a = np.asarray(arr, dtype=float)
+    if np.isfinite(a).all():
+        return a.tolist()          # the common path, untouched
+    out = a.tolist()
+    if a.ndim == 1:
+        return [None if not np.isfinite(v) else v for v in out]
+    return [[None if not np.isfinite(v) else v for v in row] for row in out]
+
+
 def combine_spatial_h5ads(
     file_paths: list[Path],
     labels: list[str],
@@ -601,13 +621,13 @@ class DataAdaptor:
 
         result = {
             "name": name,
-            "coordinates": coords_2d.tolist(),
+            "coordinates": _nullable(coords_2d),
             "dim_x": dx,
             "dim_y": dy,
         }
         if dim_z is not None:
             dz = self._clamp_one_dim(name, dim_z)
-            result["z"] = np.asarray(arr[:, dz], dtype=float).tolist()
+            result["z"] = _nullable(np.asarray(arr[:, dz], dtype=float))
             result["dim_z"] = dz
         return result
 
@@ -5294,7 +5314,14 @@ class DataAdaptor:
             adata_sub = ad.AnnData(obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
             adata_sub.obsm[source_key] = pca_sub
 
-            sc.pp.neighbors(adata_sub, **kwargs)
+            # Name the representation explicitly. This AnnData holds only the
+            # obsm block — it has no .X, on purpose — and scanpy's use_rep=None
+            # default picks by adata.n_vars, which here is 0, so it falls
+            # through to .X and dies on None. Without this, Neighbors on a cell
+            # selection fails for every dataset.
+            sub_kwargs = {**kwargs, 'use_rep': source_key}
+
+            sc.pp.neighbors(adata_sub, **sub_kwargs)
 
             # Remap sparse obsp matrices to full size
             n_full = self.n_cells

@@ -3210,3 +3210,254 @@ def pyscn_train(request: PyscnTrainRequest, dataset: str | None = Query(None)):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =========================================================================
+# Analysis record — reproducible export to Jupyter / Markdown
+# =========================================================================
+
+def _record_payload(adaptor: DataAdaptor) -> dict[str, Any]:
+    """The record, with each step already translated and figures listed by id.
+
+    Translation happens here rather than in the frontend so there is exactly one
+    definition of what a step means and how faithfully it reproduces. Figure
+    payloads are omitted — a dozen base64 PNGs would make every poll megabytes.
+    """
+    from xcell import codegen
+    from xcell.notebook_export import report_counts
+
+    record = adaptor.analysis_record
+    steps = []
+    for step in record.steps:
+        t = codegen.translate(step)
+        steps.append({
+            "index": step.index,
+            "action": step.action,
+            "title": t.title,
+            "summary": t.summary,
+            "fidelity": t.fidelity,
+            "warnings": t.warnings,
+            "code": t.code,
+            "params": step.params,
+            "timestamp": step.timestamp,
+            "note": step.note,
+            "figure_ids": step.figure_ids,
+            "n_active": step.n_active,
+            "n_total": step.n_total,
+            "in_report": step.index >= record.report_start,
+        })
+    return {
+        "title": record.title,
+        "abstract": record.abstract,
+        "source": record.source,
+        "report_start": record.report_start,
+        "steps": steps,
+        "figures": [
+            {"id": f.id, "caption": f.caption, "step_index": f.step_index,
+             "timestamp": f.timestamp}
+            for f in record.figures.values()
+        ],
+        "counts": report_counts(record),
+    }
+
+
+@router.get("/record")
+def get_analysis_record(dataset: str | None = Query(None)):
+    """The analysis record: every recorded step, translated, plus figure metadata."""
+    return _record_payload(get_adaptor(dataset))
+
+
+class RecordMetaRequest(BaseModel):
+    title: str = ""
+    abstract: str = ""
+
+
+@router.put("/record/meta")
+def set_record_meta(request: RecordMetaRequest, dataset: str | None = Query(None)):
+    """Set the exported document's title and abstract."""
+    record = get_adaptor(dataset).analysis_record
+    record.title = request.title
+    record.abstract = request.abstract
+    return {"title": record.title, "abstract": record.abstract}
+
+
+@router.post("/record/mark")
+def mark_record_start(dataset: str | None = Query(None)):
+    """Treat everything from here on as the report. Discards nothing."""
+    return {"report_start": get_adaptor(dataset).analysis_record.mark_start()}
+
+
+class StepNoteRequest(BaseModel):
+    note: str = ""
+
+
+@router.post("/record/step/{index}/note")
+def set_step_note(index: int, request: StepNoteRequest, dataset: str | None = Query(None)):
+    """Annotate one step. An empty note clears it."""
+    record = get_adaptor(dataset).analysis_record
+    try:
+        step = record.set_note(index, request.note)
+    except IndexError:
+        raise HTTPException(status_code=404, detail=f"No step at index {index}")
+    return {"index": step.index, "note": step.note}
+
+
+class RecordFigureRequest(BaseModel):
+    png_b64: str
+    caption: str = ""
+    step_index: int | None = None
+
+
+@router.post("/record/figure")
+def add_record_figure(request: RecordFigureRequest, dataset: str | None = Query(None)):
+    """Attach a PNG captured in the browser. Defaults to the most recent step."""
+    import base64
+    import binascii
+
+    payload = request.png_b64
+    # canvas.toDataURL() returns 'data:image/png;base64,....'
+    if payload.startswith("data:"):
+        _, _, payload = payload.partition(",")
+    try:
+        base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Figure is not valid base64 PNG data")
+
+    record = get_adaptor(dataset).analysis_record
+    try:
+        figure = record.add_figure(
+            payload, caption=request.caption, step_index=request.step_index,
+        )
+    except IndexError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"id": figure.id, "caption": figure.caption, "step_index": figure.step_index}
+
+
+@router.delete("/record/figure/{figure_id}")
+def delete_record_figure(figure_id: str, dataset: str | None = Query(None)):
+    """Drop a captured figure."""
+    try:
+        get_adaptor(dataset).analysis_record.remove_figure(figure_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"removed": figure_id}
+
+
+@router.delete("/record")
+def clear_analysis_record(dataset: str | None = Query(None)):
+    """Clear the history, keeping the load step so an export still opens the
+    right file."""
+    adaptor = get_adaptor(dataset)
+    adaptor.analysis_record.clear()
+    return _record_payload(adaptor)
+
+
+class RecordExportRequest(BaseModel):
+    output_dir: str
+    filename: str = "analysis"
+    format: str = "ipynb"          # ipynb | md | both
+    include_figures: bool = True
+    include_code: bool = True
+
+
+_EXPORT_FORMATS = {"ipynb", "md", "both"}
+
+
+def _safe_stem(filename: str) -> str:
+    """A filename from a text box must be a name, not a path.
+
+    Rejects separators and traversal outright rather than sanitizing silently —
+    a user who typed a path deserves to be told it isn't one.
+    """
+    stem = filename.strip()
+    for suffix in (".ipynb", ".md"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+    if not stem or stem in (".", ".."):
+        raise HTTPException(status_code=400, detail="Filename must not be empty")
+    if "/" in stem or "\\" in stem or stem.startswith("."):
+        raise HTTPException(
+            status_code=400,
+            detail="Filename must be a name, not a path (no / or \\)",
+        )
+    return stem
+
+
+@router.post("/record/export")
+def export_analysis_record(request: RecordExportRequest, dataset: str | None = Query(None)):
+    """Render the record to disk as a notebook and/or markdown.
+
+    Writes server-side, into a directory the user picks with the file browser:
+    a notebook has to live next to the data to be re-runnable, and it keeps
+    figure sidecars simple. The rendered markdown comes back in the response so
+    the panel can preview what was written.
+    """
+    import json as _json
+
+    from xcell.notebook_export import (
+        figure_payloads,
+        report_counts,
+        selections_payload,
+        to_markdown,
+        to_notebook,
+    )
+
+    if request.format not in _EXPORT_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"format must be one of {sorted(_EXPORT_FORMATS)}",
+        )
+    out_dir = Path(request.output_dir).expanduser()
+    if not out_dir.is_dir():
+        raise HTTPException(
+            status_code=400, detail=f"Not a directory: {request.output_dir}",
+        )
+    stem = _safe_stem(request.filename)
+
+    adaptor = get_adaptor(dataset)
+    record = adaptor.analysis_record
+    opts = {
+        "include_figures": request.include_figures,
+        "include_code": request.include_code,
+        "notebook_name": stem,
+    }
+    wants_md = request.format in ("md", "both")
+    figures = figure_payloads(record) if request.include_figures else {}
+    # Markdown links figures from a sibling directory; a notebook carries them
+    # inline as base64 and stays a single file.
+    figure_dir = f"{stem}_figures" if (wants_md and figures) else None
+
+    written: list[dict[str, Any]] = []
+    try:
+        selections = selections_payload(record)
+        if selections and request.include_code:
+            path = out_dir / f"{stem}_selections.json"
+            path.write_text(_json.dumps(selections))
+            written.append({"path": str(path), "kind": "selections"})
+
+        if request.format in ("ipynb", "both"):
+            path = out_dir / f"{stem}.ipynb"
+            path.write_text(_json.dumps(to_notebook(record, **opts), indent=1))
+            written.append({"path": str(path), "kind": "notebook"})
+
+        markdown = to_markdown(record, figure_dir=figure_dir, **opts)
+        if wants_md:
+            path = out_dir / f"{stem}.md"
+            path.write_text(markdown)
+            written.append({"path": str(path), "kind": "markdown"})
+
+        if figure_dir:
+            fig_root = out_dir / figure_dir
+            fig_root.mkdir(exist_ok=True)
+            for name, data in figures.items():
+                path = fig_root / name
+                path.write_bytes(data)
+                written.append({"path": str(path), "kind": "figure"})
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"Could not write export: {e}")
+
+    return {
+        "files": written,
+        "markdown": markdown,
+        "counts": report_counts(record),
+    }

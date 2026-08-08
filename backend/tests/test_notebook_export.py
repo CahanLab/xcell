@@ -98,14 +98,31 @@ def test_an_untitled_record_still_gets_a_heading():
 
 
 def test_the_header_states_how_much_of_the_notebook_re_runs():
-    r = _pipeline()
+    r = _pipeline()                              # normalize, log1p, leiden
     r.add_step('some_future_tool', {}, {})       # manual
     r.add_step('smooth', {'graph_key': 'connectivities', 'n_steps': 1,
                           'source_layer': 'X', 'output_layer': 'smoothed',
                           'self_loop_weight': 1.0}, {})  # xcell
     header = _src(to_notebook(r)['cells'][0])
-    assert '4' in header and 'xcell' in header.lower()
-    assert 'manual' in header.lower() or 'not' in header.lower()
+    assert '**5 steps.**' in header
+    assert '3 re-run as written' in header
+    assert '1 need the xcell Python API' in header
+    assert '1 are manual' in header
+
+
+def test_the_header_count_matches_the_numbered_steps():
+    """A reader who counts the headings must get the number the header claims.
+
+    The load is the setup cell, not a step — counting it would put the header
+    one ahead of what is visible.
+    """
+    r = _pipeline()
+    nb = to_notebook(r)
+    headings = [c for c in nb['cells']
+                if c['cell_type'] == 'markdown' and _src(c).startswith('## ')]
+    assert '**3 steps.**' in _src(nb['cells'][0])
+    assert len(headings) == 3
+    assert _src(headings[0]).startswith('## 1. ')
 
 
 def test_the_header_counts_steps_that_ran_on_a_selection():

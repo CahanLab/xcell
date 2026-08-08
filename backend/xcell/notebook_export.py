@@ -43,7 +43,18 @@ _XCELL_PRELUDE = [
 # --- assembling the translated report -------------------------------------
 
 def _translated(record: AnalysisRecord) -> list[tuple[Step, TranslatedStep]]:
-    return [(s, translate(s)) for s in record.steps_for_report()]
+    """The steps the report actually narrates.
+
+    Loads are excluded: the first one becomes the setup cell, and a later one is
+    a session artifact (the user exported an h5ad and re-opened it) rather than
+    an analysis step. Counting them would make the header disagree with the
+    numbered steps a reader can see.
+    """
+    return [
+        (s, translate(s))
+        for s in record.steps_for_report()
+        if s.action != 'load_dataset'
+    ]
 
 
 def _load_step(record: AnalysisRecord) -> tuple[Step, TranslatedStep] | None:
@@ -117,6 +128,11 @@ def _counts(pairs: list[tuple[Step, TranslatedStep]]) -> dict[str, int]:
         MANUAL: sum(1 for _, t in pairs if t.fidelity == MANUAL),
         'subset': sum(1 for s, _ in pairs if s.n_active is not None),
     }
+
+
+def report_counts(record: AnalysisRecord) -> dict[str, int]:
+    """How much of the report re-runs — the number the UI and the header share."""
+    return _counts(_translated(record))
 
 
 def _header(record: AnalysisRecord, pairs: list[tuple[Step, TranslatedStep]]) -> str:
@@ -268,8 +284,6 @@ def to_notebook(
         cells.append(_code_cell([f'NOTEBOOK_NAME = {notebook_name!r}', ''] + setup))
 
     for n, (step, t) in enumerate(pairs, start=1):
-        if step.action == 'load_dataset':
-            continue  # already handled by the setup cell
         cells.append(_md_cell(_step_markdown(record, n, step, t,
                                              include_figures=include_figures)))
         outputs = _figure_outputs(record, step) if include_figures else []
@@ -335,8 +349,6 @@ def to_markdown(
                      '\n```')
 
     for n, (step, t) in enumerate(pairs, start=1):
-        if step.action == 'load_dataset':
-            continue
         parts.append(_step_markdown(record, n, step, t, include_figures=include_figures))
         if include_code and t.code:
             parts.append('```python\n' + '\n'.join(t.code) + '\n```')

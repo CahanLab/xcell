@@ -7705,6 +7705,323 @@ class DataAdaptor:
         return result
 
     # =========================================================================
+    # Localize — predicting spatial coordinates from a spatial reference
+    # See xcell/localize.py for the method and its failure modes.
+    # =========================================================================
+
+    # Below this many shared genes a prediction is not worth making: the map
+    # still looks smooth and confident and means nothing. Failing loudly beats a
+    # caveat nobody reads.
+    MIN_LOCALIZE_GENES = 10
+
+    def spatial_reference_bundle(
+        self,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        layer: str | None = None,
+        section_col: str | None = None,
+    ) -> dict[str, Any]:
+        """Hand this dataset over as a spatial reference, as plain arrays.
+
+        Localize spans two datasets, which no other route does. Rather than let
+        the route reach into this adaptor's AnnData — the one thing the
+        architecture reserves for adaptors — the reference exports what the
+        query needs and the query consumes plain data.
+        """
+        spatial_key = self._get_spatial_key()
+        if spatial_key is None:
+            raise ValueError(
+                'This dataset has no spatial coordinates, so it cannot act as a '
+                "reference. Expected .obsm['spatial'] or .obsm['X_spatial']."
+            )
+        mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+        sections = self._resolve_sections(section_col)
+
+        matrix = self._resolve_source_matrix(layer)
+        expr = matrix[:, mask]
+        expr = expr.toarray() if hasattr(expr, 'toarray') else np.asarray(expr)
+
+        return {
+            'expr': np.asarray(expr, dtype=np.float32),
+            'coords': np.asarray(self.adata.obsm[spatial_key], dtype=float)[:, :2],
+            'genes': [str(g) for g in self.adata.var_names[mask]],
+            'sections': sections,
+            'n_cells': int(self.n_cells),
+            'spatial_key': spatial_key,
+            'gene_subset_type': subset_type,
+            'section_col': section_col,
+            'layer': layer or 'X',
+        }
+
+    def _align_to_reference(
+        self, bundle: dict[str, Any], layer: str | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
+        """Line this dataset's genes up with the reference's, **by name**.
+
+        The pure module takes two aligned matrices and cannot know a panel was
+        reordered or only partly shared — matching names is exactly the job that
+        needs the AnnData, and getting it wrong produces a confident map of
+        nothing.
+        """
+        ref_genes = list(bundle['genes'])
+        positions = {g: i for i, g in enumerate(self.adata.var_names)}
+        shared = [g for g in ref_genes if g in positions]
+        missing = [g for g in ref_genes if g not in positions]
+
+        if not shared:
+            raise ValueError(
+                'The query and the spatial reference share no gene names. '
+                'Check that both use the same identifiers (symbols vs Ensembl IDs).'
+            )
+        matrix = self._resolve_source_matrix(layer)
+        cols = [positions[g] for g in shared]
+        query = matrix[:, cols]
+        query = query.toarray() if hasattr(query, 'toarray') else np.asarray(query)
+
+        ref_index = {g: i for i, g in enumerate(ref_genes)}
+        ref = bundle['expr'][:, [ref_index[g] for g in shared]]
+        return np.asarray(query, dtype=np.float32), ref, shared, missing
+
+    def localize_gene_overlap(
+        self, bundle: dict[str, Any], layer: str | None = None,
+    ) -> dict[str, Any]:
+        """How much of the reference panel this dataset actually carries.
+
+        Reported before anything runs, following the same reasoning as the
+        PySingleCellNet coverage check: silently proceeding on a handful of
+        shared genes yields confident nonsense.
+        """
+        ref_genes = list(bundle['genes'])
+        present = set(map(str, self.adata.var_names))
+        shared = [g for g in ref_genes if g in present]
+        missing = [g for g in ref_genes if g not in present]
+        n_ref = len(ref_genes) or 1
+        frac = len(shared) / n_ref
+        return {
+            'n_shared': len(shared),
+            'n_reference_genes': len(ref_genes),
+            'n_query_genes': int(self.n_genes),
+            'frac_of_reference': float(frac),
+            'missing_from_query': missing[:100],
+            'n_missing': len(missing),
+            'sufficient': len(shared) >= self.MIN_LOCALIZE_GENES,
+            'severity': 'ok' if frac >= 0.5 else ('warn' if frac >= 0.2 else 'error'),
+        }
+
+    def prepare_localize(
+        self,
+        bundle: dict[str, Any],
+        *,
+        k: int = 15,
+        metric: str = 'correlation',
+        transform: str = 'zscore',
+        aggregation: str = 'weighted_mean',
+        min_confidence: float = 0.0,
+        layer: str | None = None,
+        key_added: str = 'X_spatial_pred',
+    ) -> tuple[Callable[..., Any], Callable[[dict[str, Any]], dict[str, Any]]]:
+        """Predict a coordinate for every cell here from a spatial reference.
+
+        Two-phase: validate now so bad input is a 400 rather than a background
+        task that dies a minute later, compute with no side effects, then write.
+        """
+        from xcell import localize as lz
+
+        if metric not in lz.METRICS:
+            raise ValueError(f"metric must be one of {list(lz.METRICS)}")
+        if transform not in lz.TRANSFORMS:
+            raise ValueError(f"transform must be one of {list(lz.TRANSFORMS)}")
+        if aggregation not in lz.AGGREGATIONS:
+            raise ValueError(f"aggregation must be one of {list(lz.AGGREGATIONS)}")
+        if not key_added:
+            raise ValueError('key_added must be a non-empty name')
+
+        query_expr, ref_expr, shared, missing = self._align_to_reference(bundle, layer)
+        if len(shared) < self.MIN_LOCALIZE_GENES:
+            raise ValueError(
+                f'Only {len(shared)} genes overlap between the query and the '
+                f'spatial reference (need at least {self.MIN_LOCALIZE_GENES}). '
+                'A prediction from this few genes would look confident and mean '
+                'nothing.'
+            )
+
+        # Snapshot everything the closure needs, so it cannot observe state that
+        # changed while the task was queued.
+        snap = {
+            'query': query_expr,
+            'ref': ref_expr,
+            'coords': np.asarray(bundle['coords'], dtype=float),
+            'sections': bundle.get('sections'),
+            'k': int(k),
+            'metric': metric,
+            'transform': transform,
+            'aggregation': aggregation,
+            'min_confidence': float(min_confidence),
+            'key': key_added,
+            'shared': shared,
+            'missing': missing,
+            'section_col': bundle.get('section_col'),
+            'gene_subset_type': bundle.get('gene_subset_type'),
+            'n_reference_cells': int(bundle.get('n_cells', len(bundle['coords']))),
+        }
+
+        def compute_fn(report: Callable[[float, str], None] | None = None) -> dict[str, Any]:
+            projection = lz.project_knn(
+                snap['query'], snap['ref'], snap['coords'],
+                k=snap['k'], metric=snap['metric'], transform=snap['transform'],
+                aggregation=snap['aggregation'], ref_sections=snap['sections'],
+                min_confidence=snap['min_confidence'],
+                progress=report,
+            )
+            return {'projection': projection}
+
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            projection = result['projection']
+            key = snap['key']
+            self.adata.obsm[key] = np.asarray(projection.coords, dtype=float)
+            self.adata.obs[f'{key}_confidence'] = np.asarray(
+                projection.confidence, dtype=float)
+            self.adata.obs[f'{key}_similarity'] = np.asarray(
+                projection.similarity, dtype=float)
+            if projection.sections is not None:
+                self.adata.obs[f'{key}_section'] = pd.Categorical(
+                    projection.sections.astype(str))
+
+            conf = np.asarray(projection.confidence, dtype=float)
+            out = {
+                'status': 'completed',
+                'embedding_name': key,
+                'n_cells': int(self.n_cells),
+                'n_unplaced': int(projection.n_unplaced),
+                'n_shared_genes': len(snap['shared']),
+                'n_missing_genes': len(snap['missing']),
+                'missing_genes': snap['missing'][:50],
+                'n_reference_cells': snap['n_reference_cells'],
+                'gene_subset_type': snap['gene_subset_type'],
+                'section_col': snap['section_col'],
+                # So the panel can say what a threshold would cost before it is
+                # applied, rather than after.
+                'confidence_distribution': {
+                    'median': float(np.median(conf)),
+                    'q25': float(np.percentile(conf, 25)),
+                    'q75': float(np.percentile(conf, 75)),
+                    'n_below_0.2': int((conf < 0.2).sum()),
+                    'n_below_0.5': int((conf < 0.5).sum()),
+                },
+            }
+            self._log_action('localize', {
+                'k': snap['k'], 'metric': snap['metric'],
+                'transform': snap['transform'], 'aggregation': snap['aggregation'],
+                'min_confidence': snap['min_confidence'],
+                'key_added': key, 'section_col': snap['section_col'],
+                'gene_subset_type': snap['gene_subset_type'],
+            }, {
+                'embedding_name': key,
+                'n_cells': out['n_cells'],
+                'n_unplaced': out['n_unplaced'],
+                'n_shared_genes': out['n_shared_genes'],
+                'n_reference_cells': out['n_reference_cells'],
+                'median_confidence': out['confidence_distribution']['median'],
+            })
+            return out
+
+        return compute_fn, apply_fn
+
+    def prepare_localize_cross_validation(
+        self,
+        *,
+        k: int = 15,
+        metric: str = 'correlation',
+        transform: str = 'zscore',
+        aggregation: str = 'weighted_mean',
+        holdout_fraction: float = 0.2,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        layer: str | None = None,
+        section_col: str | None = None,
+        groupby: str | None = None,
+        seed: int = 0,
+    ) -> tuple[Callable[..., Any], Callable[[dict[str, Any]], dict[str, Any]]]:
+        """Hold out part of *this* spatial dataset and predict it from the rest.
+
+        What a user does when they have no ground truth for their query. The
+        number it returns is optimistic — there is no platform gap to cross
+        within one dataset — and the result says so via ``same_platform``.
+        """
+        from xcell import localize as lz
+
+        bundle = self.spatial_reference_bundle(
+            gene_subset=gene_subset, layer=layer, section_col=section_col,
+        )
+        groups = None
+        if groupby is not None:
+            if groupby not in self.adata.obs.columns:
+                raise ValueError(f"obs column '{groupby}' not found")
+            groups = np.asarray(self.adata.obs[groupby].astype(str).values)
+
+        snap = {
+            'expr': bundle['expr'], 'coords': bundle['coords'],
+            'sections': bundle['sections'], 'groups': groups,
+            'k': int(k), 'metric': metric, 'transform': transform,
+            'aggregation': aggregation,
+            'holdout_fraction': float(holdout_fraction), 'seed': int(seed),
+        }
+
+        def compute_fn(report: Callable[[float, str], None] | None = None) -> dict[str, Any]:
+            return lz.cross_validate_localization(
+                snap['expr'], snap['coords'],
+                holdout_fraction=snap['holdout_fraction'],
+                ref_sections=snap['sections'], groups=snap['groups'],
+                seed=snap['seed'], progress=report,
+                k=snap['k'], metric=snap['metric'], transform=snap['transform'],
+                aggregation=snap['aggregation'],
+            )
+
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            # Read-only: nothing is written into the AnnData, so there is
+            # nothing to apply and nothing to log.
+            return result
+
+        return compute_fn, apply_fn
+
+    def evaluate_localization(
+        self,
+        predicted_key: str,
+        truth_key: str,
+        *,
+        groupby: str | None = None,
+        confidence_column: str | None = None,
+    ) -> dict[str, Any]:
+        """Score a prediction against coordinates already known to be true.
+
+        For a benchmark dataset, or for a spatial dataset deliberately used as a
+        query to measure the method.
+        """
+        from xcell import localize as lz
+
+        for key in (predicted_key, truth_key):
+            if key not in self.adata.obsm:
+                raise KeyError(
+                    f"'{key}' not found in .obsm. Available: "
+                    f'{list(self.adata.obsm.keys())}'
+                )
+        groups = None
+        if groupby is not None:
+            if groupby not in self.adata.obs.columns:
+                raise ValueError(f"obs column '{groupby}' not found")
+            groups = np.asarray(self.adata.obs[groupby].astype(str).values)
+
+        column = confidence_column or f'{predicted_key}_confidence'
+        confidence = (
+            np.asarray(self.adata.obs[column], dtype=float)
+            if column in self.adata.obs.columns else None
+        )
+        return lz.evaluate_localization(
+            np.asarray(self.adata.obsm[predicted_key], dtype=float),
+            np.asarray(self.adata.obsm[truth_key], dtype=float),
+            confidence=confidence,
+            groups=groups,
+        )
+
+    # =========================================================================
     # Ligand-receptor spatial signaling (CytoSignal-style)
     # =========================================================================
     def _ligrec_spatial_coords(self) -> np.ndarray:

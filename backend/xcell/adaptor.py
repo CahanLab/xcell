@@ -6,6 +6,7 @@ direct AnnData access and is designed for easy integration with scanpy
 analysis functions.
 """
 
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +15,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 
+from .analysis_record import AnalysisRecord
 from .diffexp import compute_diffexp
 
 
@@ -249,16 +251,22 @@ class DataAdaptor:
                    combine-spatial route which builds the AnnData in memory.
         """
         self.filepath = Path(filepath)
+        # How the matrix got here, so the exported notebook opens it the same
+        # way. 'memory' means there is no file to re-read (combine_spatial, tests).
+        source_kind = 'memory'
         if adata is not None:
             self.adata = adata
         else:
             trio = self._find_10x_trio_files(self.filepath)
             if self.filepath.is_dir():
+                source_kind = '10x_mtx'
                 self.adata = sc.read_10x_mtx(self.filepath)
                 self.adata.var_names_make_unique()
             elif trio is not None:
+                source_kind = '10x_mtx'
                 self._load_10x_mtx_trio(*trio)
             elif self.filepath.suffix == '.h5':
+                source_kind = '10x_h5'
                 from xcell.visium_hd import is_feature_slice, load_feature_slice_cached
                 if is_feature_slice(self.filepath):
                     # 10x Visium HD feature_slice.h5 — not a feature-barcode
@@ -268,6 +276,7 @@ class DataAdaptor:
                     self.adata = sc.read_10x_h5(self.filepath)
                 self.adata.var_names_make_unique()
             else:
+                source_kind = 'h5ad'
                 self.adata = anndata.read_h5ad(self.filepath)
         self._normalized_adata: anndata.AnnData | None = None
         self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
@@ -285,6 +294,11 @@ class DataAdaptor:
         self._ucell_rank_cache: dict[tuple[str, int], Any] = {}
         self._ucell_rank_cache_adata_id: int | None = None
 
+        # Exportable provenance. Restored from the h5ad when one is present, so
+        # re-opening an exported dataset continues its history rather than
+        # starting a second one.
+        self.analysis_record = self._restore_analysis_record()
+        self._record_source(self.filepath, source_kind)
 
         # Defensively preserve raw counts: if .X looks like integer counts and
         # a "counts" layer isn't already present, snapshot .X into
@@ -632,7 +646,11 @@ class DataAdaptor:
         if key in self.adata.obsm:
             raise ValueError(f"embedding '{key}' already exists")
         self.adata.obsm[key] = np.column_stack([x, y]).astype(float)
-        return {"embedding_name": key, "n_cells": self.n_cells}
+        result = {"embedding_name": key, "n_cells": self.n_cells}
+        self._log_action('create_obs_embedding', {
+            'col_x': col_x, 'col_y': col_y, 'log_axes': log_axes, 'name': name,
+        }, result)
+        return result
 
     def score_gene_sets_matrix(
         self,
@@ -726,7 +744,7 @@ class DataAdaptor:
         }
         self.adata.uns['xcell_score_matrices'] = reg
 
-        return {
+        result = {
             "obsm_name": obsm_name,
             "columns": columns,
             "n_cells": self.n_cells,
@@ -734,6 +752,18 @@ class DataAdaptor:
             "skipped": skipped,
             "per_column": per_column,
         }
+        self._log_action('score_gene_sets_matrix', {
+            'sets': [{'name': s.get('name'), 'genes': list(s.get('genes') or [])}
+                     for s in sets],
+            'per_gene_norm': per_gene_norm,
+            'per_gene_clip': per_gene_clip,
+            'aggregation': aggregation,
+            'obsm_name': obsm_name,
+            'layer': layer,
+            'transform': transform,
+        }, {'obsm_name': obsm_name, 'columns': columns, 'n_sets': len(columns),
+            'skipped': skipped})
+        return result
 
     def _score_matrix_columns(self, obsm_name: str) -> list[str] | None:
         """Registered column (set) names for a score matrix, or None.
@@ -819,7 +849,11 @@ class DataAdaptor:
         if n_matched == 0:
             raise ValueError(f"no genes match {match_mode} '{pattern}'")
         self.adata.var[name] = mask.astype(bool)
-        return {"name": name, "n_genes_matched": n_matched}
+        result = {"name": name, "n_genes_matched": n_matched}
+        self._log_action('add_var_boolean_column', {
+            'name': name, 'pattern': pattern, 'match_mode': match_mode,
+        }, result)
+        return result
 
     def run_calculate_qc_metrics(
         self, qc_vars=None, percent_top=None, log1p: bool = True,
@@ -846,11 +880,15 @@ class DataAdaptor:
             self.adata, qc_vars=qc_vars, percent_top=percent_top,
             log1p=log1p, inplace=True,
         )
-        return {
+        result = {
             "qc_vars": qc_vars,
             "n_obs_columns": len(set(self.adata.obs.columns) - obs_before),
             "n_var_columns": len(set(self.adata.var.columns) - var_before),
         }
+        self._log_action('calculate_qc_metrics', {
+            'qc_vars': qc_vars, 'percent_top': percent_top, 'log1p': log1p,
+        }, result)
+        return result
 
     def sum_counts_by_pattern(
         self, pattern: str, match_mode: str = 'prefix',
@@ -877,7 +915,12 @@ class DataAdaptor:
             base = re.sub(r'[^0-9A-Za-z]+', '', pattern) or 'species'
             obs_name = f"{base}_counts"
         self.adata.obs[obs_name] = sums.astype(float)
-        return {"obs_name": obs_name, "n_genes_matched": n_matched}
+        result = {"obs_name": obs_name, "n_genes_matched": n_matched}
+        self._log_action('sum_counts_by_pattern', {
+            'pattern': pattern, 'match_mode': match_mode,
+            'obs_name': obs_name, 'layer': layer,
+        }, result)
+        return result
 
     def _species_prefix_candidates(self) -> list[str]:
         """Per-gene genome-prefix candidate, aligned to var_names ('' if none).
@@ -1008,12 +1051,17 @@ class DataAdaptor:
         # untouched by a rename, so it stays valid.
         self._normalized_adata = None
 
-        return {
+        result = {
             "n_renamed": len(changed),
             "n_genes": len(new_names),
             "n_duplicates": len(dupes),
             "examples": [{"before": o, "after": n} for o, n in changed[:5]],
         }
+        self._log_action('rename_genes', {
+            'pattern': pattern, 'replacement': replacement,
+            'match_mode': match_mode, 'make_unique': make_unique,
+        }, result)
+        return result
 
     def add_var_species_column(
         self, species_column: str = 'species', prefixes=None, labels=None,
@@ -1130,7 +1178,12 @@ class DataAdaptor:
         if not obs_columns:
             raise ValueError(
                 f"no species to count in .var['{species_column}']")
-        return {"obs_columns": obs_columns, "n_genes": n_genes, "layer": src}
+        result = {"obs_columns": obs_columns, "n_genes": n_genes, "layer": src}
+        self._log_action('sum_counts_by_species', {
+            'species_column': species_column, 'layer': layer, 'suffix': suffix,
+            'include_unknown': include_unknown, 'unknown_label': unknown_label,
+        }, result)
+        return result
 
     def assign_species(
         self, count_columns, labels=None, obs_name: str = 'species',
@@ -1174,7 +1227,12 @@ class DataAdaptor:
                 if c in set(assigned.tolist())]
         self.adata.obs[obs_name] = pd.Categorical(assigned, categories=cats)
         counts = {c: int((assigned == c).sum()) for c in cats}
-        return {"obs_name": obs_name, "counts": counts}
+        result = {"obs_name": obs_name, "counts": counts}
+        self._log_action('assign_species', {
+            'count_columns': list(count_columns), 'labels': list(labels),
+            'obs_name': obs_name, 'threshold': threshold,
+        }, result)
+        return result
 
     def transform_embedding(
         self,
@@ -1436,6 +1494,8 @@ class DataAdaptor:
         # If referenced columns no longer exist, the mask is cleared.
         self._regenerate_gene_mask_after_var_change()
 
+        self._log_action('swap_var_index', {'column_name': column_name},
+                         {'n_genes': int(self.n_genes)})
         return self.get_schema()
 
     def search_genes(self, query: str, limit: int = 20) -> list[str]:
@@ -1798,7 +1858,18 @@ class DataAdaptor:
                 "min": float(scores.min()), "max": float(scores.max()),
                 "n_up_used": len(up_idx), "n_down_used": len(down_idx),
             })
-        return {"results": results, "max_rank": eff_max_rank, "layer": layer}
+        out = {"results": results, "max_rank": eff_max_rank, "layer": layer}
+        self._log_action('score_gene_sets_ucell', {
+            'sets': [{'name': s.get('name'),
+                      'genes': list(s.get('genes') or []),
+                      'genes_down': list(s.get('genes_down') or [])} for s in sets],
+            'layer': layer, 'max_rank': max_rank, 'w_neg': w_neg,
+        }, {
+            'max_rank': eff_max_rank,
+            'obs_columns': [r['obs_column'] for r in results if 'obs_column' in r],
+            'n_skipped': sum(1 for r in results if 'skipped' in r),
+        })
+        return out
 
     def _aggregate_gene_set_scores(
         self,
@@ -2175,6 +2246,9 @@ class DataAdaptor:
             categories=[default_value]
         )
 
+        self._log_action('create_annotation',
+                         {'name': name, 'default_value': default_value},
+                         {'name': name, 'n_cells': self.n_cells})
         return self.get_obs_column_summary(name)
 
     def add_label_to_annotation(self, annotation: str, label: str) -> dict[str, Any]:
@@ -2233,6 +2307,12 @@ class DataAdaptor:
         # Assign label to specified cells
         self.adata.obs.iloc[cell_indices, self.adata.obs.columns.get_loc(annotation)] = label
 
+        # The selection is the whole content of this step — without it, "labelled
+        # 412 cells 'cortex'" is unreproducible prose.
+        self._log_action('label_cells',
+                         {'annotation': annotation, 'label': label},
+                         {'n_cells_labelled': len(cell_indices)},
+                         subset=cell_indices)
         return self.get_obs_column_summary(annotation)
 
     def delete_annotation(self, name: str) -> None:
@@ -2306,12 +2386,16 @@ class DataAdaptor:
                 f"Column '{column}' is not categorical or string (dtype={series.dtype})"
             )
 
-        return {
+        result = {
             "column": column,
             "old_label": old_label,
             "new_label": new_label,
             "n_cells_renamed": n_cells,
         }
+        self._log_action('rename_obs_label', {
+            'column': column, 'old_label': old_label, 'new_label': new_label,
+        }, result)
+        return result
 
     def merge_obs_labels(
         self, column: str, labels: list[str], new_label: str
@@ -2422,12 +2506,16 @@ class DataAdaptor:
                 f"Column '{column}' is not categorical or string (dtype={series.dtype})"
             )
 
-        return {
+        result = {
             "column": column,
             "merged_labels": labels,
             "new_label": new_label,
             "n_cells_merged": n_cells,
         }
+        self._log_action('merge_obs_labels', {
+            'column': column, 'labels': list(labels), 'new_label': new_label,
+        }, result)
+        return result
 
     def transfer_obs_labels(
         self,
@@ -2709,6 +2797,19 @@ class DataAdaptor:
         )
         result['gene_subset_type'] = subset_type
         result['n_genes_tested'] = work_adata.n_vars
+        self._log_action('diffexp', {
+            'n_group1': len(group1_indices), 'n_group2': len(group2_indices),
+            'top_n': top_n, 'method': method, 'corr_method': corr_method,
+            'min_fold_change': min_fold_change,
+            'min_in_group_fraction': min_in_group_fraction,
+            'max_out_group_fraction': max_out_group_fraction,
+            'max_pval_adj': max_pval_adj, 'gene_subset': gene_subset,
+        }, {
+            'n_genes_tested': work_adata.n_vars,
+            'gene_subset_type': subset_type,
+            'n_upregulated': len(result.get('upregulated') or []),
+            'n_downregulated': len(result.get('downregulated') or []),
+        })
         return result
 
     # =========================================================================
@@ -2842,11 +2943,13 @@ class DataAdaptor:
         - points: Array of [x, y] coordinates
         - smoothed_points: Array of smoothed [x, y] coordinates (if exists)
 
-        Returns:
-            Copy of adata with lines and projections added
-        """
-        import json
+        Also stores the analysis record as a JSON string in
+        .uns['xcell_analysis_record'], so an exported dataset carries its own
+        provenance and re-opening it continues the history.
 
+        Returns:
+            Copy of adata with lines, projections and the analysis record added
+        """
         # Work with a copy to avoid modifying the live data
         adata_export = self.adata.copy()
 
@@ -2856,6 +2959,8 @@ class DataAdaptor:
         for frame in (adata_export.var, adata_export.obs):
             if frame.index.name in frame.columns:
                 frame.index.name = None
+
+        adata_export.uns[self.ANALYSIS_RECORD_UNS_KEY] = self._serialize_record()
 
         if not self._drawn_lines:
             return adata_export
@@ -3746,12 +3851,92 @@ class DataAdaptor:
     # Scanpy analysis methods
     # =========================================================================
 
+    # =========================================================================
+    # Analysis record (exportable provenance) — see xcell/analysis_record.py
+    # =========================================================================
+
+    ANALYSIS_RECORD_UNS_KEY = 'xcell_analysis_record'
+
+    def _restore_analysis_record(self) -> AnalysisRecord:
+        """Read a record out of .uns, or start a fresh one.
+
+        An h5ad can come from anywhere, so anything unreadable under that key
+        is discarded rather than allowed to block the load.
+        """
+        raw = self.adata.uns.get(self.ANALYSIS_RECORD_UNS_KEY)
+        if raw is not None:
+            try:
+                return AnalysisRecord.from_dict(json.loads(raw))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        return AnalysisRecord()
+
+    def _record_source(self, path: Path, kind: str) -> None:
+        """Record what was loaded, as the record's first step and its source.
+
+        Without this the exported notebook has nothing to open — the single
+        biggest gap in the old action history.
+        """
+        self.analysis_record.source = {
+            'path': str(path),
+            'kind': kind,
+            'n_cells': int(self.n_cells),
+            'n_genes': int(self.n_genes),
+        }
+        self.analysis_record.add_step(
+            'load_dataset',
+            {'path': str(path), 'kind': kind},
+            {'n_cells': int(self.n_cells), 'n_genes': int(self.n_genes)},
+        )
+
+    def _serialize_record(self) -> str:
+        """The record as a JSON string for .uns, without figure payloads.
+
+        h5ad copes badly with deeply nested heterogeneous dicts, so the whole
+        thing goes in as one string. Figures are dropped: base64 PNGs would
+        bloat every exported dataset, and they belong to the notebook, not to
+        the matrix.
+        """
+        payload = self.analysis_record.to_dict()
+        payload['figures'] = {}
+        for step in payload['steps']:
+            step['figure_ids'] = []
+        return json.dumps(payload)
+
+    def set_source(self, path: Path | str, kind: str) -> None:
+        """Correct the recorded source after construction.
+
+        The load route converts .rds to a temporary h5ad before handing it to
+        the adaptor; the record should name the file the user actually chose.
+        """
+        self.filepath = Path(path)
+        self.analysis_record.source.update({'path': str(path), 'kind': kind})
+        for step in self.analysis_record.steps:
+            if step.action == 'load_dataset':
+                step.params.update({'path': str(path), 'kind': kind})
+                break
+
     def get_action_history(self) -> list[dict[str, Any]]:
         """Get the history of scanpy operations performed."""
         return self._action_history
 
-    def _log_action(self, action: str, params: dict[str, Any], result: dict[str, Any]) -> None:
-        """Log a scanpy action to the history."""
+    def _log_action(
+        self,
+        action: str,
+        params: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        subset: Any = None,
+    ) -> None:
+        """Log an action to the history and the exportable analysis record.
+
+        ``subset`` is the *resolved* active-cell selection — what
+        ``_validate_cell_indices`` / ``_get_active_adata`` returned, so it is
+        already None when the caller passed no selection or one covering every
+        cell. Passing it explicitly at each call site rather than stashing it on
+        self keeps a selection from being misattributed to whichever operation
+        happens to log next.
+        """
         import datetime
         self._action_history.append({
             'action': action,
@@ -3759,6 +3944,11 @@ class DataAdaptor:
             'result': result,
             'timestamp': datetime.datetime.now().isoformat(),
         })
+        self.analysis_record.add_step(
+            action, params, result,
+            selection=None if subset is None else [int(i) for i in subset],
+            n_total=self.n_cells,
+        )
 
     def _validate_cell_indices(
         self, active_cell_indices: list[int] | None,
@@ -4322,6 +4512,7 @@ class DataAdaptor:
         if max_cells is not None:
             kwargs['max_cells'] = max_cells
 
+        indices = None  # also read by _log_action below
         if kwargs:
             adata_sub, indices = self._get_active_adata(active_cell_indices)
             if indices is not None:
@@ -4348,7 +4539,7 @@ class DataAdaptor:
             'n_genes_removed': n_genes_before - n_genes_after,
             'gene_mask_cleared': mask_cleared,
         }
-        self._log_action('filter_genes', kwargs, result)
+        self._log_action('filter_genes', kwargs, result, subset=indices)
         return result
 
     def run_exclude_genes(
@@ -4443,6 +4634,7 @@ class DataAdaptor:
         if max_genes is not None:
             kwargs['max_genes'] = max_genes
 
+        indices = None  # also read by _log_action below
         if kwargs:
             adata_sub, indices = self._get_active_adata(active_cell_indices)
             if indices is not None:
@@ -4475,7 +4667,7 @@ class DataAdaptor:
             'n_cells_after': n_cells_after,
             'n_cells_removed': n_cells_before - n_cells_after,
         }
-        self._log_action('filter_cells', kwargs, result)
+        self._log_action('filter_cells', kwargs, result, subset=indices)
         return result
 
     def delete_cells(
@@ -4519,7 +4711,8 @@ class DataAdaptor:
             'n_cells_after': n_cells_after,
             'n_cells_deleted': n_cells_before - n_cells_after,
         }
-        self._log_action('delete_cells', {'n_indices': len(cell_indices)}, result)
+        self._log_action('delete_cells', {'n_indices': len(cell_indices)}, result,
+                         subset=cell_indices)
         return result
 
     def run_normalize_total(
@@ -4566,7 +4759,7 @@ class DataAdaptor:
         self._ucell_rank_cache_adata_id = None
 
         result = {'status': 'completed', 'target_sum': target_sum}
-        self._log_action('normalize_total', kwargs, result)
+        self._log_action('normalize_total', kwargs, result, subset=indices)
         return result
 
     def run_log1p(
@@ -4605,7 +4798,7 @@ class DataAdaptor:
         self._ucell_rank_cache_adata_id = None
 
         result = {'status': 'completed'}
-        self._log_action('log1p', {}, result)
+        self._log_action('log1p', {}, result, subset=indices)
         return result
 
     def run_highly_variable_genes(
@@ -4696,7 +4889,7 @@ class DataAdaptor:
             'min_disp': min_disp,
             'flavor': flavor,
             'subset': subset,
-        }, result)
+        }, result, subset=indices)
         return result
 
     def run_pca(
@@ -4825,7 +5018,7 @@ class DataAdaptor:
             'n_comps': n_comps,
             'svd_solver': svd_solver,
             'gene_subset': gene_subset,
-        }, result)
+        }, result, subset=cell_indices)
         return result
 
     def get_pca_loadings(self, top_n: int = 10) -> dict[str, Any]:
@@ -5122,7 +5315,7 @@ class DataAdaptor:
             sc.pp.neighbors(self.adata, **kwargs)
 
         result = {'status': 'completed', 'n_neighbors': n_neighbors}
-        self._log_action('neighbors', kwargs, result)
+        self._log_action('neighbors', kwargs, result, subset=cell_indices)
         return result
 
     def list_neighbor_graphs(self) -> list[dict[str, Any]]:
@@ -5489,7 +5682,8 @@ class DataAdaptor:
             'embedding_name': 'X_umap',
             'n_components': n_components,
         }
-        self._log_action('umap', {'min_dist': min_dist, 'spread': spread, 'n_components': n_components}, result)
+        self._log_action('umap', {'min_dist': min_dist, 'spread': spread, 'n_components': n_components},
+                         result, subset=cell_indices)
         return result
 
     def run_leiden(
@@ -5552,7 +5746,8 @@ class DataAdaptor:
             'n_clusters': n_clusters,
             'resolution': resolution,
         }
-        self._log_action('leiden', {'resolution': resolution, 'key_added': key_added}, result)
+        self._log_action('leiden', {'resolution': resolution, 'key_added': key_added},
+                         result, subset=cell_indices)
         return result
 
     # =========================================================================
@@ -5737,7 +5932,7 @@ class DataAdaptor:
             'scale': scale,
             'use_kneedle': use_kneedle,
             'gene_subset': gene_subset,
-        }, result)
+        }, result, subset=cell_indices)
         return result
 
     def get_cell_pca_variance(self) -> dict[str, Any]:
@@ -5820,6 +6015,9 @@ class DataAdaptor:
 
         n_genes_total = self.adata.n_vars
         subset_type = 'all'
+        # Only the 'expression' basis subsets cells; elsewhere None is the
+        # honest answer for the analysis record.
+        cell_indices = None
 
         if basis == 'gene_pca':
             if 'X_gene_pca' not in self.adata.varm:
@@ -5956,7 +6154,7 @@ class DataAdaptor:
                 'n_neighbors': result['n_neighbors'],
                 'metric': result['metric'],
                 'basis': result['basis'],
-            }, status_result)
+            }, status_result, subset=cell_indices)
             return status_result
 
         return compute_fn, apply_fn
@@ -5995,6 +6193,9 @@ class DataAdaptor:
 
         n_genes_total = self.adata.n_vars
         subset_type = 'all'
+        # Only the 'expression' basis subsets cells; elsewhere None is the
+        # honest answer for the analysis record.
+        cell_indices = None
 
         if basis == 'gene_pca':
             # Existing behavior: use gene PCA embedding
@@ -6120,7 +6321,7 @@ class DataAdaptor:
             'n_neighbors': n_neighbors,
             'metric': metric,
             'basis': basis,
-        }, result)
+        }, result, subset=cell_indices)
         return result
 
     def run_find_similar_genes(
@@ -7662,6 +7863,11 @@ class DataAdaptor:
             "params": params,
             "n_dropped_capped": n_dropped_capped,
         }
+        self._log_action('ligrec_analyze', dict(params), {
+            "n_tested": len(kept),
+            "n_significant": n_significant,
+            "n_dropped_capped": n_dropped_capped,
+        })
         return {
             "summary": result["summary"],
             "params": params,

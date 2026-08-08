@@ -468,6 +468,16 @@ REGISTRY: dict[str, ActionSpec] = {
             f"({(r.get('gene_overlap') or 0) * 100:.0f}% of classifier genes found)."
         ),
     ),
+    'ligrec_analyze': ActionSpec(
+        label='Ligand-receptor signaling', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('prepare_ligrec'),
+        summary=lambda p, r: (
+            f"Scored ligand-receptor interactions (radius {p.get('radius')}, "
+            f"{_n(p.get('n_perm'))} permutations, p < {p.get('p_thresh')}): "
+            f"{_n(r.get('n_tested'))} pairs tested, "
+            f"{_n(r.get('n_significant'))} significant."
+        ),
+    ),
     'pyscn_train': ActionSpec(
         label='Train classifier (PySingleCellNet)', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_pyscn_train',
@@ -476,6 +486,168 @@ REGISTRY: dict[str, ActionSpec] = {
             f"Trained a classifier on `{p.get('groupby')}` "
             f"({_n(r.get('n_classes'))} classes, {_n(r.get('n_cells_used'))} cells, "
             f"{_n(p.get('n_trees'))} trees) → `{p.get('out_path')}`."
+        ),
+    ),
+    # --- annotation and metadata edits ---
+    # These change what every downstream figure says, so a report that omits
+    # them is misleading even when every computation in it is reproducible.
+    'rename_obs_label': ActionSpec(
+        label='Rename a label', fidelity=EXACT, imports=(),
+        code=lambda s: [
+            f"{ADATA}.obs[{_lit(s.params.get('column'))}] = "
+            f"{ADATA}.obs[{_lit(s.params.get('column'))}].cat.rename_categories("
+            f"{{{_lit(s.params.get('old_label'))}: {_lit(s.params.get('new_label'))}}})",
+        ],
+        summary=lambda p, r: (
+            f"Renamed `{p.get('old_label')}` to `{p.get('new_label')}` in "
+            f"`.obs['{p.get('column')}']` ({_n(r.get('n_cells_renamed'))} cells)."
+        ),
+    ),
+    'merge_obs_labels': ActionSpec(
+        label='Merge labels', fidelity=EXACT, imports=(),
+        code=lambda s: [
+            f"_col = {ADATA}.obs[{_lit(s.params.get('column'))}].astype(str)",
+            f"_col[_col.isin({_lit(list(s.params.get('labels') or []))})] = "
+            f"{_lit(s.params.get('new_label'))}",
+            f"{ADATA}.obs[{_lit(s.params.get('column'))}] = _col.astype('category')",
+        ],
+        summary=lambda p, r: (
+            f"Merged {p.get('labels')} into `{p.get('new_label')}` in "
+            f"`.obs['{p.get('column')}']` ({_n(r.get('n_cells_merged'))} cells)."
+        ),
+    ),
+    'create_annotation': ActionSpec(
+        label='New annotation column', fidelity=EXACT, imports=('import pandas as pd',),
+        code=lambda s: [
+            f"{ADATA}.obs[{_lit(s.params.get('name'))}] = pd.Categorical("
+            f"[{_lit(s.params.get('default_value'))}] * {ADATA}.n_obs)",
+        ],
+        summary=lambda p, r: (
+            f"Created `.obs['{p.get('name')}']`, every cell "
+            f"`{p.get('default_value')}`."
+        ),
+    ),
+    'label_cells': ActionSpec(
+        label='Label selected cells', fidelity=EXACT, imports=(),
+        code=lambda s: (
+            [
+                f"_sel = SELECTIONS[{_lit(f'step_{s.index}')}]",
+                f"{ADATA}.obs[{_lit(s.params.get('annotation'))}] = "
+                f"{ADATA}.obs[{_lit(s.params.get('annotation'))}].cat.add_categories("
+                f"[{_lit(s.params.get('label'))}])",
+                f"{ADATA}.obs.iloc[_sel, {ADATA}.obs.columns.get_loc("
+                f"{_lit(s.params.get('annotation'))})] = {_lit(s.params.get('label'))}",
+            ]
+            if s.selection else None
+        ),
+        summary=lambda p, r: (
+            f"Labelled {_n(r.get('n_cells_labelled'))} hand-selected cells "
+            f"`{p.get('label')}` in `.obs['{p.get('annotation')}']`."
+        ),
+    ),
+
+    # --- derived columns and metadata ---
+    'calculate_qc_metrics': ActionSpec(
+        label='QC metrics', fidelity=EXACT, imports=SCANPY,
+        code=lambda s: [_call('sc.pp.calculate_qc_metrics', {
+            'qc_vars': s.params.get('qc_vars'),
+            'percent_top': s.params.get('percent_top'),
+            'log1p': s.params.get('log1p'),
+            'inplace': True,
+        })],
+        summary=lambda p, r: (
+            f"Computed QC metrics over {p.get('qc_vars') or 'no'} gene flags → "
+            f"{_n(r.get('n_obs_columns'))} new `.obs` and "
+            f"{_n(r.get('n_var_columns'))} new `.var` columns."
+        ),
+    ),
+    'add_var_boolean_column': ActionSpec(
+        label='Flag genes', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('add_var_boolean_column', ('name', 'pattern', 'match_mode')),
+        summary=lambda p, r: (
+            f"Flagged {_n(r.get('n_genes_matched'))} genes matching "
+            f"{p.get('match_mode')} `{p.get('pattern')}` in `.var['{p.get('name')}']`."
+        ),
+    ),
+    'sum_counts_by_pattern': ActionSpec(
+        label='Sum counts by pattern', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('sum_counts_by_pattern', ('pattern', 'match_mode', 'obs_name', 'layer')),
+        summary=lambda p, r: (
+            f"Summed counts of {_n(r.get('n_genes_matched'))} genes matching "
+            f"`{p.get('pattern')}` into `.obs['{r.get('obs_name')}']`."
+        ),
+    ),
+    'sum_counts_by_species': ActionSpec(
+        label='Sum counts by species', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('sum_counts_by_species'),
+        summary=lambda p, r: (
+            f"Summed per-species counts from `.var['{p.get('species_column')}']` → "
+            f"{r.get('obs_columns')}."
+        ),
+    ),
+    'assign_species': ActionSpec(
+        label='Assign species', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('assign_species', ('count_columns', 'labels', 'obs_name', 'threshold')),
+        summary=lambda p, r: (
+            f"Assigned each cell a species at {p.get('threshold')} purity → "
+            f"`.obs['{p.get('obs_name')}']` ({r.get('counts')})."
+        ),
+    ),
+    'rename_genes': ActionSpec(
+        label='Rename genes', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('rename_genes', ('pattern', 'replacement', 'match_mode', 'make_unique')),
+        summary=lambda p, r: (
+            f"Renamed {_n(r.get('n_renamed'))} of {_n(r.get('n_genes'))} genes "
+            f"({p.get('match_mode')} `{p.get('pattern')}` → `{p.get('replacement')}`)."
+        ),
+    ),
+    'swap_var_index': ActionSpec(
+        label='Swap gene identifiers', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('swap_var_index', ('column_name',)),
+        summary=lambda p, r: (
+            f"Promoted `.var['{p.get('column_name')}']` to the gene index "
+            f"({_n(r.get('n_genes'))} genes)."
+        ),
+    ),
+    'create_obs_embedding': ActionSpec(
+        label='Embedding from .obs columns', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('create_obs_embedding', ('col_x', 'col_y', 'log_axes', 'name')),
+        summary=lambda p, r: (
+            f"Built a 2-D embedding from `{p.get('col_x')}` and `{p.get('col_y')}` → "
+            f"`.obsm['{r.get('embedding_name')}']`."
+        ),
+    ),
+
+    # --- scoring and testing ---
+    'score_gene_sets_matrix': ActionSpec(
+        label='Score gene sets', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('score_gene_sets_matrix',
+                     ('sets', 'per_gene_norm', 'per_gene_clip', 'aggregation',
+                      'obsm_name', 'layer', 'transform')),
+        summary=lambda p, r: (
+            f"Scored {_n(r.get('n_sets'))} gene sets "
+            f"({p.get('per_gene_norm')} per-gene, {p.get('aggregation')} across genes) "
+            f"→ `.obsm['{r.get('obsm_name')}']`."
+        ),
+    ),
+    'score_gene_sets_ucell': ActionSpec(
+        label='UCell gene-set scores', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('score_gene_sets_ucell', ('sets', 'layer', 'max_rank', 'w_neg')),
+        summary=lambda p, r: (
+            f"UCell-scored {len(p.get('sets') or [])} gene sets "
+            f"(max rank {_n(r.get('max_rank'))}) → {r.get('obs_columns')}."
+        ),
+    ),
+    'diffexp': ActionSpec(
+        label='Differential expression', fidelity=XCELL, imports=XCELL_API,
+        # The two groups were picked in the UI, so the call needs their indices.
+        code=lambda s: None,
+        summary=lambda p, r: (
+            f"{p.get('method')} test between two selections of "
+            f"{_n(p.get('n_group1'))} and {_n(p.get('n_group2'))} cells over "
+            f"{_n(r.get('n_genes_tested'))} genes → "
+            f"{_n(r.get('n_upregulated'))} up, {_n(r.get('n_downregulated'))} down "
+            f"({p.get('corr_method')} correction)."
         ),
     ),
 }

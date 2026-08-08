@@ -261,7 +261,7 @@ def test_booleans_and_none_render_as_python_literals():
 
 
 def test_generated_code_is_syntactically_valid_python():
-    """Every registry entry, compiled. A stray quote here is a broken notebook."""
+    """Representative entries, compiled with realistic parameters."""
     cases = [
         ('normalize_total', {'target_sum': 1e4}), ('log1p', {}),
         ('leiden', {'resolution': 1.0, 'key_added': 'leiden'}),
@@ -270,7 +270,38 @@ def test_generated_code_is_syntactically_valid_python():
         ('neighbors', {'n_neighbors': 15, 'metric': 'euclidean'}),
         ('contourize', {'genes': ["it's"], 'contour_levels': 6}),
         ('marker_genes', {'obs_column': 'leiden', 'top_n': 25}),
+        ('rename_obs_label', {'column': 'leiden', 'old_label': '0', 'new_label': "Muller's"}),
+        ('merge_obs_labels', {'column': 'leiden', 'labels': ['0', '1'], 'new_label': 'glia'}),
+        ('create_annotation', {'name': 'regions', 'default_value': 'unassigned'}),
+        ('calculate_qc_metrics', {'qc_vars': ['mito'], 'percent_top': None, 'log1p': True}),
+        ('exclude_genes', {'gene_names': ['A'], 'patterns': ['^MT-', "^it's"]}),
     ]
     for action, params in cases:
         t = translate(_step(action, params, {}))
         compile('\n'.join(t.code), f'<{action}>', 'exec')
+
+
+def test_every_registry_entry_compiles_with_no_parameters_recorded():
+    """A template with a stray quote or brace is a broken notebook cell.
+
+    Empty params is the degenerate case every builder must survive — a record
+    restored from someone else's h5ad can be missing anything.
+    """
+    for action in sorted(registered_actions()):
+        t = translate(_step(action, {}, {}))
+        if t.code:
+            compile('\n'.join(t.code), f'<{action}>', 'exec')
+
+
+def test_every_registry_entry_produces_a_summary_with_no_parameters():
+    for action in sorted(registered_actions()):
+        assert translate(_step(action, {}, {})).summary.strip(), action
+
+
+def test_label_cells_needs_its_selection_to_be_reproducible():
+    """The selection *is* the operation — without it there is nothing to emit."""
+    params = {'annotation': 'regions', 'label': 'cortex'}
+    assert translate(_step('label_cells', params, {})).fidelity == MANUAL
+    with_sel = translate(_step('label_cells', params, {}, selection=[1, 2], n_total=10))
+    assert with_sel.fidelity == EXACT
+    compile('\n'.join(with_sel.code), '<label_cells>', 'exec')

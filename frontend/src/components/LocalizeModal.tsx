@@ -358,7 +358,7 @@ export default function LocalizeModal() {
             <button onClick={runLocalize} disabled={!!busy || blocked || usable.length === 0}
                     style={{
                       ...ghost, background: dark.accent, color: '#0b1020',
-                      fontWeight: 600, borderColor: dark.accent,
+                      fontWeight: 600, border: `1px solid ${dark.accent}`,
                       opacity: busy || blocked || usable.length === 0 ? 0.5 : 1,
                     }}>
               {busy === 'run' ? 'Localizing…' : 'Localize'}

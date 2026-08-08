@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useStore } from '../store'
 import { appendDataset, pollTask, refreshSchema } from '../hooks/useData'
 
@@ -34,6 +34,11 @@ interface ReferenceSlot {
   n_genes: number
   has_spatial: boolean
   is_query: boolean
+}
+
+interface GeneColumn {
+  name: string
+  n_true: number
 }
 
 interface Overlap {
@@ -84,6 +89,65 @@ const TIPS: Record<string, string> = {
   min_confidence: 'Cells whose neighbours disagree about location this badly get no coordinate at all, rather than a fabricated one. Leave at 0 to place everything and filter later.',
 }
 
+interface Advice { level: 'warn' | 'info'; text: string }
+
+/**
+ * Parameter combinations that are actually bad, and interactions that are not
+ * obvious from the labels. Only fires on the current selection — a static table
+ * of caveats gets skimmed; a line that appears when you pick the thing does not.
+ */
+function adviseParameters(o: {
+  k: number
+  transform: string
+  metric: string
+  aggregation: string
+  minConfidence: number
+  nReferenceCells: number
+  nSharedGenes: number | null
+}): Advice[] {
+  const out: Advice[] = []
+
+  if (o.k < 5) {
+    out.push({ level: 'warn', text:
+      `k=${o.k} is too few to estimate confidence from — the spread of ${o.k} points is noisy, so the score will be unreliable in both directions.` })
+  }
+  if (o.nReferenceCells > 0 && o.k > 0.1 * o.nReferenceCells) {
+    out.push({ level: 'warn', text:
+      `k=${o.k} is over a tenth of the ${o.nReferenceCells.toLocaleString()} reference cells. Every prediction averages a large slice of the tissue, so all of them drift toward its centre.` })
+  }
+
+  if (o.transform === 'none' && o.metric === 'euclidean') {
+    out.push({ level: 'warn', text:
+      'none + euclidean compares raw magnitudes. Across two platforms, sequencing depth will dominate the distance and swamp the biology.' })
+  } else if (o.transform === 'none') {
+    out.push({ level: 'warn', text:
+      'No per-dataset transform. Only safe when both datasets are already normalized the same way — otherwise per-gene capture differences drive the matches.' })
+  }
+
+  if (o.aggregation === 'densest' && o.k < 12) {
+    out.push({ level: 'info', text:
+      `densest picks the tightest cluster among the neighbours, and with k=${o.k} there is not much to cluster — it will behave much like the mean. Raise k to about 20 to get the benefit.` })
+  }
+  if (o.aggregation === 'best_match') {
+    out.push({ level: 'info', text:
+      'best_match takes the single nearest cell\u2019s position, so k no longer affects the coordinate — only the confidence score, which is still measured over k neighbours.' })
+  }
+  if (o.aggregation === 'weighted_mean') {
+    out.push({ level: 'info', text:
+      'weighted_mean can land in a gap the tissue does not have, most visibly for a cell type present in two separate regions. densest or best_match keep predictions on real tissue.' })
+  }
+
+  if (o.nSharedGenes != null && o.nSharedGenes < 30) {
+    out.push({ level: 'warn', text:
+      `Only ${o.nSharedGenes} genes drive the similarity. That is enough to run but not to separate fine structure; treat the map as coarse and check the accuracy figures.` })
+  }
+  if (o.minConfidence > 0) {
+    out.push({ level: 'info', text:
+      `Cells scoring under ${o.minConfidence} will get no coordinate at all rather than a guessed one. Confidence depends on the gene basis, so a threshold tuned for one basis does not carry to another.` })
+  }
+  return out
+}
+
 export default function LocalizeModal() {
   const isOpen = useStore((s) => s.isLocalizeModalOpen)
   const setOpen = useStore((s) => s.setLocalizeModalOpen)
@@ -93,6 +157,12 @@ export default function LocalizeModal() {
   const [reference, setReference] = useState('secondary')
   const [overlap, setOverlap] = useState<Overlap | null>(null)
   const [sectionOptions, setSectionOptions] = useState<string[]>([])
+  const [geneColumns, setGeneColumns] = useState<GeneColumn[]>([])
+  // '' = every shared gene; 'col:<name>' = a reference .var flag;
+  // 'set:<id>' = a gene set curated in the Gene panel.
+  const [basis, setBasis] = useState('')
+  const [showGuide, setShowGuide] = useState(false)
+  const categories = useStore((s) => s.geneSetCategories)
 
   const [k, setK] = useState('15')
   const [transform, setTransform] = useState('zscore')
@@ -108,6 +178,31 @@ export default function LocalizeModal() {
   const [cv, setCv] = useState<CrossValidation | null>(null)
   const [result, setResult] = useState<LocalizeResult | null>(null)
 
+  // Every gene set the user has curated, from any category or folder.
+  const geneSets = useMemo(() => {
+    const out: { id: string; label: string; genes: string[] }[] = []
+    for (const cat of Object.values(categories)) {
+      const collect = (sets: { id: string; name: string; genes: string[] }[]) => {
+        for (const gs of sets) {
+          out.push({ id: gs.id, label: `${cat.name}: ${gs.name} (${gs.genes.length})`, genes: gs.genes })
+        }
+      }
+      collect(cat.geneSets)
+      for (const f of cat.folders) collect(f.geneSets)
+    }
+    return out
+  }, [categories])
+
+  // The wire form of the chosen basis: a .var column name, an explicit gene
+  // list, or null for every shared gene.
+  const geneSubset = useMemo<string | string[] | null>(() => {
+    if (basis.startsWith('col:')) return basis.slice(4)
+    if (basis.startsWith('set:')) {
+      return geneSets.find((g) => g.id === basis.slice(4))?.genes ?? null
+    }
+    return null
+  }, [basis, geneSets])
+
   const close = () => {
     setOpen(false)
     setError(null); setCv(null); setResult(null); setBusy(''); setProgress(null)
@@ -122,10 +217,11 @@ export default function LocalizeModal() {
   }, [isOpen])
 
   // Which slots can be a reference, and how well the panels match.
-  const loadSuggest = useCallback(async (slot: string) => {
+  const loadSuggest = useCallback(async (slot: string, column: string) => {
     setError(null)
     try {
-      const r = await fetch(appendDataset(`${API}/localize/suggest?reference=${slot}`))
+      const q = column ? `&gene_subset=${encodeURIComponent(column)}` : ''
+      const r = await fetch(appendDataset(`${API}/localize/suggest?reference=${slot}${q}`))
       const body = await r.json()
       if (!r.ok) {
         setOverlap(null)
@@ -137,6 +233,7 @@ export default function LocalizeModal() {
       setRefs(body.references || [])
       setOverlap(body.overlap || null)
       setSectionOptions(body.reference_sections || [])
+      setGeneColumns(body.reference_gene_columns || [])
       setK((prev) => (prev === '15' && body.suggested_k ? String(body.suggested_k) : prev))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -144,8 +241,10 @@ export default function LocalizeModal() {
   }, [])
 
   useEffect(() => {
-    if (isOpen) loadSuggest(reference)
-  }, [isOpen, reference, loadSuggest])
+    // Only a .var flag can be previewed by name; a gene list is checked when
+    // the run starts, and the count below reports it either way.
+    if (isOpen) loadSuggest(reference, basis.startsWith('col:') ? basis.slice(4) : '')
+  }, [isOpen, reference, basis, loadSuggest])
 
   const body = () => ({
     reference,
@@ -153,6 +252,7 @@ export default function LocalizeModal() {
     transform, metric, aggregation,
     min_confidence: Number(minConfidence) || 0,
     section_col: sectionCol || null,
+    gene_subset: geneSubset,
   })
 
   const runCheck = async () => {
@@ -206,6 +306,17 @@ export default function LocalizeModal() {
 
   const usable = refs.filter((r) => r.has_spatial && !r.is_query)
   const blocked = overlap != null && !overlap.sufficient
+  const chosenRef = refs.find((r) => r.slot === reference)
+  const basisGenes = basis.startsWith('set:')
+    ? (geneSets.find((g) => g.id === basis.slice(4))?.genes.length ?? null)
+    : (overlap?.n_shared ?? null)
+  const advice = adviseParameters({
+    k: Number(k) || 0,
+    transform, metric, aggregation,
+    minConfidence: Number(minConfidence) || 0,
+    nReferenceCells: chosenRef?.n_cells ?? 0,
+    nSharedGenes: basisGenes,
+  })
 
   return (
     <div onClick={close} style={overlayStyle}>
@@ -268,6 +379,41 @@ export default function LocalizeModal() {
             </div>
           )}
 
+          {/* Which genes similarity is computed over. The reference owns this
+              choice: they are the genes shown to carry positional signal. */}
+          <div style={{ ...sectionLabel, marginTop: 14 }}>Similarity basis (genes)</div>
+          <select value={basis} onChange={(e) => setBasis(e.target.value)}
+                  style={{ ...input, width: '100%' }}>
+            <option value="">All shared genes</option>
+            {geneColumns.length > 0 && (
+              <optgroup label="Reference .var flags">
+                {geneColumns.map((c) => (
+                  <option key={c.name} value={`col:${c.name}`}>
+                    {c.name} ({c.n_true.toLocaleString()} genes)
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {geneSets.length > 0 && (
+              <optgroup label="Gene sets">
+                {geneSets.map((g) => (
+                  <option key={g.id} value={`set:${g.id}`}>{g.label}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          <div style={{ fontSize: 10.5, color: dark.faint, marginTop: 4 }}>
+            Genes that vary <i>spatially</i> are the ones carrying positional
+            information, so <code>spatially_variable</code> (from Spatial
+            Autocorrelation on the reference) is the principled choice when it
+            exists; <code>highly_variable</code> is a reasonable stand-in. Using
+            every gene is fine for a targeted panel, but on whole-transcriptome
+            data it dilutes the signal with thousands of genes that say nothing
+            about position.
+            {geneColumns.length === 0 &&
+              ' This reference carries no .var flags yet — run Spatial → Spatial Autocorrelation on it to create one.'}
+          </div>
+
           {/* Parameters */}
           <div style={{ ...sectionLabel, marginTop: 14 }}>Parameters</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -307,6 +453,29 @@ export default function LocalizeModal() {
               </select>
             </Field>
           </div>
+
+          {/* Live advice about the current selection. */}
+          {advice.length > 0 && (
+            <div style={{ marginTop: 10, display: 'grid', gap: 5 }}>
+              {advice.map((a, i) => (
+                <div key={i} style={{
+                  fontSize: 11, lineHeight: 1.45,
+                  color: a.level === 'warn' ? '#f0c987' : dark.sub,
+                  background: a.level === 'warn' ? 'rgba(233,162,59,0.12)' : 'transparent',
+                  borderLeft: `2px solid ${a.level === 'warn' ? dark.warn : dark.border}`,
+                  padding: '4px 8px', borderRadius: 2,
+                }}>
+                  {a.level === 'warn' ? '⚠ ' : ''}{a.text}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button onClick={() => setShowGuide((v) => !v)}
+                  style={{ ...ghost, marginTop: 8, fontSize: 11 }}>
+            {showGuide ? 'Hide' : 'Show'} how to choose these
+          </button>
+          {showGuide && <ParameterGuide />}
 
           {/* Accuracy check */}
           <div style={{ ...sectionLabel, marginTop: 16 }}>Accuracy</div>
@@ -399,6 +568,100 @@ export default function LocalizeModal() {
       </div>
     </div>
   )
+}
+
+/**
+ * What to pick, and what each choice costs. Written as three concrete recipes
+ * plus the trade-offs, rather than a restatement of the dropdown labels — a
+ * user opening this wants to know which combination to use, not what the words
+ * mean.
+ */
+function ParameterGuide() {
+  return (
+    <div style={{
+      marginTop: 8, padding: 10, background: dark.inset, borderRadius: 4,
+      fontSize: 11, lineHeight: 1.5, color: dark.sub,
+    }}>
+      <div style={{ ...sectionLabel, marginBottom: 6 }}>Starting points</div>
+      <table style={{ borderCollapse: 'collapse', width: '100%', marginBottom: 10 }}>
+        <thead>
+          <tr style={{ color: dark.faint, textAlign: 'left' }}>
+            <th style={th}>Situation</th><th style={th}>Use</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={td}>scRNA-seq onto Visium / Xenium <span style={{ color: dark.faint }}>(the usual case)</span></td>
+            <td style={td}><code>z-score</code> + <code>correlation</code> + <code>weighted mean</code>, basis <code>spatially_variable</code>, k ≈ √(reference cells)</td>
+          </tr>
+          <tr>
+            <td style={td}>Platforms that differ a lot, or unknown normalization</td>
+            <td style={td}><code>rank</code> + <code>cosine</code> — survives any monotone difference between the two, at the cost of ignoring magnitude</td>
+          </tr>
+          <tr>
+            <td style={td}>Both datasets from the same platform and pipeline</td>
+            <td style={td}>Any transform; <code>euclidean</code> becomes meaningful and is the most literal comparison</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div style={{ ...sectionLabel, marginBottom: 6 }}>Trade-offs</div>
+      <ul style={{ margin: 0, paddingLeft: 16, display: 'grid', gap: 5 }}>
+        <li>
+          <b>k</b> trades noise against blur. Small k follows fine structure but
+          is driven by a few cells; large k is stable but pulls every prediction
+          toward the middle of the tissue, and past ~10% of the reference that
+          dominates everything else. Confidence partly self-corrects — a wider
+          spread of neighbours lowers it — so a suspiciously high k shows up as
+          uniformly low confidence rather than as a silently worse map.
+        </li>
+        <li>
+          <b>Transform</b> is applied to each dataset <i>separately</i>; that is
+          the whole point, and it is what cancels per-gene capture efficiency.{' '}
+          <code>z-score</code> assumes the query is heterogeneous — standardizing
+          a set of nearly identical cells amplifies their noise instead.
+        </li>
+        <li>
+          <b>Aggregation</b> trades plausibility against precision.{' '}
+          <code>weighted mean</code> is the best estimate when neighbours agree
+          and lands in empty space when they do not. <code>best match</code> is
+          always on real tissue but quantized to one reference cell.{' '}
+          <code>densest</code> handles a cell type present in two places by
+          choosing one — but it cannot know which, so it is right about half the
+          time for such cells. <code>median</code> is the mean's safer sibling.
+        </li>
+        <li>
+          <b>Gene basis</b> helps in proportion to how much of the panel is
+          uninformative. On whole-transcriptome data, restricting to spatially
+          variable genes removes thousands that say nothing about position and
+          the map sharpens; on a targeted panel where most genes already carry
+          signal, expect little change. The cost is real either way: fewer genes
+          shared with the query, and a population defined by genes outside the
+          set becomes invisible.
+        </li>
+        <li>
+          <b>Min confidence</b> trades coverage against honesty. It is the one
+          parameter that cannot make the map wrong — it only removes cells the
+          method could not place.
+        </li>
+      </ul>
+
+      <div style={{ ...sectionLabel, margin: '10px 0 6px' }}>Avoid</div>
+      <ul style={{ margin: 0, paddingLeft: 16, display: 'grid', gap: 5 }}>
+        <li><code>none</code> + <code>euclidean</code> across platforms — sequencing depth becomes the strongest signal in the data.</li>
+        <li>Tuning k or the basis until the picture looks nicer. A smoother map is what this method produces when it is failing; use the accuracy check, which has ground truth, instead.</li>
+        <li>Reading a confidence threshold across runs. It depends on the gene basis and on k, so re-check the distribution after changing either.</li>
+      </ul>
+    </div>
+  )
+}
+
+const th: React.CSSProperties = {
+  padding: '3px 6px', borderBottom: `1px solid ${dark.border}`, fontWeight: 600,
+}
+const td: React.CSSProperties = {
+  padding: '4px 6px', borderBottom: `1px solid rgba(255,255,255,0.05)`,
+  verticalAlign: 'top',
 }
 
 function beatsBaseline(cv: CrossValidation): boolean | null {

@@ -3524,6 +3524,10 @@ def localize_suggest(
             out["reference_sections"] = [
                 c for c, d in ref.get_schema()["obs_dtypes"].items() if d == "category"
             ]
+            # The reference owns which genes carry positional signal, so the
+            # bases on offer (spatially_variable, highly_variable, ...) are its
+            # .var flags, not the query's.
+            out["reference_gene_columns"] = ref.get_var_boolean_columns()
         except HTTPException:
             raise
         except ValueError as e:

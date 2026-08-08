@@ -27,6 +27,10 @@ def _spatial(n=160, n_genes=24, seed=0):
     ad.obs_names = [f'spot{i}' for i in range(n)]
     ad.obsm['spatial'] = coords
     ad.obs['region'] = pd.Categorical(np.where(coords[:, 0] < 50, 'left', 'right'))
+    # The flags a real reference carries after highly_variable_genes /
+    # spatial_autocorr — the two principled bases for a similarity gene set.
+    ad.var['highly_variable'] = [i < 16 for i in range(n_genes)]
+    ad.var['spatially_variable'] = [i < 12 for i in range(n_genes)]
     return ad, coords
 
 
@@ -248,3 +252,80 @@ def test_scoring_against_a_missing_key_is_a_404():
         'predicted_key': 'X_spatial_pred', 'truth_key': 'nope',
     })
     assert resp.status_code == 404
+
+
+# --- choosing the genes that similarity is computed over ------------------
+
+def test_suggest_lists_the_reference_gene_flags():
+    """SVG / HVG live on the reference — it owns which genes carry position."""
+    client = _install()
+    body = client.get('/api/localize/suggest?reference=secondary').json()
+    columns = {c['name']: c['n_true'] for c in body['reference_gene_columns']}
+    assert columns['spatially_variable'] == 12
+    assert columns['highly_variable'] == 16
+
+
+def test_suggest_recomputes_the_overlap_for_a_gene_subset():
+    """Narrowing the basis changes how many genes are actually shared, so the
+    preview has to follow the choice rather than describe the whole panel."""
+    client = _install()
+    full = client.get('/api/localize/suggest?reference=secondary').json()
+    svg = client.get(
+        '/api/localize/suggest?reference=secondary&gene_subset=spatially_variable'
+    ).json()
+    assert full['overlap']['n_shared'] == 24
+    assert svg['overlap']['n_shared'] == 12
+
+
+def test_a_gene_flag_can_be_the_similarity_basis():
+    client = _install()
+    result = _run(client, gene_subset='highly_variable')
+    assert result['status'] == 'completed', result
+    assert result['result']['n_shared_genes'] == 16
+    assert result['result']['gene_subset_type'] == 'column:highly_variable'
+
+
+def test_an_explicit_gene_list_can_be_the_similarity_basis():
+    """A set curated in the Gene panel, passed through as names."""
+    client = _install()
+    genes = [f'g{i}' for i in range(12)]
+    result = _run(client, gene_subset=genes)
+    assert result['status'] == 'completed', result
+    assert result['result']['n_shared_genes'] == 12
+
+
+def test_a_gene_list_naming_nothing_real_is_a_400():
+    client = _install()
+    resp = client.post('/api/localize/prepare', json={
+        'reference': 'secondary', 'gene_subset': ['nosuchgene1', 'nosuchgene2'],
+    })
+    assert resp.status_code == 400
+
+
+def test_a_basis_too_narrow_to_predict_from_is_a_400():
+    """Twelve spatially-variable genes is fine; a two-gene basis is not."""
+    client = _install()
+    resp = client.post('/api/localize/prepare', json={
+        'reference': 'secondary', 'gene_subset': ['g0', 'g1'],
+    })
+    assert resp.status_code == 400
+    assert 'overlap' in resp.json()['detail'].lower()
+
+
+def test_the_basis_is_recorded_in_the_analysis_record():
+    client = _install()
+    _run(client, gene_subset='spatially_variable')
+    step = routes.get_adaptor('primary').analysis_record.steps[-1]
+    assert step.action == 'localize'
+    assert step.params['gene_subset_type'] == 'column:spatially_variable'
+
+
+def test_cross_validation_honours_the_same_basis():
+    """Otherwise the accuracy check measures different parameters than the run."""
+    client = _install()
+    resp = client.post('/api/localize/cross_validate', json={
+        'reference': 'secondary', 'k': 10, 'gene_subset': 'highly_variable',
+    })
+    assert resp.status_code == 202, resp.text
+    body = _poll(client, resp.json()['task_id'])
+    assert body['status'] == 'completed', body

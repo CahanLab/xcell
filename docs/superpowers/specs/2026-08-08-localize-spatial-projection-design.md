@@ -76,10 +76,15 @@ Four ways to turn k neighbours into one point, each earning its place:
   real tissue rather than in interpolated space, which matters when the tissue
   has holes or the reference is a discrete grid. Quantized, but never invents a
   location that does not exist.
-- **`densest`** — find the tightest cluster among the k neighbours (the
-  neighbour with the most companions within a radius derived from the reference's
-  own spacing) and average only those. **This is the answer to bimodality**: mean
-  lands between two patches, `densest` picks one.
+- **`densest`** — find the tightest cluster among the k neighbours and average
+  only those. **For bimodality**: the mean lands in the gap between two patches,
+  a location the tissue does not have; this lands the cell in one of them. It
+  cannot say *which* — two patches sharing an expression program are
+  indistinguishable to anything reading expression, and on the bundled benchmark
+  it picks correctly about half the time. The trade is a never-right,
+  never-catastrophic estimate against a sometimes-exact, sometimes-completely-wrong
+  one. Both stay available; the default stays the mean; the confidence score
+  (near zero for such cells under either) is what says not to trust the choice.
 
 ## Cross-platform comparison
 

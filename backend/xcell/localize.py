@@ -149,10 +149,22 @@ def _weighted_median(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
 def _densest_subset(coords: np.ndarray, weights: np.ndarray) -> np.ndarray:
     """Average only the tightest cluster among each row's neighbour coordinates.
 
-    Answers bimodality: when a population sits in two distant patches, the mean
-    of its neighbours lands in the empty gap between them. Here the radius comes
-    from the neighbourhood's own pairwise distances, so it needs no tissue-scale
-    constant and degrades to the plain mean when the cloud is unimodal.
+    For bimodality: when a population sits in two distant patches, the mean of
+    its neighbours lands in the empty gap between them, which is a location the
+    tissue does not have. This lands the cell in one of the patches instead.
+
+    **It cannot say which patch**, and does not pretend to — two patches with
+    the same expression program are indistinguishable to any method reading
+    expression, so on the bundled benchmark this picks the right one about half
+    the time. What it buys is a prediction on real tissue rather than in a gap;
+    the confidence score (near zero for such cells either way) is what says not
+    to trust the choice. Trading a never-right-never-catastrophic estimate for a
+    sometimes-exact-sometimes-wrong one is a real decision, which is why both
+    remain available and the default stays the mean.
+
+    The radius comes from the neighbourhood's own pairwise distances, so it needs
+    no tissue-scale constant and degrades to the plain mean when the cloud is
+    unimodal.
     """
     n, k, _ = coords.shape
     out = np.empty((n, 2), dtype=float)

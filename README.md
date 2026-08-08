@@ -611,6 +611,13 @@ baselines — predicting the tissue centre, and predicting at random. An error
 without those is unfalsifiable, and the panel says so outright when the method
 fails to beat the centre.
 
+Similarity can be computed over every shared gene, a `.var` flag on the
+reference (`spatially_variable` from Spatial Autocorrelation is the principled
+choice — those are the genes carrying positional information), or a gene set you
+curated in the Gene panel. The overlap preview follows the choice, and the tool
+warns about parameter combinations that are actually bad rather than listing
+caveats up front.
+
 A benchmark pair with exact ground truth ships with xcell
 (`toy_localize_spatial.h5ad` and `toy_localize_scrna.h5ad`), deliberately
 containing populations the method cannot place, so the confidence scores can be

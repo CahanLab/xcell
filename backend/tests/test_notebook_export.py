@@ -138,7 +138,14 @@ def test_the_setup_cell_opens_the_source_file():
     nb = to_notebook(_pipeline())
     setup = _src(_code_cells(nb)[0])
     assert 'import scanpy as sc' in setup
-    assert "sc.read_h5ad('/data/cortex.h5ad')" in setup
+    assert "SOURCE_PATH = '/data/cortex.h5ad'" in setup
+
+
+def test_the_reader_goes_through_the_path_constant():
+    """One line to edit when the notebook moves, not two that can disagree."""
+    setup = _src(_code_cells(to_notebook(_pipeline()))[0])
+    assert 'adata = sc.read_h5ad(SOURCE_PATH)' in setup
+    assert setup.count('/data/cortex.h5ad') == 1
 
 
 def test_the_adaptor_is_only_set_up_when_a_step_needs_it():

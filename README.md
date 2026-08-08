@@ -588,6 +588,27 @@ A backend restart is required to pick up edits. Verify what was loaded by hittin
 
 Most changes you make in a session survive on the backend process: deleted cells, transformed embeddings, computed PCA / neighbors / UMAP / Leiden, drawn lines, and — as of this version — your **gene sets** (categories, folders, individual sets). If the browser tab accidentally reloads, the gene panel is rehydrated from the server. Restarting the backend still clears everything; persist important sets via the Gene Panel export controls before shutting down.
 
+## Reproducing a session outside xcell
+
+Clicking through a GUI leaves no methods section. xcell records every mutating
+operation as you go — no need to arm anything first — and **File → Analysis
+record…** turns that into a notebook that re-runs the analysis, or Markdown you
+can paste into a paper.
+
+The panel lists what happened, lets you annotate any step and attach figures
+(the **◧ Figure** button on the plot), and marks where the report should start.
+Export writes into a folder you pick, next to your data.
+
+Every step is labelled with its fidelity, and the exported document leads with
+the tally — *"11 steps. 11 re-run as written; 0 need the xcell Python API; 0 are
+manual"* — because a methods supplement describing an analysis nobody ran is
+worse than none at all. Steps that ran on a cell selection rather than the whole
+dataset are flagged individually; the emitted code runs on everything, and the
+selection itself is written alongside the notebook so you can restore it.
+
+The record is stored in `uns['xcell_analysis_record']`, so an exported `.h5ad`
+carries its own provenance and re-opening it continues the history.
+
 ## Features
 
 - **Interactive scatter plot** — deck.gl-powered visualization with pan, zoom, lasso selection
@@ -602,6 +623,7 @@ Most changes you make in a session survive on the backend process: deleted cells
 - **Highlight overlay** — stack one or more colored layers on top of the active coloring without replacing it. Each layer is either a gene-set expression threshold (above / below / between, with a draggable histogram cutoff) or a frozen cell-set mask (current selection or category value). Useful for marking e.g. epithelium in green while keeping bivariate coloring on the rest.
 - **Figure builder** — compose multi-panel publication figures from a cell selection (or the full dataset). Each panel renders the same cells colored independently (single gene, gene set, bivariate — each axis a gene or a gene set — or metadata column), with its own color scale and title. Per-figure point size, opacity, background, and optional N×N grid overlay are shared so panels stay visually consistent. Per-panel "show highlight layers" toggle blends the dataset's current Highlight overlays into the panel. Shared pan/zoom keeps panels aligned. Export to PNG at 1×–4× DPI from the new **Figure** tab.
 - **Multi-dataset support** — load two datasets (h5ad, h5, rds, 10x matrix folders, or prefixed 10x file trios from GEO), switch between them, or view side by side in split mode
+- **Analysis record** — every operation you run is recorded (parameters, result, and the cell selection it ran on), and exports as a **Jupyter notebook you can execute** or a Markdown methods supplement, with your own notes and figures captured from the plot. Each step is labelled with how faithfully it reproduces — `exact` (the emitted line is the scanpy call xcell really made), `xcell` (needs xcell's Python API), or `manual` — and the document opens by stating that split in numbers, so nobody has to trust it blindly. **File → Analysis record…**
 - **Export** — download annotations and analysis results
 
 ## Project Structure

@@ -125,6 +125,25 @@ def test_highly_variable_genes_emits_every_logged_parameter():
     assert 'n_top_genes=2000' in line and "flavor='seurat'" in line
 
 
+def test_qc_metrics_keeps_an_explicit_percent_top_none():
+    """Dropping this None silently changes the call.
+
+    xcell passes percent_top=None, meaning "no top-N columns". scanpy's own
+    default is (50, 100, 200, 500), which raises IndexError on any dataset with
+    fewer than 500 genes — so omitting the argument produces a notebook that
+    crashes where xcell did not.
+    """
+    t = translate(_step('calculate_qc_metrics',
+                        {'qc_vars': [], 'percent_top': None, 'log1p': True}, {}))
+    assert 'percent_top=None' in t.code[0]
+
+
+def test_qc_metrics_still_forwards_a_real_percent_top():
+    t = translate(_step('calculate_qc_metrics',
+                        {'qc_vars': [], 'percent_top': [50], 'log1p': True}, {}))
+    assert 'percent_top=[50]' in t.code[0]
+
+
 def test_spatial_neighbors_emits_the_squidpy_call():
     t = translate(_step('spatial_neighbors', {
         'n_neighs': 6, 'coord_type': 'generic', 'spatial_key': 'spatial', 'delaunay': False,
@@ -200,6 +219,13 @@ def test_a_whole_dataset_step_carries_no_selection_warning():
 
 
 # --- summaries ------------------------------------------------------------
+
+def test_a_whole_float_parameter_reads_as_a_whole_number():
+    """target_sum arrives as 10000.0; "10,000.0 counts" reads like a typo."""
+    t = translate(_step('normalize_total', {'target_sum': 10000.0}, {}))
+    assert '10,000 counts' in t.summary
+    assert '10,000.0' not in t.summary
+
 
 def test_the_summary_reports_the_recorded_outcome():
     """The boiler-plate annotation uses real numbers, not the parameters alone."""

@@ -113,15 +113,20 @@ export default function AnalysisRecordPanel() {
   const [browsing, setBrowsing] = useState(false)
   const [written, setWritten] = useState<string[]>([])
 
-  const load = useCallback(async () => {
+  // `syncMeta` only on the first load of a panel session: a refresh triggered
+  // while the user is mid-sentence in the abstract must not overwrite what
+  // they are typing.
+  const load = useCallback(async (syncMeta = false) => {
     setError(null)
     try {
       const r = await fetch(appendDataset('/api/record'))
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`)
       const body: AnalysisRecordData = await r.json()
       setData(body)
-      setTitle(body.title)
-      setAbstract(body.abstract)
+      if (syncMeta) {
+        setTitle(body.title)
+        setAbstract(body.abstract)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -130,7 +135,7 @@ export default function AnalysisRecordPanel() {
   useEffect(() => {
     if (isOpen) {
       setWritten([])
-      load()
+      load(true)
     }
   }, [isOpen, activeSlot, load])
 
@@ -165,7 +170,6 @@ export default function AnalysisRecordPanel() {
 
   const saveMeta = async () => {
     await post('/api/record/meta', { title, abstract }, 'PUT')
-    load()
   }
 
   const saveNote = async (index: number) => {
@@ -196,6 +200,10 @@ export default function AnalysisRecordPanel() {
       return
     }
     setWritten([])
+    // Export explicitly rather than trusting the fields' onBlur to have landed:
+    // hitting Export straight from the abstract would otherwise race the save
+    // and write a document missing its own title.
+    await saveMeta()
     const result = await post('/api/record/export', {
       output_dir: outputDir.trim(),
       filename: filename.trim() || 'analysis',
@@ -245,7 +253,7 @@ export default function AnalysisRecordPanel() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
-            <button onClick={load} style={ghost} title="Re-read the record">Refresh</button>
+            <button onClick={() => load()} style={ghost} title="Re-read the record">Refresh</button>
             <button onClick={() => setOpen(false)} style={{ ...ghost, fontSize: 16 }}>×</button>
           </div>
         </div>

@@ -1094,7 +1094,11 @@ export default function ScatterPlot({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           png_b64: canvas.toDataURL('image/png'),
-          caption: `${embedding.name} coloured by ${snap.title}`,
+          // With no coloring the snapshot title falls back to the embedding
+          // name, and "X_umap coloured by X_umap" reads like a bug.
+          caption: snap.title === embedding.name
+            ? embedding.name
+            : `${embedding.name} coloured by ${snap.title}`,
         }),
       })
       if (!resp.ok) {

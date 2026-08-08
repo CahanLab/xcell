@@ -103,20 +103,38 @@ def _lit(value: Any) -> str:
     return repr(str(value))
 
 
-def _splat(params: dict, only: tuple[str, ...] | None = None) -> str:
+def _splat(
+    params: dict,
+    only: tuple[str, ...] | None = None,
+    keep_none: tuple[str, ...] = (),
+) -> str:
     """Render params as keyword arguments, dropping Nones.
 
-    A recorded ``None`` means "the user did not ask for this", so omitting it
-    preserves the library's own default — which is not always None (scanpy's
-    ``target_sum=None`` means "median", and passing it explicitly is the same
-    thing, but omitting reads better and is what the adaptor does).
+    A recorded ``None`` usually means "the user did not ask for this", so
+    omitting it leaves the library on its own default — the same thing the
+    adaptor does when it builds a kwargs dict conditionally.
+
+    ``keep_none`` is for the cases where that reasoning fails: where the adaptor
+    passes ``None`` *explicitly* and the library's default is something else.
+    ``sc.pp.calculate_qc_metrics(percent_top=None)`` means "no top-N columns",
+    while scanpy's own default is ``(50, 100, 200, 500)`` — which raises
+    IndexError on a dataset with fewer genes than that. Dropping that None
+    produces a notebook that crashes where xcell did not.
     """
     items = params.items() if only is None else ((k, params[k]) for k in only if k in params)
-    return ', '.join(f'{k}={_lit(v)}' for k, v in items if v is not None)
+    return ', '.join(
+        f'{k}={_lit(v)}' for k, v in items if v is not None or k in keep_none
+    )
 
 
-def _call(fn: str, params: dict, only: tuple[str, ...] | None = None, target: str = ADATA) -> str:
-    args = _splat(params, only)
+def _call(
+    fn: str,
+    params: dict,
+    only: tuple[str, ...] | None = None,
+    target: str = ADATA,
+    keep_none: tuple[str, ...] = (),
+) -> str:
+    args = _splat(params, only, keep_none)
     return f'{fn}({target}, {args})' if args else f'{fn}({target})'
 
 
@@ -125,8 +143,16 @@ def _xcall(method: str, params: dict, only: tuple[str, ...] | None = None) -> st
 
 
 def _n(value: Any) -> str:
-    """Format a recorded count for prose, tolerating a missing value."""
-    return f'{value:,}' if isinstance(value, (int, float)) else '?'
+    """Format a recorded number for prose, tolerating a missing value.
+
+    Counts arrive as ints, but parameters like ``target_sum`` are floats and
+    read badly as "10,000.0", so whole floats lose their decimal.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return '?'
+    if isinstance(value, float) and value.is_integer():
+        return f'{int(value):,}'
+    return f'{value:,}'
 
 
 # --- per-action code builders ---------------------------------------------
@@ -554,7 +580,7 @@ REGISTRY: dict[str, ActionSpec] = {
             'percent_top': s.params.get('percent_top'),
             'log1p': s.params.get('log1p'),
             'inplace': True,
-        })],
+        }, keep_none=('percent_top',))],
         summary=lambda p, r: (
             f"Computed QC metrics over {p.get('qc_vars') or 'no'} gene flags → "
             f"{_n(r.get('n_obs_columns'))} new `.obs` and "

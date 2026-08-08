@@ -94,7 +94,12 @@ def _setup_lines(record: AnalysisRecord, pairs: list[tuple[Step, TranslatedStep]
         lines += ['', f'SOURCE_PATH = {path!r}']
 
     if load and load[1].code:
-        lines += [''] + load[1].code
+        # The step's own code carries the path as a literal so it stands alone
+        # in the UI; in the notebook it reads better through the constant, and
+        # one line then re-points the whole document.
+        lines += ['']
+        lines += [line.replace(repr(path), 'SOURCE_PATH') if path else line
+                  for line in load[1].code]
     elif path:
         lines += ['', 'adata = sc.read_h5ad(SOURCE_PATH)'] if 'import scanpy as sc' in lines \
             else ['', '# Load the dataset here — the original source was not recorded.']
@@ -150,7 +155,7 @@ def _header(record: AnalysisRecord, pairs: list[tuple[Step, TranslatedStep]]) ->
     stamp = datetime.date.today().isoformat()
 
     out += [
-        f'> Recorded by [xcell](https://github.com/pcahan-lab/xcell) on {stamp} '
+        f'> Recorded by [xcell](https://github.com/CahanLab/xcell) on {stamp} '
         f'from `{where}`{shape}.',
         '>',
         f'> **{c["total"]} step{"" if c["total"] == 1 else "s"}.** '

@@ -4,8 +4,9 @@ import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
 import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, ColorMode, InteractionMode, DatasetSlot, DrawTool, SelectionTool } from '../store'
 import { transformPoints, meanOf, convexHull, shapeOverlapsHull, type Pt } from '../utils/shapeTransform'
-import { SnapshotLayer } from './SnapshotPanel'
+import { SnapshotLayer, renderSnapshotToCanvas } from './SnapshotPanel'
 import { layerWeightFn, useCellColor } from '../lib/cellColors'
+import { appendDataset } from '../hooks/useData'
 
 interface ScatterPlotProps {
   slot?: DatasetSlot
@@ -315,6 +316,9 @@ export default function ScatterPlot({
   const selectionTool = useStore((state) => state.selectionTool) as SelectionTool
   const embeddingLabelColumn = useStore((state) => state.embeddingLabelColumn)
   const addEmbeddingSnapshot = useStore((state) => state.addEmbeddingSnapshot)
+  const setError = useStore((state) => state.setError)
+  // Brief confirmation that a figure reached the analysis record.
+  const [recordFlash, setRecordFlash] = useState(false)
 
   // Snapshots are tagged by which plot captured them ('single' for the
   // single-plot layout, or the dual-layout slot).
@@ -998,12 +1002,16 @@ export default function ScatterPlot({
       .map((k) => ({ label: k, data: [median(xs[k]), median(ys[k])] as [number, number] }))
   }, [showCategoryLabels, colorBy, embedding])
 
-  // Freeze the currently displayed plot into a pinned snapshot: capture each
-  // visible cell's draw-ordered position and *resolved* color (via the same
-  // getColor used by deck.gl), plus any cluster-label centroids, then hand it
-  // to the store as a movable/resizable panel. Cheap to build (one pass over
-  // the visible cells) and self-contained, so it survives later re-colorings.
-  const captureSnapshot = useCallback(() => {
+  // Freeze the currently displayed plot: capture each visible cell's
+  // draw-ordered position and *resolved* color (via the same getColor deck.gl
+  // uses), plus any cluster-label centroids. Cheap to build (one pass over the
+  // visible cells) and self-contained, so it survives later re-colorings.
+  //
+  // Two consumers: a pinned on-screen panel, and a PNG for the analysis record.
+  // Both go through the stored points rather than reading back the WebGL
+  // canvas — deck.gl does not set preserveDrawingBuffer here, so toDataURL on
+  // the live canvas is not reliable.
+  const buildSnapshot = useCallback(() => {
     const n = data.length
     const points = new Float32Array(n * 2)
     const colors = new Uint8Array(n * 3)
@@ -1017,7 +1025,7 @@ export default function ScatterPlot({
       colors[i * 3 + 2] = c[2]
     }
 
-    // Describe the coloring so the pinned panel is self-explanatory.
+    // Describe the coloring so the snapshot is self-explanatory.
     let title: string
     if (colorMode === 'expression' && expressionData) {
       title = expressionData.gene
@@ -1034,6 +1042,18 @@ export default function ScatterPlot({
 
     const labels = categoryLabelData.map((c) => ({ text: c.label, x: c.data[0], y: c.data[1] }))
 
+    return {
+      title,
+      points,
+      colors,
+      labels,
+      bounds: { minX: bounds.minX, minY: bounds.minY, maxX: bounds.maxX, maxY: bounds.maxY },
+      bg: displayPreferences.backgroundColor,
+      pointSize: displayPreferences.pointSize,
+    }
+  }, [data, getColor, categoryLabelData, bounds, displayPreferences, colorMode, expressionData, colorBy, embedding.name])
+
+  const captureSnapshot = useCallback(() => {
     // Default geometry: compact panel pinned near the top-right of the plot,
     // cascading down as snapshots accumulate so they don't land exactly atop
     // one another.
@@ -1049,17 +1069,49 @@ export default function ScatterPlot({
     addEmbeddingSnapshot({
       id: `snap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       slotKey,
-      title,
-      points,
-      colors,
-      bounds: { minX: bounds.minX, minY: bounds.minY, maxX: bounds.maxX, maxY: bounds.maxY },
-      labels,
-      bg: displayPreferences.backgroundColor,
-      pointSize: displayPreferences.pointSize,
+      ...buildSnapshot(),
       x, y, w, h,
       minimized: false,
     })
-  }, [data, getColor, categoryLabelData, bounds, displayPreferences, colorMode, expressionData, colorBy, embedding.name, slotKey, addEmbeddingSnapshot])
+  }, [buildSnapshot, slotKey, addEmbeddingSnapshot])
+
+  // Render the current view offscreen at figure resolution and attach it to
+  // the analysis record, where it becomes an output cell in the exported
+  // notebook.
+  const captureToRecord = useCallback(async () => {
+    const snap = buildSnapshot()
+    const canvas = document.createElement('canvas')
+    const SIDE = 640
+    renderSnapshotToCanvas(
+      canvas,
+      { ...snap, id: '', slotKey, x: 0, y: 0, w: SIDE, h: SIDE, minimized: false },
+      SIDE,
+      SIDE,
+    )
+    try {
+      const resp = await fetch(appendDataset('/api/record/figure'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          png_b64: canvas.toDataURL('image/png'),
+          // With no coloring the snapshot title falls back to the embedding
+          // name, and "X_umap coloured by X_umap" reads like a bug.
+          caption: snap.title === embedding.name
+            ? embedding.name
+            : `${embedding.name} coloured by ${snap.title}`,
+        }),
+      })
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}))
+        throw new Error(body.detail || `HTTP ${resp.status}`)
+      }
+      setError(null)
+      setRecordFlash(true)
+      window.setTimeout(() => setRecordFlash(false), 1200)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [buildSnapshot, slotKey, embedding.name, setError])
 
   const categoryLabelScreen = useMemo(() => {
     if (categoryLabelData.length === 0) return [] as { label: string; x: number; y: number }[]
@@ -1507,6 +1559,35 @@ export default function ScatterPlot({
       >
         <span style={{ color: '#4ecdc4', fontSize: 13 }}>◈</span>
         Snapshot
+      </button>
+
+      {/* Capture the same view into the analysis record, where it becomes a
+          figure in the exported notebook. */}
+      <button
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); captureToRecord() }}
+        title="Add this view to the analysis record as a figure"
+        style={{
+          position: 'absolute',
+          top: 8,
+          right: 100,
+          zIndex: 13,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          padding: '5px 9px',
+          fontSize: 12,
+          fontWeight: 600,
+          color: recordFlash ? '#0b1020' : '#cbd5e1',
+          backgroundColor: recordFlash ? '#4ecdc4' : 'rgba(22, 33, 62, 0.9)',
+          border: '1px solid rgba(255,255,255,0.12)',
+          borderRadius: 6,
+          cursor: 'pointer',
+          transition: 'background-color 120ms ease',
+        }}
+      >
+        <span style={{ color: recordFlash ? '#0b1020' : '#4ecdc4', fontSize: 13 }}>◧</span>
+        {recordFlash ? 'Added' : 'Figure'}
       </button>
 
       {/* Pinned snapshots for this plot */}

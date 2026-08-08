@@ -11,6 +11,7 @@ import DiffExpModal from './components/DiffExpModal'
 import LineAssociationModal from './components/LineAssociationModal'
 import ScanpyModal from './components/ScanpyModal'
 import MultiContourModal from './components/MultiContourModal'
+import AnalysisRecordPanel from './components/AnalysisRecordPanel'
 import LigRecModal from './components/LigRecModal'
 import DefineSectionsPanel from './components/DefineSectionsPanel'
 import ShapeManager from './components/ShapeManager'
@@ -783,6 +784,7 @@ export default function App() {
     displayLayer,
     setDisplayLayer,
     transformShapesForEmbedding,
+    setAnalysisRecordOpen,
   } = useStore()
 
   // Available expression layers for the in-plot Source matrix dropdown.
@@ -1440,6 +1442,19 @@ export default function App() {
                     <div>
                       <div>Export…</div>
                       <div style={{ fontSize: '10px', color: '#888' }}>Export h5ad / annotations / gene sets</div>
+                    </div>
+                  </div>
+                )}
+                {schema && (
+                  <div
+                    onClick={() => { setShowFileMenu(false); setAnalysisRecordOpen(true) }}
+                    style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', color: '#ccc', display: 'flex', alignItems: 'center', gap: '8px' }}
+                    title="What this session did, and how to reproduce it"
+                  >
+                    <span style={{ fontSize: '14px', width: '18px', textAlign: 'center' }}>{'\u{1F4D3}'}</span>
+                    <div>
+                      <div>Analysis record…</div>
+                      <div style={{ fontSize: '10px', color: '#888' }}>Export the session as a notebook / markdown</div>
                     </div>
                   </div>
                 )}
@@ -2334,6 +2349,7 @@ export default function App() {
       <ScanpyModal />
       <PyscnModal />
       <MultiContourModal />
+      <AnalysisRecordPanel />
       <LigRecModal />
       <DefineSectionsPanel />
       <MarkerGenesModal />

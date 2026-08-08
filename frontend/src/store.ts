@@ -724,6 +724,7 @@ interface AppState {
   // Scanpy modal state
   isScanpyModalOpen: boolean
   isPyscnModalOpen: boolean
+  isAnalysisRecordOpen: boolean
   isMultiContourModalOpen: boolean
   isDefineSectionsOpen: boolean
   isLigRecModalOpen: boolean
@@ -940,6 +941,7 @@ interface AppState {
   // Scanpy modal actions
   setScanpyModalOpen: (open: boolean) => void
   setPyscnModalOpen: (open: boolean) => void
+  setAnalysisRecordOpen: (open: boolean) => void
   setMultiContourModalOpen: (open: boolean) => void
   setDefineSectionsOpen: (open: boolean) => void
   setLigRecModalOpen: (open: boolean) => void
@@ -1125,6 +1127,7 @@ export const useStore = create<AppState>((set, get) => {
     userConfig: {},
     isScanpyModalOpen: false,
     isPyscnModalOpen: false,
+    isAnalysisRecordOpen: false,
     isMultiContourModalOpen: false,
     isDefineSectionsOpen: false,
     isLigRecModalOpen: false,
@@ -2227,6 +2230,7 @@ export const useStore = create<AppState>((set, get) => {
     // Scanpy modal actions
     setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),  // global
     setPyscnModalOpen: (open) => set({ isPyscnModalOpen: open }),    // global
+    setAnalysisRecordOpen: (open) => set({ isAnalysisRecordOpen: open }),  // global
     setMultiContourModalOpen: (open) => set({ isMultiContourModalOpen: open }),  // global
     setDefineSectionsOpen: (open) => set({ isDefineSectionsOpen: open }),  // global
     setLigRecModalOpen: (open) => set({ isLigRecModalOpen: open }),  // global

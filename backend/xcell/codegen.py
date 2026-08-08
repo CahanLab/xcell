@@ -1,0 +1,556 @@
+"""Turning a recorded step into prose and runnable Python.
+
+Pure: a step in, a :class:`TranslatedStep` out. No AnnData, no adaptor, no I/O —
+which is what lets every entry in the registry be tested against its expected
+output directly.
+
+The whole feature stands or falls on whether a reader can trust the emitted
+code, so each step carries a **fidelity**:
+
+``exact``
+    The emitted line is the library call the adaptor really makes. Verified
+    against ``adaptor.py``: ``run_normalize_total`` with no active selection
+    literally executes ``sc.pp.normalize_total(self.adata, **kwargs)``.
+``xcell``
+    Reproducible only through xcell's own Python API. The notebook wraps the
+    AnnData in a ``DataAdaptor`` and calls the method, with the parameters as
+    recorded.
+``manual``
+    No code equivalent — described in prose and nothing more.
+
+Orthogonally, a step that ran on an active cell selection is flagged in
+``warnings``. We deliberately do not generate subset + write-back code: each
+subset-capable method has its own write-back semantics (UMAP writes NaN for
+inactive cells, Leiden writes ``'unassigned'``, ``normalize_total`` splices
+sparse rows), and code that silently differs from what ran is the exact failure
+this feature exists to prevent.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+from xcell.analysis_record import Step
+
+EXACT = 'exact'
+XCELL = 'xcell'
+MANUAL = 'manual'
+
+SCANPY = ('import scanpy as sc',)
+SQUIDPY = ('import squidpy as sq',)
+NUMPY = ('import numpy as np',)
+XCELL_API = ('from xcell.adaptor import DataAdaptor',)
+
+# The variable names the exported notebook sets up. `xa` is a DataAdaptor
+# wrapping `adata`; SELECTIONS is the sidecar of recorded cell selections.
+ADATA = 'adata'
+ADAPTOR = 'xa'
+
+
+@dataclass(frozen=True)
+class TranslatedStep:
+    title: str
+    summary: str
+    code: list[str]
+    fidelity: str
+    imports: tuple[str, ...]
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Emission:
+    """Code lines whose fidelity differs from the action's usual tier.
+
+    Most actions sit in one tier, so their builders just return a list. A few
+    depend on how they were called — PCA over a plain `.var` column is an exact
+    scanpy call, but PCA over an ad-hoc gene list is only reproducible through
+    xcell's own API — and those return this instead.
+    """
+
+    lines: list[str]
+    fidelity: str
+
+
+@dataclass(frozen=True)
+class ActionSpec:
+    label: str
+    fidelity: str
+    summary: Callable[[dict, dict], str]
+    # Returns the code lines (or an Emission to override the tier), or None
+    # when this particular step can't be reproduced — a missing selection, an
+    # in-memory source. None downgrades the step to `manual`.
+    code: Callable[[Step], list[str] | Emission | None] | None = None
+    imports: tuple[str, ...] = ()
+
+
+# --- literal rendering ----------------------------------------------------
+
+def _lit(value: Any) -> str:
+    """Render a recorded parameter as a Python literal.
+
+    Everything here is pasted into a notebook the user will execute, so this
+    goes through ``repr`` rather than string formatting — a gene name or file
+    path containing a quote must not be able to escape its literal.
+    """
+    if isinstance(value, (str, bool)) or value is None:
+        return repr(value)
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, (list, tuple)):
+        return '[' + ', '.join(_lit(v) for v in value) + ']'
+    if isinstance(value, dict):
+        return '{' + ', '.join(f'{_lit(k)}: {_lit(v)}' for k, v in value.items()) + '}'
+    return repr(str(value))
+
+
+def _splat(params: dict, only: tuple[str, ...] | None = None) -> str:
+    """Render params as keyword arguments, dropping Nones.
+
+    A recorded ``None`` means "the user did not ask for this", so omitting it
+    preserves the library's own default — which is not always None (scanpy's
+    ``target_sum=None`` means "median", and passing it explicitly is the same
+    thing, but omitting reads better and is what the adaptor does).
+    """
+    items = params.items() if only is None else ((k, params[k]) for k in only if k in params)
+    return ', '.join(f'{k}={_lit(v)}' for k, v in items if v is not None)
+
+
+def _call(fn: str, params: dict, only: tuple[str, ...] | None = None, target: str = ADATA) -> str:
+    args = _splat(params, only)
+    return f'{fn}({target}, {args})' if args else f'{fn}({target})'
+
+
+def _xcall(method: str, params: dict, only: tuple[str, ...] | None = None) -> str:
+    return f'{ADAPTOR}.{method}({_splat(params, only)})'
+
+
+def _n(value: Any) -> str:
+    """Format a recorded count for prose, tolerating a missing value."""
+    return f'{value:,}' if isinstance(value, (int, float)) else '?'
+
+
+# --- per-action code builders ---------------------------------------------
+
+_LOADERS = {
+    'h5ad': 'sc.read_h5ad',
+    '10x_h5': 'sc.read_10x_h5',
+    '10x_mtx': 'sc.read_10x_mtx',
+}
+
+
+def _code_load(step: Step) -> list[str] | None:
+    kind = step.params.get('kind', 'h5ad')
+    path = step.params.get('path')
+    reader = _LOADERS.get(kind)
+    if reader is None or not path:
+        # An in-memory AnnData (combine_spatial, tests) has no file to re-read.
+        return None
+    lines = [f'{ADATA} = {reader}({_lit(path)})']
+    if kind != 'h5ad':
+        lines.append(f'{ADATA}.var_names_make_unique()')
+    return lines
+
+
+def _code_pca(step: Step) -> list[str] | Emission:
+    p = step.params
+    args = _splat({'n_comps': p.get('n_comps'), 'svd_solver': p.get('svd_solver')})
+    subset = p.get('gene_subset')
+    if subset is None:
+        return [f'sc.tl.pca({ADATA}, {args})']
+    if isinstance(subset, str):
+        # xcell copies out the gene subset, runs PCA there, and copies the
+        # embedding back — varm['PCs'] is padded with NaN for excluded genes.
+        return [
+            f"_mask = {ADATA}.var[{_lit(subset)}].astype(bool).values",
+            f'_sub = {ADATA}[:, _mask].copy()',
+            f'sc.tl.pca(_sub, {args})',
+            f"{ADATA}.obsm['X_pca'] = _sub.obsm['X_pca']",
+            f"{ADATA}.uns['pca'] = _sub.uns['pca']",
+        ]
+    # A gene list or a multi-column mask expression. Resolving it the way xcell
+    # does (intersection/union over .var columns) is not worth reimplementing —
+    # hand it back to the adaptor, which is where that logic lives.
+    return Emission(
+        [_xcall('run_pca', p, ('n_comps', 'svd_solver', 'gene_subset'))], XCELL,
+    )
+
+
+def _code_exclude_genes(step: Step) -> list[str]:
+    names = step.params.get('gene_names') or []
+    patterns = step.params.get('patterns') or []
+    lines = [f'_drop = {ADATA}.var_names.isin({_lit(list(names))})']
+    for pattern in patterns:
+        lines.append(f'_drop = _drop | {ADATA}.var_names.str.match({_lit(pattern)})')
+    lines.append(f'{ADATA} = {ADATA}[:, ~_drop].copy()')
+    return lines
+
+
+def _code_delete_cells(step: Step) -> list[str] | None:
+    if not step.selection:
+        # Over SELECTION_CAP the indices were never kept; there is nothing
+        # honest to emit.
+        return None
+    key = f'step_{step.index}'
+    return [
+        f'_drop = SELECTIONS[{_lit(key)}]',
+        f'{ADATA} = {ADATA}[~np.isin(np.arange({ADATA}.n_obs), _drop)].copy()',
+    ]
+
+
+def _code_multicontour(step: Step) -> list[str]:
+    p = step.params
+    prep = dict(p.get('params') or {})
+    prep['gene_sets'] = p.get('gene_sets')
+    return [
+        f'_mc = {_xcall("prepare_multicontour", prep)}',
+        f"{ADAPTOR}.finalize_multicontour(_mc['token'], "
+        f'{_splat(p, ("cutoffs", "profile_k", "out_name", "save_qc"))})',
+    ]
+
+
+def _code_pyscn_classify(step: Step) -> list[str] | None:
+    path = step.params.get('classifier_path')
+    if not path:
+        return None
+    args = _splat({'path': path, 'key': step.params.get('key'),
+                   'layer': step.params.get('layer')})
+    return [f'_xcell_run({ADAPTOR}.prepare_pyscn_classify({args}))']
+
+
+def _two_phase(method: str, only: tuple[str, ...] | None = None):
+    """A prepare_* method returning (compute_fn, apply_fn)."""
+    def build(step: Step) -> list[str]:
+        return [f'_xcell_run({ADAPTOR}.{method}({_splat(step.params, only)}))']
+    return build
+
+
+def _direct(method: str, only: tuple[str, ...] | None = None):
+    def build(step: Step) -> list[str]:
+        return [_xcall(method, step.params, only)]
+    return build
+
+
+def _scanpy(fn: str, only: tuple[str, ...] | None = None):
+    def build(step: Step) -> list[str]:
+        return [_call(fn, step.params, only)]
+    return build
+
+
+# --- the registry ---------------------------------------------------------
+
+REGISTRY: dict[str, ActionSpec] = {
+    'load_dataset': ActionSpec(
+        label='Load dataset',
+        fidelity=EXACT,
+        imports=SCANPY,
+        code=_code_load,
+        summary=lambda p, r: (
+            f"Loaded `{p.get('path', 'the dataset')}` — "
+            f"{_n(r.get('n_cells'))} cells x {_n(r.get('n_genes'))} genes."
+        ),
+    ),
+
+    # --- preprocessing (exact scanpy) ---
+    'filter_genes': ActionSpec(
+        label='Filter genes', fidelity=EXACT, imports=SCANPY,
+        code=_scanpy('sc.pp.filter_genes'),
+        summary=lambda p, r: (
+            f"Filtered genes ({_splat(p) or 'no thresholds'}): "
+            f"{_n(r.get('n_genes_removed'))} removed, {_n(r.get('n_genes_after'))} remain."
+        ),
+    ),
+    'filter_cells': ActionSpec(
+        label='Filter cells', fidelity=EXACT, imports=SCANPY,
+        code=_scanpy('sc.pp.filter_cells'),
+        summary=lambda p, r: (
+            f"Filtered cells ({_splat(p) or 'no thresholds'}): "
+            f"{_n(r.get('n_cells_removed'))} removed, {_n(r.get('n_cells_after'))} remain."
+        ),
+    ),
+    'exclude_genes': ActionSpec(
+        label='Exclude genes', fidelity=EXACT, imports=(),
+        code=_code_exclude_genes,
+        summary=lambda p, r: (
+            f"Excluded {_n(r.get('n_genes_removed'))} genes by name/pattern "
+            f"({len(p.get('gene_names') or [])} names, {len(p.get('patterns') or [])} patterns)."
+        ),
+    ),
+    'delete_cells': ActionSpec(
+        label='Delete cells', fidelity=EXACT, imports=NUMPY,
+        code=_code_delete_cells,
+        summary=lambda p, r: (
+            f"Removed {_n(r.get('n_cells_deleted'))} selected cells; "
+            f"{_n(r.get('n_cells_after'))} remain."
+        ),
+    ),
+    'normalize_total': ActionSpec(
+        label='Normalize total counts', fidelity=EXACT, imports=SCANPY,
+        code=_scanpy('sc.pp.normalize_total'),
+        summary=lambda p, r: (
+            f"Normalized each cell to {_n(p['target_sum'])} counts."
+            if p.get('target_sum') is not None
+            else 'Normalized each cell to the median total count.'
+        ),
+    ),
+    'log1p': ActionSpec(
+        label='Log-transform', fidelity=EXACT, imports=SCANPY,
+        code=_scanpy('sc.pp.log1p'),
+        summary=lambda p, r: 'Applied log1p to the expression matrix.',
+    ),
+    'highly_variable_genes': ActionSpec(
+        label='Highly variable genes', fidelity=EXACT, imports=SCANPY,
+        code=_scanpy('sc.pp.highly_variable_genes'),
+        summary=lambda p, r: (
+            f"Selected {_n(r.get('n_highly_variable'))} highly variable genes "
+            f"of {_n(r.get('n_total_genes'))} (flavor {p.get('flavor', 'seurat')})."
+        ),
+    ),
+    'pca': ActionSpec(
+        label='PCA', fidelity=EXACT, imports=SCANPY,
+        code=_code_pca,
+        summary=lambda p, r: (
+            f"PCA to {_n(r.get('n_comps', p.get('n_comps')))} components "
+            f"over {_n(r.get('n_genes_used'))} genes "
+            f"({r.get('gene_subset_type', 'default')} gene set)."
+        ),
+    ),
+    'neighbors': ActionSpec(
+        label='Neighbor graph', fidelity=EXACT, imports=SCANPY,
+        code=_scanpy('sc.pp.neighbors'),
+        summary=lambda p, r: (
+            f"Built a k-nearest-neighbor graph with k={_n(p.get('n_neighbors'))} "
+            f"({p.get('metric', 'euclidean')} distance)."
+        ),
+    ),
+    'umap': ActionSpec(
+        label='UMAP', fidelity=EXACT, imports=SCANPY,
+        code=_scanpy('sc.tl.umap', ('min_dist', 'spread', 'n_components')),
+        summary=lambda p, r: (
+            f"UMAP embedding in {_n(p.get('n_components', 2))} dimensions "
+            f"(min_dist {p.get('min_dist')}, spread {p.get('spread')}) → `.obsm['X_umap']`."
+        ),
+    ),
+    'leiden': ActionSpec(
+        label='Leiden clustering', fidelity=EXACT, imports=SCANPY,
+        code=_scanpy('sc.tl.leiden', ('resolution', 'key_added')),
+        summary=lambda p, r: (
+            f"Leiden clustering at resolution {p.get('resolution')} → "
+            f"{_n(r.get('n_clusters'))} clusters in `.obs['{p.get('key_added', 'leiden')}']`."
+        ),
+    ),
+
+    # --- spatial (exact squidpy) ---
+    'spatial_neighbors': ActionSpec(
+        label='Spatial neighbor graph', fidelity=EXACT, imports=SQUIDPY,
+        code=_scanpy('sq.gr.spatial_neighbors',
+                     ('n_neighs', 'coord_type', 'spatial_key', 'delaunay', 'n_rings', 'radius')),
+        summary=lambda p, r: (
+            f"Spatial graph over `.obsm['{p.get('spatial_key', 'spatial')}']` "
+            f"({p.get('coord_type', 'generic')}, {_n(p.get('n_neighs'))} neighbors"
+            f"{', Delaunay' if p.get('delaunay') else ''}) → "
+            f"{_n(r.get('n_edges'))} edges."
+        ),
+    ),
+    'spatial_autocorr': ActionSpec(
+        label='Spatial autocorrelation', fidelity=EXACT, imports=SQUIDPY,
+        code=_scanpy('sq.gr.spatial_autocorr', ('mode', 'genes', 'n_perms', 'corr_method')),
+        summary=lambda p, r: (
+            f"{'Moran’s I' if p.get('mode') == 'moran' else 'Geary’s C'} "
+            f"over {_n(r.get('n_genes_tested'))} genes "
+            f"({_n(p.get('n_perms'))} permutations, {p.get('corr_method')} correction) → "
+            f"{_n(r.get('n_significant'))} significant at p < {p.get('pval_threshold')}."
+        ),
+    ),
+
+    # --- xcell's own analyses ---
+    'create_pca_subset': ActionSpec(
+        label='PC subset', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('create_pca_subset', ('drop_pc_indices', 'suffix')),
+        summary=lambda p, r: (
+            f"Derived a PC subset dropping PCs {p.get('drop_pc_indices')} → "
+            f"`.obsm['{r.get('obsm_key', '?')}']`."
+        ),
+    ),
+    'delete_pca_subset': ActionSpec(
+        label='Delete PC subset', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('delete_pca_subset', ('obsm_key',)),
+        summary=lambda p, r: f"Deleted the PC subset `{p.get('obsm_key')}`.",
+    ),
+    'combine_neighbors': ActionSpec(
+        label='Combine neighbor graphs', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('combine_neighbor_graphs', ('sources', 'target_key')),
+        summary=lambda p, r: (
+            f"Combined {len(p.get('sources') or [])} neighbor graphs into "
+            f"`.obsp['{p.get('target_key', 'connectivities')}']` "
+            f"({_n(r.get('n_edges'))} edges)."
+        ),
+    ),
+    'smooth': ActionSpec(
+        label='Graph smoothing', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('run_smooth'),
+        summary=lambda p, r: (
+            f"Smoothed `{p.get('source_layer')}` over `{p.get('graph_key')}` for "
+            f"{_n(p.get('n_steps'))} steps → `.layers['{p.get('output_layer')}']`."
+        ),
+    ),
+    'gene_pca': ActionSpec(
+        label='Gene PCA', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('run_gene_pca', ('n_comps', 'scale', 'use_kneedle', 'gene_subset')),
+        summary=lambda p, r: (
+            f"PCA in gene space to {_n(r.get('n_comps', p.get('n_comps')))} components."
+        ),
+    ),
+    'gene_neighbors': ActionSpec(
+        label='Gene neighbor graph', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('run_gene_neighbors', ('n_neighbors', 'metric', 'basis')),
+        summary=lambda p, r: (
+            f"Gene-gene kNN graph with k={_n(p.get('n_neighbors'))} "
+            f"over `{p.get('basis')}` ({p.get('metric')})."
+        ),
+    ),
+    'cluster_genes': ActionSpec(
+        label='Gene clustering', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('run_cluster_genes', ('resolution', 'key_added')),
+        summary=lambda p, r: (
+            f"Leiden clustering of genes at resolution {p.get('resolution')} → "
+            f"{_n(r.get('n_clusters'))} modules in `.var['{p.get('key_added')}']`."
+        ),
+    ),
+    'contourize': ActionSpec(
+        label='Expression contours', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_contourize'),
+        summary=lambda p, r: (
+            f"Contoured {len(p.get('genes') or [])} genes at "
+            f"{_n(p.get('contour_levels'))} levels → `.obs['{p.get('annotation_key')}']`."
+        ),
+    ),
+    'multicontour': ActionSpec(
+        label='Multi-gene-set contours', fidelity=XCELL, imports=XCELL_API,
+        code=_code_multicontour,
+        summary=lambda p, r: (
+            f"Contoured {len(p.get('gene_sets') or {})} gene sets into a tissue "
+            f"annotation `.obs['{p.get('out_name')}']` "
+            f"({_n(r.get('n_regions'))} regions)."
+        ),
+    ),
+    'ligrec': ActionSpec(
+        label='Ligand-receptor columns', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('finalize_ligrec', ('interactions', 'write_significance')),
+        summary=lambda p, r: (
+            f"Wrote {len(p.get('interactions') or [])} ligand-receptor interaction "
+            f"scores to .obs ({len(r.get('written') or [])} columns)."
+        ),
+    ),
+    'marker_genes': ActionSpec(
+        label='Marker genes', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('run_marker_genes'),
+        summary=lambda p, r: (
+            f"Ranked marker genes for `{p.get('obs_column')}` "
+            f"(top {_n(p.get('top_n'))} per group) → "
+            f"{_n(r.get('total_genes'))} genes across {_n(r.get('n_groups'))} groups."
+        ),
+    ),
+    'transfer_obs_labels': ActionSpec(
+        label='Transfer labels', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('transfer_obs_labels',
+                     ('target_column', 'source_column', 'out_column', 'rename_mode')),
+        summary=lambda p, r: (
+            f"Transferred labels from `{p.get('source_column')}` onto "
+            f"`{p.get('target_column')}` → `.obs['{p.get('out_column')}']`."
+        ),
+    ),
+    'pyscn_classify': ActionSpec(
+        label='Cell-type classification (PySingleCellNet)', fidelity=XCELL, imports=XCELL_API,
+        code=_code_pyscn_classify,
+        summary=lambda p, r: (
+            f"Classified {_n(r.get('n_cells'))} cells into {_n(r.get('n_classes'))} types "
+            f"→ `.obs['{p.get('key', 'SCN')}_class']` "
+            f"({(r.get('gene_overlap') or 0) * 100:.0f}% of classifier genes found)."
+        ),
+    ),
+    'pyscn_train': ActionSpec(
+        label='Train classifier (PySingleCellNet)', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_pyscn_train',
+                        ('groupby', 'out_path', 'n_trees', 'source_scale')),
+        summary=lambda p, r: (
+            f"Trained a classifier on `{p.get('groupby')}` "
+            f"({_n(r.get('n_classes'))} classes, {_n(r.get('n_cells_used'))} cells, "
+            f"{_n(p.get('n_trees'))} trees) → `{p.get('out_path')}`."
+        ),
+    ),
+}
+
+
+def registered_actions() -> set[str]:
+    return set(REGISTRY)
+
+
+# --- translation ----------------------------------------------------------
+
+def _unknown_summary(action: str, params: dict) -> str:
+    if not params:
+        return f'`{action}` (no parameters recorded).'
+    rendered = ', '.join(f'{k}={_lit(v)}' for k, v in params.items())
+    return f'`{action}` with {rendered}.'
+
+
+def _warnings_for(step: Step, spec: ActionSpec | None) -> list[str]:
+    out: list[str] = []
+    if step.n_active is not None:
+        out.append(
+            f'xcell ran this on an active selection of {step.n_active:,} '
+            f'of {step.n_total:,} cells. The code below runs on the whole dataset.'
+            if step.n_total
+            else f'xcell ran this on an active selection of {step.n_active:,} cells. '
+                 f'The code below runs on the whole dataset.'
+        )
+    if step.action == 'spatial_neighbors' and step.params.get('section_col'):
+        out.append(
+            f"xcell additionally removed edges crossing sections defined by "
+            f"`.obs['{step.params['section_col']}']`; the squidpy call alone "
+            f'does not do that.'
+        )
+    return out
+
+
+def translate(step: Step) -> TranslatedStep:
+    """Render one recorded step as a title, prose, and (where honest) code."""
+    spec = REGISTRY.get(step.action)
+    warnings = _warnings_for(step, spec)
+
+    if spec is None:
+        return TranslatedStep(
+            title=f'Unrecognized operation: {step.action}',
+            summary=_unknown_summary(step.action, step.params),
+            code=[],
+            fidelity=MANUAL,
+            imports=(),
+            warnings=warnings,
+        )
+
+    try:
+        summary = spec.summary(step.params, step.result)
+    except Exception:  # a record restored from an older h5ad may lack keys
+        summary = _unknown_summary(step.action, step.params)
+
+    emitted = spec.code(step) if spec.code else None
+    if isinstance(emitted, Emission):
+        lines, fidelity = emitted.lines, emitted.fidelity
+    else:
+        lines, fidelity = emitted, spec.fidelity
+    if not lines:
+        return TranslatedStep(
+            title=spec.label, summary=summary, code=[],
+            fidelity=MANUAL, imports=(), warnings=warnings,
+        )
+
+    return TranslatedStep(
+        title=spec.label,
+        summary=summary,
+        code=lines,
+        fidelity=fidelity,
+        # An xcell-tier step needs the adaptor regardless of what the spec
+        # normally imports (see PCA over a gene list).
+        imports=spec.imports if fidelity != XCELL else tuple({*spec.imports, *XCELL_API}),
+        warnings=warnings,
+    )

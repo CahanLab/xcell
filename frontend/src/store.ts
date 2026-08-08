@@ -725,6 +725,7 @@ interface AppState {
   isScanpyModalOpen: boolean
   isPyscnModalOpen: boolean
   isAnalysisRecordOpen: boolean
+  isLocalizeModalOpen: boolean
   isMultiContourModalOpen: boolean
   isDefineSectionsOpen: boolean
   isLigRecModalOpen: boolean
@@ -942,6 +943,7 @@ interface AppState {
   setScanpyModalOpen: (open: boolean) => void
   setPyscnModalOpen: (open: boolean) => void
   setAnalysisRecordOpen: (open: boolean) => void
+  setLocalizeModalOpen: (open: boolean) => void
   setMultiContourModalOpen: (open: boolean) => void
   setDefineSectionsOpen: (open: boolean) => void
   setLigRecModalOpen: (open: boolean) => void
@@ -1128,6 +1130,7 @@ export const useStore = create<AppState>((set, get) => {
     isScanpyModalOpen: false,
     isPyscnModalOpen: false,
     isAnalysisRecordOpen: false,
+    isLocalizeModalOpen: false,
     isMultiContourModalOpen: false,
     isDefineSectionsOpen: false,
     isLigRecModalOpen: false,
@@ -2231,6 +2234,7 @@ export const useStore = create<AppState>((set, get) => {
     setScanpyModalOpen: (open) => set({ isScanpyModalOpen: open }),  // global
     setPyscnModalOpen: (open) => set({ isPyscnModalOpen: open }),    // global
     setAnalysisRecordOpen: (open) => set({ isAnalysisRecordOpen: open }),  // global
+    setLocalizeModalOpen: (open) => set({ isLocalizeModalOpen: open }),  // global
     setMultiContourModalOpen: (open) => set({ isMultiContourModalOpen: open }),  // global
     setDefineSectionsOpen: (open) => set({ isDefineSectionsOpen: open }),  // global
     setLigRecModalOpen: (open) => set({ isLigRecModalOpen: open }),  // global

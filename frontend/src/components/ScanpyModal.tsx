@@ -461,6 +461,15 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         custom: true,
         params: [],
       },
+      localize: {
+        label: 'Localize',
+        description: "Predict spatial coordinates for a dissociated (scRNA-seq) dataset from a spatial one loaded in the other slot. Each cell is placed by its nearest transcriptional neighbours among the spatial cells; the result is a new embedding plus two confidence scores saying which placements to believe. Includes a hold-out accuracy check against random and centroid baselines. Opens the Localize tool.",
+        // No prerequisite on *this* dataset: the coordinates live in the other
+        // slot, and the tool checks for one itself.
+        prerequisites: [],
+        custom: true,
+        params: [],
+      },
     },
   },
   multigenome: {
@@ -733,7 +742,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2338,6 +2347,13 @@ export default function ScanpyModal() {
               onClick={() => { setLigRecModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Ligand-Receptor tool…
+            </button>
+          ) : selectedFunction === 'localize' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setLocalizeModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Localize tool…
             </button>
           ) : (
             <button

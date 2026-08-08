@@ -588,6 +588,34 @@ A backend restart is required to pick up edits. Verify what was loaded by hittin
 
 Most changes you make in a session survive on the backend process: deleted cells, transformed embeddings, computed PCA / neighbors / UMAP / Leiden, drawn lines, and — as of this version — your **gene sets** (categories, folders, individual sets). If the browser tab accidentally reloads, the gene panel is rehydrated from the server. Restarting the backend still clears everything; persist important sets via the Gene Panel export controls before shutting down.
 
+## Placing dissociated cells on a tissue map
+
+`Analyze → Spatial → Localize` predicts spatial coordinates for an scRNA-seq
+dataset using a spatial dataset loaded in the other slot as the map. Each cell
+is placed by its *k* nearest transcriptional neighbours among the spatial cells,
+and the result is a new embedding — so everything xcell can already do with an
+embedding then works on data that never had coordinates.
+
+The reason the tool leads with confidence rather than parameters: averaging the
+positions of *k* similar cells only means something if those cells sit together.
+A cell type scattered through the tissue has neighbours everywhere, and their
+average lands in the middle — a smooth, convincing, wrong answer that the
+coordinate itself gives no hint about. So every cell gets two scores, written to
+`.obs`: whether it resembles the reference at all, and whether its neighbours
+agree on a location. Colour by `<key>_confidence` after a run and the
+untrustworthy regions of the map are immediately visible.
+
+Before trusting anything, **Check accuracy** holds out a fifth of the spatial
+reference and predicts it from the rest, reporting the error next to two
+baselines — predicting the tissue centre, and predicting at random. An error
+without those is unfalsifiable, and the panel says so outright when the method
+fails to beat the centre.
+
+A benchmark pair with exact ground truth ships with xcell
+(`toy_localize_spatial.h5ad` and `toy_localize_scrna.h5ad`), deliberately
+containing populations the method cannot place, so the confidence scores can be
+seen doing their job.
+
 ## Reproducing a session outside xcell
 
 Clicking through a GUI leaves no methods section. xcell records every mutating
@@ -623,6 +651,7 @@ carries its own provenance and re-opening it continues the history.
 - **Highlight overlay** — stack one or more colored layers on top of the active coloring without replacing it. Each layer is either a gene-set expression threshold (above / below / between, with a draggable histogram cutoff) or a frozen cell-set mask (current selection or category value). Useful for marking e.g. epithelium in green while keeping bivariate coloring on the rest.
 - **Figure builder** — compose multi-panel publication figures from a cell selection (or the full dataset). Each panel renders the same cells colored independently (single gene, gene set, bivariate — each axis a gene or a gene set — or metadata column), with its own color scale and title. Per-figure point size, opacity, background, and optional N×N grid overlay are shared so panels stay visually consistent. Per-panel "show highlight layers" toggle blends the dataset's current Highlight overlays into the panel. Shared pan/zoom keeps panels aligned. Export to PNG at 1×–4× DPI from the new **Figure** tab.
 - **Multi-dataset support** — load two datasets (h5ad, h5, rds, 10x matrix folders, or prefixed 10x file trios from GEO), switch between them, or view side by side in split mode
+- **Localize** — predict where dissociated cells came from. Load a spatial dataset alongside an scRNA-seq one and each scRNA-seq cell is placed by its nearest transcriptional neighbours among the spatial cells, producing a new embedding you can then explore like any other. Two confidence scores say which placements to believe — whether the cell resembles the reference at all, and whether its neighbours agree on a location — because a dispersed cell type produces a smooth, convincing map of nowhere. A built-in hold-out check reports accuracy against random and centroid baselines before you trust it. **Analyze → Spatial → Localize**
 - **Analysis record** — every operation you run is recorded (parameters, result, and the cell selection it ran on), and exports as a **Jupyter notebook you can execute** or a Markdown methods supplement, with your own notes and figures captured from the plot. Each step is labelled with how faithfully it reproduces — `exact` (the emitted line is the scanpy call xcell really made), `xcell` (needs xcell's Python API), or `manual` — and the document opens by stating that split in numbers, so nobody has to trust it blindly. **File → Analysis record…**
 - **Export** — download annotations and analysis results
 

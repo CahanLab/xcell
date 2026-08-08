@@ -491,7 +491,7 @@ export default function AnalysisRecordPanel() {
                 disabled={busy}
                 style={{
                   ...ghost, background: dark.accent, color: '#0b1020',
-                  fontWeight: 600, borderColor: dark.accent,
+                  fontWeight: 600, border: `1px solid ${dark.accent}`,
                   opacity: busy ? 0.6 : 1,
                 }}
               >

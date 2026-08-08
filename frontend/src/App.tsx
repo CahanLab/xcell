@@ -12,6 +12,7 @@ import LineAssociationModal from './components/LineAssociationModal'
 import ScanpyModal from './components/ScanpyModal'
 import MultiContourModal from './components/MultiContourModal'
 import AnalysisRecordPanel from './components/AnalysisRecordPanel'
+import LocalizeModal from './components/LocalizeModal'
 import LigRecModal from './components/LigRecModal'
 import DefineSectionsPanel from './components/DefineSectionsPanel'
 import ShapeManager from './components/ShapeManager'
@@ -2350,6 +2351,7 @@ export default function App() {
       <PyscnModal />
       <MultiContourModal />
       <AnalysisRecordPanel />
+      <LocalizeModal />
       <LigRecModal />
       <DefineSectionsPanel />
       <MarkerGenesModal />

@@ -494,6 +494,24 @@ REGISTRY: dict[str, ActionSpec] = {
             f"({(r.get('gene_overlap') or 0) * 100:.0f}% of classifier genes found)."
         ),
     ),
+    'localize': ActionSpec(
+        label='Localize (spatial projection)', fidelity=MANUAL,
+        # Reproducing it needs the *other* dataset — the spatial reference —
+        # which the record does not carry and a single-adata notebook cannot
+        # reconstruct. Naming the parameters is honest; emitting a call that
+        # silently used the wrong reference would not be.
+        code=lambda s: None,
+        summary=lambda p, r: (
+            f"Predicted spatial coordinates for {_n(r.get('n_cells'))} cells "
+            f"from a spatial reference of {_n(r.get('n_reference_cells'))} cells "
+            f"(k={_n(p.get('k'))}, {p.get('metric')} on {p.get('transform')}-"
+            f"transformed expression, {p.get('aggregation')} aggregation over "
+            f"{_n(r.get('n_shared_genes'))} shared genes) → "
+            f"`.obsm['{r.get('embedding_name')}']`. "
+            f"Median confidence {r.get('median_confidence')}; "
+            f"{_n(r.get('n_unplaced'))} cells left unplaced."
+        ),
+    ),
     'ligrec_analyze': ActionSpec(
         label='Ligand-receptor signaling', fidelity=XCELL, imports=XCELL_API,
         code=_direct('prepare_ligrec'),

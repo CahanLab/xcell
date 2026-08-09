@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  adviseContour, adviseModules,
+  adviseContour, adviseModules, sectionColumnCandidates,
   type ContourSettings, type ContourGeometry,
 } from './contourAdvice'
 
@@ -186,5 +186,38 @@ describe('adviseModules', () => {
 
   it('is silent with no modules', () => {
     expect(adviseModules([], N, 15)).toEqual([])
+  })
+})
+
+describe('sectionColumnCandidates', () => {
+  const cat = (name: string, nCategories: number) =>
+    ({ name, dtype: 'category', nCategories })
+
+  it('accepts columns named like a section', () => {
+    expect(sectionColumnCandidates([
+      cat('section', 3), cat('sample', 2), cat('slide_id', 4), cat('Batch', 2),
+    ])).toEqual(['section', 'sample', 'slide_id', 'Batch'])
+  })
+
+  it('rejects a low-cardinality categorical that is not a section', () => {
+    // The bug this exists to prevent: cell_type is a 2-level categorical, and a
+    // cardinality-only filter suggested it as a section column.
+    expect(sectionColumnCandidates([
+      cat('cell_type', 2), cat('condition', 3), cat('sex', 2), cat('leiden', 12),
+    ])).toEqual([])
+  })
+
+  it('rejects a per-cell column even when the name fits', () => {
+    expect(sectionColumnCandidates([cat('sample_barcode', 4000)])).toEqual([])
+  })
+
+  it('rejects non-categorical columns', () => {
+    expect(sectionColumnCandidates([
+      { name: 'section_area', dtype: 'numeric', nCategories: 0 },
+    ])).toEqual([])
+  })
+
+  it('does not match a section-like substring inside another word', () => {
+    expect(sectionColumnCandidates([cat('dissection_quality', 3)])).toEqual([])
   })
 })

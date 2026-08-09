@@ -22,7 +22,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useStore, GeneSet, GeneSetCategoryType, cfgDefault } from '../store'
 import { appendDataset, pollTask } from '../hooks/useData'
 import {
-  adviseContour, adviseModules, type Advice, type ContourGeometry,
+  adviseContour, adviseModules, sectionColumnCandidates,
+  type Advice, type ContourGeometry,
 } from '../lib/contourAdvice'
 
 const API_BASE = '/api'
@@ -134,16 +135,13 @@ export default function MultiContourModal() {
           .filter((s: { dtype?: string }) => s.dtype === 'category')
           .map((s: { name: string }) => s.name)
         setObsColumns(cols)
-        // A section column has a handful of levels, not hundreds — a per-cell
-        // barcode column is categorical too and would be a useless suggestion.
-        setSectionCandidates(
-          (d.summaries || d || [])
-            .filter((s: { dtype?: string; categories?: unknown[] }) =>
-              s.dtype === 'category'
-              && (s.categories?.length ?? 0) >= 2
-              && (s.categories?.length ?? 0) <= 20)
-            .map((s: { name: string }) => s.name),
-        )
+        setSectionCandidates(sectionColumnCandidates(
+          (d.summaries || d || []).map(
+            (s: { name: string; dtype?: string; categories?: unknown[] }) => ({
+              name: s.name, dtype: s.dtype, nCategories: s.categories?.length ?? 0,
+            }),
+          ),
+        ))
         const detected = cols.find((c) => c.toLowerCase() === 'section')
           || cols.find((c) => c.toLowerCase() === 'sample')
         if (detected) setSectionCol((prev) => (prev ? prev : detected))
@@ -188,6 +186,33 @@ export default function MultiContourModal() {
       .catch(() => {})
     return () => { cancelled = true }
   }, [isOpen])
+
+  const highCount = (m: ModuleReview, cutoff: number) =>
+    m.band_values.reduce((sum, bv, i) => (bv >= cutoff ? sum + m.histogram[i] : sum), 0)
+
+  const nSources = sources.length
+
+  // These sit above the `!isOpen` early return on purpose: a hook after it runs
+  // only while the modal is open, so the hook count changes when it opens and
+  // React throws "Rendered more hooks than during the previous render".
+  const advice = useMemo(() => adviseContour({
+    gridRes: parseInt(gridRes || '0', 10) || 0,
+    smoothSigma: parseFloat(smoothSigma || '0') || 0,
+    contourLevels, logTransform, sectionCol, sectionCandidates, nSources,
+    smallestSourceSize: sources.length
+      ? Math.min(...sources.map((s) => s.genes.length)) : null,
+    hasPca, matrixScale, matrixMax,
+  }, geom), [gridRes, smoothSigma, contourLevels, logTransform, sectionCol,
+             sectionCandidates, nSources, sources, hasPca, matrixScale,
+             matrixMax, geom])
+
+  const moduleAdvice: Advice[] = useMemo(() => (prep
+    ? adviseModules(
+        prep.modules.map((m) => ({
+          name: m.name, highCount: highCount(m, cutoffs[m.name] ?? m.auto_cutoff),
+        })),
+        geom?.nSpots ?? 0, profileK)
+    : []), [prep, cutoffs, profileK, geom])
 
   if (!isOpen) return null
 
@@ -290,30 +315,6 @@ export default function MultiContourModal() {
     })
     setPhase('done')
   }
-
-  const highCount = (m: ModuleReview, cutoff: number) =>
-    m.band_values.reduce((sum, bv, i) => (bv >= cutoff ? sum + m.histogram[i] : sum), 0)
-
-  const nSources = sources.length
-
-  const advice = useMemo(() => adviseContour({
-    gridRes: parseInt(gridRes || '0', 10) || 0,
-    smoothSigma: parseFloat(smoothSigma || '0') || 0,
-    contourLevels, logTransform, sectionCol, sectionCandidates, nSources,
-    smallestSourceSize: sources.length
-      ? Math.min(...sources.map((s) => s.genes.length)) : null,
-    hasPca, matrixScale, matrixMax,
-  }, geom), [gridRes, smoothSigma, contourLevels, logTransform, sectionCol,
-             sectionCandidates, nSources, sources, hasPca, matrixScale,
-             matrixMax, geom])
-
-  const moduleAdvice: Advice[] = useMemo(() => (prep
-    ? adviseModules(
-        prep.modules.map((m) => ({
-          name: m.name, highCount: highCount(m, cutoffs[m.name] ?? m.auto_cutoff),
-        })),
-        geom?.nSpots ?? 0, profileK)
-    : []), [prep, cutoffs, profileK, geom])
 
   return (
     <div style={styles.overlay} onClick={close}>

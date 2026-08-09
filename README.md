@@ -476,9 +476,30 @@ within a cell, which is precisely what the pair transform reads.
 Open the **Analyze** modal → **Spatial** → **Contour** → **Open Contour tool…**.
 The Contour tool handles both single- and multi-gene-set contouring; grid
 resolution and smoothing sigma are prefilled with data-aware suggestions (you can
-override), and each parameter has a tooltip explaining the effect of raising or
-lowering it. Click **Choose gene sets…** to pick sources — any saved gene set, or
+override), and each parameter has a tooltip explaining what raising or lowering
+it costs. Click **Choose gene sets…** to pick sources — any saved gene set, or
 the current Gene Panel selection.
+
+**The tool checks your settings against the data as you type**, and
+**Show how to choose these** opens a guide with starting recipes per platform,
+the trade-offs, and what to avoid. The two things worth knowing before you
+touch anything:
+
+- **Grid resolution and smoothing sigma are one setting, not two.** Sigma is
+  measured in *grid pixels*, and a pixel is `extent / grid`, so doubling the
+  grid halves the real smoothing radius. Raise the grid alone and the tool
+  tells you what the smoothing just became, in spot spacings, and what sigma
+  would restore it. Every warning is phrased in spot spacings for this reason —
+  under 1 the filter never reaches the neighbouring spot and the bands speckle;
+  over about 6 it spans a whole zone and adjacent tissues merge.
+- **Bands are equal-width, not equal-count.** Thresholds are spaced evenly
+  between zero and the field's maximum, so on a skewed field — a module high in
+  one corner, the normal case — the top band holds few spots. That is the shape
+  of the field, not weak expression.
+
+It also reads the detected scale of `.X` (see expression-scale detection above)
+and says so when **Log transform** disagrees with it — off on raw counts, or on
+over an already-logged matrix.
 
 **One gene set → a banded expression column.** Pick a single source, optionally
 name the output column, and click **Run contour**. A new ordered-categorical

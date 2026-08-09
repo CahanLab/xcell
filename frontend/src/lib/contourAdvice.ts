@@ -16,6 +16,29 @@
 
 export interface Advice { level: 'warn' | 'info'; text: string }
 
+// A section column is named like one. Cardinality alone says nothing —
+// cell_type, condition and sex are all low-cardinality categoricals, and
+// suggesting them as sections is worse than saying nothing at all.
+const SECTION_NAME = /(^|[_.\- ])(section|sample|slide|slice|array|library|capture|puck|fov|batch)([_.\- ]|$)/i
+
+/**
+ * Categorical columns that plausibly label tissue sections.
+ *
+ * Both signals are required: the name has to read like a section, and the level
+ * count has to be small enough to be one (a per-cell barcode column called
+ * `sample_barcode` is categorical and named right, but 4,000 levels is not a
+ * set of sections).
+ */
+export function sectionColumnCandidates(
+  cols: { name: string; dtype?: string; nCategories?: number }[],
+): string[] {
+  return cols
+    .filter((c) => c.dtype === 'category'
+      && (c.nCategories ?? 0) >= 2 && (c.nCategories ?? 0) <= 20
+      && SECTION_NAME.test(c.name))
+    .map((c) => c.name)
+}
+
 export interface ContourGeometry {
   nSpots: number
   medianSpacing: number | null

@@ -146,3 +146,60 @@ def test_pattern_fidelity_handles_an_empty_overlap():
     out = spatial_pattern_fidelity(ref, _annulus_scores(ref), far, _annulus_scores(far))
     json.dumps(out)
     assert out['correlation'] is None or np.isfinite(out['correlation'])
+
+
+# --- axis fidelity ---------------------------------------------------------
+
+from xcell.localize_metrics import axis_direction, axis_fidelity  # noqa: E402
+
+
+def test_axis_direction_finds_the_gradient():
+    """A score that increases with x must yield a direction along +x, whatever
+    the coordinate units are."""
+    coords = _disc(seed=0)
+    u = axis_direction(coords, coords[:, 0])
+    assert abs(u[0]) == pytest.approx(1.0, abs=0.05)
+    assert u[0] > 0
+    assert abs(u[1]) < 0.2
+
+
+def test_axis_direction_finds_a_diagonal_gradient():
+    coords = _disc(seed=0)
+    u = axis_direction(coords, coords[:, 0] + coords[:, 1])
+    assert u[0] == pytest.approx(0.707, abs=0.1)
+    assert u[1] == pytest.approx(0.707, abs=0.1)
+
+
+def test_axis_fidelity_reports_the_reference_as_the_ceiling():
+    """The prediction is never reported alone: -0.17 means nothing until you
+    know the reference itself only reaches -0.33."""
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    out = axis_fidelity(ref, ref[:, 0], pred, pred[:, 0])
+    assert out['reference'] > 0.9
+    assert out['prediction'] > 0.9
+
+
+def test_axis_fidelity_falls_when_the_gradient_is_lost():
+    """best_match kept full tissue area and drove every axis correlation to
+    roughly zero; that has to be visible."""
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    rng = np.random.default_rng(5)
+    out = axis_fidelity(ref, ref[:, 0], pred, rng.random(len(pred)))
+    assert out['reference'] > 0.9
+    assert abs(out['prediction']) < 0.2
+
+
+def test_axis_fidelity_uses_the_references_direction_for_both():
+    """Deriving the direction from the reference is what makes this
+    orientation-free — the user never declares which way is distal."""
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    out = axis_fidelity(ref, ref[:, 1], pred, pred[:, 1])
+    assert abs(out['direction'][1]) > 0.9      # the y axis, discovered
+    assert out['prediction'] > 0.9
+
+
+def test_axis_fidelity_survives_a_constant_score():
+    import json
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    out = axis_fidelity(ref, np.ones(len(ref)), pred, np.ones(len(pred)))
+    json.dumps(out)

@@ -188,6 +188,69 @@ def spatial_pattern_fidelity(
     return {'correlation': _f(rho), 'n_bins_compared': int(usable.sum())}
 
 
+def axis_direction(coords, scores) -> np.ndarray:
+    """Unit direction along which ``scores`` varies most, by rank correlation.
+
+    Maximizing ``corr(s, coords @ u)`` over unit ``u`` is a least-squares
+    problem: the maximizer is proportional to the regression of the score on
+    the coordinates. Doing it on ranks makes the answer a Spearman direction
+    and immune to a few extreme values.
+
+    Taking this from the **reference** is what makes the whole metric
+    orientation-free — the user never has to declare which way is distal, and
+    the sign convention comes from the data. (On the limb pair, +x turned out
+    to be *proximal* in the stored coordinates even though the rendered view
+    shows distal to the right.)
+    """
+    from scipy.stats import rankdata
+
+    C = np.asarray(coords, dtype=float)[:, :2]
+    s = np.asarray(scores, dtype=float).ravel()
+    if len(C) < 3 or np.allclose(s, s[0]):
+        return np.array([1.0, 0.0])
+
+    Cr = np.column_stack([rankdata(C[:, 0]), rankdata(C[:, 1])]).astype(float)
+    sr = rankdata(s).astype(float)
+    Cr -= Cr.mean(axis=0)
+    sr -= sr.mean()
+
+    u, *_ = np.linalg.lstsq(Cr, sr, rcond=None)
+    n = float(np.linalg.norm(u))
+    return (u / n) if n > 0 else np.array([1.0, 0.0])
+
+
+def axis_fidelity(ref_coords, ref_scores, pred_coords, pred_scores) -> dict[str, Any]:
+    """Is the gradient real, and how does it compare with the best possible?
+
+    Both sides are projected onto the direction found in the reference, so the
+    two numbers are directly comparable. The reference value is the ceiling and
+    is always returned with the prediction: an attenuated correlation is only
+    interpretable next to what the reference itself achieves.
+    """
+    from scipy.stats import spearmanr
+
+    ref = np.asarray(ref_coords, dtype=float)[:, :2]
+    pred = np.asarray(pred_coords, dtype=float)[:, :2]
+    rs = np.asarray(ref_scores, dtype=float).ravel()
+    ps = np.asarray(pred_scores, dtype=float).ravel()
+
+    ok = np.isfinite(pred).all(axis=1)
+    pred, ps = pred[ok], ps[ok]
+
+    u = axis_direction(ref, rs)
+
+    def _rho(scores, coords):
+        if len(coords) < 3 or np.allclose(scores, scores[0]):
+            return np.nan
+        return spearmanr(scores, coords @ u)[0]
+
+    return {
+        'reference': _f(_rho(rs, ref)),
+        'prediction': _f(_rho(ps, pred)),
+        'direction': [float(u[0]), float(u[1])],
+    }
+
+
 def occupancy(ref_coords, pred_coords) -> dict[str, Any]:
     """How many distinct reference locations the predictions actually use.
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useStore } from '../store'
+import { useStore, type DatasetSlot } from '../store'
 import { appendDataset, pollTask, refreshSchema } from '../hooks/useData'
+import { assignRoles, type RefSlot } from '../lib/localizeRoles'
 
 /**
  * Localize — predict where each dissociated cell came from, using a spatial
@@ -27,14 +28,9 @@ const dark = {
   faint: '#888',
 }
 
-interface ReferenceSlot {
-  slot: string
-  filename: string
-  n_cells: number
-  n_genes: number
-  has_spatial: boolean
-  is_query: boolean
-}
+// The wire shape lives with the role logic that consumes it, so the two cannot
+// drift — this modal is the only consumer.
+type ReferenceSlot = RefSlot
 
 interface GeneColumn {
   name: string
@@ -154,7 +150,11 @@ export default function LocalizeModal() {
   const refreshObsSummaries = useStore((s) => s.refreshObsSummaries)
 
   const [refs, setRefs] = useState<ReferenceSlot[]>([])
-  const [reference, setReference] = useState('secondary')
+  // '' = let assignRoles pick. Seeding this with a literal slot name was the
+  // bug: the reference list is only returned by a call that names a valid
+  // reference, so a wrong guess 400'd and the picker that would correct it
+  // never populated.
+  const [preferRef, setPreferRef] = useState('')
   const [overlap, setOverlap] = useState<Overlap | null>(null)
   const [sectionOptions, setSectionOptions] = useState<string[]>([])
   const [geneColumns, setGeneColumns] = useState<GeneColumn[]>([])
@@ -216,21 +216,48 @@ export default function LocalizeModal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen])
 
-  // Which slots can be a reference, and how well the panels match.
-  const loadSuggest = useCallback(async (slot: string, column: string) => {
+  // Roles come from the data, not from whichever slot happens to be active.
+  const roles = useMemo(() => assignRoles(refs, preferRef || null), [refs, preferRef])
+  const reference = roles.referenceSlot
+  const querySlot = roles.querySlot
+  const refInfo = refs.find((r) => r.slot === reference)
+  const queryInfo = refs.find((r) => r.slot === querySlot)
+
+  // Step 1: the unconditional call. Naming no reference cannot 400 — the route
+  // builds the slot list before it validates one — so this always populates the
+  // picker, whatever the arrangement.
+  const loadSlots = useCallback(async () => {
+    setError(null)
+    try {
+      const r = await fetch(`${API}/localize/suggest`)
+      const body = await r.json()
+      if (!r.ok) { setError(body.detail || `HTTP ${r.status}`); return }
+      setRefs(body.references || [])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  // Step 2: once roles are known, ask again for the gene-overlap preview and
+  // the reference's own .var flags and section columns.
+  const loadSuggest = useCallback(async (
+    refSlot: string, qSlot: string, column: string,
+  ) => {
     setError(null)
     try {
       const q = column ? `&gene_subset=${encodeURIComponent(column)}` : ''
-      const r = await fetch(appendDataset(`${API}/localize/suggest?reference=${slot}${q}`))
+      const r = await fetch(
+        appendDataset(`${API}/localize/suggest?reference=${refSlot}${q}`, qSlot as DatasetSlot),
+      )
       const body = await r.json()
       if (!r.ok) {
         setOverlap(null)
-        // A slot with no coordinates is a normal state to be in, not an error
-        // worth a red box — the picker below already says which are usable.
+        // Keep whatever slot list we already have — dropping it here is what
+        // stranded the UI with "no dataset has spatial coordinates".
         if (r.status !== 400) setError(body.detail || `HTTP ${r.status}`)
         return
       }
-      setRefs(body.references || [])
+      if (body.references) setRefs(body.references)
       setOverlap(body.overlap || null)
       setSectionOptions(body.reference_sections || [])
       setGeneColumns(body.reference_gene_columns || [])
@@ -241,13 +268,22 @@ export default function LocalizeModal() {
   }, [])
 
   useEffect(() => {
+    if (isOpen) loadSlots()
+  }, [isOpen, loadSlots])
+
+  useEffect(() => {
     // Only a .var flag can be previewed by name; a gene list is checked when
     // the run starts, and the count below reports it either way.
-    if (isOpen) loadSuggest(reference, basis.startsWith('col:') ? basis.slice(4) : '')
-  }, [isOpen, reference, basis, loadSuggest])
+    if (isOpen && reference && querySlot) {
+      loadSuggest(reference, querySlot, basis.startsWith('col:') ? basis.slice(4) : '')
+    }
+  }, [isOpen, reference, querySlot, basis, loadSuggest])
 
   const body = () => ({
     reference,
+    // Name the query explicitly rather than letting the route fall back to the
+    // active slot — the results are written into whichever dataset this names.
+    dataset: querySlot,
     k: Number(k) || 15,
     transform, metric, aggregation,
     min_confidence: Number(minConfidence) || 0,
@@ -258,7 +294,7 @@ export default function LocalizeModal() {
   const runCheck = async () => {
     setBusy('check'); setError(null); setCv(null); setProgress(0)
     try {
-      const r = await fetch(appendDataset(`${API}/localize/cross_validate`), {
+      const r = await fetch(appendDataset(`${API}/localize/cross_validate`, querySlot as DatasetSlot), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...body(), holdout_fraction: 0.2 }),
@@ -279,7 +315,7 @@ export default function LocalizeModal() {
   const runLocalize = async () => {
     setBusy('run'); setError(null); setResult(null); setProgress(0)
     try {
-      const r = await fetch(appendDataset(`${API}/localize/prepare`), {
+      const r = await fetch(appendDataset(`${API}/localize/prepare`, querySlot as DatasetSlot), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...body(), key_added: keyAdded }),
@@ -304,9 +340,9 @@ export default function LocalizeModal() {
 
   if (!isOpen) return null
 
-  const usable = refs.filter((r) => r.has_spatial && !r.is_query)
+  const ready = roles.referenceSlot != null
   const blocked = overlap != null && !overlap.sufficient
-  const chosenRef = refs.find((r) => r.slot === reference)
+  const chosenRef = refInfo
   const basisGenes = basis.startsWith('set:')
     ? (geneSets.find((g) => g.id === basis.slice(4))?.genes.length ?? null)
     : (overlap?.n_shared ?? null)
@@ -327,7 +363,7 @@ export default function LocalizeModal() {
               Localize — predict spatial coordinates
             </div>
             <div style={{ fontSize: 11, color: dark.faint, marginTop: 2 }}>
-              Place this dataset's cells on a tissue map borrowed from a spatial dataset
+              Place dissociated cells on a tissue map borrowed from a spatial dataset
             </div>
           </div>
           <button onClick={close} style={{ ...ghost, fontSize: 16 }}>×</button>
@@ -336,22 +372,47 @@ export default function LocalizeModal() {
         <div style={{ overflowY: 'auto', padding: '12px 16px', flex: 1 }}>
           {error && <div style={errBox}>{error}</div>}
 
-          {/* Reference */}
-          <div style={sectionLabel}>Spatial reference</div>
-          {usable.length === 0 ? (
+          {/* Roles. Derived from which dataset carries coordinates, not from
+              whichever slot is active — but stated, so it is a visible
+              decision rather than a hidden one. */}
+          <div style={sectionLabel}>Datasets</div>
+          {!ready ? (
             <div style={{ ...noticeStyle, background: 'rgba(233,162,59,0.14)', color: '#f0c987' }}>
-              No loaded dataset has spatial coordinates to borrow. Load one into the
-              other slot with <b>File → Load…</b>, then reopen this tool.
+              {roles.problem} Use <b>File → Load…</b>, then reopen this tool.
             </div>
           ) : (
-            <select value={reference} onChange={(e) => setReference(e.target.value)}
-                    style={{ ...input, width: '100%' }}>
-              {usable.map((r) => (
-                <option key={r.slot} value={r.slot}>
-                  {r.slot} — {r.filename} ({r.n_cells.toLocaleString()} cells)
-                </option>
-              ))}
-            </select>
+            <div style={{ ...noticeStyle, display: 'grid', gap: 4 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <span style={{ color: dark.faint, width: 74 }}>Reference</span>
+                <span>
+                  {refInfo?.filename}
+                  <span style={{ color: dark.faint }}>
+                    {' '}({refInfo?.spatial_key}, {refInfo?.n_cells.toLocaleString()} cells)
+                  </span>
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <span style={{ color: dark.faint, width: 74 }}>Query</span>
+                <span>
+                  {queryInfo?.filename}
+                  <span style={{ color: dark.faint }}>
+                    {' '}({queryInfo?.n_cells.toLocaleString()} cells)
+                  </span>
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ color: dark.faint, width: 74 }}>Writes to</span>
+                <span style={{ color: dark.faint }}>
+                  {queryInfo?.filename} · <code>.obsm['{keyAdded}']</code>
+                </span>
+                {roles.swappable && (
+                  <button style={{ ...ghost, fontSize: 11, marginLeft: 'auto' }}
+                          onClick={() => setPreferRef(querySlot || '')}>
+                    swap
+                  </button>
+                )}
+              </div>
+            </div>
           )}
 
           {/* Gene overlap — shown before anything runs, on purpose. */}
@@ -485,7 +546,7 @@ export default function LocalizeModal() {
             exact — but both halves come from the same platform, so the real
             scRNA-seq mapping will be worse than this.
           </div>
-          <button onClick={runCheck} disabled={!!busy || blocked || usable.length === 0}
+          <button onClick={runCheck} disabled={!!busy || blocked || !ready}
                   style={{ ...ghost, opacity: busy || blocked ? 0.5 : 1 }}>
             {busy === 'check' ? 'Checking…' : 'Check accuracy on the reference'}
           </button>
@@ -524,11 +585,11 @@ export default function LocalizeModal() {
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input value={keyAdded} onChange={(e) => setKeyAdded(e.target.value)}
                    style={{ ...input, flex: 1 }} placeholder="X_spatial_pred" />
-            <button onClick={runLocalize} disabled={!!busy || blocked || usable.length === 0}
+            <button onClick={runLocalize} disabled={!!busy || blocked || !ready}
                     style={{
                       ...ghost, background: dark.accent, color: '#0b1020',
                       fontWeight: 600, border: `1px solid ${dark.accent}`,
-                      opacity: busy || blocked || usable.length === 0 ? 0.5 : 1,
+                      opacity: busy || blocked || !ready ? 0.5 : 1,
                     }}>
               {busy === 'run' ? 'Localizing…' : 'Localize'}
             </button>

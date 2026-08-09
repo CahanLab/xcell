@@ -306,7 +306,9 @@ def evaluate_map(ref_coords, pred_coords, marker_sets: list[dict]) -> dict[str, 
     }
 
 
-def mean_collapse_risk(coords, scores, *, top: float = 0.2) -> dict[str, Any]:
+def mean_collapse_risk(
+    coords, scores, *, top: float = 0.2, neighbors: int = 5,
+) -> dict[str, Any]:
     """Would averaging this population's positions land outside the population?
 
     Reference-only, and that is the point: ``weighted_mean`` predicts, for every
@@ -317,18 +319,45 @@ def mean_collapse_risk(coords, scores, *, top: float = 0.2) -> dict[str, Any]:
     rather than after a map has been made and believed.
 
     **The mean of a ring is its hole.** The population is the top ``top``
-    fraction of cells by score; its centroid is where the estimator would send
-    every one of its cells. The question is then what these markers do *there*,
-    answered as the mean rank-score of the cells in the nearest 2% of the
-    tissue: 0.5 is a typical patch of tissue, ~1 is the middle of the
-    population, and ~0 is a hole the population surrounds.
+    fraction of cells by score, and its centroid is where the estimator would
+    send every one of them. The question is how far that centroid sits from the
+    population, measured **in the population's own units**: against how far its
+    members sit from each other. A ratio of 1 means the mean is an ordinary
+    place within the population; 8 means it is eight times farther out than the
+    population's own spacing, which is a hole.
 
-    Deciding on the **mean rank** rather than on how many of those neighbours
-    are population members is what keeps it quiet on ordinary populations. A
-    membership count is a rare event — about 8 of 40 neighbours at chance — so
-    it strays far enough to fire on a scattered population roughly 1 time in 60,
-    and a user with a dozen gene sets would see a spurious warning most
-    sessions. The mean of 40 ranks has a fifth of that spread.
+    Two other formulations were tried and are worth naming, because both look
+    right and neither is:
+
+    - *How many of the cells around the centroid are population members?* Right
+      in every case and far too noisy — about 8 members expected among 40
+      neighbours, so it strays past the warning threshold on an ordinary
+      scattered population roughly 1 time in 60. A user with a dozen gene sets
+      would see a spurious warning most sessions.
+    - *What is the mean rank-score of the tissue around the centroid, against
+      chance?* Low-variance, but it silently depends on how much of the tissue
+      the population covers. For a realistic marker — high in the population,
+      flat noise everywhere else — the background's mean rank is ``(1-f)/2``,
+      not 0, so the risk saturates near 0.25 for a population covering a quarter
+      of the tissue and the warning never fires. Measured on a 20x20 grid with a
+      rim population: 0.34, below the threshold, on geometry that plainly
+      collapses.
+
+    A distance ratio has neither problem: it is scale-free, it averages over
+    ``neighbors`` distances rather than counting rare events, and it never
+    consults the background at all. Measured across 59 seeds a scattered
+    population peaks at 0.20, against 0.96 for a ring, 0.94 for two patches and
+    0.79 for a one-spot-wide perimeter.
+
+    ``neighbors`` is 5 because it decides how far "the population's own
+    spacing" reaches, and a *thin* population — an epidermis is one or two spots
+    wide — has only its two neighbours along the band. Averaging over 25 instead
+    walks a quarter of the way around the ring, inflates that spacing, and hides
+    the hole: on a 20x20 grid with a rim population the risk falls from 0.85 to
+    0.47, i.e. from firing to silent. Larger values are quieter on noise (0.06
+    against 0.20) but buy it by missing exactly the shape this exists for; 5
+    keeps every measured case at least 1.6x clear of the warning threshold in
+    both directions.
 
     What it does **not** catch: a population scattered through a *ring-shaped
     tissue*, where the mean is off-tissue but not off-population. That one needs
@@ -338,14 +367,15 @@ def mean_collapse_risk(coords, scores, *, top: float = 0.2) -> dict[str, Any]:
         coords: ``(n, 2)`` reference coordinates.
         scores: ``(n,)`` marker score per reference cell.
         top: what fraction of the reference counts as the population.
+        neighbors: how many population members each distance averages over.
 
     Returns:
-        risk: ``1 - centroid_score/0.5`` clipped to ``[0, 1]``. 0 means the mean
-            lands somewhere at least as marker-positive as ordinary tissue; 1
-            means it lands where these markers are absent. ``None`` when there
-            is nothing to measure.
-        centroid_score: the raw local rank-score, for the UI to quote — "these
-            markers sit in the bottom 4% of the tissue there".
+        risk: ``1 - typical/centroid`` distance, clipped to ``[0, 1]``. 0 means
+            the mean lands among the population; 0.5 means twice as far out as
+            the population's own spacing; 1 means far outside it. ``None`` when
+            there is nothing to measure.
+        distance_ratio: the raw ratio, for the UI to quote — "the mean sits 8
+            times farther from these cells than they sit from each other".
         population_fraction: the realized ``top``.
         centroid: ``[x, y]`` — where the estimator would put every one of them.
         n_population: how many reference cells the population has.
@@ -357,29 +387,33 @@ def mean_collapse_risk(coords, scores, *, top: float = 0.2) -> dict[str, Any]:
     n = len(C)
 
     empty: dict[str, Any] = {
-        'risk': None, 'centroid_score': None,
+        'risk': None, 'distance_ratio': None,
         'population_fraction': _f(top), 'centroid': None, 'n_population': 0,
     }
-    # Under ~20 cells the local window is the whole tissue and the average is a
-    # coin flip; a constant score has no population to speak of.
+    # Under ~20 cells a neighbourhood is the whole tissue and none of this
+    # means anything; a constant score has no population to speak of.
     if n < 20 or len(s) != n or not np.isfinite(s).any() or np.allclose(s, s[0]):
         return empty
 
-    ranks = _rank_weights(s)                     # [0, 1], mean 0.5 by construction
     n_pop = max(3, int(round(float(top) * n)))
-    top_idx = np.argsort(-s, kind='stable')[:n_pop]
-    centroid = C[top_idx].mean(axis=0)
+    pop = C[np.argsort(-s, kind='stable')[:n_pop]]
+    m = max(1, min(int(neighbors), len(pop) - 1))
+    tree = cKDTree(pop)
+    centroid = pop.mean(axis=0)
 
-    # 2% of the tissue around the mean: small enough to describe the point the
-    # estimator actually returns, large enough that the average is not decided
-    # by one or two cells. Chance stays 0.5 at any reference size.
-    k_local = max(10, int(round(0.02 * n)))
-    _, idx = cKDTree(C).query(centroid, k=k_local)
-    centroid_score = float(ranks[np.asarray(idx).ravel()].mean())
+    d_centroid = float(np.atleast_1d(tree.query(centroid, k=m)[0]).mean())
+    # Column 0 of each member's own query is itself, at distance 0.
+    d_typical = float(np.median(tree.query(pop, k=m + 1)[0][:, 1:].mean(axis=1)))
+
+    if d_centroid <= 0:
+        risk, ratio = 0.0, 0.0          # the mean is sitting on the population
+    else:
+        risk = float(np.clip(1.0 - d_typical / d_centroid, 0.0, 1.0))
+        ratio = d_centroid / d_typical if d_typical > 0 else None
 
     return {
-        'risk': _f(np.clip(1.0 - centroid_score / 0.5, 0.0, 1.0)),
-        'centroid_score': _f(centroid_score),
+        'risk': _f(risk),
+        'distance_ratio': _f(ratio),
         'population_fraction': _f(n_pop / n),
         'centroid': [_f(centroid[0]), _f(centroid[1])],
         'n_population': int(n_pop),

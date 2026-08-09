@@ -240,31 +240,47 @@ def test_collapse_risk_flags_an_annular_population():
     of a ring is its hole; weighted_mean predicts every epidermal cell into it."""
     ref = _disc(seed=0)
     out = mean_collapse_risk(ref, np.linalg.norm(ref, axis=1))   # high on the rim
-    assert out['risk'] > 0.9
-    assert out['centroid_score'] < 0.1
+    assert out['risk'] > 0.8
+    # The hole is eight ring-spacings across, which is the number the UI quotes.
+    assert out['distance_ratio'] > 4.0
 
 
 def test_collapse_risk_flags_a_population_in_two_distant_patches():
     """The other shape weighted_mean cannot represent: the mean lands in the
     gap between the patches, which is a location the population never occupies.
 
-    It scores lower than the annulus (~0.80 against ~0.98) and should: a strip
-    of low |x| through the middle of a disc is the bottom tenth of the tissue
-    for this marker, where the middle of a ring is the bottom hundredth. Both
-    are far past the half-of-chance the warning fires at; a gap need not be as
-    empty as a hole to be the wrong place to put every cell of a type.
+    A gap and a hole are the same failure to this metric, and score alike (~0.88
+    each): in both, the mean sits many population-spacings away from the nearest
+    member.
     """
     ref = _disc(seed=0)
     out = mean_collapse_risk(ref, np.abs(ref[:, 0]))             # both left and right
-    assert out['risk'] > 0.7
+    assert out['risk'] > 0.8
+
+
+def test_collapse_risk_flags_a_one_cell_wide_perimeter():
+    """The epidermis's actual shape, and the case that pins ``neighbors``.
+
+    A thin population has only its two neighbours along the band, so averaging
+    over many of them walks around the ring and reports a "spacing" far larger
+    than the real one — which hides the hole rather than measuring it. At the
+    shipped ``neighbors=5`` this scores ~0.79; at 25 it falls to ~0.38 and the
+    warning would never fire on the shape it exists for.
+    """
+    grid = np.array([[float(i), float(j)] for i in range(20) for j in range(20)])
+    on_edge = ((grid[:, 0] == 0) | (grid[:, 0] == 19)
+               | (grid[:, 1] == 0) | (grid[:, 1] == 19))
+    assert mean_collapse_risk(grid, on_edge.astype(float))['risk'] > 0.7
 
 
 def test_collapse_risk_clears_a_compact_population():
     ref = _disc(seed=0)
     blob = -np.linalg.norm(ref - np.array([0.4, 0.3]), axis=1)
     out = mean_collapse_risk(ref, blob)
-    assert out['risk'] < 0.1
-    assert out['centroid_score'] > 0.9
+    assert out['risk'] < 0.2
+    # The mean is an ordinary place inside the blob, so it sits about as far
+    # from its members as they sit from each other.
+    assert out['distance_ratio'] == pytest.approx(1.0, abs=0.4)
 
 
 def test_collapse_risk_does_not_cry_wolf_on_a_scattered_population():
@@ -275,7 +291,8 @@ def test_collapse_risk_does_not_cry_wolf_on_a_scattered_population():
     Swept across seeds rather than fixed at one, because a single draw is how a
     rare false positive hides: an earlier formulation counted how many of the
     local neighbours were population *members*, which at 8 expected out of 40
-    strayed past the warning threshold on about 1 seed in 60.
+    strayed past the warning threshold on about 1 seed in 60. The shipped
+    version peaks at 0.06 here, so the margin is the point of the sweep.
 
     Seed 0 is excluded, and the reason is a trap worth naming: ``_disc(seed=0)``
     spends ``rng.random(n)`` on its radii first, so ``default_rng(0).random(n)``

@@ -203,3 +203,28 @@ def test_axis_fidelity_survives_a_constant_score():
     ref, pred = _disc(seed=0), _disc(seed=1)
     out = axis_fidelity(ref, np.ones(len(ref)), pred, np.ones(len(pred)))
     json.dumps(out)
+
+
+# --- the whole panel -------------------------------------------------------
+
+from xcell.localize_metrics import evaluate_map  # noqa: E402
+
+
+def test_evaluate_map_bundles_every_metric_per_marker_set():
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    out = evaluate_map(ref, pred, [
+        {'name': 'skin', 'ref_scores': _annulus_scores(ref),
+         'pred_scores': _annulus_scores(pred)},
+        {'name': 'distal', 'ref_scores': ref[:, 0], 'pred_scores': pred[:, 0]},
+    ])
+    assert set(out) == {'dispersion', 'occupancy', 'markers'}
+    assert [m['name'] for m in out['markers']] == ['skin', 'distal']
+    assert out['markers'][0]['pattern']['correlation'] > 0.7
+    assert out['markers'][1]['axis']['prediction'] > 0.9
+    assert out['dispersion']['area_ratio'] == pytest.approx(1.0, abs=0.15)
+
+
+def test_evaluate_map_is_json_safe_with_no_marker_sets():
+    import json
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    json.dumps(evaluate_map(ref, pred, []))

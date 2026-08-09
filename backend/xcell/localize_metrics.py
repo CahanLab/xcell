@@ -280,3 +280,27 @@ def occupancy(ref_coords, pred_coords) -> dict[str, Any]:
         'effective_n': _f(effective),
         'n_pred': int(len(pred)),
     }
+
+
+def evaluate_map(ref_coords, pred_coords, marker_sets: list[dict]) -> dict[str, Any]:
+    """The whole panel for one predicted map.
+
+    ``marker_sets`` entries are ``{'name', 'ref_scores', 'pred_scores'}``. The
+    caller supplies scores rather than genes because only it can read a matrix.
+    """
+    return {
+        'dispersion': dispersion(ref_coords, pred_coords),
+        'occupancy': occupancy(ref_coords, pred_coords),
+        'markers': [
+            {
+                'name': str(m['name']),
+                'pattern': spatial_pattern_fidelity(
+                    ref_coords, m['ref_scores'], pred_coords, m['pred_scores'],
+                ),
+                'axis': axis_fidelity(
+                    ref_coords, m['ref_scores'], pred_coords, m['pred_scores'],
+                ),
+            }
+            for m in marker_sets
+        ],
+    }

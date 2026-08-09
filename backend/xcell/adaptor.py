@@ -8184,6 +8184,69 @@ class DataAdaptor:
 
         return compute_fn, apply_fn
 
+    def evaluate_localization_maps(
+        self,
+        bundle: dict[str, Any],
+        embeddings: list[str],
+        gene_sets: dict[str, list[str]],
+    ) -> dict[str, Any]:
+        """Score one or more predicted maps against the spatial reference.
+
+        Scoring several at once is the point: the value of these numbers is
+        comparative, and a user arrives here with a handful of saved variants
+        and no way to rank them.
+
+        Args:
+            bundle: from the reference's :meth:`spatial_reference_bundle`.
+            embeddings: obsm keys on *this* (query) dataset holding predictions.
+            gene_sets: marker name -> gene list. Genes absent from either
+                dataset are dropped; a set left with none is skipped and named
+                in ``skipped_gene_sets``, rather than failing the whole run.
+        """
+        from xcell import localize_metrics as lm
+
+        if not embeddings:
+            raise ValueError('Name at least one predicted embedding to score.')
+
+        ref_coords = np.asarray(bundle['coords'], dtype=float)
+        ref_expr = np.asarray(bundle['expr'], dtype=np.float32)
+        ref_genes = {str(g): i for i, g in enumerate(bundle['genes'])}
+
+        query_matrix = self._resolve_source_matrix(None)
+
+        marker_sets: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for name, genes in gene_sets.items():
+            present, _ = self._split_present_genes(list(genes))
+            cols = [g for g in present if g in ref_genes]
+            if not cols:
+                skipped.append(str(name))
+                continue
+            q = query_matrix[:, [self.adata.var_names.get_loc(g) for g in cols]]
+            q = q.toarray() if hasattr(q, 'toarray') else np.asarray(q)
+            marker_sets.append({
+                'name': name,
+                'ref_scores': ref_expr[:, [ref_genes[g] for g in cols]].mean(axis=1),
+                'pred_scores': np.asarray(q, dtype=float).mean(axis=1),
+            })
+
+        results = []
+        for key in embeddings:
+            if key not in self.adata.obsm:
+                raise ValueError(
+                    f"Embedding '{key}' not found in obsm. "
+                    f'Available: {list(self.adata.obsm.keys())}'
+                )
+            pred = np.asarray(self.adata.obsm[key], dtype=float)[:, :2]
+            results.append({'embedding': key,
+                            **lm.evaluate_map(ref_coords, pred, marker_sets)})
+
+        return {
+            'maps': results,
+            'skipped_gene_sets': skipped,
+            'n_reference_cells': int(ref_coords.shape[0]),
+        }
+
     def evaluate_localization(
         self,
         predicted_key: str,

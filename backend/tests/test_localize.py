@@ -19,6 +19,8 @@ from xcell.localize import (
     TRANSFORMS,
     cross_validate_localization,
     evaluate_localization,
+    injective_assignment,
+    injective_feasibility,
     project_knn,
     transform_expression,
 )
@@ -570,3 +572,100 @@ def test_cross_validation_is_json_safe():
     groups = np.array(['a', 'b'] * 100)
     json.dumps(cross_validate_localization(ref_expr, ref_coords, k=10, groups=groups),
                allow_nan=False)
+
+
+# --- injective assignment: no spot absorbs many cells ---------------------
+
+def _clones(n_ref=400, n_query=60, seed=0):
+    """A query whose cells are near-identical.
+
+    Greedy matching sends every one of them to the same reference cell, which is
+    the pile-up injective assignment exists to remove: on the limb pair it put
+    2,683 cells onto 865 distinct spots, 15 on a single one.
+    """
+    ref_coords, ref_expr = _tissue(n_ref, seed=seed)
+    rng = np.random.default_rng(seed + 7)
+    base = _gradient_genes(np.array([[50.0, 50.0]]), seed=seed)[0]
+    q_expr = base[None, :] + rng.normal(0, 0.02, (n_query, len(base)))
+    return ref_expr, ref_coords, q_expr.astype(np.float32)
+
+
+def test_injective_assignment_beats_taking_each_rows_best():
+    """Both rows prefer column 0. Taking the best *set* gives it to the row that
+    gains more by it — which is the entire difference from best_match."""
+    S = np.array([[0.9, 0.8], [1.0, 0.1]])
+    assert list(S.argmax(axis=1)) == [0, 0]          # greedy collides
+    assert list(injective_assignment(S)) == [1, 0]
+
+
+def test_injective_assignment_uses_each_spot_at_most_once():
+    S = np.random.default_rng(0).random((40, 60))
+    assert len(set(injective_assignment(S).tolist())) == 40
+
+
+def test_injective_assignment_needs_a_spot_for_every_cell():
+    assert injective_feasibility(5, 9) is None
+    assert 'at least one reference spot' in (injective_feasibility(9, 5) or '')
+    with pytest.raises(ValueError, match='at least one reference spot'):
+        injective_assignment(np.zeros((9, 5)))
+
+
+def test_a_similarity_matrix_too_large_to_hold_is_refused_by_size():
+    """It materializes the whole query x reference matrix, which the chunked
+    top-k path never does — so the size limit is a real one, not a formality."""
+    assert injective_feasibility(200_000, 200_000) is not None
+    assert 'memory' in injective_feasibility(200_000, 200_000)
+
+
+def test_injective_spreads_what_best_match_piles_up():
+    """The transform is pinned because ``zscore`` cannot express this fixture.
+
+    z-scoring centres each gene *across the query*, so a query of near-identical
+    cells has its shared profile subtracted away entirely and only amplified
+    noise is left to match on — the cells then scatter, which hides the pile-up
+    rather than fixing it. That is its own pathology (the guide says z-score
+    assumes a heterogeneous query); this test isolates the one under study.
+    """
+    ref_expr, ref_coords, q_expr = _clones()
+    greedy = project_knn(q_expr, ref_expr, ref_coords, k=15,
+                         transform='none', aggregation='best_match')
+    inj = project_knn(q_expr, ref_expr, ref_coords, k=15,
+                      transform='none', aggregation='injective')
+    assert len(np.unique(greedy.coords, axis=0)) < 10
+    assert len(np.unique(inj.coords, axis=0)) == 60
+
+
+def test_injective_lands_every_cell_on_a_real_reference_position():
+    ref_expr, ref_coords, q_expr, _ = _matched()
+    p = project_knn(q_expr, ref_expr, ref_coords, k=10, aggregation='injective')
+    for c in p.coords:
+        assert np.isclose(ref_coords, c).all(axis=1).any()
+
+
+def test_injective_still_recovers_a_recoverable_tissue():
+    """Spreading the cells must not be bought by placing them badly."""
+    ref_expr, ref_coords, q_expr, q_coords = _matched()
+    p = project_knn(q_expr, ref_expr, ref_coords, k=10, aggregation='injective')
+    centroid_error = float(np.median(
+        np.linalg.norm(q_coords - ref_coords.mean(axis=0), axis=1)
+    ))
+    assert _median_error(p.coords, q_coords) < centroid_error / 2
+
+
+def test_injective_is_refused_when_the_reference_is_too_small():
+    ref_expr, ref_coords, q_expr, _ = _matched(n_ref=40, n_query=120)
+    with pytest.raises(ValueError, match='at least one reference spot'):
+        project_knn(q_expr, ref_expr, ref_coords, k=10, aggregation='injective')
+
+
+def test_injective_reports_the_section_of_the_spot_it_assigned():
+    """The assignment is over the whole reference, so the honest section label is
+    the assigned spot's own — not the weighted majority of the k neighbours,
+    which is what the *averaging* estimators need and this one does not."""
+    ref_expr, ref_coords, sections, query = _two_sections()
+    p = project_knn(query, ref_expr, ref_coords, k=20,
+                    ref_sections=sections, aggregation='injective')
+    assert p.sections is not None
+    for coord, label in zip(p.coords, p.sections):
+        hit = np.isclose(ref_coords, coord).all(axis=1)
+        assert label in set(sections[hit])

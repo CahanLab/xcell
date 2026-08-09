@@ -3689,3 +3689,35 @@ def localize_evaluate_map(
         raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class ReferenceGeometryRequest(BaseModel):
+    reference: str = "primary"
+    gene_sets: dict[str, list[str]] = {}
+    layer: str | None = None
+    dataset: str | None = None
+
+
+@router.post("/localize/reference_geometry")
+def localize_reference_geometry(
+    request: ReferenceGeometryRequest, dataset: str | None = Query(None),
+):
+    """Which populations in the reference a mean estimator would collapse.
+
+    Reads the reference and nothing else, so the answer is available before any
+    map exists — which is the point. A user who learns after the run that
+    ``weighted_mean`` puts their epidermis in the middle of the bud has already
+    believed the picture.
+    """
+    query_slot = request.dataset or dataset
+    reference = _resolve_reference(request.reference, query_slot)
+    try:
+        return reference.localize_reference_geometry(
+            request.gene_sets, layer=request.layer,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))

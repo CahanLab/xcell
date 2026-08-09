@@ -282,3 +282,37 @@ def test_scoring_against_a_missing_truth_key_is_an_error():
     _run(query, ref.spatial_reference_bundle(), k=10)
     with pytest.raises(KeyError):
         query.evaluate_localization('X_spatial_pred', 'not_there')
+
+
+# --- injective assignment -------------------------------------------------
+
+def test_injective_gives_every_cell_its_own_spot():
+    ref, query, _ = _pair()
+    bundle = ref.spatial_reference_bundle()
+    _run(query, bundle, k=10, aggregation='injective')
+    coords = query.adata.obsm['X_spatial_pred']
+    assert len(np.unique(coords, axis=0)) == query.n_cells
+
+
+def test_injective_is_a_validation_error_not_a_dead_background_task():
+    """The house rule: bad input is a 400 from prepare_*, never a task that
+    fails a minute in. A 200-cell query cannot be injectively assigned to a
+    180-spot reference, and the user has to learn that immediately."""
+    ref_ad, coords = _spatial()
+    big_q, _ = _query_from(ref_ad, coords, n=200)
+    ref = DataAdaptor('spatial.h5ad', adata=ref_ad)
+    query = DataAdaptor('scrna.h5ad', adata=big_q)
+    bundle = ref.spatial_reference_bundle()
+    with pytest.raises(ValueError, match='at least one reference spot'):
+        query.prepare_localize(bundle, k=10, aggregation='injective')
+
+
+def test_the_other_aggregations_do_not_care_about_the_size_ratio():
+    """The gate is injective's alone — nothing else acquired a constraint."""
+    ref_ad, coords = _spatial()
+    big_q, _ = _query_from(ref_ad, coords, n=200)
+    ref = DataAdaptor('spatial.h5ad', adata=ref_ad)
+    query = DataAdaptor('scrna.h5ad', adata=big_q)
+    out = _run(query, ref.spatial_reference_bundle(), k=10,
+               aggregation='weighted_mean')
+    assert out['n_cells'] == 200

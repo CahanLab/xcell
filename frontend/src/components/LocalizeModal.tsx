@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useStore, type DatasetSlot } from '../store'
 import { appendDataset, pollTask, refreshSchema } from '../hooks/useData'
 import { assignRoles, type RefSlot } from '../lib/localizeRoles'
+import { adviseParameters, type PopulationGeometry } from '../lib/localizeAdvice'
 
 /**
  * Localize — predict where each dissociated cell came from, using a spatial
@@ -81,7 +82,7 @@ const TIPS: Record<string, string> = {
   k: 'How many spatial cells vote on each prediction. Too few is noisy; too many drags every cell toward the tissue centre.',
   transform: 'Applied to each dataset separately — that is what removes platform-level differences in per-gene capture. z-score is the safe default across platforms; rank additionally survives any monotone difference.',
   metric: 'How similarity between two cells is measured. Correlation on z-scored data and cosine coincide.',
-  aggregation: 'How the k neighbours become one point. weighted_mean is the classic estimator; densest lands the cell in real tissue when its neighbours sit in two separate patches, though it cannot say which patch; best_match snaps to a real reference cell.',
+  aggregation: 'How the k neighbours become one point. weighted_mean is the classic estimator; densest lands the cell in real tissue when its neighbours sit in two separate patches, though it cannot say which patch; best_match snaps to a real reference cell; injective does the same but gives every cell a different one, which removes pile-up and asserts that the query’s composition matches the tissue’s.',
   min_confidence: 'Cells whose neighbours disagree about location this badly get no coordinate at all, rather than a fabricated one. Leave at 0 to place everything and filter later.',
 }
 
@@ -109,65 +110,6 @@ const areaColor = (v: number | null | undefined) =>
 // inversion. That is a different kind of wrong from merely weak.
 const patternColor = (v: number | null | undefined) =>
   v == null ? dark.faint : v < 0 ? '#ff8fa3' : v < 0.2 ? '#f0c987' : dark.text
-
-interface Advice { level: 'warn' | 'info'; text: string }
-
-/**
- * Parameter combinations that are actually bad, and interactions that are not
- * obvious from the labels. Only fires on the current selection — a static table
- * of caveats gets skimmed; a line that appears when you pick the thing does not.
- */
-function adviseParameters(o: {
-  k: number
-  transform: string
-  metric: string
-  aggregation: string
-  minConfidence: number
-  nReferenceCells: number
-  nSharedGenes: number | null
-}): Advice[] {
-  const out: Advice[] = []
-
-  if (o.k < 5) {
-    out.push({ level: 'warn', text:
-      `k=${o.k} is too few to estimate confidence from — the spread of ${o.k} points is noisy, so the score will be unreliable in both directions.` })
-  }
-  if (o.nReferenceCells > 0 && o.k > 0.1 * o.nReferenceCells) {
-    out.push({ level: 'warn', text:
-      `k=${o.k} is over a tenth of the ${o.nReferenceCells.toLocaleString()} reference cells. Every prediction averages a large slice of the tissue, so all of them drift toward its centre.` })
-  }
-
-  if (o.transform === 'none' && o.metric === 'euclidean') {
-    out.push({ level: 'warn', text:
-      'none + euclidean compares raw magnitudes. Across two platforms, sequencing depth will dominate the distance and swamp the biology.' })
-  } else if (o.transform === 'none') {
-    out.push({ level: 'warn', text:
-      'No per-dataset transform. Only safe when both datasets are already normalized the same way — otherwise per-gene capture differences drive the matches.' })
-  }
-
-  if (o.aggregation === 'densest' && o.k < 12) {
-    out.push({ level: 'info', text:
-      `densest picks the tightest cluster among the neighbours, and with k=${o.k} there is not much to cluster — it will behave much like the mean. Raise k to about 20 to get the benefit.` })
-  }
-  if (o.aggregation === 'best_match') {
-    out.push({ level: 'info', text:
-      'best_match takes the single nearest cell\u2019s position, so k no longer affects the coordinate — only the confidence score, which is still measured over k neighbours.' })
-  }
-  if (o.aggregation === 'weighted_mean') {
-    out.push({ level: 'info', text:
-      'weighted_mean can land in a gap the tissue does not have, most visibly for a cell type present in two separate regions. densest or best_match keep predictions on real tissue.' })
-  }
-
-  if (o.nSharedGenes != null && o.nSharedGenes < 30) {
-    out.push({ level: 'warn', text:
-      `Only ${o.nSharedGenes} genes drive the similarity. That is enough to run but not to separate fine structure; treat the map as coarse and check the accuracy figures.` })
-  }
-  if (o.minConfidence > 0) {
-    out.push({ level: 'info', text:
-      `Cells scoring under ${o.minConfidence} will get no coordinate at all rather than a guessed one. Confidence depends on the gene basis, so a threshold tuned for one basis does not carry to another.` })
-  }
-  return out
-}
 
 export default function LocalizeModal() {
   const isOpen = useStore((s) => s.isLocalizeModalOpen)
@@ -199,6 +141,7 @@ export default function LocalizeModal() {
 
   const [mapMetrics, setMapMetrics] = useState<MapMetrics[] | null>(null)
   const [scoring, setScoring] = useState(false)
+  const [populations, setPopulations] = useState<PopulationGeometry[]>([])
 
   const [busy, setBusy] = useState<'' | 'check' | 'run'>('')
   const [progress, setProgress] = useState<number | null>(null)
@@ -309,6 +252,35 @@ export default function LocalizeModal() {
       loadSuggest(reference, querySlot, basis.startsWith('col:') ? basis.slice(4) : '')
     }
   }, [isOpen, reference, querySlot, basis, loadSuggest])
+
+  // Which of the user's populations this reference would collapse under an
+  // averaging estimator. Reference-only, so it runs before any prediction
+  // exists — the whole point is to warn while the parameters are being chosen,
+  // not after a map has been made and believed.
+  useEffect(() => {
+    if (!isOpen || !reference || !querySlot || geneSets.length === 0) {
+      setPopulations([])
+      return
+    }
+    const sets: Record<string, string[]> = {}
+    geneSets.forEach((g) => { if (g.genes.length) sets[g.name] = g.genes })
+    if (Object.keys(sets).length === 0) { setPopulations([]); return }
+
+    let cancelled = false
+    fetch(appendDataset(`${API}/localize/reference_geometry`, querySlot as DatasetSlot), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reference, dataset: querySlot, gene_sets: sets }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((payload) => {
+        if (!cancelled && payload) setPopulations(payload.populations || [])
+      })
+      // Advice is a bonus. A failure here must not surface as a modal error and
+      // must not block the run the user came to make.
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [isOpen, reference, querySlot, geneSets])
 
   const body = () => ({
     reference,
@@ -423,7 +395,9 @@ export default function LocalizeModal() {
     transform, metric, aggregation,
     minConfidence: Number(minConfidence) || 0,
     nReferenceCells: chosenRef?.n_cells ?? 0,
+    nQueryCells: queryInfo?.n_cells ?? 0,
     nSharedGenes: basisGenes,
+    populations,
   })
 
   return (
@@ -574,6 +548,12 @@ export default function LocalizeModal() {
                 <option value="median">median</option>
                 <option value="densest">densest cluster</option>
                 <option value="best_match">best match</option>
+                {/* Gated on the same condition the backend enforces, stated
+                    where the choice is made rather than after a failed run. */}
+                <option value="injective"
+                        disabled={(queryInfo?.n_cells ?? 0) > (refInfo?.n_cells ?? 0)}>
+                  injective (a distinct spot each)
+                </option>
               </select>
             </Field>
             <Field label="Min confidence" tip={TIPS.min_confidence}>
@@ -825,7 +805,15 @@ function ParameterGuide() {
           always on real tissue but quantized to one reference cell.{' '}
           <code>densest</code> handles a cell type present in two places by
           choosing one — but it cannot know which, so it is right about half the
-          time for such cells. <code>median</code> is the mean's safer sibling.
+          time for such cells. <code>injective</code> is <code>best match</code>{' '}
+          solved as a set rather than one cell at a time, so no reference spot
+          absorbs many cells (measured on an E11.5 limb: 2,683 cells onto 2,683
+          distinct spots, up from 865, for a 7% drop in mean similarity). It
+          needs at least as many spots as cells, and it assumes the query's
+          composition matches the tissue's — which dissociation makes untrue in
+          a way that pushes over-represented types where they do not belong. It
+          fixes pile-up, not placement. <code>median</code> is the mean's safer
+          sibling.
         </li>
         <li>
           <b>Gene basis</b> helps in proportion to how much of the panel is
@@ -848,6 +836,7 @@ function ParameterGuide() {
         <li><code>none</code> + <code>euclidean</code> across platforms — sequencing depth becomes the strongest signal in the data.</li>
         <li>Tuning k or the basis until the picture looks nicer. A smoother map is what this method produces when it is failing; use the accuracy check, which has ground truth, instead.</li>
         <li>Reading a confidence threshold across runs. It depends on the gene basis and on k, so re-check the distribution after changing either.</li>
+        <li>Reading <code>injective</code> or <code>best match</code> as "more accurate" because the map fills the tissue. Filling the tissue and carrying a gradient are the two ends of one trade-off: on the limb pair, <code>weighted mean</code> kept the proximodistal gradient at 0.24 of a 0.34 ceiling while collapsing to 15% of the area, and both single-spot methods held the full area with essentially no gradient at all. Score them under <b>Map quality</b> and pick against what you need.</li>
       </ul>
     </div>
   )

@@ -93,3 +93,49 @@ def test_response_is_json_safe():
     r = client.post('/api/localize/evaluate_map?dataset=secondary',
                     json=_body(['X_good']))
     json.dumps(r.json())
+
+
+# --- reference geometry: the warning weighted_mean has earned ---------------
+
+def _geometry(gene_sets):
+    return client.post('/api/localize/reference_geometry?dataset=secondary',
+                       json={'reference': 'primary', 'dataset': 'secondary',
+                             'gene_sets': gene_sets})
+
+
+def test_reference_geometry_flags_the_annular_population():
+    _install()
+    r = _geometry({'rim': ['Rim'], 'noise': ['B']})
+    assert r.status_code == 200, r.text
+    pops = {p['name']: p for p in r.json()['populations']}
+    assert pops['rim']['risk'] > 0.7
+    assert pops['rim']['distance_ratio'] > 3.0
+    assert pops['noise']['risk'] < 0.5
+
+
+def test_reference_geometry_returns_the_riskiest_first():
+    """The modal names the top few, so the order is part of the contract."""
+    _install()
+    body = _geometry({'noise': ['B'], 'rim': ['Rim']}).json()
+    assert [p['name'] for p in body['populations']] == ['rim', 'noise']
+
+
+def test_reference_geometry_reports_a_gene_set_with_no_usable_genes():
+    _install()
+    body = _geometry({'rim': ['Rim'], 'nonsense': ['NotAGene']}).json()
+    assert body['skipped_gene_sets'] == ['nonsense']
+    assert [p['name'] for p in body['populations']] == ['rim']
+
+
+def test_reference_geometry_is_json_safe():
+    import json
+    _install()
+    json.dumps(_geometry({'rim': ['Rim']}).json())
+
+
+def test_the_reference_cannot_be_the_dataset_being_localized():
+    _install()
+    r = client.post('/api/localize/reference_geometry?dataset=secondary',
+                    json={'reference': 'secondary', 'dataset': 'secondary',
+                          'gene_sets': {'rim': ['Rim']}})
+    assert r.status_code == 400

@@ -667,12 +667,39 @@ of eyeballed. Four columns:
 Every metric is rank-based, so none of them can be moved by rescaling either
 dataset — which is what makes maps from different settings comparable at all.
 
+**Filling the tissue and carrying a gradient are the two ends of one
+trade-off**, and no aggregation escapes it. `weighted mean` averages the
+neighbours, so noise cancels and the gradient survives, but the estimate shrinks
+toward the middle: on an E11.5 limb pair it held the proximodistal gradient
+while collapsing to 15% of the tissue area and placing the epidermis — the
+outermost tissue in the embryo — in the centre of the bud. Anything that picks a
+*single* location per cell (`best match`, `injective`) keeps the full extent and
+essentially no gradient. Score them under Map quality and pick against what you
+need; treating either end as "more accurate" is the mistake the panel exists to
+prevent.
+
+`injective` is `best match` solved as a set rather than one cell at a time, so
+no reference spot absorbs many cells — on that limb pair, 2,683 cells onto 2,683
+distinct spots instead of 1,522, for a few percent of mean similarity. It needs
+at least as many spots as cells (the option is disabled otherwise), and it
+assumes the query's composition matches the tissue's, which dissociation makes
+untrue in a way that pushes over-represented types where they do not belong. It
+fixes pile-up, not placement.
+
 Similarity can be computed over every shared gene, a `.var` flag on the
 reference (`spatially_variable` from Spatial Autocorrelation is the principled
 choice — those are the genes carrying positional information), or a gene set you
 curated in the Gene panel. The overlap preview follows the choice, and the tool
 warns about parameter combinations that are actually bad rather than listing
 caveats up front.
+
+One of those warnings reads the reference's geometry **before** anything runs.
+For each gene set you have curated, it asks where the mean of that population's
+own positions falls: if the population forms a ring or hugs the tissue edge,
+that mean is a place none of its cells occupy, and `weighted mean` will send
+every query cell of the type there. The panel then names the sets at risk while
+the parameters are still being chosen, rather than leaving the map to be
+believed first and doubted later.
 
 A benchmark pair with exact ground truth ships with xcell
 (`toy_localize_spatial.h5ad` and `toy_localize_scrna.h5ad`), deliberately

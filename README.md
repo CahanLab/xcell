@@ -642,6 +642,31 @@ baselines — predicting the tissue centre, and predicting at random. An error
 without those is unfalsifiable, and the panel says so outright when the method
 fails to beat the centre.
 
+**Map quality** answers a different question: given maps you have *already*
+produced, which is best? It scores every predicted embedding in the query
+against the reference, so a handful of parameter variants can be ranked instead
+of eyeballed. Four columns:
+
+- **Area** — how much of the tissue the map fills, 1.0 being right. Well under
+  1 means the map collapsed toward the centre, which is what averaging many
+  neighbours does; well over 1 means it overshot, and **outside** then says how
+  many cells were pushed beyond the tissue entirely.
+- **Spots used** — distinct reference locations the predictions land on, out of
+  the number of cells. A small number means many cells piled onto the same few
+  spots, which happens when a better-recovered spot correlates well with
+  everything.
+- **One column per gene set** — spatial pattern fidelity: does that cell type
+  land where it actually lives? This is the column that matters most. A
+  **negative** value is not merely a weak result, it means the cell type was
+  placed where it is *not* — an epidermis predicted into the middle of the
+  tissue rather than around its rim. Hover any of these for the gradient
+  (axis) correlation, reported as *x of y possible*, where *y* is what the
+  reference itself achieves. An attenuated gradient is only interpretable
+  against that ceiling.
+
+Every metric is rank-based, so none of them can be moved by rescaling either
+dataset — which is what makes maps from different settings comparable at all.
+
 Similarity can be computed over every shared gene, a `.var` flag on the
 reference (`spatially_variable` from Spatial Autocorrelation is the principled
 choice — those are the genes carrying positional information), or a gene set you

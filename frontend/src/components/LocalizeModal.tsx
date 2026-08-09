@@ -329,8 +329,12 @@ export default function LocalizeModal() {
     try {
       const sets: Record<string, string[]> = {}
       geneSets.forEach((g) => { if (g.genes.length) sets[g.name] = g.genes })
-      const all = useStore.getState().datasets[querySlot as DatasetSlot]
-        ?.schema?.embeddings || []
+      // Ask the server rather than the store. The modal's refreshSchema() after
+      // a run refreshes the *active* slot, which is not necessarily the query,
+      // so the cached list can be stale exactly when it matters.
+      const sr = await fetch(
+        appendDataset(`${API}/schema`, querySlot as DatasetSlot))
+      const all: string[] = sr.ok ? ((await sr.json()).embeddings || []) : []
       // Only things that could be a predicted map. The query's own PCA/UMAP
       // are embeddings too and scoring them against tissue coordinates is
       // meaningless.

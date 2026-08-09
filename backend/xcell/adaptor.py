@@ -7699,6 +7699,12 @@ class DataAdaptor:
         the median spot spacing). Used to prefill the contour UI for both single-
         and multi-gene-set contouring.
 
+        Also returns ``n_spots``, ``median_spacing`` and ``extent``. Sigma is
+        measured in grid pixels and a pixel is ``extent / grid_res``, so the UI
+        cannot say whether a smoothing setting reaches the neighbouring spot —
+        or spans a whole zone — without these. ``median_spacing`` and ``extent``
+        are ``None`` when there is nothing to measure.
+
         Raises:
             ValueError: if no spatial coordinates are present.
         """
@@ -7707,9 +7713,19 @@ class DataAdaptor:
         spatial_key = self._get_spatial_key()
         if spatial_key is None:
             raise ValueError("No spatial coordinates found")
+        coords = self.adata.obsm[spatial_key]
         grid_res = mc.suggest_grid_res(self.adata.n_obs)
-        smooth_sigma = mc.suggest_smooth_sigma(self.adata.obsm[spatial_key], grid_res)
-        return {'grid_res': grid_res, 'smooth_sigma': round(float(smooth_sigma), 2)}
+        smooth_sigma = mc.suggest_smooth_sigma(coords, grid_res)
+        median_spacing, extent = mc.spot_geometry(coords)
+        return {
+            'grid_res': grid_res,
+            'smooth_sigma': round(float(smooth_sigma), 2),
+            'n_spots': int(self.adata.n_obs),
+            # None rather than NaN: the UI drops the advice that needs these
+            # rather than rendering a broken comparison.
+            'median_spacing': round(median_spacing, 4) if median_spacing else None,
+            'extent': round(extent, 4) if extent else None,
+        }
 
     def check_multicontour_prereqs(self, gene_sets: dict[str, list[str]]) -> None:
         """Cheap up-front validation for multi-contour (raises ValueError).

@@ -166,16 +166,35 @@ def suggest_grid_res(n_spots):
     return int(min(600, max(50, round(math.sqrt(max(1, n_spots))))))
 
 
-def suggest_smooth_sigma(coords, grid_res):
-    """~2 grid-pixels at the median spot spacing; clamped to [1, 6]."""
+def spot_geometry(coords):
+    """Median nearest-neighbour spacing and the larger axis span.
+
+    These are the units the contour parameters actually live in: one grid pixel
+    is ``extent / grid_res``, and sigma is measured in those pixels — so without
+    both numbers there is no way to say whether a smoothing setting reaches the
+    next spot or spans a whole zone.
+
+    Returns ``(None, None)`` when there is nothing to measure; NaN would not
+    survive the JSON round trip to the UI.
+    """
     from scipy.spatial import cKDTree
 
     coords = np.asarray(coords)
-    if coords.shape[0] < 2:
-        return 2.0
+    if coords.ndim != 2 or coords.shape[0] < 2:
+        return None, None
     d, _ = cKDTree(coords).query(coords, k=2)
     median_spacing = float(np.median(d[:, 1]))
-    extent = float(max(np.ptp(coords[:, 0]), np.ptp(coords[:, 1]))) or 1.0
-    px = extent / grid_res
+    extent = float(max(np.ptp(coords[:, 0]), np.ptp(coords[:, 1])))
+    if not np.isfinite(median_spacing) or not np.isfinite(extent):
+        return None, None
+    return median_spacing, extent
+
+
+def suggest_smooth_sigma(coords, grid_res):
+    """~2 grid-pixels at the median spot spacing; clamped to [1, 6]."""
+    median_spacing, extent = spot_geometry(coords)
+    if median_spacing is None:
+        return 2.0
+    px = (extent or 1.0) / grid_res
     sigma = 2.0 * (median_spacing / px) if px > 0 else 2.0
     return float(min(6.0, max(1.0, sigma)))

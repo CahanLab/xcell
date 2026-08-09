@@ -246,6 +246,30 @@ def _contour_score_field(coords, gene_expr, log_transform, clip_percentiles,
     return cell_vals, vmax
 
 
+_CONN_SUFFIX = '_connectivities'
+
+
+def _graph_suffix(graph_key: str | None) -> str:
+    """Short name for a connectivity graph, used to name what it produces.
+
+    'connectivities' is the default graph, so it contributes no suffix and
+    UMAP/Leiden keep writing X_umap / leiden — nothing changes for a user who
+    never touches the picker. Every other graph is named after its prefix so
+    results from different graphs sit side by side instead of overwriting.
+    """
+    if not graph_key or graph_key == 'connectivities':
+        return ''
+    if graph_key.endswith(_CONN_SUFFIX):
+        return graph_key[: -len(_CONN_SUFFIX)]
+    return graph_key
+
+
+def _default_output_name(base: str, graph_key: str | None) -> str:
+    """'X_umap' + spatial_connectivities -> 'X_umap_spatial'."""
+    suffix = _graph_suffix(graph_key)
+    return f'{base}_{suffix}' if suffix else base
+
+
 class DataAdaptor:
     """Wraps an AnnData object and provides accessor methods.
 
@@ -5374,6 +5398,7 @@ class DataAdaptor:
                     'key': key,
                     'label': label,
                     'n_edges': nnz,
+                    'suffix': _graph_suffix(key),
                 })
         graphs.sort(key=lambda g: (g['key'] != 'connectivities', g['key']))
         return graphs

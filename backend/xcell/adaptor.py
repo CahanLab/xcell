@@ -8034,6 +8034,14 @@ class DataAdaptor:
             raise ValueError(f"transform must be one of {list(lz.TRANSFORMS)}")
         if aggregation not in lz.AGGREGATIONS:
             raise ValueError(f"aggregation must be one of {list(lz.AGGREGATIONS)}")
+        if aggregation == 'injective':
+            # Same check the estimator makes, made here so an impossible run is
+            # a 400 the user reads rather than a task that dies a minute in.
+            problem = lz.injective_feasibility(
+                int(self.n_cells), int(len(bundle['coords'])),
+            )
+            if problem:
+                raise ValueError(problem)
         if not key_added:
             raise ValueError('key_added must be a non-empty name')
 

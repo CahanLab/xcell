@@ -304,3 +304,83 @@ def evaluate_map(ref_coords, pred_coords, marker_sets: list[dict]) -> dict[str, 
             for m in marker_sets
         ],
     }
+
+
+def mean_collapse_risk(coords, scores, *, top: float = 0.2) -> dict[str, Any]:
+    """Would averaging this population's positions land outside the population?
+
+    Reference-only, and that is the point: ``weighted_mean`` predicts, for every
+    query cell of a type, roughly the centroid of that type's reference members.
+    Whether that centroid is a place the type actually occupies depends on the
+    reference's geometry and on nothing else — no query, no parameters, no run.
+    So the warning can be raised while the parameters are still being chosen
+    rather than after a map has been made and believed.
+
+    **The mean of a ring is its hole.** The population is the top ``top``
+    fraction of cells by score; its centroid is where the estimator would send
+    every one of its cells. The question is then what these markers do *there*,
+    answered as the mean rank-score of the cells in the nearest 2% of the
+    tissue: 0.5 is a typical patch of tissue, ~1 is the middle of the
+    population, and ~0 is a hole the population surrounds.
+
+    Deciding on the **mean rank** rather than on how many of those neighbours
+    are population members is what keeps it quiet on ordinary populations. A
+    membership count is a rare event — about 8 of 40 neighbours at chance — so
+    it strays far enough to fire on a scattered population roughly 1 time in 60,
+    and a user with a dozen gene sets would see a spurious warning most
+    sessions. The mean of 40 ranks has a fifth of that spread.
+
+    What it does **not** catch: a population scattered through a *ring-shaped
+    tissue*, where the mean is off-tissue but not off-population. That one needs
+    an actual run, and :func:`dispersion`'s ``frac_outside`` is what reports it.
+
+    Args:
+        coords: ``(n, 2)`` reference coordinates.
+        scores: ``(n,)`` marker score per reference cell.
+        top: what fraction of the reference counts as the population.
+
+    Returns:
+        risk: ``1 - centroid_score/0.5`` clipped to ``[0, 1]``. 0 means the mean
+            lands somewhere at least as marker-positive as ordinary tissue; 1
+            means it lands where these markers are absent. ``None`` when there
+            is nothing to measure.
+        centroid_score: the raw local rank-score, for the UI to quote — "these
+            markers sit in the bottom 4% of the tissue there".
+        population_fraction: the realized ``top``.
+        centroid: ``[x, y]`` — where the estimator would put every one of them.
+        n_population: how many reference cells the population has.
+    """
+    from scipy.spatial import cKDTree
+
+    C = np.asarray(coords, dtype=float)[:, :2]
+    s = np.asarray(scores, dtype=float).ravel()
+    n = len(C)
+
+    empty: dict[str, Any] = {
+        'risk': None, 'centroid_score': None,
+        'population_fraction': _f(top), 'centroid': None, 'n_population': 0,
+    }
+    # Under ~20 cells the local window is the whole tissue and the average is a
+    # coin flip; a constant score has no population to speak of.
+    if n < 20 or len(s) != n or not np.isfinite(s).any() or np.allclose(s, s[0]):
+        return empty
+
+    ranks = _rank_weights(s)                     # [0, 1], mean 0.5 by construction
+    n_pop = max(3, int(round(float(top) * n)))
+    top_idx = np.argsort(-s, kind='stable')[:n_pop]
+    centroid = C[top_idx].mean(axis=0)
+
+    # 2% of the tissue around the mean: small enough to describe the point the
+    # estimator actually returns, large enough that the average is not decided
+    # by one or two cells. Chance stays 0.5 at any reference size.
+    k_local = max(10, int(round(0.02 * n)))
+    _, idx = cKDTree(C).query(centroid, k=k_local)
+    centroid_score = float(ranks[np.asarray(idx).ravel()].mean())
+
+    return {
+        'risk': _f(np.clip(1.0 - centroid_score / 0.5, 0.0, 1.0)),
+        'centroid_score': _f(centroid_score),
+        'population_fraction': _f(n_pop / n),
+        'centroid': [_f(centroid[0]), _f(centroid[1])],
+        'n_population': int(n_pop),
+    }

@@ -228,3 +228,78 @@ def test_evaluate_map_is_json_safe_with_no_marker_sets():
     import json
     ref, pred = _disc(seed=0), _disc(seed=1)
     json.dumps(evaluate_map(ref, pred, []))
+
+
+# --- would a mean estimator lose this population? -------------------------
+
+from xcell.localize_metrics import mean_collapse_risk  # noqa: E402
+
+
+def test_collapse_risk_flags_an_annular_population():
+    """The limb failure, reduced to geometry. The epidermis is a ring; the mean
+    of a ring is its hole; weighted_mean predicts every epidermal cell into it."""
+    ref = _disc(seed=0)
+    out = mean_collapse_risk(ref, np.linalg.norm(ref, axis=1))   # high on the rim
+    assert out['risk'] > 0.9
+    assert out['centroid_score'] < 0.1
+
+
+def test_collapse_risk_flags_a_population_in_two_distant_patches():
+    """The other shape weighted_mean cannot represent: the mean lands in the
+    gap between the patches, which is a location the population never occupies.
+
+    It scores lower than the annulus (~0.80 against ~0.98) and should: a strip
+    of low |x| through the middle of a disc is the bottom tenth of the tissue
+    for this marker, where the middle of a ring is the bottom hundredth. Both
+    are far past the half-of-chance the warning fires at; a gap need not be as
+    empty as a hole to be the wrong place to put every cell of a type.
+    """
+    ref = _disc(seed=0)
+    out = mean_collapse_risk(ref, np.abs(ref[:, 0]))             # both left and right
+    assert out['risk'] > 0.7
+
+
+def test_collapse_risk_clears_a_compact_population():
+    ref = _disc(seed=0)
+    blob = -np.linalg.norm(ref - np.array([0.4, 0.3]), axis=1)
+    out = mean_collapse_risk(ref, blob)
+    assert out['risk'] < 0.1
+    assert out['centroid_score'] > 0.9
+
+
+def test_collapse_risk_does_not_cry_wolf_on_a_scattered_population():
+    """A type spread through the tissue is not what this catches — the mean
+    lands in the middle, which is as good a guess as any. Advice that fires on
+    an ordinary population is noise, and would train the user to ignore it.
+
+    Swept across seeds rather than fixed at one, because a single draw is how a
+    rare false positive hides: an earlier formulation counted how many of the
+    local neighbours were population *members*, which at 8 expected out of 40
+    strayed past the warning threshold on about 1 seed in 60.
+
+    Seed 0 is excluded, and the reason is a trap worth naming: ``_disc(seed=0)``
+    spends ``rng.random(n)`` on its radii first, so ``default_rng(0).random(n)``
+    reproduces that same draw and the "random" score is exactly the squared
+    radius — a perfect annulus, which this metric should and does flag.
+    """
+    ref = _disc(seed=0)
+    for seed in range(1, 25):
+        scores = np.random.default_rng(seed).random(len(ref))
+        assert mean_collapse_risk(ref, scores)['risk'] < 0.5, seed
+
+
+def test_collapse_risk_reports_where_the_mean_would_land():
+    """The centroid is returned because the warning is about a *place*, and a
+    user who wants to check it needs the coordinate."""
+    ref = _disc(seed=0)
+    out = mean_collapse_risk(ref, np.linalg.norm(ref, axis=1))
+    assert out['centroid'] == pytest.approx([0.0, 0.0], abs=0.1)
+    assert out['n_population'] == pytest.approx(0.2 * len(ref), rel=0.02)
+
+
+def test_collapse_risk_is_json_safe_on_degenerate_input():
+    import json
+    ref = _disc(n=200, seed=0)
+    json.dumps(mean_collapse_risk(ref, np.ones(len(ref))))       # no variation
+    json.dumps(mean_collapse_risk(_disc(n=5, seed=0), np.arange(5.0)))
+    assert mean_collapse_risk(ref, np.ones(len(ref)))['risk'] is None

@@ -306,8 +306,44 @@ def evaluate_map(ref_coords, pred_coords, marker_sets: list[dict]) -> dict[str, 
     }
 
 
+def _collapse_at(
+    C: np.ndarray, s: np.ndarray, top: float, neighbors: int,
+) -> dict[str, Any]:
+    """One reading of "the population": the top ``top`` fraction by score."""
+    from scipy.spatial import cKDTree
+
+    n = len(C)
+    n_pop = max(3, int(round(float(top) * n)))
+    if n_pop > n:
+        n_pop = n
+    pop = C[np.argsort(-s, kind='stable')[:n_pop]]
+    m = max(1, min(int(neighbors), len(pop) - 1))
+    tree = cKDTree(pop)
+    centroid = pop.mean(axis=0)
+
+    d_centroid = float(np.atleast_1d(tree.query(centroid, k=m)[0]).mean())
+    # Column 0 of each member's own query is itself, at distance 0.
+    d_typical = float(np.median(tree.query(pop, k=m + 1)[0][:, 1:].mean(axis=1)))
+
+    if d_centroid <= 0:
+        risk, ratio = 0.0, 0.0          # the mean is sitting on the population
+    else:
+        risk = float(np.clip(1.0 - d_typical / d_centroid, 0.0, 1.0))
+        ratio = d_centroid / d_typical if d_typical > 0 else None
+
+    return {
+        'risk': _f(risk),
+        'distance_ratio': _f(ratio),
+        'population_fraction': _f(n_pop / n),
+        'centroid': [_f(centroid[0]), _f(centroid[1])],
+        'n_population': int(n_pop),
+    }
+
+
 def mean_collapse_risk(
-    coords, scores, *, top: float = 0.2, neighbors: int = 5,
+    coords, scores, *,
+    fractions: tuple[float, ...] = (0.02, 0.05, 0.10, 0.20),
+    neighbors: int = 5,
 ) -> dict[str, Any]:
     """Would averaging this population's positions land outside the population?
 
@@ -318,13 +354,26 @@ def mean_collapse_risk(
     So the warning can be raised while the parameters are still being chosen
     rather than after a map has been made and believed.
 
-    **The mean of a ring is its hole.** The population is the top ``top``
-    fraction of cells by score, and its centroid is where the estimator would
-    send every one of them. The question is how far that centroid sits from the
-    population, measured **in the population's own units**: against how far its
-    members sit from each other. A ratio of 1 means the mean is an ordinary
-    place within the population; 8 means it is eight times farther out than the
-    population's own spacing, which is a hole.
+    **The mean of a ring is its hole.** The population is the top fraction of
+    cells by score, and its centroid is where the estimator would send every one
+    of them. The question is how far that centroid sits from the population,
+    measured **in the population's own units**: against how far its members sit
+    from each other. A ratio of 1 means the mean is an ordinary place within the
+    population; 8 means it is eight times farther out than the population's own
+    spacing, which is a hole.
+
+    **"The population" is swept, not assumed**, and that is not a refinement —
+    a single fraction misses the case this exists for. Real markers differ
+    enormously in prevalence: on the E11.5 limb the skin genes are detected in
+    7% of spots, so the top 20% is mostly interior tissue with trace expression,
+    the "population" fills the bud, and its mean is comfortably inside it —
+    risk 0.14, silent, on a map Phase 1 had already measured as inverted
+    (pattern fidelity -0.11). At the top 2%, which is the epidermis proper, the
+    same reference scores 0.88. So each fraction in ``fractions`` is scored and
+    the worst is reported, with the fraction that produced it: for *some*
+    reasonable reading of this population, its mean lands outside it. Measured
+    over 118 draws of pure noise the swept maximum never reached the warning
+    threshold.
 
     Two other formulations were tried and are worth naming, because both look
     right and neither is:
@@ -366,55 +415,33 @@ def mean_collapse_risk(
     Args:
         coords: ``(n, 2)`` reference coordinates.
         scores: ``(n,)`` marker score per reference cell.
-        top: what fraction of the reference counts as the population.
+        fractions: the readings of "the population" to score, worst reported.
         neighbors: how many population members each distance averages over.
 
     Returns:
-        risk: ``1 - typical/centroid`` distance, clipped to ``[0, 1]``. 0 means
-            the mean lands among the population; 0.5 means twice as far out as
-            the population's own spacing; 1 means far outside it. ``None`` when
-            there is nothing to measure.
+        risk: ``1 - typical/centroid`` distance, clipped to ``[0, 1]``, at the
+            worst fraction. 0 means the mean lands among the population; 0.5
+            means twice as far out as the population's own spacing; 1 means far
+            outside it. ``None`` when there is nothing to measure.
         distance_ratio: the raw ratio, for the UI to quote — "the mean sits 8
             times farther from these cells than they sit from each other".
-        population_fraction: the realized ``top``.
+        population_fraction: the fraction that produced that worst case, which
+            is what makes the number self-explaining — 0.02 says it is the
+            population's core that forms a ring, not its diffuse tail.
         centroid: ``[x, y]`` — where the estimator would put every one of them.
-        n_population: how many reference cells the population has.
+        n_population: how many reference cells that population has.
     """
-    from scipy.spatial import cKDTree
-
     C = np.asarray(coords, dtype=float)[:, :2]
     s = np.asarray(scores, dtype=float).ravel()
     n = len(C)
 
-    empty: dict[str, Any] = {
-        'risk': None, 'distance_ratio': None,
-        'population_fraction': _f(top), 'centroid': None, 'n_population': 0,
-    }
     # Under ~20 cells a neighbourhood is the whole tissue and none of this
     # means anything; a constant score has no population to speak of.
     if n < 20 or len(s) != n or not np.isfinite(s).any() or np.allclose(s, s[0]):
-        return empty
+        return {
+            'risk': None, 'distance_ratio': None,
+            'population_fraction': None, 'centroid': None, 'n_population': 0,
+        }
 
-    n_pop = max(3, int(round(float(top) * n)))
-    pop = C[np.argsort(-s, kind='stable')[:n_pop]]
-    m = max(1, min(int(neighbors), len(pop) - 1))
-    tree = cKDTree(pop)
-    centroid = pop.mean(axis=0)
-
-    d_centroid = float(np.atleast_1d(tree.query(centroid, k=m)[0]).mean())
-    # Column 0 of each member's own query is itself, at distance 0.
-    d_typical = float(np.median(tree.query(pop, k=m + 1)[0][:, 1:].mean(axis=1)))
-
-    if d_centroid <= 0:
-        risk, ratio = 0.0, 0.0          # the mean is sitting on the population
-    else:
-        risk = float(np.clip(1.0 - d_typical / d_centroid, 0.0, 1.0))
-        ratio = d_centroid / d_typical if d_typical > 0 else None
-
-    return {
-        'risk': _f(risk),
-        'distance_ratio': _f(ratio),
-        'population_fraction': _f(n_pop / n),
-        'centroid': [_f(centroid[0]), _f(centroid[1])],
-        'n_population': int(n_pop),
-    }
+    scored = [_collapse_at(C, s, t, neighbors) for t in fractions]
+    return max(scored, key=lambda d: d['risk'] or 0.0)

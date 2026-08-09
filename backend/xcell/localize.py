@@ -38,11 +38,17 @@ import numpy as np
 
 TRANSFORMS = ('none', 'log1p', 'zscore', 'rank')
 METRICS = ('correlation', 'cosine', 'euclidean')
-AGGREGATIONS = ('weighted_mean', 'median', 'best_match', 'densest')
+AGGREGATIONS = ('weighted_mean', 'median', 'best_match', 'densest', 'injective')
 
 # Query cells per chunk. Keeps the similarity block bounded regardless of how
 # many cells are being mapped, and gives progress something to report.
 _CHUNK = 2048
+
+# Injective assignment needs the whole query x reference similarity matrix at
+# once; the chunked top-k path never materializes it. 1e8 float32 entries is
+# 400 MB, which is the ceiling this refuses past. Time is not the binding
+# constraint: 2,683 x 9,773 (26 M entries, 105 MB) solves in 0.2 s.
+_MAX_INJECTIVE_ENTRIES = 100_000_000
 
 
 @dataclass
@@ -201,6 +207,74 @@ def _aggregate(coords: np.ndarray, weights: np.ndarray, how: str) -> np.ndarray:
     return _densest_subset(coords, weights)
 
 
+def injective_feasibility(n_query: int, n_ref: int) -> str | None:
+    """Why injective assignment cannot run at these sizes, or None if it can.
+
+    One message, three callers: the estimator itself, ``project_knn`` — which
+    checks before doing a minute of matching work it would then throw away — and
+    the adaptor, which turns it into a 400 rather than a background task that
+    dies later.
+    """
+    if n_ref < n_query:
+        return (
+            f'Injective assignment needs at least one reference spot per query '
+            f'cell: {n_query:,} cells against {n_ref:,} spots. Use best_match, '
+            f'or subsample the query.'
+        )
+    if n_query * n_ref > _MAX_INJECTIVE_ENTRIES:
+        return (
+            f'Injective assignment holds the whole {n_query:,} x {n_ref:,} '
+            f'similarity matrix in memory, which is beyond what this refuses to '
+            f'allocate. Subsample the query or the reference, or use best_match.'
+        )
+    return None
+
+
+def injective_assignment(similarity: np.ndarray) -> np.ndarray:
+    """One distinct reference spot per query cell, maximizing total similarity.
+
+    ``best_match`` takes each cell's single best spot independently, so a spot
+    that correlates well with everything — better recovered, less noisy —
+    absorbs many cells. Solving for the best *set* of assignments subject to
+    distinct spots removes the pile-up entirely and costs very little: measured
+    on the limb pair, 2,683 cells onto 2,683 distinct spots (from 1,749 on all
+    shared genes, or 865 on HVG), with mean similarity falling 0.163 to 0.151.
+
+    What it does **not** buy is placement. Like every single-location estimator
+    it keeps the tissue's full extent and retains no axis signal — measured
+    axis fidelity -0.056 / +0.017 / +0.033 / -0.027 against a reference ceiling
+    of -0.327 / +0.316 / +0.306 / -0.178, which is greedy ``best_match`` to
+    within noise. It is a different point on the same frontier.
+
+    Args:
+        similarity: ``(n_query, n_ref)``, larger meaning more alike — which is
+            the convention every metric in this module already produces.
+
+    Returns:
+        ``(n_query,)`` column index per row, all distinct.
+
+    Raises:
+        ValueError: when the sizes make a distinct assignment impossible, or
+            when the matrix is larger than this will allocate.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    S = np.asarray(similarity)
+    if S.ndim != 2:
+        raise ValueError('similarity must be a 2-D (n_query, n_ref) matrix')
+    n_query, n_ref = S.shape
+    problem = injective_feasibility(n_query, n_ref)
+    if problem:
+        raise ValueError(problem)
+
+    # maximize=True on a rectangular matrix assigns every row exactly once and
+    # leaves the surplus columns unused, which is the shape we want.
+    rows, cols = linear_sum_assignment(S, maximize=True)
+    out = np.empty(n_query, dtype=np.int64)
+    out[rows] = cols
+    return out
+
+
 # --- projection -----------------------------------------------------------
 
 def _tissue_radius(coords: np.ndarray) -> float:
@@ -265,6 +339,14 @@ def project_knn(
 
     k = max(1, min(int(k), ref_expr.shape[0]))
 
+    # Checked before the matching work rather than after it: on a real pair the
+    # similarity blocks take tens of seconds, and failing then would waste them.
+    needs_full = aggregation == 'injective'
+    if needs_full:
+        problem = injective_feasibility(query_expr.shape[0], ref_expr.shape[0])
+        if problem:
+            raise ValueError(problem)
+
     q = _prepare_for_metric(transform_expression(query_expr, transform), metric)
     r = _prepare_for_metric(transform_expression(ref_expr, transform), metric)
 
@@ -272,9 +354,16 @@ def project_knn(
     idx = np.empty((n_query, k), dtype=np.int64)
     sims = np.empty((n_query, k), dtype=float)
 
+    # The chunked path keeps only the top k, so injective assignment — which is
+    # a global decision — needs the blocks kept as they are computed. Storing
+    # them costs memory, not a second pass.
+    full = np.empty((n_query, r.shape[0]), dtype=np.float32) if needs_full else None
+
     for start in range(0, n_query, _CHUNK):
         stop = min(start + _CHUNK, n_query)
         block = _similarity_block(q[start:stop], r, metric)
+        if full is not None:
+            full[start:stop] = block
         # argpartition for the top-k, then order those k properly.
         part = np.argpartition(-block, k - 1, axis=1)[:, :k]
         rows = np.arange(stop - start)[:, None]
@@ -308,7 +397,19 @@ def project_knn(
             weights[i] = weights[i] / total if total > 1e-12 else keep / keep.sum()
         sections_out = sections_out.astype(str)
 
-    coords = _aggregate(neighbor_coords, weights, aggregation)
+    if needs_full:
+        if progress is not None:
+            progress(1.0, f'Assigning {n_query:,} cells to distinct spots')
+        assigned = injective_assignment(full)
+        coords = ref_coords[assigned].astype(float)
+        if sections_out is not None:
+            # The assignment ranges over the whole reference, so the honest
+            # label is the assigned spot's own section rather than the majority
+            # of the k neighbours — that majority exists to stop an *average*
+            # landing in the gap between cuts, and nothing is being averaged.
+            sections_out = ref_sections[assigned]
+    else:
+        coords = _aggregate(neighbor_coords, weights, aggregation)
 
     # Confidence: weighted RMS spread of the neighbours about the prediction,
     # against the tissue's own radius. 1 = one spot, 0 = as scattered as the

@@ -3658,3 +3658,34 @@ def localize_evaluate(
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class EvaluateMapRequest(BaseModel):
+    reference: str = "primary"
+    embeddings: list[str]
+    gene_sets: dict[str, list[str]] = {}
+    dataset: str | None = None
+
+
+@router.post("/localize/evaluate_map")
+def localize_evaluate_map(
+    request: EvaluateMapRequest, dataset: str | None = Query(None),
+):
+    """Score predicted maps against the spatial reference.
+
+    Several embeddings at once, because these numbers are only meaningful
+    comparatively — a user arrives with a handful of saved variants and no way
+    to rank them.
+    """
+    query_slot = request.dataset or dataset
+    query = get_adaptor(query_slot)
+    reference = _resolve_reference(request.reference, query_slot)
+    try:
+        bundle = reference.spatial_reference_bundle()
+        return query.evaluate_localization_maps(
+            bundle, request.embeddings, request.gene_sets,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

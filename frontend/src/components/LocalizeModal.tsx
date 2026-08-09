@@ -85,6 +85,31 @@ const TIPS: Record<string, string> = {
   min_confidence: 'Cells whose neighbours disagree about location this badly get no coordinate at all, rather than a fabricated one. Leave at 0 to place everything and filter later.',
 }
 
+interface MapMetrics {
+  embedding: string
+  dispersion: {
+    area_ratio: number | null; std_ratio_x: number | null
+    std_ratio_y: number | null; frac_outside: number | null
+  }
+  occupancy: {
+    n_distinct: number; max_per_spot: number
+    effective_n: number | null; n_pred: number
+  }
+  markers: {
+    name: string
+    pattern: { correlation: number | null; n_bins_compared: number }
+    axis: { reference: number | null; prediction: number | null }
+  }[]
+}
+
+// 1.0 is right; the limb failure was 0.10 one way and 2.93 the other.
+const areaColor = (v: number | null | undefined) =>
+  v == null ? dark.faint : (v < 0.5 || v > 1.8) ? '#f0c987' : dark.text
+// Negative means the cell type was placed where it is not — the epidermis
+// inversion. That is a different kind of wrong from merely weak.
+const patternColor = (v: number | null | undefined) =>
+  v == null ? dark.faint : v < 0 ? '#ff8fa3' : v < 0.2 ? '#f0c987' : dark.text
+
 interface Advice { level: 'warn' | 'info'; text: string }
 
 /**
@@ -172,6 +197,9 @@ export default function LocalizeModal() {
   const [sectionCol, setSectionCol] = useState('')
   const [keyAdded, setKeyAdded] = useState('X_spatial_pred')
 
+  const [mapMetrics, setMapMetrics] = useState<MapMetrics[] | null>(null)
+  const [scoring, setScoring] = useState(false)
+
   const [busy, setBusy] = useState<'' | 'check' | 'run'>('')
   const [progress, setProgress] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -180,11 +208,14 @@ export default function LocalizeModal() {
 
   // Every gene set the user has curated, from any category or folder.
   const geneSets = useMemo(() => {
-    const out: { id: string; label: string; genes: string[] }[] = []
+    const out: { id: string; name: string; label: string; genes: string[] }[] = []
     for (const cat of Object.values(categories)) {
       const collect = (sets: { id: string; name: string; genes: string[] }[]) => {
         for (const gs of sets) {
-          out.push({ id: gs.id, label: `${cat.name}: ${gs.name} (${gs.genes.length})`, genes: gs.genes })
+          out.push({
+            id: gs.id, name: gs.name, genes: gs.genes,
+            label: `${cat.name}: ${gs.name} (${gs.genes.length})`,
+          })
         }
       }
       collect(cat.geneSets)
@@ -290,6 +321,47 @@ export default function LocalizeModal() {
     section_col: sectionCol || null,
     gene_subset: geneSubset,
   })
+
+  /** Score every predicted embedding in the query against the reference. */
+  const scoreMaps = async () => {
+    if (!reference || !querySlot) return
+    setScoring(true); setError(null)
+    try {
+      const sets: Record<string, string[]> = {}
+      geneSets.forEach((g) => { if (g.genes.length) sets[g.name] = g.genes })
+      // Ask the server rather than the store. The modal's refreshSchema() after
+      // a run refreshes the *active* slot, which is not necessarily the query,
+      // so the cached list can be stale exactly when it matters.
+      const sr = await fetch(
+        appendDataset(`${API}/schema`, querySlot as DatasetSlot))
+      const all: string[] = sr.ok ? ((await sr.json()).embeddings || []) : []
+      // Only things that could be a predicted map. The query's own PCA/UMAP
+      // are embeddings too and scoring them against tissue coordinates is
+      // meaningless.
+      const embeddings = all.filter((e) => /pred/i.test(e) || /spatial/i.test(e))
+        .filter((e) => e !== 'spatial' && e !== 'X_spatial')
+      if (embeddings.length === 0) {
+        setError('No predicted embeddings to score — run Localize first.')
+        return
+      }
+      const r = await fetch(
+        appendDataset(`${API}/localize/evaluate_map`, querySlot as DatasetSlot),
+        {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reference, dataset: querySlot, embeddings, gene_sets: sets,
+          }),
+        },
+      )
+      const payload = await r.json()
+      if (!r.ok) throw new Error(payload.detail || `HTTP ${r.status}`)
+      setMapMetrics(payload.maps)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setScoring(false)
+    }
+  }
 
   const runCheck = async () => {
     setBusy('check'); setError(null); setCv(null); setProgress(0)
@@ -537,6 +609,70 @@ export default function LocalizeModal() {
             {showGuide ? 'Hide' : 'Show'} how to choose these
           </button>
           {showGuide && <ParameterGuide />}
+
+          {/* Map quality — compares maps already produced, against the
+              reference. Distinct from Accuracy below, which holds out part of
+              the reference and predicts it. */}
+          <div style={{ ...sectionLabel, marginTop: 16 }}>Map quality</div>
+          <div style={{ fontSize: 11, color: dark.sub, marginBottom: 6 }}>
+            Scores every predicted embedding in the query against the reference.
+            The numbers are comparative: a pattern score means little alone, and
+            an axis correlation means nothing until you see what the reference
+            itself reaches. <b>Area</b> 1.0 fills the tissue — well under means
+            the map collapsed toward the centre. A <b>negative</b> marker score
+            means that cell type was placed where it is not.
+          </div>
+          <button onClick={scoreMaps} disabled={scoring || !ready}
+                  style={{ ...ghost, fontSize: 11 }}>
+            {scoring ? 'Scoring…' : 'Score predicted maps'}
+          </button>
+
+          {mapMetrics && mapMetrics.length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%',
+                              fontSize: 11, marginTop: 8 }}>
+                <thead>
+                  <tr style={{ color: dark.faint, textAlign: 'left' }}>
+                    <th style={th}>embedding</th>
+                    <th style={th}>area</th>
+                    <th style={th}>outside</th>
+                    <th style={th}>spots used</th>
+                    {mapMetrics[0].markers.map((m) => (
+                      <th key={m.name} style={th}>{m.name}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {mapMetrics.map((m) => (
+                    <tr key={m.embedding}>
+                      <td style={td}><code>{m.embedding}</code></td>
+                      <td style={{ ...td, color: areaColor(m.dispersion.area_ratio) }}>
+                        {fmt(m.dispersion.area_ratio, 2)}
+                      </td>
+                      <td style={td}>{pct(m.dispersion.frac_outside)}</td>
+                      <td style={td}>
+                        {m.occupancy.n_distinct.toLocaleString()}
+                        <span style={{ color: dark.faint }}>
+                          {' '}/ {m.occupancy.n_pred.toLocaleString()}
+                        </span>
+                      </td>
+                      {m.markers.map((k) => (
+                        <td key={k.name}
+                            style={{ ...td, color: patternColor(k.pattern.correlation) }}
+                            title={`axis ${fmt(k.axis.prediction, 2)} of ${fmt(k.axis.reference, 2)} possible`}>
+                          {fmt(k.pattern.correlation, 2)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 10.5, color: dark.faint, marginTop: 4 }}>
+                Marker columns show spatial pattern fidelity; hover one for its
+                axis correlation against the reference's ceiling.
+              </div>
+            </div>
+          )}
 
           {/* Accuracy check */}
           <div style={{ ...sectionLabel, marginTop: 16 }}>Accuracy</div>

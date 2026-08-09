@@ -331,3 +331,94 @@ def test_label_cells_needs_its_selection_to_be_reproducible():
     with_sel = translate(_step('label_cells', params, {}, selection=[1, 2], n_total=10))
     assert with_sel.fidelity == EXACT
     compile('\n'.join(with_sel.code), '<label_cells>', 'exec')
+
+
+# --- graph choice ---------------------------------------------------------
+
+def test_codegen_and_adaptor_agree_on_the_uns_key():
+    """codegen must not import the adaptor (it promises no AnnData, no adaptor),
+    so the key is spelled twice. This is what keeps the two spellings equal."""
+    from xcell.adaptor import _GRAPH_META_KEY as adaptor_key
+    from xcell.codegen import _GRAPH_META_KEY as codegen_key
+
+    assert adaptor_key == codegen_key
+
+
+def test_umap_on_the_default_graph_emits_one_unchanged_line():
+    step = _step('umap', {'min_dist': 0.5, 'spread': 1.0, 'n_components': 2})
+    t = translate(step)
+    assert t.fidelity == EXACT
+    assert t.code == [
+        'sc.tl.umap(adata, min_dist=0.5, spread=1.0, n_components=2)'
+    ]
+
+
+def test_umap_on_a_named_graph_emits_the_neighbors_entry_it_needs():
+    step = _step('umap', {
+        'min_dist': 0.5, 'spread': 1.0, 'n_components': 2,
+        'graph_key': 'spatial_connectivities', 'key_added': 'X_umap_spatial',
+        'neighbors_meta': {
+            'connectivities_key': 'spatial_connectivities',
+            'distances_key': 'spatial_distances',
+            'params': {'n_neighbors': 6, 'method': 'umap'},
+        },
+    })
+    t = translate(step)
+    assert t.fidelity == EXACT
+    code = '\n'.join(t.code)
+    # Emitting only the call would fail in the notebook: the entry it names
+    # does not exist there.
+    assert "adata.uns['_xcell_graph']" in code
+    assert "'connectivities_key': 'spatial_connectivities'" in code
+    assert "'method': 'umap'" in code
+    assert "'distances_key'" in code
+    assert "neighbors_key='_xcell_graph'" in code
+    assert "key_added='X_umap_spatial'" in code
+    # graph_key is xcell's own parameter name; scanpy has no such argument.
+    assert 'graph_key=' not in code
+
+
+def test_umap_export_carries_use_rep_so_the_notebook_makes_no_phantom_pca():
+    """Without use_rep, scanpy computes and stores a PCA when X_pca is absent.
+
+    The adaptor avoids that; the notebook has to avoid it too, or executing the
+    export produces an object the recording never described.
+    """
+    step = _step('umap', {
+        'min_dist': 0.5, 'spread': 1.0, 'n_components': 2,
+        'graph_key': 'spatial_connectivities', 'key_added': 'X_umap_spatial',
+        'neighbors_meta': {
+            'connectivities_key': 'spatial_connectivities',
+            'distances_key': 'spatial_distances',
+            'params': {'n_neighbors': 6, 'method': 'umap', 'use_rep': 'X'},
+        },
+    })
+    assert "'use_rep': 'X'" in '\n'.join(translate(step).code)
+
+
+def test_umap_with_only_a_custom_name_stays_a_one_liner():
+    step = _step('umap', {'min_dist': 0.5, 'spread': 1.0,
+                          'n_components': 2, 'key_added': 'X_umap_v2'})
+    t = translate(step)
+    assert t.code == [
+        "sc.tl.umap(adata, min_dist=0.5, spread=1.0, n_components=2, "
+        "key_added='X_umap_v2')"
+    ]
+
+
+def test_leiden_on_a_named_graph_passes_obsp():
+    step = _step('leiden', {'resolution': 0.5, 'key_added': 'leiden_spatial',
+                            'graph_key': 'spatial_connectivities'})
+    t = translate(step)
+    assert t.fidelity == EXACT
+    assert t.code == [
+        "sc.tl.leiden(adata, resolution=0.5, key_added='leiden_spatial', "
+        "obsp='spatial_connectivities')"
+    ]
+
+
+def test_leiden_on_the_default_graph_is_unchanged():
+    step = _step('leiden', {'resolution': 0.5, 'key_added': 'leiden'})
+    assert translate(step).code == [
+        "sc.tl.leiden(adata, resolution=0.5, key_added='leiden')"
+    ]

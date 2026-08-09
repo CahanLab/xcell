@@ -5864,6 +5864,11 @@ class DataAdaptor:
         }
         if graph_key:
             params['graph_key'] = graph_key
+            # Record the entry that was actually installed, rather than letting
+            # codegen re-derive it. The exported notebook then emits what really
+            # ran — including use_rep, without which the notebook would compute
+            # the same phantom PCA this method exists to avoid.
+            params['neighbors_meta'] = meta
         if name != 'X_umap':
             params['key_added'] = name
         self._log_action('umap', params, result, subset=cell_indices)

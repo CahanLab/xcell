@@ -153,8 +153,10 @@ entropy of the row, or the posterior's spatial variance.
 `best_match` takes each cell's single best spot independently, so a spot that
 correlates well with everything — better recovery, less noise — absorbs many
 cells. Optimal assignment maximizes total similarity subject to distinct spots,
-via `scipy.optimize.linear_sum_assignment`: **0.5 s** at 2,683 × 9,773, taking
-distinct spots from 865 to 2,683 and costing 0.163 → 0.151 in mean similarity.
+via `scipy.optimize.linear_sum_assignment`: **0.5 s** at 2,683 × 9,773. It takes
+distinct spots to 2,683 out of 2,683 in every configuration measured — from
+1,749 (all shared genes) and from 865 (HVG). The cost is small: on the
+all-shared run, mean similarity falls 0.163 → 0.151.
 
 Available only when the reference has at least as many spots as the query has
 cells, and off by default, because injectivity asserts that the query's

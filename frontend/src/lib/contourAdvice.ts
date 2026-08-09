@@ -154,3 +154,57 @@ export function adviseContour(
 
   return [...warns, ...infos]
 }
+
+export interface ModuleHighs { name: string; highCount: number }
+
+// Above this share of the tissue a module stops distinguishing anything.
+const BROAD_FRACTION = 0.5
+// Two modules this broad overlap over most spots, so the fused annotation is
+// mostly the neighbour vote rather than the contours under review.
+const OVERLAP_FRACTION = 0.4
+// Past this the vote reaches well beyond the local neighbourhood.
+const WIDE_PROFILE_K = 50
+
+/**
+ * Whether the chosen cutoffs can actually produce a tissue map.
+ *
+ * A module high nowhere contributes nothing; a module high everywhere wins
+ * conflicts by size rather than by signal, which is the quiet way a fused
+ * annotation turns into one label with decoration.
+ */
+export function adviseModules(
+  modules: ModuleHighs[], nSpots: number, profileK: number,
+): Advice[] {
+  const out: Advice[] = []
+  if (modules.length === 0 || nSpots <= 0) return out
+
+  const frac = (m: ModuleHighs) => m.highCount / nSpots
+
+  for (const m of modules) {
+    if (m.highCount === 0) {
+      out.push({ level: 'warn', text:
+        `${m.name} has no spots above its cutoff, so it cannot contribute a tissue. ` +
+        `Lower the cutoff, or drop the set.` })
+    } else if (frac(m) > BROAD_FRACTION) {
+      out.push({ level: 'warn', text:
+        `${m.name} is high in ${Math.round(frac(m) * 100)}% of spots. A module high ` +
+        `nearly everywhere wins overlaps by size rather than by signal.` })
+    }
+  }
+
+  const broad = modules.filter((m) => frac(m) > OVERLAP_FRACTION).map((m) => m.name)
+  if (broad.length >= 2) {
+    out.push({ level: 'info', text:
+      `${broad.join(' and ')} are each high in over ${OVERLAP_FRACTION * 100}% of spots, ` +
+      `so most assignments will come from the neighbour vote rather than from the ` +
+      `contours themselves.` })
+  }
+
+  if (profileK > WIDE_PROFILE_K) {
+    out.push({ level: 'info', text:
+      `Profile k of ${profileK} votes over a wide neighbourhood, which pulls ambiguous ` +
+      `spots toward whatever is regionally dominant rather than locally adjacent.` })
+  }
+
+  return out
+}

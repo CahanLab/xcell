@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { adviseContour, type ContourSettings, type ContourGeometry } from './contourAdvice'
+import {
+  adviseContour, adviseModules,
+  type ContourSettings, type ContourGeometry,
+} from './contourAdvice'
 
 // 400 spots on a 20x20 grid at spacing 2, so extent = 38. These are the real
 // numbers the backend produces for that layout: suggest_grid_res clamps to a
@@ -142,5 +145,46 @@ describe('adviseContour', () => {
     const firstInfo = a.findIndex((x) => x.level === 'info')
     const lastWarn = a.map((x) => x.level).lastIndexOf('warn')
     expect(firstInfo === -1 || lastWarn < firstInfo).toBe(true)
+  })
+})
+
+describe('adviseModules', () => {
+  const N = 400
+
+  it('says nothing when each module marks a distinct minority', () => {
+    expect(adviseModules(
+      [{ name: 'A', highCount: 80 }, { name: 'B', highCount: 60 }], N, 15,
+    )).toEqual([])
+  })
+
+  it('warns when a module has no high spots', () => {
+    const a = adviseModules(
+      [{ name: 'A', highCount: 0 }, { name: 'B', highCount: 60 }], N, 15,
+    )
+    expect(a.map((x) => x.text).join(' ')).toMatch(/A/)
+    expect(a.map((x) => x.text).join(' ')).toMatch(/no spots|nothing/i)
+  })
+
+  it('warns when a module is high nearly everywhere', () => {
+    const a = adviseModules(
+      [{ name: 'A', highCount: 300 }, { name: 'B', highCount: 60 }], N, 15,
+    )
+    expect(a.map((x) => x.text).join(' ')).toMatch(/75%/)
+  })
+
+  it('flags a large overlap between two broad modules', () => {
+    const a = adviseModules(
+      [{ name: 'A', highCount: 200 }, { name: 'B', highCount: 180 }], N, 15,
+    )
+    expect(a.map((x) => x.text).join(' ')).toMatch(/neighbour vote/i)
+  })
+
+  it('warns when profile k reaches past the local neighbourhood', () => {
+    const a = adviseModules([{ name: 'A', highCount: 80 }], N, 80)
+    expect(a.map((x) => x.text).join(' ')).toMatch(/80/)
+  })
+
+  it('is silent with no modules', () => {
+    expect(adviseModules([], N, 15)).toEqual([])
   })
 })

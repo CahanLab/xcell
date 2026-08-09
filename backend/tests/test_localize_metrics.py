@@ -92,3 +92,57 @@ def test_metrics_are_json_safe_on_degenerate_input():
     single = np.tile(ref[:1], (5, 1))        # no spread at all -> no hull
     json.dumps(dispersion(ref, single))      # raises on NaN/inf
     json.dumps(occupancy(ref, single))
+
+
+# --- spatial pattern fidelity ---------------------------------------------
+
+from xcell.localize_metrics import spatial_pattern_fidelity  # noqa: E402
+
+
+def _annulus_scores(coords, inner=0.75):
+    """High on the rim, low inside — the epidermis pattern."""
+    r = np.linalg.norm(coords, axis=1)
+    return (r >= inner).astype(float)
+
+
+def test_pattern_fidelity_is_high_when_the_pattern_is_reproduced():
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    out = spatial_pattern_fidelity(ref, _annulus_scores(ref), pred, _annulus_scores(pred))
+    assert out['correlation'] > 0.7
+
+
+def test_pattern_fidelity_is_negative_when_the_pattern_is_inverted():
+    """The limb failure exactly: epidermis belongs on the rim and was predicted
+    into the centre. This must come out clearly negative, not merely low."""
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    out = spatial_pattern_fidelity(
+        ref, _annulus_scores(ref), pred, 1.0 - _annulus_scores(pred),
+    )
+    assert out['correlation'] < -0.3
+
+
+def test_pattern_fidelity_is_near_zero_for_an_unrelated_pattern():
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    rng = np.random.default_rng(3)
+    out = spatial_pattern_fidelity(ref, _annulus_scores(ref), pred, rng.random(len(pred)))
+    assert abs(out['correlation']) < 0.3
+
+
+def test_pattern_fidelity_ignores_the_scale_of_the_scores():
+    """ST spots and dissociated cells are on different expression scales, so a
+    metric sensitive to that would compare the platforms, not the biology."""
+    ref, pred = _disc(seed=0), _disc(seed=1)
+    a = spatial_pattern_fidelity(ref, _annulus_scores(ref), pred, _annulus_scores(pred))
+    b = spatial_pattern_fidelity(
+        ref, _annulus_scores(ref), pred, 100.0 * _annulus_scores(pred) + 7.0,
+    )
+    assert a['correlation'] == pytest.approx(b['correlation'], abs=1e-9)
+
+
+def test_pattern_fidelity_handles_an_empty_overlap():
+    import json
+    ref = _disc(seed=0)
+    far = _disc(seed=1) + 1000.0            # nowhere near the reference
+    out = spatial_pattern_fidelity(ref, _annulus_scores(ref), far, _annulus_scores(far))
+    json.dumps(out)
+    assert out['correlation'] is None or np.isfinite(out['correlation'])

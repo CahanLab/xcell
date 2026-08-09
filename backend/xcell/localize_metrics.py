@@ -98,6 +98,96 @@ def dispersion(ref_coords, pred_coords, *, inner: float = 0.95) -> dict[str, Any
     }
 
 
+def _rank_weights(scores: np.ndarray) -> np.ndarray:
+    """Scores as ranks in [0, 1].
+
+    Weighting a density by raw score would let one platform's dynamic range
+    decide the answer, and a z-scored matrix can go negative, which a density
+    cannot use. Ranks are non-negative, bounded, and identical under any
+    monotone rescale of either side.
+    """
+    from scipy.stats import rankdata
+
+    s = np.asarray(scores, dtype=float).ravel()
+    if len(s) == 0:
+        return s
+    return (rankdata(s) - 1.0) / max(len(s) - 1, 1)
+
+
+def _mean_score_field(coords, weights, edges_x, edges_y, sigma: float = 1.0):
+    """Mean marker score per grid bin, plus how many cells backed each bin.
+
+    The obvious formulation — a marker-*weighted* density — is confounded by
+    the cell density underneath it. Both maps then contain the same "where are
+    there cells at all" signal, which dominates: two unrelated markers score
+    +0.33 and a fully inverted one barely reaches -0.07. Dividing the weighted
+    sum by the count isolates "is this marker high here" from "are there many
+    cells here", which is the question actually being asked.
+
+    Smoothing numerator and denominator separately before dividing is a
+    Nadaraya-Watson estimate; it keeps a bin holding one cell from swinging the
+    field, without discarding it.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    num, _, _ = np.histogram2d(
+        coords[:, 0], coords[:, 1], bins=[edges_x, edges_y], weights=weights,
+    )
+    den, _, _ = np.histogram2d(coords[:, 0], coords[:, 1], bins=[edges_x, edges_y])
+    num = gaussian_filter(num, sigma=sigma, mode='nearest')
+    den_s = gaussian_filter(den, sigma=sigma, mode='nearest')
+    with np.errstate(invalid='ignore', divide='ignore'):
+        field = np.where(den_s > 1e-12, num / np.maximum(den_s, 1e-12), np.nan)
+    return field, den
+
+
+def spatial_pattern_fidelity(
+    ref_coords, ref_scores, pred_coords, pred_scores, *, bins: int = 32,
+) -> dict[str, Any]:
+    """Does this cell type land where it lives?
+
+    Both sides are binned on the **reference's** grid and compared as density
+    maps, so the question asked is "is the marker-weighted density in the same
+    places", not "did any individual cell go to the right spot" — which is not
+    answerable and not what a user is looking at.
+
+    Correlation is Spearman over the bins the reference actually covers; empty
+    tissue outside the bud would otherwise dominate the count and inflate every
+    score toward agreement-on-nothing.
+    """
+    from scipy.stats import spearmanr
+
+    ref = np.asarray(ref_coords, dtype=float)[:, :2]
+    pred = np.asarray(pred_coords, dtype=float)[:, :2]
+    rs = np.asarray(ref_scores, dtype=float).ravel()
+    ps = np.asarray(pred_scores, dtype=float).ravel()
+
+    ok = np.isfinite(pred).all(axis=1)
+    pred, ps = pred[ok], ps[ok]
+    if len(pred) < 3 or len(ref) < 3:
+        return {'correlation': None, 'n_bins_compared': 0}
+
+    edges_x = np.linspace(ref[:, 0].min(), ref[:, 0].max(), bins + 1)
+    edges_y = np.linspace(ref[:, 1].min(), ref[:, 1].max(), bins + 1)
+
+    ref_field, ref_n = _mean_score_field(ref, _rank_weights(rs), edges_x, edges_y)
+    pred_field, pred_n = _mean_score_field(pred, _rank_weights(ps), edges_x, edges_y)
+
+    # Compare only where both sides put cells. A bin the reference never
+    # covered carries no claim about where the cell type belongs, and one the
+    # prediction never reached has no estimate to offer.
+    usable = (ref_n > 0) & (pred_n > 0) & np.isfinite(ref_field) & np.isfinite(pred_field)
+    if usable.sum() < 8:
+        return {'correlation': None, 'n_bins_compared': int(usable.sum())}
+
+    a, b = ref_field[usable], pred_field[usable]
+    if np.allclose(a, a[0]) or np.allclose(b, b[0]):
+        return {'correlation': None, 'n_bins_compared': int(usable.sum())}
+
+    rho, _ = spearmanr(a, b)
+    return {'correlation': _f(rho), 'n_bins_compared': int(usable.sum())}
+
+
 def occupancy(ref_coords, pred_coords) -> dict[str, Any]:
     """How many distinct reference locations the predictions actually use.
 

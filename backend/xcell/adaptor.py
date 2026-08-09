@@ -8255,6 +8255,57 @@ class DataAdaptor:
             'n_reference_cells': int(ref_coords.shape[0]),
         }
 
+    def localize_reference_geometry(
+        self, gene_sets: dict[str, list[str]], layer: str | None = None,
+    ) -> dict[str, Any]:
+        """Which of these populations would a mean-of-neighbours estimator lose?
+
+        Called on the **reference** adaptor, about itself — there is no query and
+        no prediction, which is what lets the answer be shown while the
+        parameters are still being chosen. See
+        :func:`xcell.localize_metrics.mean_collapse_risk` for what the number is.
+
+        Args:
+            gene_sets: population name -> gene list. Genes absent from this
+                dataset are dropped; a set left with none is skipped and named
+                in ``skipped_gene_sets`` rather than failing the whole call.
+            layer: which matrix to score from; ``None`` is ``.X``.
+        """
+        from xcell import localize_metrics as lm
+
+        spatial_key = self._get_spatial_key()
+        if spatial_key is None:
+            raise ValueError(
+                'This dataset has no spatial coordinates, so it cannot act as a '
+                "reference. Expected .obsm['spatial'] or .obsm['X_spatial']."
+            )
+        coords = np.asarray(self.adata.obsm[spatial_key], dtype=float)[:, :2]
+        matrix = self._resolve_source_matrix(layer)
+
+        populations: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for name, genes in gene_sets.items():
+            present, _ = self._split_present_genes(list(genes))
+            if not present:
+                skipped.append(str(name))
+                continue
+            block = matrix[:, [self.adata.var_names.get_loc(g) for g in present]]
+            block = block.toarray() if hasattr(block, 'toarray') else np.asarray(block)
+            scores = np.asarray(block, dtype=float).mean(axis=1)
+            populations.append({
+                'name': str(name),
+                'n_genes_used': len(present),
+                **lm.mean_collapse_risk(coords, scores),
+            })
+
+        # Riskiest first: the UI names the top few, and which few matters.
+        populations.sort(key=lambda p: (p['risk'] is None, -(p['risk'] or 0.0)))
+        return {
+            'populations': populations,
+            'skipped_gene_sets': skipped,
+            'n_reference_cells': int(coords.shape[0]),
+        }
+
     def evaluate_localization(
         self,
         predicted_key: str,

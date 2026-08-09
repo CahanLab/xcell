@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useStore, ScanpyActionRecord, PCASubsetSummary, userConfigGet } from '../store'
 import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset } from '../hooks/useData'
 import { MESSAGES } from '../messages'
@@ -153,6 +153,10 @@ interface ParamDef {
   options?: string[]
   obsDtype?: 'numeric' | 'category'
   visibleWhen?: { param: string; value: string }
+  // graph_select only: label for the "" option. Absent means a graph is
+  // required (Smooth); present means "" is a real choice (UMAP / Leiden, where
+  // it stands for whatever uns['neighbors'] points at).
+  emptyLabel?: string
 }
 
 interface FunctionDef {
@@ -301,6 +305,8 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         description: 'Compute UMAP embedding',
         prerequisites: ['neighbors'],
         params: [
+          { name: 'graph_key', label: 'kNN graph', type: 'graph_select', default: '', emptyLabel: 'Expression neighbors (default)', description: 'Which cell-cell graph to embed. Spatial or a Combine Neighbors result gives a different map of the same cells.' },
+          { name: 'key_added', label: 'Embedding name', type: 'text', default: '', description: 'obsm key for the result. Blank uses the name derived from the graph, so embeddings from different graphs coexist.' },
           { name: 'min_dist', label: 'Min distance', type: 'number', default: 0.5, description: 'Minimum distance between points' },
           { name: 'spread', label: 'Spread', type: 'number', default: 1.0, description: 'Spread of embedding' },
           { name: 'n_components', label: 'Dimensions', type: 'number', default: 2, description: 'Number of dimensions' },
@@ -311,6 +317,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         description: 'Leiden clustering algorithm',
         prerequisites: ['neighbors'],
         params: [
+          { name: 'graph_key', label: 'kNN graph', type: 'graph_select', default: '', emptyLabel: 'Expression neighbors (default)', description: 'Which cell-cell graph to cluster. Clustering the spatial graph finds spatial domains rather than cell types.' },
           { name: 'resolution', label: 'Resolution', type: 'number', default: 0.5, description: 'Higher = more clusters' },
           { name: 'key_added', label: 'Column name', type: 'text', default: 'leiden', description: 'Name for cluster labels' },
         ],
@@ -781,7 +788,7 @@ export default function ScanpyModal() {
   const [pcaCreateBusy, setPcaCreateBusy] = useState<boolean>(false)
 
   // Combine neighbor graphs state
-  type NeighborGraphInfo = { key: string; label: string; n_edges: number }
+  type NeighborGraphInfo = { key: string; label: string; n_edges: number; suffix?: string }
   const [combineGraphs, setCombineGraphs] = useState<NeighborGraphInfo[]>([])
   const [combineSelected, setCombineSelected] = useState<Set<string>>(new Set())
   const [combineWeights, setCombineWeights] = useState<Record<string, number>>({})
@@ -796,6 +803,9 @@ export default function ScanpyModal() {
   type LayerInfo = { name: string; nnz: number; density: number; is_default?: boolean }
   const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
   const [availableGraphs, setAvailableGraphs] = useState<NeighborGraphInfo[]>([])
+  // The last output name this component filled in, so a name the user typed is
+  // never clobbered when they change the graph.
+  const autoNameRef = useRef<string | null>(null)
   const [availableObsColumns, setAvailableObsColumns] = useState<string[]>([])
   const [availableNumericObsColumns, setAvailableNumericObsColumns] = useState<string[]>([])
   const activeSlot = useStore((s) => s.activeSlot)
@@ -880,7 +890,7 @@ export default function ScanpyModal() {
   // Load layer + graph lists when any function that consumes them is selected.
   useEffect(() => {
     const needsLayers = ['smooth', 'gene_pca', 'gene_neighbors', 'build_gene_graph', 'sum_counts_by_pattern', 'sum_counts_by_species'].includes(selectedFunction)
-    const needsGraphs = ['smooth'].includes(selectedFunction)
+    const needsGraphs = ['smooth', 'umap', 'leiden'].includes(selectedFunction)
     if (!needsLayers && !needsGraphs) return
     if (needsLayers) {
       fetch(appendDataset(`${API_BASE}/scanpy/layers`))
@@ -895,6 +905,30 @@ export default function ScanpyModal() {
         .catch(() => setAvailableGraphs([]))
     }
   }, [selectedFunction, activeSlot, scanpyActionHistory])
+
+  // Name the result after the graph it came from, unless the user has typed
+  // their own. autoNameRef holds what we last filled in; if the field still
+  // matches, it is ours to replace.
+  useEffect(() => {
+    if (selectedFunction !== 'umap' && selectedFunction !== 'leiden') return
+    const base = selectedFunction === 'umap' ? 'X_umap' : 'leiden'
+    const graphKey = (paramValues.graph_key as string) || ''
+    const suffix = availableGraphs.find((g) => g.key === graphKey)?.suffix ?? ''
+    // UMAP's default-graph name is left blank on purpose — blank already means
+    // "derive it", and showing X_umap would imply the user chose it.
+    const derived = suffix
+      ? `${base}_${suffix}`
+      : (selectedFunction === 'umap' ? '' : base)
+
+    // Replaceable when blank, when it is still what we last wrote, or when it
+    // is the untouched default — Leiden's field starts at 'leiden' rather than
+    // empty, so without the last case it would never pick up a graph's name.
+    const current = (paramValues.key_added as string) ?? ''
+    if (current === '' || current === autoNameRef.current || current === base) {
+      autoNameRef.current = derived
+      if (current !== derived) handleParamChange('key_added', derived)
+    }
+  }, [selectedFunction, paramValues.graph_key, paramValues.key_added, availableGraphs])
 
   // Load available neighbor graphs when combine_neighbors is selected.
   useEffect(() => {
@@ -925,11 +959,22 @@ export default function ScanpyModal() {
       return
     }
 
+    // UMAP/Leiden list 'neighbors' as a prerequisite, meaning
+    // obsp['connectivities']. Picking a graph explicitly names its own, and a
+    // spatial-only dataset — the case the picker exists for — has no
+    // expression kNN at all, so the backend check would refuse a run it now
+    // accepts.
+    if ((selectedFunction === 'umap' || selectedFunction === 'leiden') &&
+        (paramValues.graph_key as string)) {
+      setPrereqStatus({ satisfied: true, missing: [] })
+      return
+    }
+
     fetch(appendDataset(`${API_BASE}/scanpy/prerequisites/${selectedFunction}`))
       .then((res) => res.json())
       .then(setPrereqStatus)
       .catch(() => setPrereqStatus({ satisfied: false, missing: ['unknown'] }))
-  }, [selectedFunction, functionDef, scanpyActionHistory])
+  }, [selectedFunction, functionDef, scanpyActionHistory, paramValues.graph_key])
 
   // Fetch boolean columns for gene subset selection
   useEffect(() => {
@@ -1315,7 +1360,8 @@ export default function ScanpyModal() {
         }
       } else if (data.n_clusters !== undefined) {
         // leiden cell clustering result
-        message = `Found ${data.n_clusters} clusters`
+        const over = data.graph_key ? ` over ${data.graph_key}` : ''
+        message = `Found ${data.n_clusters} clusters${over} → .obs["${data.key_added}"]`
       } else if (data.embedding_name && data.n_genes_used !== undefined) {
         // PCA with gene subset info
         const subsetInfo = data.gene_subset_type && data.gene_subset_type !== 'default'
@@ -2176,7 +2222,7 @@ export default function ScanpyModal() {
                             <option value="">No kNN graph found — run Spatial / Cell Neighbors first</option>
                           ) : (
                             <>
-                              <option value="">— pick a graph —</option>
+                              <option value="">{param.emptyLabel ?? '— pick a graph —'}</option>
                               {availableGraphs.map((g) => (
                                 <option key={g.key} value={g.key}>
                                   {g.label} ({g.key}, {g.n_edges.toLocaleString()} edges)

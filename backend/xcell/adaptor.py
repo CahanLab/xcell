@@ -7,6 +7,7 @@ analysis functions.
 """
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
@@ -244,6 +245,99 @@ def _contour_score_field(coords, gene_expr, log_transform, clip_percentiles,
         cell_vals[idx] = sub_vals
         vmax = max(vmax, sub_vmax)
     return cell_vals, vmax
+
+
+_CONN_SUFFIX = '_connectivities'
+
+
+def _graph_suffix(graph_key: str | None) -> str:
+    """Short name for a connectivity graph, used to name what it produces.
+
+    'connectivities' is the default graph, so it contributes no suffix and
+    UMAP/Leiden keep writing X_umap / leiden — nothing changes for a user who
+    never touches the picker. Every other graph is named after its prefix so
+    results from different graphs sit side by side instead of overwriting.
+    """
+    if not graph_key or graph_key == 'connectivities':
+        return ''
+    if graph_key.endswith(_CONN_SUFFIX):
+        return graph_key[: -len(_CONN_SUFFIX)]
+    return graph_key
+
+
+def _default_output_name(base: str, graph_key: str | None) -> str:
+    """'X_umap' + spatial_connectivities -> 'X_umap_spatial'."""
+    suffix = _graph_suffix(graph_key)
+    return f'{base}_{suffix}' if suffix else base
+
+
+# Where the synthesized neighbors entry lives while sc.tl.umap reads it. Also
+# emitted by codegen, so the exported notebook uses the same name.
+_GRAPH_META_KEY = '_xcell_graph'
+
+
+def _umap_neighbors_meta(adata, graph_key: str) -> dict[str, Any]:
+    """A ``uns['neighbors']``-shaped entry that ``sc.tl.umap`` will accept.
+
+    scanpy reads three fields without guarding them, and the graphs xcell
+    produces are each missing one:
+
+    - squidpy's ``uns['spatial_neighbors']`` has no ``params['method']``, and
+      ``tl.umap`` evaluates it to decide whether to warn -> ``KeyError``.
+    - ``combine_neighbor_graphs`` writes only the obsp matrix, no ``uns`` entry
+      at all, and ``NeighborsView`` requires ``distances_key`` to be present.
+      The matrix it names is never read — UMAP uses connectivities only — so a
+      key pointing at nothing is fine.
+
+    Start from any real entry that already points at this graph, so squidpy's
+    recorded ``n_neighbors`` reaches the exported notebook instead of an
+    invented one, then fill the gaps.
+    """
+    source: Mapping = {}
+    for entry in adata.uns.values():
+        if isinstance(entry, Mapping) and entry.get('connectivities_key') == graph_key:
+            source = entry
+            break
+
+    params = dict(source.get('params', {}))
+    params['method'] = 'umap'
+
+    # Without a representation scanpy falls through to _get_pca_or_small_x,
+    # which *computes and stores* a PCA when X_pca is missing and n_vars > 50.
+    # That would leave an embedding in the object that no recorded step made,
+    # so the exported notebook would not reproduce it. Reading .X costs nothing
+    # here: for method='umap' the matrix is not what drives the layout.
+    if 'use_rep' not in params and 'X_pca' not in adata.obsm:
+        params['use_rep'] = 'X'
+
+    suffix = _graph_suffix(graph_key)
+    return {
+        'connectivities_key': graph_key,
+        'distances_key': (source.get('distances_key')
+                          or (f'{suffix}_distances' if suffix else 'distances')),
+        'params': params,
+    }
+
+
+def _umap_call(adata, *, min_dist, spread, n_components, meta, key_added):
+    """``sc.tl.umap``, with a synthesized neighbors entry when one is needed."""
+    kwargs = {'min_dist': min_dist, 'spread': spread, 'n_components': n_components}
+    # key_added='X_umap' would move the params to uns['X_umap']; omitting it
+    # keeps scanpy's own uns['umap'], exactly as before this parameter existed.
+    if key_added != 'X_umap':
+        kwargs['key_added'] = key_added
+
+    if meta is None:
+        sc.tl.umap(adata, **kwargs)
+        return
+
+    adata.uns[_GRAPH_META_KEY] = meta
+    try:
+        sc.tl.umap(adata, neighbors_key=_GRAPH_META_KEY, **kwargs)
+    finally:
+        # A failed run must not leave a fabricated neighbors entry behind for
+        # the next tool that reads uns.
+        adata.uns.pop(_GRAPH_META_KEY, None)
 
 
 class DataAdaptor:
@@ -5374,6 +5468,7 @@ class DataAdaptor:
                     'key': key,
                     'label': label,
                     'n_edges': nnz,
+                    'suffix': _graph_suffix(key),
                 })
         graphs.sort(key=lambda g: (g['key'] != 'connectivities', g['key']))
         return graphs
@@ -5654,86 +5749,169 @@ class DataAdaptor:
         }, result)
         return result
 
+    def _require_graph(self, graph_key: str) -> None:
+        """Validate an obsp connectivity graph before any work starts."""
+        if graph_key not in self.adata.obsp:
+            available = [k for k in self.adata.obsp
+                         if k == 'connectivities' or k.endswith(_CONN_SUFFIX)]
+            raise ValueError(
+                f"Graph '{graph_key}' not found in obsp. "
+                f"Available: {available if available else 'none'}"
+            )
+        n = self.n_cells
+        shape = tuple(self.adata.obsp[graph_key].shape)
+        if shape != (n, n):
+            raise ValueError(
+                f"Graph '{graph_key}' has shape {shape}, expected ({n}, {n})."
+            )
+
     def run_umap(
         self,
         min_dist: float = 0.5,
         spread: float = 1.0,
         n_components: int = 2,
+        graph_key: str | None = None,
+        key_added: str | None = None,
         active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
-        """Compute UMAP embedding.
+        """Compute a UMAP embedding.
 
         Args:
-            min_dist: Minimum distance between points
-            spread: Spread of the embedding
-            n_components: Number of dimensions
+            min_dist: Minimum distance between points.
+            spread: Spread of the embedding.
+            n_components: Number of dimensions.
+            graph_key: obsp connectivity graph to embed. None uses whatever
+                ``uns['neighbors']`` points at — the expression kNN, and the
+                behaviour before this parameter existed. Any other graph
+                (spatial, or a Combine Neighbors result) reaches scanpy through
+                a synthesized entry; see :func:`_umap_neighbors_meta`.
+            key_added: obsm key for the result. None or blank derives it from
+                the graph: ``X_umap`` for the default, ``X_umap_<prefix>``
+                otherwise, so embeddings from different graphs coexist.
             active_cell_indices: If provided, compute UMAP on these cells only;
                 inactive cells get NaN coordinates.
 
         Returns:
-            Dict with operation status and embedding name
+            Dict with status, embedding_name, n_components, graph_key.
         """
-        # Check prerequisites
-        prereq = self.check_prerequisites('umap')
-        if not prereq['satisfied']:
-            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+        if graph_key:
+            # A named graph carries its own prerequisite. check_prerequisites
+            # looks for obsp['connectivities'], which a spatial-only dataset
+            # does not have — and that is the case this parameter exists for.
+            self._require_graph(graph_key)
+        else:
+            prereq = self.check_prerequisites('umap')
+            if not prereq['satisfied']:
+                raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        name = (key_added or '').strip() or _default_output_name('X_umap', graph_key)
+        meta = _umap_neighbors_meta(self.adata, graph_key) if graph_key else None
 
         cell_indices = self._validate_cell_indices(active_cell_indices)
         if cell_indices is not None:
-            # Build subset AnnData with PCA and neighbor graph
             import anndata as ad
-            pca_full = self.adata.obsm['X_pca']
-            adata_sub = ad.AnnData(obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
-            adata_sub.obsm['X_pca'] = pca_full[cell_indices]
+            adata_sub = ad.AnnData(
+                obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
+            if 'X_pca' in self.adata.obsm:
+                adata_sub.obsm['X_pca'] = self.adata.obsm['X_pca'][cell_indices]
 
-            # Extract subset neighbor graph from full-size obsp
-            for key in ['connectivities', 'distances']:
+            # Slice the graph this run actually uses. Hardcoding
+            # 'connectivities' here sliced the wrong matrix for any other
+            # choice, and nothing at all on a spatial-only dataset.
+            if meta is not None:
+                wanted = (meta['connectivities_key'], meta['distances_key'])
+            else:
+                wanted = ('connectivities', 'distances')
+            for key in wanted:
                 if key in self.adata.obsp:
                     full_mat = self.adata.obsp[key].tocsr()
                     adata_sub.obsp[key] = full_mat[np.ix_(cell_indices, cell_indices)]
 
-            if 'neighbors' in self.adata.uns:
+            if meta is None and 'neighbors' in self.adata.uns:
                 adata_sub.uns['neighbors'] = self.adata.uns['neighbors']
 
-            sc.tl.umap(adata_sub, min_dist=min_dist, spread=spread, n_components=n_components)
+            sub_meta = dict(meta) if meta is not None else None
+            if sub_meta is not None and sub_meta['params'].get('use_rep') == 'X':
+                # adata_sub deliberately has no .X — only the obsm block — so
+                # 'X' is not a readable representation here. X_pca is the only
+                # thing a subset run can offer.
+                if 'X_pca' not in adata_sub.obsm:
+                    raise ValueError(
+                        "UMAP on a cell selection needs X_pca — run PCA first."
+                    )
+                sub_meta['params'] = {**sub_meta['params'], 'use_rep': 'X_pca'}
 
-            # Store with NaN for inactive cells
+            _umap_call(adata_sub, min_dist=min_dist, spread=spread,
+                       n_components=n_components, meta=sub_meta, key_added='X_umap')
+
             full_umap = np.full((self.n_cells, n_components), np.nan)
             full_umap[cell_indices] = adata_sub.obsm['X_umap']
-            self.adata.obsm['X_umap'] = full_umap
+            self.adata.obsm[name] = full_umap
         else:
-            sc.tl.umap(self.adata, min_dist=min_dist, spread=spread, n_components=n_components)
+            _umap_call(self.adata, min_dist=min_dist, spread=spread,
+                       n_components=n_components, meta=meta, key_added=name)
 
         result = {
             'status': 'completed',
-            'embedding_name': 'X_umap',
+            'embedding_name': name,
             'n_components': n_components,
+            'graph_key': graph_key,
         }
-        self._log_action('umap', {'min_dist': min_dist, 'spread': spread, 'n_components': n_components},
-                         result, subset=cell_indices)
+        # Only record what differs from the default, so existing recordings and
+        # their exported notebooks stay byte-identical.
+        params: dict[str, Any] = {
+            'min_dist': min_dist, 'spread': spread, 'n_components': n_components,
+        }
+        if graph_key:
+            params['graph_key'] = graph_key
+            # Record the entry that was actually installed, rather than letting
+            # codegen re-derive it. The exported notebook then emits what really
+            # ran — including use_rep, without which the notebook would compute
+            # the same phantom PCA this method exists to avoid.
+            params['neighbors_meta'] = meta
+        if name != 'X_umap':
+            params['key_added'] = name
+        self._log_action('umap', params, result, subset=cell_indices)
         return result
 
     def run_leiden(
         self,
         resolution: float = 1.0,
         key_added: str = 'leiden',
+        graph_key: str | None = None,
         active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Run Leiden clustering.
 
         Args:
-            resolution: Resolution parameter (higher = more clusters)
-            key_added: Key to add to obs for cluster labels
+            resolution: Resolution parameter (higher = more clusters).
+            key_added: obs column for the labels. Left at its default, a
+                non-default graph derives its own name (``leiden_spatial``) so
+                clusterings from different graphs coexist.
+            graph_key: obsp connectivity graph to cluster. None uses
+                ``obsp['connectivities']`` via ``uns['neighbors']``, as before.
             active_cell_indices: If provided, cluster only these cells;
                 inactive cells are labeled 'unassigned'.
 
         Returns:
-            Dict with operation status and cluster info
+            Dict with status, key_added, n_clusters, resolution, graph_key.
         """
-        # Check prerequisites
-        prereq = self.check_prerequisites('leiden')
-        if not prereq['satisfied']:
-            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+        if graph_key:
+            self._require_graph(graph_key)
+        else:
+            prereq = self.check_prerequisites('leiden')
+            if not prereq['satisfied']:
+                raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        # key_added defaults to a string rather than None, so an explicit
+        # 'leiden' is indistinguishable from an unset one — treat the default
+        # value as unset and let the graph name the column.
+        name = (_default_output_name('leiden', graph_key)
+                if key_added == 'leiden' else key_added)
+        # sc.tl.leiden takes the adjacency directly; unlike UMAP it needs no
+        # synthesized uns entry. obsp and neighbors_key are mutually exclusive,
+        # so only one is ever passed.
+        graph_kwargs = {'obsp': graph_key} if graph_key else {}
 
         cell_indices = self._validate_cell_indices(active_cell_indices)
         if cell_indices is not None:
@@ -5741,40 +5919,48 @@ class DataAdaptor:
             import anndata as ad
             adata_sub = ad.AnnData(obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
 
-            # Extract subset neighbor graph from full-size obsp
-            for key in ['connectivities', 'distances']:
+            # Slice the graph this run actually uses. Hardcoding
+            # 'connectivities' sliced the wrong matrix for any other choice,
+            # and nothing at all on a spatial-only dataset.
+            wanted = (graph_key,) if graph_key else ('connectivities', 'distances')
+            for key in wanted:
                 if key in self.adata.obsp:
                     full_mat = self.adata.obsp[key].tocsr()
                     adata_sub.obsp[key] = full_mat[np.ix_(cell_indices, cell_indices)]
 
-            if 'neighbors' in self.adata.uns:
+            if not graph_key and 'neighbors' in self.adata.uns:
                 adata_sub.uns['neighbors'] = self.adata.uns['neighbors']
 
-            sc.tl.leiden(adata_sub, resolution=resolution, key_added=key_added)
+            sc.tl.leiden(adata_sub, resolution=resolution, key_added=name,
+                         **graph_kwargs)
 
             # Map labels back with 'unassigned' for inactive cells
-            sub_categories = list(adata_sub.obs[key_added].cat.categories)
+            sub_categories = list(adata_sub.obs[name].cat.categories)
             all_categories = sub_categories + ['unassigned']
             full_labels = ['unassigned'] * self.n_cells
             for i, idx in enumerate(cell_indices):
-                full_labels[idx] = str(adata_sub.obs[key_added].iloc[i])
-            self.adata.obs[key_added] = pd.Categorical(
+                full_labels[idx] = str(adata_sub.obs[name].iloc[i])
+            self.adata.obs[name] = pd.Categorical(
                 full_labels, categories=all_categories,
             )
 
             n_clusters = len(sub_categories)
         else:
-            sc.tl.leiden(self.adata, resolution=resolution, key_added=key_added)
-            n_clusters = len(self.adata.obs[key_added].cat.categories)
+            sc.tl.leiden(self.adata, resolution=resolution, key_added=name,
+                         **graph_kwargs)
+            n_clusters = len(self.adata.obs[name].cat.categories)
 
         result = {
             'status': 'completed',
-            'key_added': key_added,
+            'key_added': name,
             'n_clusters': n_clusters,
             'resolution': resolution,
+            'graph_key': graph_key,
         }
-        self._log_action('leiden', {'resolution': resolution, 'key_added': key_added},
-                         result, subset=cell_indices)
+        params: dict[str, Any] = {'resolution': resolution, 'key_added': name}
+        if graph_key:
+            params['graph_key'] = graph_key
+        self._log_action('leiden', params, result, subset=cell_indices)
         return result
 
     # =========================================================================

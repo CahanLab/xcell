@@ -240,6 +240,16 @@ warn outright if you point them at a z-scored layer.
 
   Re-running PCA clears all derived PC subsets (with a toast) since their column indices refer to the previous eigenvectors.
 
+  **UMAP and Leiden both take a kNN graph.** The **kNN graph** dropdown lists
+  every connectivity graph in the dataset — the expression neighbors from step 3
+  (the default), the graph from **Spatial Neighbors**, and anything built with
+  **Combine Neighbors**. Clustering the *spatial* graph finds spatial domains —
+  contiguous regions of tissue — rather than cell types, and needs neither PCA
+  nor step 3, so it works on a spatial dataset the moment Spatial Neighbors has
+  run. Results are named after the graph (`X_umap_spatial`, `leiden_spatial`),
+  so an expression map and a spatial one sit side by side instead of
+  overwriting each other; the name is editable.
+
 ### 6. View Clustering Results
 
 - In **Cell Manager**, select the `leiden` column to color by cluster
@@ -365,8 +375,8 @@ Typical workflow for "find DEGs by expression state in a region": lasso a region
 
 - After computing both **Neighbors** (Cell Analysis) and **Spatial Neighbors** (Spatial Analysis), open **Analyze** → **Cell Analysis** → **Combine Neighbors**
 - Select two or more graphs and set their weights (default: equal weights; weights are normalized to sum to 1)
-- Click **Combine graphs** — the combined graph becomes the default `connectivities` slot
-- Run **Leiden** (or **UMAP**) afterward and clustering/embedding will reflect both graphs, encouraging spatially neighboring cells to cluster together when the spatial graph is weighted in
+- Click **Combine graphs** — by default the combined graph goes to its own `<name>_connectivities` slot; targeting `connectivities` overwrites the expression graph in place
+- Run **Leiden** (or **UMAP**) afterward and pick the combined graph from their **kNN graph** dropdown; clustering/embedding then reflects both graphs, encouraging spatially neighboring cells to cluster together when the spatial graph is weighted in
 
 ### 11. Run Gene Analysis
 

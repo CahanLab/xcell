@@ -262,6 +262,43 @@ def _scanpy(fn: str, only: tuple[str, ...] | None = None):
     return build
 
 
+# Must equal adaptor._GRAPH_META_KEY. Spelled twice rather than imported: this
+# module promises no adaptor and no AnnData, and importing the constant would
+# drag scanpy in behind it. test_codegen asserts the two stay equal.
+_GRAPH_META_KEY = '_xcell_graph'
+
+
+def _code_umap(step: Step) -> list[str]:
+    """UMAP, plus the neighbors entry a non-default graph needs.
+
+    ``sc.tl.umap`` has no ``obsp=``; it reads ``uns[neighbors_key]``. The
+    adaptor builds that entry, hands it over, and deletes it — a notebook has
+    to build it too, or ``neighbors_key`` names nothing. Emitting both is what
+    keeps this ``exact``. The dict is the one that really ran, recorded at the
+    time, rather than a re-derivation that could drift from it.
+    """
+    p = step.params
+    call = _call('sc.tl.umap', p,
+                 ('min_dist', 'spread', 'n_components', 'key_added'))
+    meta = p.get('neighbors_meta')
+    if not meta:
+        return [call]
+    return [
+        f'{ADATA}.uns[{_lit(_GRAPH_META_KEY)}] = {_lit(meta)}',
+        call[:-1] + f', neighbors_key={_lit(_GRAPH_META_KEY)})',
+    ]
+
+
+def _code_leiden(step: Step) -> list[str]:
+    """Leiden takes the adjacency directly, so this stays a one-liner."""
+    p = step.params
+    call = _call('sc.tl.leiden', p, ('resolution', 'key_added'))
+    graph_key = p.get('graph_key')
+    if not graph_key:
+        return [call]
+    return [call[:-1] + f', obsp={_lit(graph_key)})']
+
+
 # --- the registry ---------------------------------------------------------
 
 REGISTRY: dict[str, ActionSpec] = {
@@ -350,18 +387,22 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'umap': ActionSpec(
         label='UMAP', fidelity=EXACT, imports=SCANPY,
-        code=_scanpy('sc.tl.umap', ('min_dist', 'spread', 'n_components')),
+        code=_code_umap,
         summary=lambda p, r: (
             f"UMAP embedding in {_n(p.get('n_components', 2))} dimensions "
-            f"(min_dist {p.get('min_dist')}, spread {p.get('spread')}) → `.obsm['X_umap']`."
+            f"(min_dist {p.get('min_dist')}, spread {p.get('spread')})"
+            + (f" over `{p['graph_key']}`" if p.get('graph_key') else '')
+            + f" → `.obsm['{r.get('embedding_name', 'X_umap')}']`."
         ),
     ),
     'leiden': ActionSpec(
         label='Leiden clustering', fidelity=EXACT, imports=SCANPY,
-        code=_scanpy('sc.tl.leiden', ('resolution', 'key_added')),
+        code=_code_leiden,
         summary=lambda p, r: (
-            f"Leiden clustering at resolution {p.get('resolution')} → "
-            f"{_n(r.get('n_clusters'))} clusters in `.obs['{p.get('key_added', 'leiden')}']`."
+            f"Leiden clustering at resolution {p.get('resolution')}"
+            + (f" over `{p['graph_key']}`" if p.get('graph_key') else '')
+            + f" → {_n(r.get('n_clusters'))} clusters in "
+            f"`.obs['{p.get('key_added', 'leiden')}']`."
         ),
     ),
 

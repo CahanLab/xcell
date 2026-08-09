@@ -1679,12 +1679,15 @@ class UmapRequest(BaseModel):
     min_dist: float = 0.5
     spread: float = 1.0
     n_components: int = 2
+    graph_key: str | None = None
+    key_added: str | None = None
     active_cell_indices: list[int] | None = None
 
 
 class LeidenRequest(BaseModel):
     resolution: float = 1.0
     key_added: str = 'leiden'
+    graph_key: str | None = None
     active_cell_indices: list[int] | None = None
 
 
@@ -2228,6 +2231,8 @@ def run_umap(request: UmapRequest, dataset: str | None = Query(None)):
             min_dist=request.min_dist,
             spread=request.spread,
             n_components=request.n_components,
+            graph_key=request.graph_key,
+            key_added=request.key_added,
             active_cell_indices=request.active_cell_indices,
         )
     except ValueError as e:
@@ -2250,6 +2255,7 @@ def run_leiden(request: LeidenRequest, dataset: str | None = Query(None)):
         return adaptor.run_leiden(
             resolution=request.resolution,
             key_added=request.key_added,
+            graph_key=request.graph_key,
             active_cell_indices=request.active_cell_indices,
         )
     except ValueError as e:

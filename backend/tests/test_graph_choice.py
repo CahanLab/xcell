@@ -247,3 +247,66 @@ def test_umap_on_a_selection_slices_the_chosen_graph():
     E = a.adata.obsm[res["embedding_name"]]
     assert not np.isnan(E[active]).any()
     assert np.isnan(E[20:]).all()
+
+
+# --- Leiden ---------------------------------------------------------------
+
+def test_leiden_on_spatial_graph_writes_its_own_column():
+    a = _adaptor()
+    a.run_pca(n_comps=5)
+    a.run_neighbors(n_neighbors=5)
+    a.run_leiden(resolution=0.5)
+    a.run_spatial_neighbors(n_neighs=6, coord_type="generic")
+
+    res = a.run_leiden(resolution=0.5, graph_key="spatial_connectivities")
+
+    assert res["key_added"] == "leiden_spatial"
+    assert res["graph_key"] == "spatial_connectivities"
+    assert "leiden_spatial" in a.adata.obs
+    assert "leiden" in a.adata.obs           # the expression clustering survives
+    assert res["n_clusters"] >= 2
+
+
+def test_leiden_on_spatial_graph_without_pca_or_expression_knn():
+    a = _spatial_only()
+    res = a.run_leiden(resolution=0.5, graph_key="spatial_connectivities")
+    assert res["n_clusters"] >= 2
+    assert "connectivities" not in a.adata.obsp
+
+
+def test_leiden_explicit_name_wins_over_the_derived_one():
+    a = _adaptor()
+    a.run_spatial_neighbors(n_neighs=6, coord_type="generic")
+    res = a.run_leiden(resolution=0.5, key_added="domains",
+                       graph_key="spatial_connectivities")
+    assert res["key_added"] == "domains"
+    assert "domains" in a.adata.obs
+
+
+def test_leiden_default_path_is_unchanged():
+    a = _adaptor()
+    a.run_pca(n_comps=5)
+    a.run_neighbors(n_neighbors=5)
+    res = a.run_leiden(resolution=0.5)
+
+    assert res["key_added"] == "leiden"
+    assert a._action_history[-1]["params"] == {"resolution": 0.5, "key_added": "leiden"}
+
+
+def test_leiden_rejects_an_unknown_graph():
+    a = _adaptor()
+    a.run_pca(n_comps=5)
+    a.run_neighbors(n_neighbors=5)
+    with pytest.raises(ValueError):
+        a.run_leiden(graph_key="nope_connectivities")
+
+
+def test_leiden_on_a_selection_slices_the_chosen_graph():
+    a = _adaptor()
+    a.run_spatial_neighbors(n_neighs=6, coord_type="generic")
+    active = list(range(20))
+    res = a.run_leiden(resolution=0.5, graph_key="spatial_connectivities",
+                       active_cell_indices=active)
+    labels = a.adata.obs[res["key_added"]]
+    assert set(labels.iloc[20:]) == {"unassigned"}
+    assert "unassigned" not in set(labels.iloc[:20])

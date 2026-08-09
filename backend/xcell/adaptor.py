@@ -5873,23 +5873,40 @@ class DataAdaptor:
         self,
         resolution: float = 1.0,
         key_added: str = 'leiden',
+        graph_key: str | None = None,
         active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Run Leiden clustering.
 
         Args:
-            resolution: Resolution parameter (higher = more clusters)
-            key_added: Key to add to obs for cluster labels
+            resolution: Resolution parameter (higher = more clusters).
+            key_added: obs column for the labels. Left at its default, a
+                non-default graph derives its own name (``leiden_spatial``) so
+                clusterings from different graphs coexist.
+            graph_key: obsp connectivity graph to cluster. None uses
+                ``obsp['connectivities']`` via ``uns['neighbors']``, as before.
             active_cell_indices: If provided, cluster only these cells;
                 inactive cells are labeled 'unassigned'.
 
         Returns:
-            Dict with operation status and cluster info
+            Dict with status, key_added, n_clusters, resolution, graph_key.
         """
-        # Check prerequisites
-        prereq = self.check_prerequisites('leiden')
-        if not prereq['satisfied']:
-            raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+        if graph_key:
+            self._require_graph(graph_key)
+        else:
+            prereq = self.check_prerequisites('leiden')
+            if not prereq['satisfied']:
+                raise ValueError(f"Prerequisites not met: {prereq['missing']}")
+
+        # key_added defaults to a string rather than None, so an explicit
+        # 'leiden' is indistinguishable from an unset one — treat the default
+        # value as unset and let the graph name the column.
+        name = (_default_output_name('leiden', graph_key)
+                if key_added == 'leiden' else key_added)
+        # sc.tl.leiden takes the adjacency directly; unlike UMAP it needs no
+        # synthesized uns entry. obsp and neighbors_key are mutually exclusive,
+        # so only one is ever passed.
+        graph_kwargs = {'obsp': graph_key} if graph_key else {}
 
         cell_indices = self._validate_cell_indices(active_cell_indices)
         if cell_indices is not None:
@@ -5897,40 +5914,48 @@ class DataAdaptor:
             import anndata as ad
             adata_sub = ad.AnnData(obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
 
-            # Extract subset neighbor graph from full-size obsp
-            for key in ['connectivities', 'distances']:
+            # Slice the graph this run actually uses. Hardcoding
+            # 'connectivities' sliced the wrong matrix for any other choice,
+            # and nothing at all on a spatial-only dataset.
+            wanted = (graph_key,) if graph_key else ('connectivities', 'distances')
+            for key in wanted:
                 if key in self.adata.obsp:
                     full_mat = self.adata.obsp[key].tocsr()
                     adata_sub.obsp[key] = full_mat[np.ix_(cell_indices, cell_indices)]
 
-            if 'neighbors' in self.adata.uns:
+            if not graph_key and 'neighbors' in self.adata.uns:
                 adata_sub.uns['neighbors'] = self.adata.uns['neighbors']
 
-            sc.tl.leiden(adata_sub, resolution=resolution, key_added=key_added)
+            sc.tl.leiden(adata_sub, resolution=resolution, key_added=name,
+                         **graph_kwargs)
 
             # Map labels back with 'unassigned' for inactive cells
-            sub_categories = list(adata_sub.obs[key_added].cat.categories)
+            sub_categories = list(adata_sub.obs[name].cat.categories)
             all_categories = sub_categories + ['unassigned']
             full_labels = ['unassigned'] * self.n_cells
             for i, idx in enumerate(cell_indices):
-                full_labels[idx] = str(adata_sub.obs[key_added].iloc[i])
-            self.adata.obs[key_added] = pd.Categorical(
+                full_labels[idx] = str(adata_sub.obs[name].iloc[i])
+            self.adata.obs[name] = pd.Categorical(
                 full_labels, categories=all_categories,
             )
 
             n_clusters = len(sub_categories)
         else:
-            sc.tl.leiden(self.adata, resolution=resolution, key_added=key_added)
-            n_clusters = len(self.adata.obs[key_added].cat.categories)
+            sc.tl.leiden(self.adata, resolution=resolution, key_added=name,
+                         **graph_kwargs)
+            n_clusters = len(self.adata.obs[name].cat.categories)
 
         result = {
             'status': 'completed',
-            'key_added': key_added,
+            'key_added': name,
             'n_clusters': n_clusters,
             'resolution': resolution,
+            'graph_key': graph_key,
         }
-        self._log_action('leiden', {'resolution': resolution, 'key_added': key_added},
-                         result, subset=cell_indices)
+        params: dict[str, Any] = {'resolution': resolution, 'key_added': name}
+        if graph_key:
+            params['graph_key'] = graph_key
+        self._log_action('leiden', params, result, subset=cell_indices)
         return result
 
     # =========================================================================

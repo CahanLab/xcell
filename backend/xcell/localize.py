@@ -44,11 +44,34 @@ AGGREGATIONS = ('weighted_mean', 'median', 'best_match', 'densest', 'injective')
 # many cells are being mapped, and gives progress something to report.
 _CHUNK = 2048
 
-# Injective assignment needs the whole query x reference similarity matrix at
-# once; the chunked top-k path never materializes it. 1e8 float32 entries is
-# 400 MB, which is the ceiling this refuses past. Time is not the binding
-# constraint: 2,683 x 9,773 (26 M entries, 105 MB) solves in 0.2 s.
-_MAX_INJECTIVE_ENTRIES = 100_000_000
+# ...and bounded regardless of how many reference spots there are, which the row
+# count alone does not do: 2,048 rows against a 100,000-spot reference is a
+# 820 MB transient block, for every aggregation rather than only the assigning
+# one. 2e7 float32 entries is 80 MB.
+_MAX_BLOCK_ENTRIES = 20_000_000
+
+# Below this, the dense solver is affordable and exactly optimal, so it stays.
+# 4e7 entries is ~480 MB peak — scipy converts its input to float64 internally,
+# so a float32 matrix costs 12 bytes per entry, not 4 (measured: +210 MB on top
+# of a 105 MB array).
+#
+# Set by what already works rather than by a round number: the E11.5 limb pair
+# is 2.6e7 entries and runs dense today, so a lower ceiling would push a
+# currently-exact case onto the approximate path — a regression dressed as a
+# memory saving. The candidate path takes over precisely where the alternative
+# used to be a refusal.
+_DENSE_MAX_ENTRIES = 40_000_000
+
+# Candidates per cell for the sparse path. Measured on the E11.5 limb pair
+# (2,683 x 9,773): 128 candidates put the objective 0.18% below optimal with 87%
+# of cells on the identical spot, using 4.1 MB against 315 MB — and the
+# map-quality metrics cannot tell the two apart at all.
+_CANDIDATES = 128
+
+# The candidate graph's own ceiling: n_query x candidates edges, each an index
+# plus a float64 cost. 5e7 edges is ~600 MB, so the refusal now fires around
+# 400,000 cells rather than around 10,000.
+_MAX_CANDIDATE_EDGES = 50_000_000
 
 
 @dataclass
@@ -61,6 +84,11 @@ class Projection:
     neighbor_indices: np.ndarray     # (n_query, k) into the reference
     sections: np.ndarray | None      # (n_query,) assigned section label, or None
     n_unplaced: int
+    # How an injective assignment was solved, and over how many candidates.
+    # 'exact' is provably optimal; 'candidate' is near-optimal, and the
+    # difference is reported rather than assumed away.
+    assignment: str | None = None
+    n_candidates: int | None = None
 
 
 # --- transforms -----------------------------------------------------------
@@ -221,11 +249,12 @@ def injective_feasibility(n_query: int, n_ref: int) -> str | None:
             f'cell: {n_query:,} cells against {n_ref:,} spots. Use best_match, '
             f'or subsample the query.'
         )
-    if n_query * n_ref > _MAX_INJECTIVE_ENTRIES:
+    if n_query * min(_CANDIDATES, n_ref) > _MAX_CANDIDATE_EDGES:
         return (
-            f'Injective assignment holds the whole {n_query:,} x {n_ref:,} '
-            f'similarity matrix in memory, which is beyond what this refuses to '
-            f'allocate. Subsample the query or the reference, or use best_match.'
+            f'Injective assignment would need a candidate graph of about '
+            f'{n_query * min(_CANDIDATES, n_ref):,} edges for {n_query:,} cells, '
+            f'which is beyond what this refuses to allocate in memory. '
+            f'Subsample the query, or use best_match.'
         )
     return None
 
@@ -275,7 +304,107 @@ def injective_assignment(similarity: np.ndarray) -> np.ndarray:
     return out
 
 
+def _feasible_seed(cand_idx: np.ndarray, best_sim: np.ndarray, n_ref: int) -> np.ndarray:
+    """Some injective assignment — any one — over the candidate lists.
+
+    Its only job is to exist. Adding these edges to the candidate graph makes a
+    full matching a theorem rather than something to hope for, and the optimizer
+    can only improve on it. Without it, a top-c graph on real data had no full
+    matching at any c up to 64: many query cells rank the same well-recovered
+    spots highest, so their candidate sets overlap and Hall's condition fails —
+    which is the very pile-up injective exists to remove.
+
+    Cells choose in descending order of their best similarity, so the most
+    confident cells are the ones that get their first choice.
+    """
+    n_query = cand_idx.shape[0]
+    used = np.zeros(n_ref, dtype=bool)
+    out = np.full(n_query, -1, dtype=np.int64)
+
+    for i in np.argsort(-np.asarray(best_sim)):
+        for j in cand_idx[i]:
+            if not used[j]:
+                out[i] = j
+                used[j] = True
+                break
+
+    stranded = np.flatnonzero(out < 0)
+    if len(stranded):
+        # Every candidate of these cells was taken. There is always a spot left
+        # over — n_ref >= n_query is checked before any of this runs.
+        out[stranded] = np.flatnonzero(~used)[:len(stranded)]
+    return out
+
+
+def candidate_assignment(cand_idx, cand_sim, n_ref: int) -> np.ndarray:
+    """Injective assignment over each cell's best candidates, not every spot.
+
+    The optimal assignment overwhelmingly uses each cell's few best spots, so
+    restricting the problem to them costs almost nothing and removes the memory
+    wall entirely: on the E11.5 limb pair, 4.1 MB against 315 MB, an objective
+    0.18% below optimal, 87% of cells on the identical spot, and map-quality
+    metrics that cannot separate the two.
+
+    It is **near-optimal, not optimal**. Callers report which path produced an
+    assignment for exactly that reason.
+
+    Args:
+        cand_idx: ``(n_query, c)`` reference indices, best first.
+        cand_sim: ``(n_query, c)`` their similarities, larger being more alike.
+        n_ref: how many reference spots exist in total.
+
+    Returns:
+        ``(n_query,)`` column index per row, all distinct.
+    """
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import min_weight_full_bipartite_matching
+
+    cand_idx = np.asarray(cand_idx, dtype=np.int64)
+    cand_sim = np.asarray(cand_sim, dtype=float)
+    n_query, c = cand_idx.shape
+
+    problem = injective_feasibility(n_query, n_ref)
+    if problem:
+        raise ValueError(problem)
+
+    seed = _feasible_seed(cand_idx, cand_sim.max(axis=1), n_ref)
+
+    rows = np.concatenate([np.repeat(np.arange(n_query), c), np.arange(n_query)])
+    cols = np.concatenate([cand_idx.ravel(), seed])
+    # A stranded seed edge is not in the candidate list, so its similarity was
+    # never computed. Scoring it below every candidate keeps the solver away
+    # from it unless a cell genuinely has nothing else left.
+    sims = np.concatenate([
+        cand_sim.ravel(),
+        np.full(n_query, float(cand_sim.min()) - 1.0),
+    ])
+
+    # An edge is an edge. Building the CSR with repeats *sums* them, and most
+    # seed edges are also candidates, so their costs would double and the solver
+    # would avoid exactly the edges it should prefer — measured at 12% of the
+    # objective. np.unique keeps the first occurrence, and candidates come first
+    # in the concatenation above, so the real similarity is the one kept.
+    _, keep = np.unique(rows.astype(np.int64) * n_ref + cols, return_index=True)
+    rows, cols, sims = rows[keep], cols[keep], sims[keep]
+
+    # Maximize similarity by minimizing its complement. The +1e-9 matters: a
+    # stored zero reads as "no edge" to the matcher, so the best edge in the
+    # graph would silently disappear.
+    cost = (float(sims.max()) - sims) + 1e-9
+    matrix = csr_matrix((cost, (rows, cols)), shape=(n_query, n_ref))
+
+    row_ind, col_ind = min_weight_full_bipartite_matching(matrix)
+    out = np.empty(n_query, dtype=np.int64)
+    out[row_ind] = col_ind
+    return out
+
+
 # --- projection -----------------------------------------------------------
+
+def _chunk_rows(n_ref: int) -> int:
+    """How many query cells to score at once against this many spots."""
+    return max(1, min(_CHUNK, _MAX_BLOCK_ENTRIES // max(int(n_ref), 1)))
+
 
 def _tissue_radius(coords: np.ndarray) -> float:
     """RMS distance of the reference cells from their own centroid.
@@ -351,26 +480,41 @@ def project_knn(
     r = _prepare_for_metric(transform_expression(ref_expr, transform), metric)
 
     n_query = q.shape[0]
+    n_ref = r.shape[0]
     idx = np.empty((n_query, k), dtype=np.int64)
     sims = np.empty((n_query, k), dtype=float)
 
-    # The chunked path keeps only the top k, so injective assignment — which is
-    # a global decision — needs the blocks kept as they are computed. Storing
-    # them costs memory, not a second pass.
-    full = np.empty((n_query, r.shape[0]), dtype=np.float32) if needs_full else None
+    # Assignment is a global decision, so it needs more than the k neighbours
+    # the confidence score is measured over. Dense keeps the whole matrix and is
+    # exactly optimal; candidates keep each row's best few, which is all the
+    # optimum turns out to use, at a fraction of the memory.
+    use_dense = needs_full and n_query * n_ref <= _DENSE_MAX_ENTRIES
+    n_cand = min(_CANDIDATES, n_ref) if (needs_full and not use_dense) else 0
+    take = max(k, n_cand)
 
-    for start in range(0, n_query, _CHUNK):
-        stop = min(start + _CHUNK, n_query)
+    full = np.empty((n_query, n_ref), dtype=np.float32) if use_dense else None
+    cand_idx = np.empty((n_query, n_cand), dtype=np.int64) if n_cand else None
+    cand_sim = np.empty((n_query, n_cand), dtype=float) if n_cand else None
+
+    chunk = _chunk_rows(n_ref)
+    for start in range(0, n_query, chunk):
+        stop = min(start + chunk, n_query)
         block = _similarity_block(q[start:stop], r, metric)
         if full is not None:
             full[start:stop] = block
-        # argpartition for the top-k, then order those k properly.
-        part = np.argpartition(-block, k - 1, axis=1)[:, :k]
+        # One argpartition serves both readers: the k neighbours the confidence
+        # score needs, and the wider candidate set the assignment chooses among.
+        part = np.argpartition(-block, take - 1, axis=1)[:, :take]
         rows = np.arange(stop - start)[:, None]
         part_sims = block[rows, part]
         order = np.argsort(-part_sims, axis=1)
-        idx[start:stop] = part[rows, order]
-        sims[start:stop] = part_sims[rows, order]
+        part = part[rows, order]
+        part_sims = part_sims[rows, order]
+        idx[start:stop] = part[:, :k]
+        sims[start:stop] = part_sims[:, :k]
+        if cand_idx is not None:
+            cand_idx[start:stop] = part[:, :n_cand]
+            cand_sim[start:stop] = part_sims[:, :n_cand]
         if progress is not None:
             progress(stop / n_query, f'Matched {stop:,} of {n_query:,} cells')
 
@@ -397,10 +541,18 @@ def project_knn(
             weights[i] = weights[i] / total if total > 1e-12 else keep / keep.sum()
         sections_out = sections_out.astype(str)
 
+    assignment_kind: str | None = None
+    n_candidates_used: int | None = None
     if needs_full:
         if progress is not None:
             progress(1.0, f'Assigning {n_query:,} cells to distinct spots')
-        assigned = injective_assignment(full)
+        if full is not None:
+            assigned = injective_assignment(full)
+            assignment_kind = 'exact'
+        else:
+            assigned = candidate_assignment(cand_idx, cand_sim, n_ref)
+            assignment_kind = 'candidate'
+            n_candidates_used = n_cand
         coords = ref_coords[assigned].astype(float)
         if sections_out is not None:
             # The assignment ranges over the whole reference, so the honest
@@ -437,6 +589,8 @@ def project_knn(
         neighbor_indices=idx,
         sections=sections_out,
         n_unplaced=n_unplaced,
+        assignment=assignment_kind,
+        n_candidates=n_candidates_used,
     )
 
 

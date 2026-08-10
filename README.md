@@ -686,6 +686,16 @@ assumes the query's composition matches the tissue's, which dissociation makes
 untrue in a way that pushes over-represented types where they do not belong. It
 fixes pile-up, not placement.
 
+On a large pair, `injective` assigns over each cell's **best candidate spots**
+rather than every spot, because solving exactly means holding the whole query ×
+reference similarity matrix at once — 12 GB for 50,000 cells against 20,000
+spots. Restricting to each cell's 128 best costs almost nothing: measured on the
+limb pair, the total similarity lands 0.18% below the exact answer with 87% of
+cells on the identical spot, and the Map quality numbers cannot tell the two
+apart. Every cell still gets its own spot. Below the size where the exact solver
+is affordable nothing changes, and the run says which one produced it — a
+near-optimal answer should never be read as an exact one.
+
 Similarity can be computed over every shared gene, a `.var` flag on the
 reference (`spatially_variable` from Spatial Autocorrelation is the principled
 choice — those are the genes carrying positional information), or a gene set you

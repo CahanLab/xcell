@@ -44,6 +44,12 @@ AGGREGATIONS = ('weighted_mean', 'median', 'best_match', 'densest', 'injective')
 # many cells are being mapped, and gives progress something to report.
 _CHUNK = 2048
 
+# ...and bounded regardless of how many reference spots there are, which the row
+# count alone does not do: 2,048 rows against a 100,000-spot reference is a
+# 820 MB transient block, for every aggregation rather than only the assigning
+# one. 2e7 float32 entries is 80 MB.
+_MAX_BLOCK_ENTRIES = 20_000_000
+
 # Below this, the dense solver is affordable and exactly optimal, so it stays.
 # 4e7 entries is ~480 MB peak — scipy converts its input to float64 internally,
 # so a float32 matrix costs 12 bytes per entry, not 4 (measured: +210 MB on top
@@ -395,6 +401,11 @@ def candidate_assignment(cand_idx, cand_sim, n_ref: int) -> np.ndarray:
 
 # --- projection -----------------------------------------------------------
 
+def _chunk_rows(n_ref: int) -> int:
+    """How many query cells to score at once against this many spots."""
+    return max(1, min(_CHUNK, _MAX_BLOCK_ENTRIES // max(int(n_ref), 1)))
+
+
 def _tissue_radius(coords: np.ndarray) -> float:
     """RMS distance of the reference cells from their own centroid.
 
@@ -485,8 +496,9 @@ def project_knn(
     cand_idx = np.empty((n_query, n_cand), dtype=np.int64) if n_cand else None
     cand_sim = np.empty((n_query, n_cand), dtype=float) if n_cand else None
 
-    for start in range(0, n_query, _CHUNK):
-        stop = min(start + _CHUNK, n_query)
+    chunk = _chunk_rows(n_ref)
+    for start in range(0, n_query, chunk):
+        stop = min(start + chunk, n_query)
         block = _similarity_block(q[start:stop], r, metric)
         if full is not None:
             full[start:stop] = block

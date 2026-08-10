@@ -804,3 +804,34 @@ def test_both_paths_agree_on_this_problem(monkeypatch):
     approx = project_knn(q_expr, ref_expr, ref_coords, k=10, aggregation='injective')
     agree = float(np.mean(np.all(exact.coords == approx.coords, axis=1)))
     assert agree > 0.9, agree
+
+
+def test_the_chunk_shrinks_as_the_reference_grows():
+    """A fixed 2,048-row chunk is 820 MB of transient block against a
+    100,000-spot reference, which blocks every aggregation and not just the
+    assigning one."""
+    from xcell.localize import _chunk_rows
+    assert _chunk_rows(1_000) == 2048           # small reference: unchanged
+    assert _chunk_rows(100_000) == 200
+    assert _chunk_rows(50_000_000) == 1         # never zero
+
+
+def test_chunking_does_not_change_which_neighbours_are_chosen(monkeypatch):
+    """The chunk must not carry state between rows — the map is the same however
+    it is sliced.
+
+    Selection is exactly invariant and that is what is asserted. The coordinates
+    are equal only to about 1e-5 of the tissue, and that is not a bug to chase:
+    BLAS accumulates a 1-row product differently from a 97-row one, so the last
+    bits of the similarities differ. The same noise already exists today between
+    a 2,000-cell and a 3,000-cell query, since both are chunked. A real
+    regression here would move cells by whole tissue units, not by 1e-5 of one.
+    """
+    import xcell.localize as lz
+    ref_expr, ref_coords, q_expr, _ = _matched(n_query=97)
+    big = project_knn(q_expr, ref_expr, ref_coords, k=10)
+    monkeypatch.setattr(lz, '_MAX_BLOCK_ENTRIES', 400)     # forces a chunk of 1
+    small = project_knn(q_expr, ref_expr, ref_coords, k=10)
+    assert np.array_equal(big.neighbor_indices, small.neighbor_indices)
+    assert np.allclose(big.coords, small.coords, atol=1e-3)   # tissue spans 100
+    assert np.allclose(big.confidence, small.confidence, atol=1e-4)

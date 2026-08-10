@@ -50,7 +50,7 @@ measured while designing this:
 **Module API**, fixed here so every task agrees:
 
 ```python
-_DENSE_MAX_ENTRIES  = 20_000_000     # dense path ceiling (~240 MB peak)
+_DENSE_MAX_ENTRIES  = 40_000_000     # dense path ceiling (~480 MB peak)
 _CANDIDATES         = 128            # candidates per cell
 _MAX_CANDIDATE_EDGES = 50_000_000    # candidate graph ceiling
 _MAX_BLOCK_ENTRIES  = 20_000_000     # transient chunk block ceiling
@@ -209,10 +209,16 @@ In `backend/xcell/localize.py`, replace the `_MAX_INJECTIVE_ENTRIES` constant
 
 ```python
 # Below this, the dense solver is affordable and exactly optimal, so it stays.
-# 2e7 entries is ~240 MB peak — scipy converts its input to float64 internally,
+# 4e7 entries is ~480 MB peak — scipy converts its input to float64 internally,
 # so a float32 matrix costs 12 bytes per entry, not 4 (measured: +210 MB on top
 # of a 105 MB array).
-_DENSE_MAX_ENTRIES = 20_000_000
+#
+# Set by what already works rather than by a round number: the E11.5 limb pair
+# is 2.6e7 entries and runs dense today, so a lower ceiling would push a
+# currently-exact case onto the approximate path — a regression dressed as a
+# memory saving. The candidate path takes over precisely where the alternative
+# used to be a refusal.
+_DENSE_MAX_ENTRIES = 40_000_000
 
 # Candidates per cell for the sparse path. Measured on the E11.5 limb pair
 # (2,683 x 9,773): 128 candidates put the objective 0.18% below optimal with 87%
@@ -869,14 +875,11 @@ query `GSM4227224_E11_112125.h5ad` (2,683 cells) at
 `POST /api/load` takes the slot as a **body** field
 (`{"file_path": ..., "slot": "secondary"}`); `?dataset=` there is ignored.
 
-- [ ] **Step 3: Confirm the dense path is unchanged**
+- [ ] **Step 3: Confirm the dense path is unchanged on this pair**
 
-2,683 × 9,773 = 2.6e7 entries, which is above `_DENSE_MAX_ENTRIES` (2e7) — so
-**this pair now takes the candidate path**. To check the dense path is
-untouched, run injective on a subset small enough to stay under the ceiling, or
-temporarily confirm via the unit tests, which cover it directly.
-
-Then run injective on the full pair and check the reported fields:
+2,683 × 9,773 = 2.6e7 entries, below `_DENSE_MAX_ENTRIES` (4e7), so this pair
+keeps the exact solver and must produce exactly what it produced before this
+change. Run injective and check the reported fields:
 
 ```bash
 curl -s -X POST "localhost:8000/api/localize/prepare?dataset=<query slot>" \
@@ -886,14 +889,19 @@ curl -s -X POST "localhost:8000/api/localize/prepare?dataset=<query slot>" \
 # poll /api/tasks/<id> until completed, then read the result
 ```
 
-Expected: `assignment` is `"candidate"`, `n_candidates` is 128, and the run
-completes in a few seconds.
+Expected: `assignment` is `"exact"`, `n_candidates` is `null`, and the run
+completes in a few seconds — unchanged from before this work.
+
+To exercise the *candidate* path on real data, re-run with
+`_DENSE_MAX_ENTRIES` temporarily lowered (edit the constant, which restarts the
+backend and drops the datasets, so do this last and reload). Expect
+`assignment: "candidate"`, `n_candidates: 128`.
 
 - [ ] **Step 4: Confirm the map is what it was**
 
 Score it against the reference and compare with the numbers this design was
 built on — `X_spatial_pred_inj` must still use **2,683 distinct spots of 2,683**
-with hull area ~1.00:
+with hull area ~1.00, on either path:
 
 ```bash
 curl -s -X POST "localhost:8000/api/localize/evaluate_map?dataset=<query slot>" \
@@ -958,12 +966,12 @@ Task 3. Out-of-scope items (no UI dial for `c`, no fallback if the solver
 raises) are respected: `_CANDIDATES` stays a module constant and no `try` wraps
 `min_weight_full_bipartite_matching`.
 
-**One thing the spec implied and this plan makes explicit:** the limb pair
-(2.6e7 entries) sits *above* `_DENSE_MAX_ENTRIES`, so after this change it takes
-the candidate path. That is intended — it is what the measurements were made on
-— but it means Patrick's existing injective map will differ slightly from a
-re-run, and Task 5 Step 4 checks the properties that must not change rather than
-expecting bit-identity.
+**The ceiling was corrected while writing this plan.** At the 2e7 first
+proposed, the limb pair (2.6e7 entries) would have fallen onto the candidate
+path — a currently-exact, currently-working case made approximate, which is a
+regression rather than a saving. `_DENSE_MAX_ENTRIES` is 4e7 so everything that
+runs dense today still does, and the candidate path takes over exactly where the
+alternative used to be a refusal.
 
 **Placeholder scan.** No TBDs. Every code step carries its code, every test step
 its test, and every constant its measured justification.

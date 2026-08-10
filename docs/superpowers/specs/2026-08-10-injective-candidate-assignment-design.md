@@ -116,9 +116,16 @@ plus a small positive constant so no kept edge stores an exact zero, which
 
 ### 3. Dense stays for problems that fit, and the run says which ran
 
-`n_query × n_ref ≤ 2e7` (~240 MB peak) keeps `linear_sum_assignment`, so
+`n_query × n_ref ≤ 4e7` (~480 MB peak) keeps `linear_sum_assignment`, so
 existing runs stay bit-identical and provably optimal. Above that the candidate
 path runs instead of the current refusal.
+
+**The ceiling is set by what already works, not by a round number.** The limb
+pair is 2.6e7 entries and runs dense today at 315 MB; a lower ceiling would push
+a currently-exact case onto the approximate path, which is a regression dressed
+as a memory saving. 4e7 keeps it — and everything else that runs today — exactly
+where it is, while the candidate path takes over precisely at the point where
+the alternative is the current refusal.
 
 `Projection` gains `assignment` (`'exact'` or `'candidate'`) and
 `n_candidates`, which reach the run result. A near-optimal answer must never be

@@ -17,6 +17,7 @@ from xcell.localize import (
     AGGREGATIONS,
     METRICS,
     TRANSFORMS,
+    candidate_assignment,
     cross_validate_localization,
     evaluate_localization,
     injective_assignment,
@@ -610,11 +611,12 @@ def test_injective_assignment_needs_a_spot_for_every_cell():
         injective_assignment(np.zeros((9, 5)))
 
 
-def test_a_similarity_matrix_too_large_to_hold_is_refused_by_size():
-    """It materializes the whole query x reference matrix, which the chunked
-    top-k path never does — so the size limit is a real one, not a formality."""
-    assert injective_feasibility(200_000, 200_000) is not None
-    assert 'memory' in injective_feasibility(200_000, 200_000)
+def test_the_size_limit_now_bounds_the_candidate_graph():
+    """The ceiling moved from the dense matrix to the candidate graph, so what
+    used to be refused now runs: 200,000 cells against 200,000 spots is 4e10
+    dense entries and 2.6e7 candidate edges."""
+    assert injective_feasibility(200_000, 200_000) is None
+    assert 'memory' in (injective_feasibility(1_000_000, 1_000_000) or '')
 
 
 def test_injective_spreads_what_best_match_piles_up():
@@ -669,3 +671,81 @@ def test_injective_reports_the_section_of_the_spot_it_assigned():
     for coord, label in zip(p.coords, p.sections):
         hit = np.isclose(ref_coords, coord).all(axis=1)
         assert label in set(sections[hit])
+
+
+# --- assignment without the whole matrix ----------------------------------
+
+def _candidates(S, c):
+    """Each row's top c, sorted — what project_knn's chunk loop will keep."""
+    c = min(c, S.shape[1])
+    part = np.argpartition(-S, c - 1, axis=1)[:, :c]
+    rows = np.arange(S.shape[0])[:, None]
+    vals = S[rows, part]
+    order = np.argsort(-vals, axis=1)
+    return part[rows, order], vals[rows, order]
+
+
+def test_candidate_assignment_gives_every_cell_a_distinct_spot():
+    S = np.random.default_rng(0).random((40, 60))
+    idx, sim = _candidates(S, 16)
+    out = candidate_assignment(idx, sim, 60)
+    assert out.shape == (40,)
+    assert len(set(out.tolist())) == 40
+
+
+def test_candidate_assignment_matches_the_exact_answer_when_it_can_see_everything():
+    """With every column a candidate the two solvers are the same problem, so
+    any disagreement is a bug in the sparse construction — most likely costs
+    doubled by duplicate edges."""
+    S = np.random.default_rng(1).random((25, 40))
+    idx, sim = _candidates(S, 40)
+    exact = injective_assignment(S)
+    approx = candidate_assignment(idx, sim, 40)
+    assert float(S[np.arange(25), approx].sum()) == pytest.approx(
+        float(S[np.arange(25), exact].sum()), abs=1e-9)
+
+
+def test_candidate_assignment_beats_taking_each_rows_best():
+    """The same 2x2 the exact solver is held to: both rows prefer column 0."""
+    S = np.array([[0.9, 0.8], [1.0, 0.1]])
+    idx, sim = _candidates(S, 2)
+    assert list(candidate_assignment(idx, sim, 2)) == [1, 0]
+
+
+def test_candidate_assignment_stays_solvable_when_every_cell_wants_the_same_spots():
+    """The case that makes a plain top-c graph unsolvable — and it is not
+    hypothetical: on the real limb pair no full matching existed for any c up to
+    64, because many cells rank the same well-recovered spots highest. That is
+    the pile-up injective exists to remove. The greedy seed is what makes the
+    matching exist by construction rather than by luck.
+    """
+    rng = np.random.default_rng(2)
+    nq, nr = 200, 2000
+    base = rng.normal(size=20)
+    Q = base + 0.01 * rng.normal(size=(nq, 20))
+    R = rng.normal(size=(nr, 20))
+    R[:5] = base + 0.005 * rng.normal(size=(5, 20))   # only 5 spots anyone wants
+    Q /= np.linalg.norm(Q, axis=1, keepdims=True)
+    R /= np.linalg.norm(R, axis=1, keepdims=True)
+    S = (Q @ R.T).astype(np.float32)
+
+    idx, sim = _candidates(S, 8)          # far too few for a matching to exist
+    out = candidate_assignment(idx, sim, nr)
+    assert len(set(out.tolist())) == nq
+
+
+def test_the_seed_alone_is_already_a_valid_assignment():
+    """It has to be: it is what makes the matching a theorem rather than a hope."""
+    from xcell.localize import _feasible_seed
+    S = np.random.default_rng(3).random((30, 45))
+    idx, sim = _candidates(S, 4)
+    seed = _feasible_seed(idx, sim.max(axis=1), 45)
+    assert len(set(seed.tolist())) == 30
+    assert seed.min() >= 0
+
+
+def test_candidate_assignment_needs_a_spot_for_every_cell():
+    S = np.random.default_rng(4).random((9, 5))
+    idx, sim = _candidates(S, 5)
+    with pytest.raises(ValueError, match='at least one reference spot'):
+        candidate_assignment(idx, sim, 5)

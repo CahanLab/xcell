@@ -69,6 +69,8 @@ interface LocalizeResult {
   n_missing_genes: number
   n_reference_cells: number
   section_col: string | null
+  assignment: string | null
+  n_candidates: number | null
   confidence_distribution: {
     median: number
     q25: number
@@ -739,6 +741,16 @@ export default function LocalizeModal() {
                 colour by <b>{result.embedding_name}_confidence</b> to see which regions
                 of the map to trust.
               </div>
+              {result.assignment === 'candidate' && (
+                <div style={{ fontSize: 11, color: '#f0c987', marginTop: 5 }}>
+                  Too large to assign exactly, so each cell chose among its{' '}
+                  {result.n_candidates} best-matching spots rather than all{' '}
+                  {result.n_reference_cells.toLocaleString()}. Every cell still has
+                  its own spot and the total similarity is within a fraction of a
+                  percent of the exact answer, but this is <b>near-optimal, not
+                  optimal</b>.
+                </div>
+              )}
             </div>
           )}
         </div>

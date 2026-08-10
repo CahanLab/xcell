@@ -316,3 +316,29 @@ def test_the_other_aggregations_do_not_care_about_the_size_ratio():
     out = _run(query, ref.spatial_reference_bundle(), k=10,
                aggregation='weighted_mean')
     assert out['n_cells'] == 200
+
+
+# --- which solver produced the assignment ---------------------------------
+
+def test_the_run_says_how_the_assignment_was_solved():
+    """A near-optimal answer must never be readable as an exact one."""
+    ref, query, _ = _pair()
+    out = _run(query, ref.spatial_reference_bundle(), k=10, aggregation='injective')
+    assert out['assignment'] == 'exact'
+    assert out['n_candidates'] is None
+
+
+def test_a_non_assigning_aggregation_claims_nothing():
+    ref, query, _ = _pair()
+    out = _run(query, ref.spatial_reference_bundle(), k=10, aggregation='weighted_mean')
+    assert out['assignment'] is None
+
+
+def test_the_candidate_path_is_reported_as_such(monkeypatch):
+    import xcell.localize as lz
+    monkeypatch.setattr(lz, '_DENSE_MAX_ENTRIES', 10)
+    ref, query, _ = _pair()
+    out = _run(query, ref.spatial_reference_bundle(), k=10, aggregation='injective')
+    assert out['assignment'] == 'candidate'
+    assert out['n_candidates'] > 0
+    json.dumps(out, allow_nan=False)

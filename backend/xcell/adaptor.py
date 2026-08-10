@@ -8175,6 +8175,11 @@ class DataAdaptor:
                 'n_missing_genes': len(snap['missing']),
                 'missing_genes': snap['missing'][:50],
                 'n_reference_cells': snap['n_reference_cells'],
+                # Which solver produced the assignment. 'candidate' is
+                # near-optimal, and saying so is the difference between a
+                # documented approximation and a silent one.
+                'assignment': projection.assignment,
+                'n_candidates': projection.n_candidates,
                 'gene_subset_type': snap['gene_subset_type'],
                 'section_col': snap['section_col'],
                 # So the panel can say what a threshold would cost before it is

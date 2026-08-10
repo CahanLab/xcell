@@ -78,6 +78,11 @@ class Projection:
     neighbor_indices: np.ndarray     # (n_query, k) into the reference
     sections: np.ndarray | None      # (n_query,) assigned section label, or None
     n_unplaced: int
+    # How an injective assignment was solved, and over how many candidates.
+    # 'exact' is provably optimal; 'candidate' is near-optimal, and the
+    # difference is reported rather than assumed away.
+    assignment: str | None = None
+    n_candidates: int | None = None
 
 
 # --- transforms -----------------------------------------------------------
@@ -464,26 +469,40 @@ def project_knn(
     r = _prepare_for_metric(transform_expression(ref_expr, transform), metric)
 
     n_query = q.shape[0]
+    n_ref = r.shape[0]
     idx = np.empty((n_query, k), dtype=np.int64)
     sims = np.empty((n_query, k), dtype=float)
 
-    # The chunked path keeps only the top k, so injective assignment — which is
-    # a global decision — needs the blocks kept as they are computed. Storing
-    # them costs memory, not a second pass.
-    full = np.empty((n_query, r.shape[0]), dtype=np.float32) if needs_full else None
+    # Assignment is a global decision, so it needs more than the k neighbours
+    # the confidence score is measured over. Dense keeps the whole matrix and is
+    # exactly optimal; candidates keep each row's best few, which is all the
+    # optimum turns out to use, at a fraction of the memory.
+    use_dense = needs_full and n_query * n_ref <= _DENSE_MAX_ENTRIES
+    n_cand = min(_CANDIDATES, n_ref) if (needs_full and not use_dense) else 0
+    take = max(k, n_cand)
+
+    full = np.empty((n_query, n_ref), dtype=np.float32) if use_dense else None
+    cand_idx = np.empty((n_query, n_cand), dtype=np.int64) if n_cand else None
+    cand_sim = np.empty((n_query, n_cand), dtype=float) if n_cand else None
 
     for start in range(0, n_query, _CHUNK):
         stop = min(start + _CHUNK, n_query)
         block = _similarity_block(q[start:stop], r, metric)
         if full is not None:
             full[start:stop] = block
-        # argpartition for the top-k, then order those k properly.
-        part = np.argpartition(-block, k - 1, axis=1)[:, :k]
+        # One argpartition serves both readers: the k neighbours the confidence
+        # score needs, and the wider candidate set the assignment chooses among.
+        part = np.argpartition(-block, take - 1, axis=1)[:, :take]
         rows = np.arange(stop - start)[:, None]
         part_sims = block[rows, part]
         order = np.argsort(-part_sims, axis=1)
-        idx[start:stop] = part[rows, order]
-        sims[start:stop] = part_sims[rows, order]
+        part = part[rows, order]
+        part_sims = part_sims[rows, order]
+        idx[start:stop] = part[:, :k]
+        sims[start:stop] = part_sims[:, :k]
+        if cand_idx is not None:
+            cand_idx[start:stop] = part[:, :n_cand]
+            cand_sim[start:stop] = part_sims[:, :n_cand]
         if progress is not None:
             progress(stop / n_query, f'Matched {stop:,} of {n_query:,} cells')
 
@@ -510,10 +529,18 @@ def project_knn(
             weights[i] = weights[i] / total if total > 1e-12 else keep / keep.sum()
         sections_out = sections_out.astype(str)
 
+    assignment_kind: str | None = None
+    n_candidates_used: int | None = None
     if needs_full:
         if progress is not None:
             progress(1.0, f'Assigning {n_query:,} cells to distinct spots')
-        assigned = injective_assignment(full)
+        if full is not None:
+            assigned = injective_assignment(full)
+            assignment_kind = 'exact'
+        else:
+            assigned = candidate_assignment(cand_idx, cand_sim, n_ref)
+            assignment_kind = 'candidate'
+            n_candidates_used = n_cand
         coords = ref_coords[assigned].astype(float)
         if sections_out is not None:
             # The assignment ranges over the whole reference, so the honest
@@ -550,6 +577,8 @@ def project_knn(
         neighbor_indices=idx,
         sections=sections_out,
         n_unplaced=n_unplaced,
+        assignment=assignment_kind,
+        n_candidates=n_candidates_used,
     )
 
 

@@ -749,3 +749,58 @@ def test_candidate_assignment_needs_a_spot_for_every_cell():
     idx, sim = _candidates(S, 5)
     with pytest.raises(ValueError, match='at least one reference spot'):
         candidate_assignment(idx, sim, 5)
+
+
+def test_a_small_problem_still_gets_the_exact_assignment():
+    """Existing runs must not change answers: the dense solver is affordable
+    here and provably optimal, so it stays."""
+    ref_expr, ref_coords, q_expr, _ = _matched()
+    p = project_knn(q_expr, ref_expr, ref_coords, k=10, aggregation='injective')
+    assert p.assignment == 'exact'
+    assert p.n_candidates is None
+
+
+def test_a_large_problem_takes_the_candidate_path(monkeypatch):
+    """Forced by lowering the ceiling rather than by building a real matrix that
+    would not fit — the point is the branch, not the arithmetic."""
+    import xcell.localize as lz
+    monkeypatch.setattr(lz, '_DENSE_MAX_ENTRIES', 10)
+    ref_expr, ref_coords, q_expr, q_coords = _matched()
+    p = project_knn(q_expr, ref_expr, ref_coords, k=10, aggregation='injective')
+    assert p.assignment == 'candidate'
+    assert p.n_candidates == min(lz._CANDIDATES, ref_expr.shape[0])
+    assert len(np.unique(p.coords, axis=0)) == len(q_expr)
+    centroid_error = float(np.median(
+        np.linalg.norm(q_coords - ref_coords.mean(axis=0), axis=1)
+    ))
+    assert _median_error(p.coords, q_coords) < centroid_error / 2
+
+
+def test_the_candidate_path_still_spreads_what_best_match_piles_up(monkeypatch):
+    import xcell.localize as lz
+    monkeypatch.setattr(lz, '_DENSE_MAX_ENTRIES', 10)
+    ref_expr, ref_coords, q_expr = _clones()
+    p = project_knn(q_expr, ref_expr, ref_coords, k=15,
+                    transform='none', aggregation='injective')
+    assert len(np.unique(p.coords, axis=0)) == 60
+
+
+def test_the_other_aggregations_report_no_assignment_path():
+    """Only injective assigns; nothing else should claim to."""
+    ref_expr, ref_coords, q_expr, _ = _matched()
+    p = project_knn(q_expr, ref_expr, ref_coords, k=10, aggregation='weighted_mean')
+    assert p.assignment is None and p.n_candidates is None
+
+
+def test_both_paths_agree_on_this_problem(monkeypatch):
+    """Not guaranteed in general — the candidate path is near-optimal — but on a
+    problem this size with 128 candidates out of 400 spots it should land on the
+    same answer, and a large disagreement means the wiring is wrong rather than
+    the approximation biting."""
+    import xcell.localize as lz
+    ref_expr, ref_coords, q_expr, _ = _matched()
+    exact = project_knn(q_expr, ref_expr, ref_coords, k=10, aggregation='injective')
+    monkeypatch.setattr(lz, '_DENSE_MAX_ENTRIES', 10)
+    approx = project_knn(q_expr, ref_expr, ref_coords, k=10, aggregation='injective')
+    agree = float(np.mean(np.all(exact.coords == approx.coords, axis=1)))
+    assert agree > 0.9, agree

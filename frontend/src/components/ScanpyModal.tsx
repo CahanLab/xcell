@@ -147,10 +147,12 @@ function VarianceChart({ data, width = 300, height = 150 }: { data: VarianceData
 interface ParamDef {
   name: string
   label: string
-  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select' | 'layer_select' | 'graph_select' | 'obs_column_select' | 'var_bool_multiselect'
+  type: 'number' | 'text' | 'select' | 'gene_subset' | 'textarea' | 'pc_source_select' | 'layer_select' | 'graph_select' | 'obs_column_select' | 'var_bool_multiselect' | 'percent_of_cells'
   default: string | number | null
   description: string
   options?: string[]
+  /** The name the backend expects, when it differs from the one shown here. */
+  sendAs?: string
   obsDtype?: 'numeric' | 'category'
   visibleWhen?: { param: string; value: string }
   // graph_select only: label for the "" option. Absent means a graph is
@@ -214,7 +216,10 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         params: [
           { name: 'min_counts', label: 'Min counts', type: 'number', default: null, description: 'Minimum total counts' },
           { name: 'max_counts', label: 'Max counts', type: 'number', default: null, description: 'Maximum total counts' },
-          { name: 'min_cells', label: 'Min cells', type: 'number', default: 25, description: 'Minimum cells expressing' },
+          // Named _pct rather than min_cells so a config file holding the old
+          // absolute count cannot be read as a percentage — 3 meant 3 cells and
+          // would silently become 3% of the dataset.
+          { name: 'min_cells_pct', sendAs: 'min_cells', label: 'Min cells', type: 'percent_of_cells', default: 0.1, description: 'Drop a gene unless at least this share of cells express it. A share rather than a count, so the same setting means the same thing on a 2,000-cell dataset and a 200,000-cell one. 0.1% keeps anything present in one cell per thousand.' },
           { name: 'max_cells', label: 'Max cells', type: 'number', default: null, description: 'Maximum cells expressing' },
         ],
       },
@@ -550,6 +555,19 @@ interface ParamValues {
 interface PrerequisiteStatus {
   satisfied: boolean
   missing: string[]
+}
+
+/**
+ * A percentage of the dataset, as the whole number of cells scanpy is given.
+ *
+ * Floored at 1: a threshold that rounds to zero would keep every gene, which is
+ * not what asking for a threshold means. An empty box is 0 — the parameter is
+ * optional and omitting it is a real choice.
+ */
+export function percentOfCells(value: unknown, nCells: number): number {
+  const pct = Number(value)
+  if (!Number.isFinite(pct) || pct <= 0) return 0
+  return Math.max(1, Math.round((pct / 100) * nCells))
 }
 
 /** One .obsm array that could act as this dataset's spatial coordinates. */
@@ -1258,6 +1276,18 @@ export default function ScanpyModal() {
         } else {
           requestParams[key] = value
         }
+      }
+
+      // A percentage is what the user chose; a cell count is what scanpy takes.
+      // Converting here rather than in the backend keeps the recorded parameter
+      // — and so the exported notebook — the exact number that ran.
+      for (const p of functionDef.params) {
+        if (p.type !== 'percent_of_cells' || hiddenParams.has(p.name)) continue
+        const raw = requestParams[p.name]
+        delete requestParams[p.name]
+        requestParams[p.sendAs ?? p.name] = (raw === '' || raw == null)
+          ? null
+          : percentOfCells(raw, schema?.n_cells ?? 0)
       }
 
       // obs_column_select params: empty string means "none" — omit so the
@@ -2416,6 +2446,26 @@ export default function ScanpyModal() {
                           onChange={(e) => handleParamChange(param.name, e.target.value)}
                           placeholder={param.default === null ? '(optional)' : String(param.default)}
                         />
+                      ) : param.type === 'percent_of_cells' ? (
+                        // Asked as a share of the dataset so the same setting
+                        // means the same thing on 2,000 cells and on 200,000.
+                        // The count it works out to is shown, because that is
+                        // what scanpy is given and what the record will say.
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1 }}>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            style={{ ...styles.paramInput, flex: '0 0 90px' }}
+                            value={paramValues[param.name] ?? ''}
+                            onChange={(e) => handleParamChange(param.name, e.target.value)}
+                            placeholder={String(param.default ?? '')}
+                          />
+                          <span style={{ fontSize: '12px', color: '#888' }}>
+                            % of cells
+                            {schema?.n_cells ? ` — ${percentOfCells(paramValues[param.name], schema.n_cells).toLocaleString()} of ${schema.n_cells.toLocaleString()}` : ''}
+                          </span>
+                        </div>
                       ) : (
                         <input
                           type={param.type === 'number' ? 'number' : 'text'}

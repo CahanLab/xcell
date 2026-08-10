@@ -16,7 +16,11 @@ scanpy:
     min_genes: 15
 
   filter_genes:
-    min_cells: 3
+    # A percentage of the dataset, not a cell count — 0.1% is the default, so a
+    # gene has to appear in one cell per thousand to survive. The old
+    # `min_cells: 3` key is no longer read: 3 meant three cells, and leaving it
+    # in place would have turned it into three *percent*.
+    min_cells_pct: 0.1
 
   normalize_total:
     target_sum: 10000

@@ -2746,6 +2746,35 @@ def check_has_spatial(dataset: str | None = Query(None)):
     }
 
 
+@router.get("/spatial_key")
+def get_spatial_key(dataset: str | None = Query(None)):
+    """Which .obsm arrays could be spatial coordinates, and which one is active.
+
+    The picker this feeds exists because a Localize map lands in
+    ``X_spatial_pred``, which auto-detection cannot see — so the spatial tools
+    refused to run on coordinates the user had just made.
+    """
+    return get_adaptor(dataset).spatial_key_options()
+
+
+class SpatialKeyRequest(BaseModel):
+    key: str | None = None
+
+
+@router.put("/spatial_key")
+def put_spatial_key(request: SpatialKeyRequest, dataset: str | None = Query(None)):
+    """Choose the .obsm array that acts as spatial coordinates. None resets."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.set_spatial_key(request.key)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.post("/scanpy/spatial_neighbors", status_code=202)
 def run_spatial_neighbors(request: SpatialNeighborsRequest, dataset: str | None = Query(None)):
     """Compute spatial neighborhood graph (cancellable background task)."""

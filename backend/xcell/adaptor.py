@@ -4172,35 +4172,104 @@ class DataAdaptor:
             'missing': missing,
         }
 
+    # Where an explicit choice of coordinate array is remembered. In .uns so it
+    # travels with the dataset, and namespaced because it is xcell's, not a
+    # convention any other tool will recognize.
+    SPATIAL_KEY_UNS = 'xcell_spatial_key'
+
+    def _is_coordinate_array(self, key: str) -> bool:
+        """Could this .obsm entry be a set of 2-D positions?"""
+        if key not in self.adata.obsm:
+            return False
+        arr = self.adata.obsm[key]
+        return isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.shape[1] >= 2
+
     def _has_spatial_coordinates(self) -> bool:
-        """Check if spatial coordinates are available.
-
-        Looks for common spatial coordinate keys in .obsm.
-
-        Returns:
-            True if spatial coordinates exist
-        """
-        spatial_keys = ['spatial', 'X_spatial']
-        for key in spatial_keys:
-            if key in self.adata.obsm:
-                arr = self.adata.obsm[key]
-                if isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.shape[1] >= 2:
-                    return True
-        return False
+        """Whether any array is acting as this dataset's spatial coordinates."""
+        return self._get_spatial_key() is not None
 
     def _get_spatial_key(self) -> str | None:
-        """Get the key for spatial coordinates in .obsm.
+        """The .obsm key holding this dataset's spatial coordinates, if any.
 
-        Returns:
-            The key name, or None if not found
+        An explicit choice wins, then the two conventional names. The explicit
+        step exists because Localize writes its map to ``X_spatial_pred`` (or
+        whatever ``key_added`` names), which auto-detection could not see — so
+        every spatial tool refused to run on coordinates the user had just
+        produced.
+
+        Widening auto-detection instead would have to *guess*: a query localized
+        under several settings carries several predicted maps, and picking one
+        would silently decide which analysis the user meant. It also matters
+        that predicted coordinates are a weaker claim than measured ones —
+        keeping the choice explicit is what lets the UI say so.
+
+        A stored key naming an array that no longer exists falls back to
+        auto-detection rather than stranding the dataset, since .uns survives a
+        save and the .obsm it names may not.
         """
-        spatial_keys = ['spatial', 'X_spatial']
-        for key in spatial_keys:
-            if key in self.adata.obsm:
-                arr = self.adata.obsm[key]
-                if isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.shape[1] >= 2:
-                    return key
+        chosen = self.adata.uns.get(self.SPATIAL_KEY_UNS)
+        if isinstance(chosen, str) and self._is_coordinate_array(chosen):
+            return chosen
+        for key in ('spatial', 'X_spatial'):
+            if self._is_coordinate_array(key):
+                return key
         return None
+
+    def set_spatial_key(self, key: str | None) -> dict[str, Any]:
+        """Choose which .obsm array acts as this dataset's spatial coordinates.
+
+        Args:
+            key: an .obsm key, or None to go back to auto-detection.
+        """
+        if key is None:
+            self.adata.uns.pop(self.SPATIAL_KEY_UNS, None)
+        else:
+            key = str(key)
+            if key not in self.adata.obsm:
+                raise ValueError(
+                    f"'{key}' not found in .obsm. "
+                    f'Available: {list(self.adata.obsm.keys())}'
+                )
+            if not self._is_coordinate_array(key):
+                arr = self.adata.obsm[key]
+                shape = getattr(arr, 'shape', None)
+                raise ValueError(
+                    f"'{key}' cannot be spatial coordinates: it needs at least "
+                    f'two dimensions per cell, and has shape {shape}.'
+                )
+            self.adata.uns[self.SPATIAL_KEY_UNS] = key
+
+        self._log_action('set_spatial_key', {'key': key}, {'spatial_key': key})
+        return self.spatial_key_options()
+
+    def spatial_key_options(self) -> dict[str, Any]:
+        """Every .obsm array that could serve as coordinates, and which is active.
+
+        ``predicted`` is read from the companion ``<key>_confidence`` column
+        Localize writes beside its map, so maps made before this picker existed
+        are still recognized as predictions. ``n_missing`` counts cells with no
+        coordinate — ``min_confidence`` leaves those as NaN deliberately, and a
+        spatial graph built over them is meaningless, so the number belongs in
+        front of the choice rather than behind it.
+        """
+        options = []
+        for key in self.adata.obsm.keys():
+            if not self._is_coordinate_array(key):
+                continue
+            arr = np.asarray(self.adata.obsm[key], dtype=float)
+            options.append({
+                'key': str(key),
+                'n_dims': int(arr.shape[1]),
+                'predicted': f'{key}_confidence' in self.adata.obs.columns,
+                'n_missing': int((~np.isfinite(arr[:, :2]).all(axis=1)).sum()),
+            })
+
+        explicit = self.adata.uns.get(self.SPATIAL_KEY_UNS)
+        return {
+            'current': self._get_spatial_key(),
+            'explicit': explicit if isinstance(explicit, str) else None,
+            'options': options,
+        }
 
     def _split_present_genes(self, genes: list[str]) -> tuple[list[str], list[str]]:
         """Partition gene names into (present in .var_names, missing).

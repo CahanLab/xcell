@@ -552,6 +552,20 @@ interface PrerequisiteStatus {
   missing: string[]
 }
 
+/** One .obsm array that could act as this dataset's spatial coordinates. */
+interface SpatialKeyOption {
+  key: string
+  n_dims: number
+  predicted: boolean
+  n_missing: number
+}
+
+interface SpatialKeyState {
+  current: string | null
+  explicit: string | null
+  options: SpatialKeyOption[]
+}
+
 const styles = {
   overlay: {
     position: 'fixed' as const,
@@ -766,6 +780,10 @@ export default function ScanpyModal() {
   const [isRunning, setIsRunning] = useState(false)
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null)
   const [prereqStatus, setPrereqStatus] = useState<PrerequisiteStatus | null>(null)
+  // Offered when has_spatial is the thing missing: a localized dataset has
+  // coordinates, they are just not under a name auto-detection looks for.
+  const [spatialKeys, setSpatialKeys] = useState<SpatialKeyState | null>(null)
+  const [pendingSpatialKey, setPendingSpatialKey] = useState('')
   const [varianceData, setVarianceData] = useState<VarianceData | null>(null)
   const [cellVarianceData, setCellVarianceData] = useState<VarianceData | null>(null)
 
@@ -975,6 +993,50 @@ export default function ScanpyModal() {
       .then(setPrereqStatus)
       .catch(() => setPrereqStatus({ satisfied: false, missing: ['unknown'] }))
   }, [selectedFunction, functionDef, scanpyActionHistory, paramValues.graph_key])
+
+  // What could serve as coordinates, when that is what is missing. A dataset
+  // that has been localized *has* coordinates — they are in X_spatial_pred,
+  // which auto-detection does not look for — so the dead end is one choice away
+  // from being a run.
+  useEffect(() => {
+    if (!prereqStatus || prereqStatus.satisfied ||
+        !prereqStatus.missing.includes('has_spatial')) {
+      setSpatialKeys(null)
+      return
+    }
+    let cancelled = false
+    fetch(appendDataset(`${API_BASE}/spatial_key`))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: SpatialKeyState | null) => {
+        if (cancelled || !body) return
+        setSpatialKeys(body)
+        // Prefer a predicted map: on a dataset with no measured coordinates
+        // that is what the user came here to use.
+        const preferred = body.options.find((o) => o.predicted) || body.options[0]
+        setPendingSpatialKey(preferred ? preferred.key : '')
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [prereqStatus, activeSlot])
+
+  const useAsSpatialCoordinates = useCallback(async () => {
+    if (!pendingSpatialKey) return
+    try {
+      const res = await fetch(appendDataset(`${API_BASE}/spatial_key`), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: pendingSpatialKey }),
+      })
+      if (!res.ok) return
+      // Re-ask rather than assuming: the gate is the backend's to open.
+      const prereq = await fetch(
+        appendDataset(`${API_BASE}/scanpy/prerequisites/${selectedFunction}`),
+      ).then((r) => r.json())
+      setPrereqStatus(prereq)
+    } catch {
+      // Leave the warning standing; nothing has changed.
+    }
+  }, [pendingSpatialKey, selectedFunction])
 
   // Fetch boolean columns for gene subset selection
   useEffect(() => {
@@ -1200,8 +1262,15 @@ export default function ScanpyModal() {
 
       // obs_column_select params: empty string means "none" — omit so the
       // backend uses its default (null) rather than looking up a '' column.
+      // A select offering '' among its options means the same thing ("auto"),
+      // and the backend's default is what implements it. Sending the empty
+      // string instead reaches squidpy, which refuses it outright: Spatial
+      // Neighbors failed with "Invalid option `` for `CoordType`" on every run
+      // that left Coord Type at its own default.
       for (const p of functionDef.params) {
-        if (p.type === 'obs_column_select' && !requestParams[p.name]) {
+        const meansUnset = p.type === 'obs_column_select' ||
+          (p.type === 'select' && (p.options || []).includes(''))
+        if (meansUnset && !requestParams[p.name]) {
           delete requestParams[p.name]
         }
       }
@@ -1584,6 +1653,56 @@ export default function ScanpyModal() {
         {prereqStatus && !prereqStatus.satisfied && (
           <div style={styles.prerequisiteWarning}>
             Requires: {prereqStatus.missing.map((p) => p.toUpperCase()).join(', ')} to be computed first
+            {spatialKeys && spatialKeys.options.length > 0 && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,215,0,0.25)' }}>
+                <div style={{ marginBottom: 6, lineHeight: 1.45 }}>
+                  No array is acting as this dataset's coordinates yet. Pick the
+                  one that should — a map from <b>Localize</b> counts, and is
+                  what these tools would then measure over.
+                </div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <select value={pendingSpatialKey}
+                          onChange={(e) => setPendingSpatialKey(e.target.value)}
+                          style={{ ...styles.paramInput, flex: 1 }}>
+                    {spatialKeys.options.map((o) => (
+                      <option key={o.key} value={o.key}>
+                        {o.key}{o.predicted ? ' — predicted' : ''}
+                        {o.n_missing > 0 ? ` (${o.n_missing.toLocaleString()} unplaced)` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button onClick={useAsSpatialCoordinates}
+                          disabled={!pendingSpatialKey}
+                          style={{ ...styles.cancelButton, padding: '6px 10px',
+                                   fontSize: '12px', whiteSpace: 'nowrap' }}>
+                    Use as coordinates
+                  </button>
+                </div>
+                {(() => {
+                  const chosen = spatialKeys.options.find((o) => o.key === pendingSpatialKey)
+                  if (!chosen) return null
+                  return (
+                    <div style={{ marginTop: 6, fontSize: 11, lineHeight: 1.45, opacity: 0.85 }}>
+                      {chosen.predicted && (
+                        <div>
+                          These coordinates were <b>predicted</b>, not measured. Every
+                          spatial result computed over them inherits the prediction's
+                          error — check the map under Localize → Map quality before
+                          reading a neighbourhood statistic as biology.
+                        </div>
+                      )}
+                      {chosen.n_missing > 0 && (
+                        <div style={{ marginTop: chosen.predicted ? 4 : 0 }}>
+                          {chosen.n_missing.toLocaleString()} cells have no coordinate
+                          (left unplaced by a confidence threshold) and cannot take
+                          part in a spatial graph.
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
           </div>
         )}
 

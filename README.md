@@ -693,6 +693,18 @@ curated in the Gene panel. The overlap preview follows the choice, and the tool
 warns about parameter combinations that are actually bad rather than listing
 caveats up front.
 
+**To run the spatial tools on a predicted map, choose it as the dataset's
+coordinates.** A Localize result lands in `.obsm['X_spatial_pred']`, which is
+not a name auto-detection looks for, so Spatial Neighbors, Contour, Define
+Sections and Ligand-Receptor will report `HAS_SPATIAL` missing. Their
+prerequisite warning carries a picker: choose the map and they unblock. The
+choice is remembered with the dataset, so switching between two predicted maps
+re-points every spatial tool at once. It stays an explicit choice rather than a
+wider auto-detect because a query localized several ways carries several
+predicted maps, and because a prediction is a weaker claim than a measurement —
+anything computed over these coordinates inherits the map's error, which Map
+quality is there to quantify.
+
 One of those warnings reads the reference's geometry **before** anything runs.
 For each gene set you have curated, it asks where the mean of that population's
 own positions falls: if the population forms a ring or hugs the tissue edge,

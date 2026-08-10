@@ -553,6 +553,23 @@ REGISTRY: dict[str, ActionSpec] = {
             f"{_n(r.get('n_unplaced'))} cells left unplaced."
         ),
     ),
+    'set_spatial_key': ActionSpec(
+        label='Choose the spatial coordinates', fidelity=EXACT, imports=(),
+        # A one-line assignment, but it belongs in the export: every spatial
+        # result after it was computed over *this* array, and on a localized
+        # dataset that array is a prediction rather than a measurement.
+        code=lambda s: (
+            [f"{ADATA}.uns['xcell_spatial_key'] = {_lit(s.params.get('key'))}"]
+            if s.params.get('key')
+            else [f"{ADATA}.uns.pop('xcell_spatial_key', None)"]
+        ),
+        summary=lambda p, r: (
+            f"Used `.obsm['{p.get('key')}']` as the spatial coordinates for "
+            f'everything below.'
+            if p.get('key') else
+            'Went back to auto-detecting the spatial coordinates.'
+        ),
+    ),
     'ligrec_analyze': ActionSpec(
         label='Ligand-receptor signaling', fidelity=XCELL, imports=XCELL_API,
         code=_direct('prepare_ligrec'),

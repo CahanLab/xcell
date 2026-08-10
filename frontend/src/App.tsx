@@ -25,6 +25,7 @@ import GeneMaskModal from './components/GeneMaskModal'
 import PyscnModal from './components/PyscnModal'
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './components/LayerScaleInfo'
 import { MESSAGES } from './messages'
+import { buildCrumbs } from './lib/pathCrumbs'
 
 const styles = {
   container: {
@@ -925,6 +926,10 @@ export default function App() {
   const [browseCurrent, setBrowseCurrent] = useState<string | null>(null)
   const [browseLoading, setBrowseLoading] = useState(false)
   const [browseShortcuts, setBrowseShortcuts] = useState<{ name: string; path: string }[]>([])
+  const [browseFilter, setBrowseFilter] = useState('')
+  // The elided middle of a deep path, opened on demand. Reset on navigation —
+  // an expansion belongs to the path it was opened on.
+  const [crumbsExpanded, setCrumbsExpanded] = useState(false)
   const [recentFiles, setRecentFiles] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem('xcell_recentFiles') || '[]')
@@ -1267,6 +1272,9 @@ export default function App() {
       const data = await response.json()
       setBrowseEntries(data.entries)
       setBrowseCurrent(data.current)
+      // A filter and an expanded path both describe the folder you were in.
+      setBrowseFilter('')
+      setCrumbsExpanded(false)
       if (data.shortcuts) setBrowseShortcuts(data.shortcuts)
       lastBrowseDirRef.current = data.current
       localStorage.setItem('xcell_lastBrowseDir', data.current)
@@ -1276,6 +1284,15 @@ export default function App() {
       setBrowseLoading(false)
     }
   }, [])
+
+  // What the filter box leaves standing. Substring rather than prefix, because
+  // dataset filenames carry their identity in the middle: a date, a stage, a
+  // sample id.
+  const visibleBrowseEntries = useMemo(() => {
+    const needle = browseFilter.trim().toLowerCase()
+    if (!needle) return browseEntries
+    return browseEntries.filter((e) => e.name.toLowerCase().includes(needle))
+  }, [browseEntries, browseFilter])
 
   const handleCombineDatasets = useCallback(async () => {
     if (combineFiles.length < 2) return
@@ -2689,56 +2706,76 @@ export default function App() {
               {/* Main browser area */}
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
 
-                {/* Breadcrumb path bar */}
-                {browseCurrent && (
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '2px',
-                    marginBottom: '6px',
-                    fontSize: '11px',
-                    overflowX: 'auto',
-                    whiteSpace: 'nowrap',
-                    padding: '4px 0',
-                  }}>
-                    {(() => {
-                      const parts = browseCurrent.split('/').filter(Boolean)
-                      return (
-                        <>
-                          <span
-                            onClick={() => browseDirectory('/')}
-                            style={{ cursor: 'pointer', color: '#888', padding: '1px 3px', borderRadius: '3px' }}
-                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.06)' }}
-                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
-                          >/</span>
-                          {parts.map((part, i) => {
-                            const fullPath = '/' + parts.slice(0, i + 1).join('/')
-                            const isLast = i === parts.length - 1
-                            return (
-                              <span key={fullPath} style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-                                <span style={{ color: '#555' }}>&rsaquo;</span>
-                                <span
-                                  onClick={() => !isLast && browseDirectory(fullPath)}
+                {/* Where you are, and how to get back out. The middle of a deep
+                    path is collapsed rather than scrolled, because a scrolling
+                    bar hides its own end — the folder you are actually in. */}
+                {browseCurrent && (() => {
+                  const trail = buildCrumbs(browseCurrent, browseShortcuts)
+                  const shown = crumbsExpanded && trail.hidden.length
+                    ? [trail.crumbs[0], ...trail.hidden, ...trail.crumbs.slice(1)]
+                    : trail.crumbs
+                  const crumbStyle = (isLast: boolean): React.CSSProperties => ({
+                    cursor: isLast ? 'default' : 'pointer',
+                    color: isLast ? '#ccc' : '#888',
+                    fontWeight: isLast ? 600 : 400,
+                    padding: '1px 3px',
+                    borderRadius: '3px',
+                  })
+                  return (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: '2px',
+                      marginBottom: '6px', fontSize: '11px', flexWrap: 'wrap',
+                      padding: '4px 0',
+                    }}>
+                      {shown.map((crumb, i) => {
+                        const isLast = i === shown.length - 1
+                        const showEllipsis = !crumbsExpanded && trail.hidden.length > 0 && i === 1
+                        return (
+                          <span key={crumb.path} style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                            {i > 0 && <span style={{ color: '#555' }}>&rsaquo;</span>}
+                            {showEllipsis && (
+                              <>
+                                <button
+                                  onClick={() => setCrumbsExpanded(true)}
+                                  title={`Show ${trail.hidden.length} more folders`}
                                   style={{
-                                    cursor: isLast ? 'default' : 'pointer',
-                                    color: isLast ? '#ccc' : '#888',
-                                    fontWeight: isLast ? 600 : 400,
-                                    padding: '1px 3px',
-                                    borderRadius: '3px',
+                                    background: 'transparent', border: 'none', color: '#888',
+                                    cursor: 'pointer', font: 'inherit', padding: '1px 3px',
                                   }}
-                                  onMouseEnter={(e) => { if (!isLast) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.06)' }}
-                                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
                                 >
-                                  {part}
-                                </span>
-                              </span>
-                            )
-                          })}
-                        </>
-                      )
-                    })()}
-                  </div>
-                )}
+                                  …
+                                </button>
+                                <span style={{ color: '#555' }}>&rsaquo;</span>
+                              </>
+                            )}
+                            <span
+                              onClick={() => !isLast && browseDirectory(crumb.path)}
+                              style={crumbStyle(isLast)}
+                              onMouseEnter={(e) => { if (!isLast) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.06)' }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
+                            >
+                              {crumb.label}
+                            </span>
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )
+                })()}
+
+                {/* Filter. The fastest way to a file you can already see the
+                    folder of is to type three letters of its name. */}
+                <input
+                  type="text"
+                  value={browseFilter}
+                  onChange={(e) => setBrowseFilter(e.target.value)}
+                  placeholder="Filter this folder"
+                  style={{
+                    marginBottom: '6px', padding: '5px 8px', fontSize: '12px',
+                    backgroundColor: '#1a1a2e', color: '#eee',
+                    border: '1px solid #0f3460', borderRadius: '4px', outline: 'none',
+                  }}
+                />
 
                 {/* File/directory list */}
                 <div style={{
@@ -2752,10 +2789,14 @@ export default function App() {
                 }}>
                   {browseLoading ? (
                     <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '12px' }}>Loading...</div>
-                  ) : browseEntries.length === 0 ? (
-                    <div style={{ padding: '20px', textAlign: 'center', color: '#666', fontSize: '12px' }}>No folders or data files here</div>
+                  ) : visibleBrowseEntries.length === 0 ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: '#666', fontSize: '12px' }}>
+                      {browseFilter
+                        ? `Nothing here matches “${browseFilter}”`
+                        : 'No folders or data files here'}
+                    </div>
                   ) : (
-                    browseEntries.map((entry) => (
+                    visibleBrowseEntries.map((entry) => (
                       <div
                         key={entry.path}
                         onClick={() => {

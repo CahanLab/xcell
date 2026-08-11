@@ -41,3 +41,76 @@ def normalize_cost(cost: np.ndarray) -> tuple[np.ndarray, float]:
         # would fill the matrix with inf.
         return c, 1.0
     return c / sigma, sigma
+
+
+@dataclass
+class SinkhornResult:
+    """A coupling, plus what it cost to get and how well it satisfies itself."""
+
+    coupling: np.ndarray      # (n_query, n_ref), rows sum to 1/n, columns to 1/m
+    iterations: int
+    # Max relative deviation of a *row* sum from 1/n. Rows, not columns,
+    # because the column update runs last: right after it the column marginal
+    # holds to machine precision no matter how far from converged the coupling
+    # is, so measuring it would report ~1e-15 on iteration two and stop there.
+    # The un-enforced marginal is the only one carrying information.
+    marginal_error: float
+
+
+def sinkhorn_log(
+    cost: np.ndarray,
+    epsilon: float,
+    *,
+    max_iterations: int = 200,
+    tol: float = 1e-4,
+    check_every: int = 10,
+    progress: Callable[[float, str], None] | None = None,
+) -> SinkhornResult:
+    """Entropic OT in the log domain. ``cost`` must already be normalized.
+
+    Log-domain always, rather than the faster kernel form. The kernel form does
+    not fail on the kernel entries -- it fails on the scaling vectors, which
+    grow and shrink without bound over iterations, and it does so at exactly
+    the small epsilon where this estimator is most interesting. One stable path
+    is worth more than the 2-3x per-iteration saving of a form that breaks
+    where it is most needed.
+    """
+    from scipy.special import logsumexp
+
+    if epsilon <= 0:
+        raise ValueError(f'epsilon must be positive, got {epsilon}')
+    if max_iterations < 1:
+        raise ValueError(f'max_iterations must be at least 1, got {max_iterations}')
+
+    c = np.asarray(cost, dtype=np.float64)
+    n, m = c.shape
+    log_a = -np.log(n)
+    log_b = -np.log(m)
+    f = np.zeros(n, dtype=np.float64)
+    g = np.zeros(m, dtype=np.float64)
+
+    target_row = 1.0 / n
+    used = 0
+    for it in range(1, max_iterations + 1):
+        used = it
+        M = (-c + f[:, None] + g[None, :]) / epsilon
+        f += epsilon * (log_a - logsumexp(M, axis=1))
+        M = (-c + f[:, None] + g[None, :]) / epsilon
+        g += epsilon * (log_b - logsumexp(M, axis=0))
+
+        # Checking every iteration doubles the work in the loop for a number
+        # that moves slowly; never checking means we can only ever spend the
+        # whole budget.
+        if it % check_every == 0 or it == max_iterations:
+            P = np.exp((-c + f[:, None] + g[None, :]) / epsilon)
+            err = float(np.abs(P.sum(axis=1) - target_row).max() / target_row)
+            if progress is not None:
+                progress(it / max_iterations,
+                         f'Sinkhorn iteration {it} of {max_iterations}, '
+                         f'marginal error {err:.2e}')
+            if err < tol:
+                break
+
+    P = np.exp((-c + f[:, None] + g[None, :]) / epsilon)
+    err = float(np.abs(P.sum(axis=1) - target_row).max() / target_row)
+    return SinkhornResult(coupling=P, iterations=used, marginal_error=err)

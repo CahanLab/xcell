@@ -119,9 +119,15 @@ would push a currently-affordable case onto the approximate path, which is a
 regression dressed as a memory saving.
 
 **Bounded iterations with an honest convergence report.** Default budget 200
-iterations, early stop when `marginal_error` — the maximum absolute deviation of
-a column sum from its target 1/m, expressed as a fraction of that target — falls
-below 1e-4. The run reports iterations used and the final marginal error,
+iterations, early stop when `marginal_error` — the maximum deviation of a **row**
+sum from its target 1/n, as a fraction of that target — falls below 1e-4.
+
+Rows rather than columns, which is not arbitrary: the column potential is
+updated last, so immediately afterwards the column marginal holds to machine
+precision however far from converged the coupling is. Measuring it reports
+~1e-15 on the second iteration and stops there, with the row marginal still
+wrong by ~6e-4. Only the un-enforced marginal carries information about
+convergence. The run reports iterations used and the final marginal error,
 because a Sinkhorn that ran out of budget has *not* satisfied the constraint that
 justifies the method, and that must be visible rather than inferred. The parent
 spec measured the full reference at 120 iterations exceeding two minutes, so this

@@ -8087,6 +8087,8 @@ class DataAdaptor:
         transform: str = 'zscore',
         aggregation: str = 'weighted_mean',
         min_confidence: float = 0.0,
+        epsilon: float = 0.5,
+        max_iterations: int = 200,
         layer: str | None = None,
         key_added: str = 'X_spatial_pred',
     ) -> tuple[Callable[..., Any], Callable[[dict[str, Any]], dict[str, Any]]]:
@@ -8111,6 +8113,14 @@ class DataAdaptor:
             )
             if problem:
                 raise ValueError(problem)
+        if aggregation == 'transport':
+            # Same reason as above: caught here so a bad dial is a 400 rather
+            # than a background task that dies once the matching is done.
+            if epsilon <= 0:
+                raise ValueError(f'epsilon must be positive, got {epsilon}')
+            if max_iterations < 1:
+                raise ValueError(
+                    f'max_iterations must be at least 1, got {max_iterations}')
         if not key_added:
             raise ValueError('key_added must be a non-empty name')
 
@@ -8135,6 +8145,8 @@ class DataAdaptor:
             'transform': transform,
             'aggregation': aggregation,
             'min_confidence': float(min_confidence),
+            'epsilon': float(epsilon),
+            'max_iterations': int(max_iterations),
             'key': key_added,
             'shared': shared,
             'missing': missing,
@@ -8149,6 +8161,7 @@ class DataAdaptor:
                 k=snap['k'], metric=snap['metric'], transform=snap['transform'],
                 aggregation=snap['aggregation'], ref_sections=snap['sections'],
                 min_confidence=snap['min_confidence'],
+                epsilon=snap['epsilon'], max_iterations=snap['max_iterations'],
                 progress=report,
             )
             return {'projection': projection}
@@ -8180,6 +8193,20 @@ class DataAdaptor:
                 # documented approximation and a silent one.
                 'assignment': projection.assignment,
                 'n_candidates': projection.n_candidates,
+                # Which reference the coupling was solved against, and whether
+                # it converged. A subsampled or budget-exhausted run is a
+                # different answer, and the panel has to be able to say so.
+                'transport': projection.transport,
+                'n_ref_used': projection.n_ref_used,
+                'sinkhorn_iterations': projection.sinkhorn_iterations,
+                # None rather than NaN when there is nothing to report: this
+                # crosses the API, and NaN is not JSON.
+                'marginal_error': (
+                    float(projection.marginal_error)
+                    if projection.marginal_error is not None
+                    and np.isfinite(projection.marginal_error)
+                    else None
+                ),
                 'gene_subset_type': snap['gene_subset_type'],
                 'section_col': snap['section_col'],
                 # So the panel can say what a threshold would cost before it is

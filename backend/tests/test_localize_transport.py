@@ -1,6 +1,12 @@
-import numpy as np
-import pytest
+import json
 
+import anndata as ad
+import numpy as np
+import pandas as pd
+import pytest
+from scipy.sparse import csr_matrix
+
+from xcell.adaptor import DataAdaptor
 from xcell.localize import project_knn
 
 
@@ -117,3 +123,55 @@ def test_other_aggregations_report_no_transport_fields():
     assert proj.n_ref_used is None
     assert proj.sinkhorn_iterations is None
     assert proj.marginal_error is None
+
+
+def _adata(n=40, n_genes=30, spatial=True, seed=0):
+    rng = np.random.default_rng(seed)
+    X = csr_matrix(rng.poisson(1.0, size=(n, n_genes)).astype(np.float32))
+    obs = pd.DataFrame(index=[f'c{i}' for i in range(n)])
+    var = pd.DataFrame(index=[f'g{i}' for i in range(n_genes)])
+    a = ad.AnnData(X=X, obs=obs, var=var)
+    if spatial:
+        a.obsm['X_spatial'] = rng.uniform(0, 10, size=(n, 2))
+    return a
+
+
+def _adaptor(a):
+    return DataAdaptor('x.h5ad', adata=a)
+
+
+def test_prepare_localize_passes_transport_settings_through():
+    query = _adaptor(_adata(spatial=False, seed=1))
+    reference = _adaptor(_adata(seed=2))
+    bundle = reference.spatial_reference_bundle()
+
+    compute_fn, apply_fn = query.prepare_localize(
+        bundle, aggregation='transport', epsilon=0.4, max_iterations=25,
+    )
+    result = apply_fn(compute_fn())
+
+    assert result['transport'] == 'full'
+    assert result['n_ref_used'] == 40
+    assert result['sinkhorn_iterations'] <= 25
+    assert np.isfinite(result['marginal_error'])
+    # These stats cross the API, so they must survive json.dumps.
+    json.dumps(result)
+
+
+def test_prepare_localize_rejects_a_bad_epsilon_synchronously():
+    query = _adaptor(_adata(spatial=False, seed=1))
+    reference = _adaptor(_adata(seed=2))
+    bundle = reference.spatial_reference_bundle()
+    with pytest.raises(ValueError, match='epsilon'):
+        query.prepare_localize(bundle, aggregation='transport', epsilon=-1.0)
+
+
+def test_prepare_localize_leaves_transport_fields_empty_for_other_aggregations():
+    query = _adaptor(_adata(spatial=False, seed=1))
+    reference = _adaptor(_adata(seed=2))
+    bundle = reference.spatial_reference_bundle()
+    compute_fn, apply_fn = query.prepare_localize(bundle, aggregation='weighted_mean')
+    result = apply_fn(compute_fn())
+    assert result['transport'] is None
+    assert result['marginal_error'] is None
+    json.dumps(result)

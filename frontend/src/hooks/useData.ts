@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
 import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
+import { assertJsonResponse } from '../lib/foreignServer'
 import { MESSAGES } from '../messages'
 
 let _highlightIdSeq = 0
@@ -25,6 +26,9 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const error = await response.json().catch(() => ({ detail: response.statusText }))
     throw new Error(error.detail || `HTTP ${response.status}`)
   }
+  // A successful reply that isn't JSON never comes from xcell's backend — it
+  // comes from whatever else grabbed the port first.
+  await assertJsonResponse(response)
   return response.json()
 }
 

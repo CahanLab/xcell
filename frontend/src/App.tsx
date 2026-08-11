@@ -26,6 +26,7 @@ import PyscnModal from './components/PyscnModal'
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './components/LayerScaleInfo'
 import { MESSAGES } from './messages'
 import { buildCrumbs } from './lib/pathCrumbs'
+import { assertJsonResponse } from './lib/foreignServer'
 
 const styles = {
   container: {
@@ -1269,6 +1270,7 @@ export default function App() {
         const err = await response.json().catch(() => ({ detail: response.statusText }))
         throw new Error(err.detail || `HTTP ${response.status}`)
       }
+      await assertJsonResponse(response)
       const data = await response.json()
       setBrowseEntries(data.entries)
       setBrowseCurrent(data.current)
@@ -1313,7 +1315,10 @@ export default function App() {
         throw new Error(err.detail || `HTTP ${response.status}`)
       }
       const schemaUrl = loadSlot === 'primary' ? '/api/schema' : `/api/schema?dataset=${loadSlot}`
-      const schemaData = await fetch(schemaUrl).then(r => r.json())
+      const schemaData = await fetch(schemaUrl).then(async r => {
+        await assertJsonResponse(r)
+        return r.json()
+      })
       loadDatasetIntoSlot(loadSlot, schemaData)
       await fetchGeneMask(loadSlot)
       if (loadSlot !== activeSlot) setActiveSlot(loadSlot)
@@ -1346,8 +1351,9 @@ export default function App() {
       const schemaUrl = loadSlot === 'primary'
         ? '/api/schema'
         : `/api/schema?dataset=${loadSlot}`
-      const schemaData = await fetch(schemaUrl).then(r => {
+      const schemaData = await fetch(schemaUrl).then(async r => {
         if (!r.ok) throw new Error(`Failed to fetch schema: ${r.statusText}`)
+        await assertJsonResponse(r)
         return r.json()
       })
       // Update store

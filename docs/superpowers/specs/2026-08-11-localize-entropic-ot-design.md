@@ -77,12 +77,16 @@ survives `none`+`cosine` and `zscore`+`correlation` alike. **The normalizer is
 computed on the matrix actually solved**, so the subsampled path cannot silently
 shift the dial relative to the dense one.
 
-**ε default: 0.5 spreads**, favouring area, since collapse is the failure that
-motivated this work. In normalized units the parent spec's frontier becomes
-≈0.43 spreads → area 0.59 and ≈1.08 spreads → area 0.22, so the useful band is
-roughly 0.4–1.1. This number is a starting point to be re-derived by an ε sweep
-through the Phase 1 harness during implementation — it is not yet a measurement
-on this preprocessing, and the spec should not pretend otherwise.
+**ε default: 0.05 spreads**, with a useful band of roughly 0.03–0.3. This was
+provisionally 0.5 in this document, extrapolated from the parent spec's
+unnormalized figures; the sweep in
+`docs/superpowers/measurements/2026-08-11-transport-epsilon-sweep.md` showed that
+five times too smooth — ε=0.5 covers 5.5% of the tissue with the epidermis
+inverted again, which is the failure the estimator was built to fix. At 0.05 the
+map covers 44% over 1,774 distinct spots with every marker pattern positive.
+0.03 scores marginally higher still but does not meet its convergence tolerance
+within 400 iterations, and a default that has not satisfied its own marginals
+would contradict everything else in this design.
 
 **Prediction is the barycentric projection**, coordsᵢ = Σⱼ Pᵢⱼ·coordsⱼ,
 row-normalized. Taking the row argmax instead returns to the single-location

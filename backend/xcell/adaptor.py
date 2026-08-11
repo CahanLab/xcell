@@ -8087,8 +8087,8 @@ class DataAdaptor:
         transform: str = 'zscore',
         aggregation: str = 'weighted_mean',
         min_confidence: float = 0.0,
-        epsilon: float = 0.5,
-        max_iterations: int = 200,
+        epsilon: float = 0.05,
+        max_iterations: int = 300,
         layer: str | None = None,
         key_added: str = 'X_spatial_pred',
     ) -> tuple[Callable[..., Any], Callable[[dict[str, Any]], dict[str, Any]]]:

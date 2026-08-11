@@ -24,23 +24,34 @@ def normalize_cost(cost: np.ndarray) -> tuple[np.ndarray, float]:
 
     Sinkhorn forms exp(-C/eps), so what epsilon trades against is the *spread*
     of C, not its absolute scale. Measured on the E11.5 limb pair, the
-    transform/metric choice moves the effective epsilon across 3.5x (0.60
-    spreads under none+cosine, 2.09 under rank+cosine) while the useful tuning
-    range spans only 2.5x -- the preprocessing moves the dial further than the
-    dial travels. Dividing by the spread is what lets one default survive every
-    setting.
+    transform/metric choice moves the effective epsilon across 3.5x while the
+    useful tuning range spans only 2.5x -- the preprocessing moves the dial
+    further than the dial travels. Dividing by the spread is what lets one
+    default survive every setting.
 
-    The shift is free: entropic OT is invariant to a constant added to C,
-    because the resulting exp(-a/eps) is absorbed into the scaling vectors.
+    **Which spread is not obvious, and getting it wrong destroys the map.**
+    Entropic OT is invariant to ``C_ij -> C_ij + a_i + b_j``: both offsets are
+    absorbed into the potentials, so neither can move the coupling. The global
+    standard deviation counts them anyway. On that limb pair the column effect
+    alone -- reference spots that are better recovered and so similar to
+    *everything*, the same artifact that makes ``best_match`` pile up -- was
+    98% of the global spread (0.0808 of 0.0827), against a double-centred
+    spread of 0.0134. Normalizing by the global figure inflated the scale 6.2x,
+    so every run converged in ten iterations to a near-uniform coupling and the
+    barycentric projection collapsed to 0.5% of the tissue's area.
+
+    So the matrix is double-centred first, and the scale is the spread of what
+    remains: the variation that actually drives the coupling.
     """
     c = np.asarray(cost, dtype=np.float64)
-    c = c - c.min()
-    sigma = float(c.std())
+    d = c - c.mean(axis=1, keepdims=True) - c.mean(axis=0, keepdims=True) + c.mean()
+    d = d - d.min()
+    sigma = float(d.std())
     if sigma <= 1e-12:
-        # Every pair equally similar. There is nothing to scale, and dividing
-        # would fill the matrix with inf.
-        return c, 1.0
-    return c / sigma, sigma
+        # Every pair equally similar once offsets are removed. There is nothing
+        # to scale, and dividing would fill the matrix with inf.
+        return d, 1.0
+    return d / sigma, sigma
 
 
 @dataclass
@@ -61,7 +72,7 @@ def sinkhorn_log(
     cost: np.ndarray,
     epsilon: float,
     *,
-    max_iterations: int = 200,
+    max_iterations: int = 300,
     tol: float = 1e-4,
     check_every: int = 10,
     progress: Callable[[float, str], None] | None = None,

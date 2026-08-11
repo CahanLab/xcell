@@ -85,7 +85,7 @@ const TIPS: Record<string, string> = {
   transform: 'Applied to each dataset separately — that is what removes platform-level differences in per-gene capture. z-score is the safe default across platforms; rank additionally survives any monotone difference.',
   metric: 'How similarity between two cells is measured. Correlation on z-scored data and cosine coincide.',
   aggregation: 'How the k neighbours become one point. weighted_mean is the classic estimator; densest lands the cell in real tissue when its neighbours sit in two separate patches, though it cannot say which patch; best_match snaps to a real reference cell; injective does the same but gives every cell a different one, which removes pile-up and asserts that the query’s composition matches the tissue’s; transport solves for all cells at once, subject to the tissue being occupied, which is the only option that trades between filling the tissue and keeping the gradient rather than sitting at one end.',
-  epsilon: 'How much each cell is allowed to hedge across reference spots, in units of the cost matrix’s own spread — so the same value means the same thing whatever transform and metric you chose. Lower fills more of the tissue and behaves more like best match; higher averages more and eventually collapses toward the tissue centre. The useful band is roughly 0.4 to 1.1.',
+  epsilon: 'How much each cell is allowed to hedge across reference spots, in units of the cost matrix’s own spread — so the same value means the same thing whatever transform and metric you chose. Lower fills more of the tissue and behaves more like best match; higher averages more and eventually collapses toward the tissue centre. Measured on an E11.5 limb pair the useful band is roughly 0.03 to 0.3: at 0.05 the map covers 44% of the tissue over 1,774 distinct spots, at 0.5 it is down to 5.5% with the epidermis inverted again. Below 0.03 it converges too slowly to be worth it.',
   min_confidence: 'Cells whose neighbours disagree about location this badly get no coordinate at all, rather than a fabricated one. Leave at 0 to place everything and filter later.',
 }
 
@@ -138,7 +138,7 @@ export default function LocalizeModal() {
   const [transform, setTransform] = useState('zscore')
   const [metric, setMetric] = useState('correlation')
   const [aggregation, setAggregation] = useState('weighted_mean')
-  const [epsilon, setEpsilon] = useState('0.5')
+  const [epsilon, setEpsilon] = useState('0.05')
   const [minConfidence, setMinConfidence] = useState('0')
   const [sectionCol, setSectionCol] = useState('')
   const [keyAdded, setKeyAdded] = useState('X_spatial_pred')
@@ -294,7 +294,7 @@ export default function LocalizeModal() {
     k: Number(k) || 15,
     transform, metric, aggregation,
     min_confidence: Number(minConfidence) || 0,
-    epsilon: Number(epsilon) || 0.5,
+    epsilon: Number(epsilon) || 0.05,
     section_col: sectionCol || null,
     gene_subset: geneSubset,
   })
@@ -399,7 +399,7 @@ export default function LocalizeModal() {
     k: Number(k) || 0,
     transform, metric, aggregation,
     minConfidence: Number(minConfidence) || 0,
-    epsilon: Number(epsilon) || 0.5,
+    epsilon: Number(epsilon) || 0.05,
     nReferenceCells: chosenRef?.n_cells ?? 0,
     nQueryCells: queryInfo?.n_cells ?? 0,
     nSharedGenes: basisGenes,

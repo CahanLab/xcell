@@ -445,8 +445,8 @@ def project_knn(
     aggregation: str = 'weighted_mean',
     ref_sections: np.ndarray | None = None,
     min_confidence: float = 0.0,
-    epsilon: float = 0.5,
-    max_iterations: int = 200,
+    epsilon: float = 0.05,
+    max_iterations: int = 300,
     progress: Callable[[float, str], None] | None = None,
 ) -> Projection:
     """Predict a coordinate for every query cell from a spatial reference.

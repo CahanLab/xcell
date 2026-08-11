@@ -66,14 +66,15 @@ export function adviseParameters(o: LocalizeSettings): Advice[] {
     out.push({ level: 'info', text:
       'Transport places the population so that it occupies the tissue, which assumes the query’s composition matches the tissue’s. Dissociation biases which cell types survive, so a type under-represented in the query will still have its share of the tissue filled by something else.' })
     // The band either side of which the dial stops trading and starts simply
-    // failing. Measured on a synthetic pair: spread falls monotonically from
-    // 93% of the reference's own at ε=0.05 to 32% at ε=2.0.
-    if (o.epsilon >= 2.0) {
+    // failing. Measured on the E11.5 limb pair: hull area falls monotonically
+    // from 0.44 at ε=0.05 to 0.004 at ε=2.0, and the epidermis is inverted
+    // again by ε=0.5 — the very failure weighted_mean was faulted for.
+    if (o.epsilon >= 0.5) {
       out.push({ level: 'warn', text:
-        `ε=${o.epsilon} spreads each cell’s posterior over much of the reference, so the averaged prediction collapses toward the tissue centre — the failure this estimator exists to avoid.` })
-    } else if (o.epsilon <= 0.05) {
+        `ε=${o.epsilon} spreads each cell’s posterior over much of the reference, so the averaged prediction collapses toward the tissue centre. Measured on the limb pair, ε=0.5 covered 5.5% of the tissue with the epidermis inverted again — the failure this estimator exists to avoid.` })
+    } else if (o.epsilon <= 0.02) {
       out.push({ level: 'warn', text:
-        `ε=${o.epsilon} makes each cell pick almost a single spot, which throws away the averaging that keeps the gradient. Expect the axis correlations to fall toward best_match’s.` })
+        `ε=${o.epsilon} is below the measured band and converges slowly — at ε=0.03 the solver had not met its tolerance after 400 iterations. Raise the iteration budget or expect a map whose marginals were never satisfied.` })
     }
   }
 

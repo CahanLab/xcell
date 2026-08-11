@@ -137,7 +137,8 @@ describe('the rules that were already there', () => {
 })
 
 describe('transport', () => {
-  const OT: LocalizeSettings = { ...OK, aggregation: 'transport', epsilon: 0.5 }
+  // The measured default: hull area 0.44 on the limb pair, converging.
+  const OT: LocalizeSettings = { ...OK, aggregation: 'transport', epsilon: 0.05 }
 
   it('states the composition assumption the reference marginal makes', () => {
     expect(texts(adviseParameters(OT))).toContain('composition')
@@ -147,14 +148,18 @@ describe('transport', () => {
     expect(texts(adviseParameters({ ...OT, epsilon: 3.0 }))).toContain('centre')
   })
 
-  it('warns that a tiny epsilon throws away the averaging', () => {
-    expect(texts(adviseParameters({ ...OT, epsilon: 0.02 }))).toContain('gradient')
+  it('warns at the epsilon where the epidermis inverted again', () => {
+    expect(texts(adviseParameters({ ...OT, epsilon: 0.5 }))).toContain('centre')
   })
 
-  it('says nothing about epsilon in the useful band', () => {
-    const t = texts(adviseParameters({ ...OT, epsilon: 0.5 }))
+  it('warns that an epsilon below the band will not converge', () => {
+    expect(texts(adviseParameters({ ...OT, epsilon: 0.01 }))).toContain('converges slowly')
+  })
+
+  it('says nothing about epsilon at the measured default', () => {
+    const t = texts(adviseParameters(OT))
     expect(t).not.toContain('centre')
-    expect(t).not.toContain('gradient')
+    expect(t).not.toContain('converges slowly')
   })
 
   it('stays silent about epsilon for every other aggregation', () => {

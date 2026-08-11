@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from xcell.transport import SinkhornResult, normalize_cost, sinkhorn_log
+from xcell.transport import (
+    SinkhornResult,
+    barycentric_projection,
+    normalize_cost,
+    posterior_spread,
+    sinkhorn_log,
+)
 
 
 def test_normalize_cost_is_zero_based_and_unit_spread():
@@ -101,3 +107,41 @@ def test_sinkhorn_rejects_a_non_positive_epsilon():
     cost, _ = normalize_cost(_toy_cost())
     with pytest.raises(ValueError, match='epsilon'):
         sinkhorn_log(cost, epsilon=0.0)
+
+
+def test_barycentric_is_the_row_weighted_mean_of_coordinates():
+    coupling = np.array([[0.5, 0.5, 0.0],
+                         [0.0, 0.0, 1.0]]) / 2.0   # rows sum to 1/n
+    coords = np.array([[0.0, 0.0], [2.0, 0.0], [10.0, 4.0]])
+    pred, sections = barycentric_projection(coupling, coords)
+    assert sections is None
+    np.testing.assert_allclose(pred, [[1.0, 0.0], [10.0, 4.0]])
+
+
+def test_a_row_split_across_sections_does_not_land_in_the_gap():
+    # Two cuts 100 apart. A row with mass in both must resolve to one of them,
+    # not to the empty space between -- the failure project_knn already guards
+    # against for the k-NN path.
+    coupling = np.array([[0.4, 0.2, 0.3, 0.1]])
+    coords = np.array([[0.0, 0.0], [1.0, 0.0], [100.0, 0.0], [101.0, 0.0]])
+    sections = np.array(['a', 'a', 'b', 'b'])
+    pred, chosen = barycentric_projection(coupling, coords, sections)
+    assert chosen is not None and chosen[0] == 'a'          # 0.6 of the mass
+    assert pred[0][0] < 1.0                                  # inside section a
+    np.testing.assert_allclose(pred[0], [1.0 / 3.0, 0.0])    # 0.4/0.6, 0.2/0.6
+
+
+def test_posterior_spread_is_zero_for_a_certain_row():
+    coupling = np.array([[0.0, 1.0]])
+    coords = np.array([[0.0, 0.0], [3.0, 4.0]])
+    pred, _ = barycentric_projection(coupling, coords)
+    assert posterior_spread(coupling, coords, pred)[0] == pytest.approx(0.0)
+
+
+def test_posterior_spread_grows_as_the_posterior_spreads():
+    coords = np.array([[0.0, 0.0], [10.0, 0.0]])
+    tight = np.array([[0.99, 0.01]])
+    loose = np.array([[0.5, 0.5]])
+    st = posterior_spread(tight, coords, barycentric_projection(tight, coords)[0])
+    sl = posterior_spread(loose, coords, barycentric_projection(loose, coords)[0])
+    assert sl[0] > st[0]

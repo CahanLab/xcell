@@ -114,3 +114,68 @@ def sinkhorn_log(
     P = np.exp((-c + f[:, None] + g[None, :]) / epsilon)
     err = float(np.abs(P.sum(axis=1) - target_row).max() / target_row)
     return SinkhornResult(coupling=P, iterations=used, marginal_error=err)
+
+
+# --- reading a coupling -----------------------------------------------------
+
+def _row_normalize(coupling: np.ndarray) -> np.ndarray:
+    """Rows of P sum to 1/n; a posterior over locations must sum to 1."""
+    P = np.asarray(coupling, dtype=np.float64)
+    total = P.sum(axis=1, keepdims=True)
+    return P / np.where(total > 0, total, 1.0)
+
+
+def barycentric_projection(
+    coupling: np.ndarray,
+    coords: np.ndarray,
+    sections: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Predict each cell's coordinate as the mean of its posterior.
+
+    Taking the row argmax instead returns to the single-location regime and
+    loses the axes (measured: 0.98 area, ~0 correlation), which is the failure
+    this estimator exists to avoid.
+    """
+    W = _row_normalize(coupling)
+    coords = np.asarray(coords, dtype=np.float64)
+    if sections is None:
+        return W @ coords, None
+
+    # Averaging across sections lands in the gap between cuts, so resolve each
+    # row to the section holding most of its mass and renormalize within it.
+    sections = np.asarray(sections).astype(str)
+    labels = np.unique(sections)
+    mass = np.stack([W[:, sections == s].sum(axis=1) for s in labels], axis=1)
+    chosen = labels[np.argmax(mass, axis=1)]
+
+    out = np.zeros((W.shape[0], coords.shape[1]), dtype=np.float64)
+    for s in labels:
+        rows = np.flatnonzero(chosen == s)
+        if rows.size == 0:
+            continue
+        cols = np.flatnonzero(sections == s)
+        sub = W[np.ix_(rows, cols)]
+        total = sub.sum(axis=1, keepdims=True)
+        sub = sub / np.where(total > 0, total, 1.0)
+        out[rows] = sub @ coords[cols]
+    return out, chosen
+
+
+def posterior_spread(
+    coupling: np.ndarray,
+    coords: np.ndarray,
+    predictions: np.ndarray,
+) -> np.ndarray:
+    """Weighted RMS distance of the posterior from its own mean, per cell.
+
+    The same quantity ``project_knn`` already computes over the k neighbours,
+    evaluated over the coupling instead. Keeping the formula identical is what
+    lets confidence stay comparable across aggregations -- row entropy was the
+    other candidate and is not in spatial units, so a transport run's
+    confidence could not be read against any other run's.
+    """
+    W = _row_normalize(coupling)
+    coords = np.asarray(coords, dtype=np.float64)
+    predictions = np.asarray(predictions, dtype=np.float64)
+    offsets = coords[None, :, :] - predictions[:, None, :]
+    return np.sqrt((W * (offsets ** 2).sum(axis=2)).sum(axis=1))

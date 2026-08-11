@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { assertJsonResponse } from '../lib/foreignServer'
 
 /**
  * Pick a server-side file by browsing the filesystem.
@@ -79,6 +80,7 @@ export default function FileBrowser({
         const err = await resp.json().catch(() => ({ detail: resp.statusText }))
         throw new Error(err.detail || `HTTP ${resp.status}`)
       }
+      await assertJsonResponse(resp)
       const data = await resp.json()
       setEntries(data.entries)
       setCurrent(data.current)

@@ -3577,6 +3577,8 @@ class LocalizeRequest(BaseModel):
     transform: str = "zscore"
     aggregation: str = "weighted_mean"
     min_confidence: float = 0.0
+    epsilon: float = 0.05
+    max_iterations: int = 300
     gene_subset: str | list[str] | dict[str, Any] | None = None
     section_col: str | None = None
     layer: str | None = None
@@ -3604,6 +3606,8 @@ def localize_prepare(request: LocalizeRequest, dataset: str | None = Query(None)
             transform=request.transform,
             aggregation=request.aggregation,
             min_confidence=request.min_confidence,
+            epsilon=request.epsilon,
+            max_iterations=request.max_iterations,
             layer=request.layer,
             key_added=request.key_added,
         )

@@ -38,7 +38,9 @@ import numpy as np
 
 TRANSFORMS = ('none', 'log1p', 'zscore', 'rank')
 METRICS = ('correlation', 'cosine', 'euclidean')
-AGGREGATIONS = ('weighted_mean', 'median', 'best_match', 'densest', 'injective')
+AGGREGATIONS = (
+    'weighted_mean', 'median', 'best_match', 'densest', 'injective', 'transport',
+)
 
 # Query cells per chunk. Keeps the similarity block bounded regardless of how
 # many cells are being mapped, and gives progress something to report.
@@ -73,6 +75,14 @@ _CANDIDATES = 128
 # 400,000 cells rather than around 10,000.
 _MAX_CANDIDATE_EDGES = 50_000_000
 
+# Sinkhorn holds the cost matrix, one workspace of the same shape and the
+# coupling, all float64 for numerical safety — about three arrays, so 4e7
+# entries is ~960 MB at the ceiling and the E11.5 limb pair (2.6e7) costs
+# ~630 MB. Set by what already works, as the dense assignment ceiling was: that
+# pair must keep running against the full reference, because a subsampled
+# answer is a different answer rather than a slower one.
+_TRANSPORT_MAX_ENTRIES = 40_000_000
+
 
 @dataclass
 class Projection:
@@ -89,6 +99,14 @@ class Projection:
     # difference is reported rather than assumed away.
     assignment: str | None = None
     n_candidates: int | None = None
+    # Which reference the coupling was solved against, and how well it
+    # converged. A subsampled run is a different answer from a full one and
+    # must never be readable as the same; a run that spent its whole iteration
+    # budget has not satisfied the constraint that justifies the method.
+    transport: str | None = None
+    n_ref_used: int | None = None
+    sinkhorn_iterations: int | None = None
+    marginal_error: float | None = None
 
 
 # --- transforms -----------------------------------------------------------
@@ -427,6 +445,8 @@ def project_knn(
     aggregation: str = 'weighted_mean',
     ref_sections: np.ndarray | None = None,
     min_confidence: float = 0.0,
+    epsilon: float = 0.05,
+    max_iterations: int = 300,
     progress: Callable[[float, str], None] | None = None,
 ) -> Projection:
     """Predict a coordinate for every query cell from a spatial reference.
@@ -475,6 +495,8 @@ def project_knn(
         problem = injective_feasibility(query_expr.shape[0], ref_expr.shape[0])
         if problem:
             raise ValueError(problem)
+    if aggregation == 'transport' and epsilon <= 0:
+        raise ValueError(f'epsilon must be positive, got {epsilon}')
 
     q = _prepare_for_metric(transform_expression(query_expr, transform), metric)
     r = _prepare_for_metric(transform_expression(ref_expr, transform), metric)
@@ -543,6 +565,8 @@ def project_knn(
 
     assignment_kind: str | None = None
     n_candidates_used: int | None = None
+    transport_out: tuple[str, int, int, float] | None = None
+    transport_spread: np.ndarray | None = None
     if needs_full:
         if progress is not None:
             progress(1.0, f'Assigning {n_query:,} cells to distinct spots')
@@ -560,14 +584,52 @@ def project_knn(
             # of the k neighbours — that majority exists to stop an *average*
             # landing in the gap between cuts, and nothing is being averaged.
             sections_out = ref_sections[assigned]
+    elif aggregation == 'transport':
+        from xcell import transport as tr
+
+        ref_idx = np.arange(n_ref)
+        transport_kind = 'full'
+        if n_query * n_ref > _TRANSPORT_MAX_ENTRIES:
+            budget = max(1, _TRANSPORT_MAX_ENTRIES // max(n_query, 1))
+            ref_idx = tr.stratified_subsample(ref_coords, budget)
+            transport_kind = 'subsampled'
+
+        if progress is not None:
+            progress(1.0, f'Transporting {n_query:,} cells onto '
+                          f'{len(ref_idx):,} spots')
+
+        # Recomputed rather than reused: the matching pass above keeps only
+        # each row's best k, and the coupling is solved over every entry.
+        sim = _similarity_block(q, r[ref_idx], metric)
+        cost, _ = tr.normalize_cost(-sim)
+        result = tr.sinkhorn_log(
+            cost, epsilon, max_iterations=max_iterations, progress=progress,
+        )
+        sub_sections = ref_sections[ref_idx] if ref_sections is not None else None
+        coords, chosen = tr.barycentric_projection(
+            result.coupling, ref_coords[ref_idx], sub_sections,
+        )
+        if chosen is not None:
+            sections_out = chosen
+        transport_out = (transport_kind, len(ref_idx), result.iterations,
+                         result.marginal_error)
+        # Each row of the coupling is a spatial posterior, so the spread of
+        # that posterior is the honest confidence — and it is the same
+        # quantity the k-NN path measures, so the two stay comparable.
+        transport_spread = tr.posterior_spread(
+            result.coupling, ref_coords[ref_idx], coords,
+        )
     else:
         coords = _aggregate(neighbor_coords, weights, aggregation)
 
     # Confidence: weighted RMS spread of the neighbours about the prediction,
     # against the tissue's own radius. 1 = one spot, 0 = as scattered as the
     # whole reference, i.e. no positional information.
-    offsets = neighbor_coords - coords[:, None, :]
-    spread = np.sqrt((weights * (offsets ** 2).sum(axis=2)).sum(axis=1))
+    if transport_spread is not None:
+        spread = transport_spread
+    else:
+        offsets = neighbor_coords - coords[:, None, :]
+        spread = np.sqrt((weights * (offsets ** 2).sum(axis=2)).sum(axis=1))
     confidence = np.clip(1.0 - spread / _tissue_radius(ref_coords), 0.0, 1.0)
 
     similarity = (weights * sims).sum(axis=1)
@@ -591,6 +653,10 @@ def project_knn(
         n_unplaced=n_unplaced,
         assignment=assignment_kind,
         n_candidates=n_candidates_used,
+        transport=transport_out[0] if transport_out else None,
+        n_ref_used=transport_out[1] if transport_out else None,
+        sinkhorn_iterations=transport_out[2] if transport_out else None,
+        marginal_error=transport_out[3] if transport_out else None,
     )
 
 

@@ -31,6 +31,8 @@ export interface LocalizeSettings {
   metric: string
   aggregation: string
   minConfidence: number
+  /** The transport dial, in units of the cost matrix's own spread. */
+  epsilon: number
   nReferenceCells: number
   nQueryCells: number
   nSharedGenes: number | null
@@ -58,6 +60,21 @@ export function adviseParameters(o: LocalizeSettings): Advice[] {
   if (o.nReferenceCells > 0 && o.k > 0.1 * o.nReferenceCells) {
     out.push({ level: 'warn', text:
       `k=${o.k} is over a tenth of the ${o.nReferenceCells.toLocaleString()} reference cells. Every prediction averages a large slice of the tissue, so all of them drift toward its centre.` })
+  }
+
+  if (o.aggregation === 'transport') {
+    out.push({ level: 'info', text:
+      'Transport places the population so that it occupies the tissue, which assumes the query’s composition matches the tissue’s. Dissociation biases which cell types survive, so a type under-represented in the query will still have its share of the tissue filled by something else.' })
+    // The band either side of which the dial stops trading and starts simply
+    // failing. Measured on a synthetic pair: spread falls monotonically from
+    // 93% of the reference's own at ε=0.05 to 32% at ε=2.0.
+    if (o.epsilon >= 2.0) {
+      out.push({ level: 'warn', text:
+        `ε=${o.epsilon} spreads each cell’s posterior over much of the reference, so the averaged prediction collapses toward the tissue centre — the failure this estimator exists to avoid.` })
+    } else if (o.epsilon <= 0.05) {
+      out.push({ level: 'warn', text:
+        `ε=${o.epsilon} makes each cell pick almost a single spot, which throws away the averaging that keeps the gradient. Expect the axis correlations to fall toward best_match’s.` })
+    }
   }
 
   if (o.transform === 'none' && o.metric === 'euclidean') {

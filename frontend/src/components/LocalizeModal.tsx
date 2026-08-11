@@ -84,7 +84,8 @@ const TIPS: Record<string, string> = {
   k: 'How many spatial cells vote on each prediction. Too few is noisy; too many drags every cell toward the tissue centre.',
   transform: 'Applied to each dataset separately — that is what removes platform-level differences in per-gene capture. z-score is the safe default across platforms; rank additionally survives any monotone difference.',
   metric: 'How similarity between two cells is measured. Correlation on z-scored data and cosine coincide.',
-  aggregation: 'How the k neighbours become one point. weighted_mean is the classic estimator; densest lands the cell in real tissue when its neighbours sit in two separate patches, though it cannot say which patch; best_match snaps to a real reference cell; injective does the same but gives every cell a different one, which removes pile-up and asserts that the query’s composition matches the tissue’s.',
+  aggregation: 'How the k neighbours become one point. weighted_mean is the classic estimator; densest lands the cell in real tissue when its neighbours sit in two separate patches, though it cannot say which patch; best_match snaps to a real reference cell; injective does the same but gives every cell a different one, which removes pile-up and asserts that the query’s composition matches the tissue’s; transport solves for all cells at once, subject to the tissue being occupied, which is the only option that trades between filling the tissue and keeping the gradient rather than sitting at one end.',
+  epsilon: 'How much each cell is allowed to hedge across reference spots, in units of the cost matrix’s own spread — so the same value means the same thing whatever transform and metric you chose. Lower fills more of the tissue and behaves more like best match; higher averages more and eventually collapses toward the tissue centre. The useful band is roughly 0.4 to 1.1.',
   min_confidence: 'Cells whose neighbours disagree about location this badly get no coordinate at all, rather than a fabricated one. Leave at 0 to place everything and filter later.',
 }
 
@@ -137,6 +138,7 @@ export default function LocalizeModal() {
   const [transform, setTransform] = useState('zscore')
   const [metric, setMetric] = useState('correlation')
   const [aggregation, setAggregation] = useState('weighted_mean')
+  const [epsilon, setEpsilon] = useState('0.5')
   const [minConfidence, setMinConfidence] = useState('0')
   const [sectionCol, setSectionCol] = useState('')
   const [keyAdded, setKeyAdded] = useState('X_spatial_pred')
@@ -292,6 +294,7 @@ export default function LocalizeModal() {
     k: Number(k) || 15,
     transform, metric, aggregation,
     min_confidence: Number(minConfidence) || 0,
+    epsilon: Number(epsilon) || 0.5,
     section_col: sectionCol || null,
     gene_subset: geneSubset,
   })
@@ -396,6 +399,7 @@ export default function LocalizeModal() {
     k: Number(k) || 0,
     transform, metric, aggregation,
     minConfidence: Number(minConfidence) || 0,
+    epsilon: Number(epsilon) || 0.5,
     nReferenceCells: chosenRef?.n_cells ?? 0,
     nQueryCells: queryInfo?.n_cells ?? 0,
     nSharedGenes: basisGenes,
@@ -556,8 +560,17 @@ export default function LocalizeModal() {
                         disabled={(queryInfo?.n_cells ?? 0) > (refInfo?.n_cells ?? 0)}>
                   injective (a distinct spot each)
                 </option>
+                <option value="transport">transport (fills the tissue)</option>
               </select>
             </Field>
+            {/* Only the aggregation it belongs to: a dial with no effect is
+                worse than no dial, because it invites tuning that does nothing. */}
+            {aggregation === 'transport' && (
+              <Field label="ε (spread)" tip={TIPS.epsilon}>
+                <input value={epsilon} onChange={(e) => setEpsilon(e.target.value)}
+                       style={input} />
+              </Field>
+            )}
             <Field label="Min confidence" tip={TIPS.min_confidence}>
               <input value={minConfidence} onChange={(e) => setMinConfidence(e.target.value)} style={input} />
             </Field>

@@ -10,7 +10,7 @@ import {
 const OK: LocalizeSettings = {
   k: 15, transform: 'zscore', metric: 'correlation', aggregation: 'median',
   minConfidence: 0, nReferenceCells: 9145, nQueryCells: 2683,
-  nSharedGenes: 12449, populations: [],
+  nSharedGenes: 12449, populations: [], epsilon: 0.5,
 }
 
 const pop = (name: string, risk: number | null): PopulationGeometry => ({
@@ -133,5 +133,32 @@ describe('the rules that were already there', () => {
 
   it('says nothing at all about sensible settings', () => {
     expect(adviseParameters(OK)).toHaveLength(0)
+  })
+})
+
+describe('transport', () => {
+  const OT: LocalizeSettings = { ...OK, aggregation: 'transport', epsilon: 0.5 }
+
+  it('states the composition assumption the reference marginal makes', () => {
+    expect(texts(adviseParameters(OT))).toContain('composition')
+  })
+
+  it('warns that a large epsilon collapses the map toward the centre', () => {
+    expect(texts(adviseParameters({ ...OT, epsilon: 3.0 }))).toContain('centre')
+  })
+
+  it('warns that a tiny epsilon throws away the averaging', () => {
+    expect(texts(adviseParameters({ ...OT, epsilon: 0.02 }))).toContain('gradient')
+  })
+
+  it('says nothing about epsilon in the useful band', () => {
+    const t = texts(adviseParameters({ ...OT, epsilon: 0.5 }))
+    expect(t).not.toContain('centre')
+    expect(t).not.toContain('gradient')
+  })
+
+  it('stays silent about epsilon for every other aggregation', () => {
+    const t = texts(adviseParameters({ ...OK, epsilon: 3.0 }))
+    expect(t).not.toContain('ε')
   })
 })

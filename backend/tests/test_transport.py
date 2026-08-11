@@ -7,6 +7,7 @@ from xcell.transport import (
     normalize_cost,
     posterior_spread,
     sinkhorn_log,
+    stratified_subsample,
 )
 
 
@@ -145,3 +146,45 @@ def test_posterior_spread_grows_as_the_posterior_spreads():
     st = posterior_spread(tight, coords, barycentric_projection(tight, coords)[0])
     sl = posterior_spread(loose, coords, barycentric_projection(loose, coords)[0])
     assert sl[0] > st[0]
+
+
+def test_subsample_returns_the_requested_size():
+    rng = np.random.default_rng(0)
+    coords = rng.uniform(0, 100, size=(5000, 2))
+    idx = stratified_subsample(coords, 500)
+    assert len(idx) == 500
+    assert len(np.unique(idx)) == 500
+
+
+def test_subsample_keeps_every_occupied_region():
+    # A dense blob plus a sparse arm. Uniform sampling would thin the arm in
+    # proportion to its density, and the column marginal would then be
+    # enforcing occupancy of a tissue that is missing a limb.
+    rng = np.random.default_rng(0)
+    blob = rng.normal(10, 1.0, size=(4000, 2))
+    arm = np.stack([np.linspace(40, 60, 40), np.full(40, 50.0)], axis=1)
+    coords = np.vstack([blob, arm])
+    idx = stratified_subsample(coords, 300)
+    kept_arm = (idx >= 4000).sum()
+    assert kept_arm >= 5, f'the sparse arm all but vanished: {kept_arm} of 40'
+
+
+def test_subsample_returns_everything_when_the_target_is_larger():
+    coords = np.random.default_rng(0).uniform(0, 1, size=(100, 2))
+    idx = stratified_subsample(coords, 500)
+    np.testing.assert_array_equal(idx, np.arange(100))
+
+
+def test_subsample_is_deterministic_for_a_seed():
+    coords = np.random.default_rng(0).uniform(0, 1, size=(2000, 2))
+    np.testing.assert_array_equal(
+        stratified_subsample(coords, 200, seed=7),
+        stratified_subsample(coords, 200, seed=7),
+    )
+
+
+def test_subsample_indices_are_valid_and_sorted():
+    coords = np.random.default_rng(0).uniform(0, 1, size=(3000, 2))
+    idx = stratified_subsample(coords, 400)
+    assert idx.min() >= 0 and idx.max() < 3000
+    np.testing.assert_array_equal(idx, np.sort(idx))

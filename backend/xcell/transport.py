@@ -179,3 +179,53 @@ def posterior_spread(
     predictions = np.asarray(predictions, dtype=np.float64)
     offsets = coords[None, :, :] - predictions[:, None, :]
     return np.sqrt((W * (offsets ** 2).sum(axis=2)).sum(axis=1))
+
+
+# --- fitting the reference into memory --------------------------------------
+
+def stratified_subsample(
+    coords: np.ndarray,
+    n_target: int,
+    *,
+    seed: int = 0,
+    n_bins: int = 32,
+) -> np.ndarray:
+    """Pick ``n_target`` reference spots that still cover the tissue.
+
+    Uniform sampling thins a sparse extremity in proportion to its density, and
+    the column marginal would then be enforcing occupancy of a tissue missing
+    that extremity -- exactly the shape information transport exists to use.
+    Binning the coordinates and taking at least one spot from every occupied
+    bin keeps the outline; the remainder is filled proportionally, because
+    sampling the leftovers uniformly *is* proportional to occupancy.
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+    n = coords.shape[0]
+    if n_target >= n:
+        return np.arange(n)
+
+    rng = np.random.default_rng(seed)
+    keys = np.zeros(n, dtype=np.int64)
+    for axis in range(2):
+        lo, hi = coords[:, axis].min(), coords[:, axis].max()
+        edges = np.linspace(lo, hi, n_bins + 1)[1:-1] if hi > lo else np.array([])
+        keys = keys * n_bins + np.digitize(coords[:, axis], edges)
+
+    bins = [np.flatnonzero(keys == b) for b in np.unique(keys)]
+    chosen = [rng.choice(members, size=1) for members in bins]
+    taken = {int(i) for arr in chosen for i in arr}
+
+    remaining = n_target - len(taken)
+    if remaining > 0:
+        rest = np.array(sorted(set(range(n)) - taken), dtype=np.int64)
+        if rest.size:
+            chosen.append(
+                rng.choice(rest, size=min(remaining, rest.size), replace=False)
+            )
+
+    out = np.unique(np.concatenate(chosen))
+    if out.size > n_target:
+        # More occupied bins than the budget: one-per-bin is unsatisfiable, so
+        # thin uniformly across bins rather than pretending otherwise.
+        out = np.sort(rng.choice(out, size=n_target, replace=False))
+    return out

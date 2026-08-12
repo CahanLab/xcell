@@ -96,6 +96,10 @@ def _resolve_cell_context(
 BROWSE_KINDS = {
     'data': ('.h5ad', '.h5', '.rds'),
     'classifier': ('.pkl', '.pickle'),
+    # Export targets. Each kind remembers its own directory, so where you keep
+    # exported tables is not forced to be where you keep h5ads.
+    'tabular': ('.tsv', '.csv', '.txt'),
+    'geneset': ('.json', '.gmt'),
 }
 
 
@@ -3069,6 +3073,72 @@ def ligrec_finalize(request: LigRecFinalizeRequest, dataset: str | None = Query(
 from fastapi.responses import FileResponse
 import tempfile
 import os
+
+
+#: What ``POST /export/save`` knows how to write.
+_EXPORT_SAVE_KINDS = ('h5ad', 'metadata', 'gene_sets')
+
+
+class ExportSaveRequest(BaseModel):
+    path: str
+    kind: str = "h5ad"
+    # Only gene sets carry content. The flattening that gives that file its
+    # shape lives in the frontend, so reproducing it here would let the two
+    # drift; h5ad and metadata the backend can produce itself.
+    content: str | None = None
+
+
+@router.post("/export/save")
+def export_save(request: ExportSaveRequest, dataset: str | None = Query(None)):
+    """Write an export to a path the user picked, rather than to Downloads.
+
+    The streaming ``GET /export/h5ad`` stays: downloading through the browser is
+    still right when the backend is not on your machine. This is for the usual
+    case, where it is, and where a multi-gigabyte h5ad has no business making
+    the round trip.
+    """
+    if request.kind not in _EXPORT_SAVE_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"kind must be one of {list(_EXPORT_SAVE_KINDS)}, "
+                   f"got '{request.kind}'",
+        )
+
+    target = Path(request.path).expanduser()
+    if target.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"That path is a directory, not a file: {target}",
+        )
+    if not target.parent.is_dir():
+        raise HTTPException(
+            status_code=400, detail=f"No such directory: {target.parent}",
+        )
+
+    adaptor = get_adaptor(dataset)
+    try:
+        if request.kind == 'h5ad':
+            adaptor.prepare_export_with_lines().write_h5ad(target)
+        elif request.kind == 'metadata':
+            target.write_text(adaptor.export_annotations(None))
+        else:
+            if request.content is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="gene_sets needs 'content' — the sets are assembled "
+                           "in the browser, so it sends the bytes to write",
+                )
+            target.write_text(request.content)
+    except HTTPException:
+        raise
+    except (OSError, ValueError, KeyError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "path": str(target),
+        "kind": request.kind,
+        "n_bytes": int(target.stat().st_size),
+    }
 
 
 @router.get("/export/h5ad")

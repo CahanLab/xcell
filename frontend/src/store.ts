@@ -716,6 +716,7 @@ interface AppState {
 
   // Gene mask modal state (global)
   geneMaskModalOpen: boolean
+  geneSymbolModalOpen: boolean
 
   // User config (loaded from backend once at app mount; overrides param defaults)
   // Shape: loose — { scanpy: { <fn>: { <param>: value } }, line_association: { <param>: value } }
@@ -926,6 +927,7 @@ interface AppState {
 
   // Gene mask actions
   setGeneMaskModalOpen: (open: boolean) => void
+  setGeneSymbolModalOpen: (open: boolean) => void
   setGeneMaskConfig: (config: GeneMaskConfig | null) => void
   setPcaSubsets: (subsets: PCASubsetSummary[]) => void
 
@@ -1123,6 +1125,7 @@ export const useStore = create<AppState>((set, get) => {
     isImportModalOpen: false,
     isCombineModalOpen: false,
     geneMaskModalOpen: false,
+    geneSymbolModalOpen: false,
     geneMaskConfig: null,
     pcaSubsets: [],
     displayLayer: 'X',
@@ -2191,6 +2194,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Gene mask actions
     setGeneMaskModalOpen: (open) => set({ geneMaskModalOpen: open }),
+    setGeneSymbolModalOpen: (open) => set({ geneSymbolModalOpen: open }),
     setGeneMaskConfig: (config) => set(dsUpdate({ geneMaskConfig: config })),
     setPcaSubsets: (subsets) => set(dsUpdate({ pcaSubsets: subsets })),
 

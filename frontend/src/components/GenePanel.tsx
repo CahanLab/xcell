@@ -1737,6 +1737,7 @@ export default function GenePanel() {
   const currentVarIndex = useStore((s) => s.currentVarIndex)
   const geneMaskConfig = useStore((s) => s.geneMaskConfig)
   const setGeneMaskModalOpen = useStore((s) => s.setGeneMaskModalOpen)
+  const setGeneSymbolModalOpen = useStore((s) => s.setGeneSymbolModalOpen)
   const setCombineModalOpen = useStore((s) => s.setCombineModalOpen)
   const [isSwapping, setIsSwapping] = useState(false)
   const [showBrowse, setShowBrowse] = useState(false)
@@ -1844,6 +1845,10 @@ export default function GenePanel() {
               {
                 label: MESSAGES.geneMask.menuItem,
                 onClick: () => setGeneMaskModalOpen(true),
+              },
+              {
+                label: 'Add gene symbols…',
+                onClick: () => setGeneSymbolModalOpen(true),
               },
             ]}
           />

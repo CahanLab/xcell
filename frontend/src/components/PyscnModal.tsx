@@ -6,6 +6,9 @@ import { datasetIdentity } from '../lib/datasetIdentity'
 import FileBrowser, { type BrowseEntry } from './FileBrowser'
 import { composeSavePath, splitSavePath } from '../lib/savePath'
 
+// Append .pkl, but a name already ending .pickle is a pickle too.
+const PICKLE_EXTS = ['.pkl', '.pickle']
+
 /**
  * PySingleCellNet cell-type classification.
  *
@@ -306,7 +309,7 @@ export default function PyscnModal() {
 
   // Training silently overwrites; say so before the run rather than after.
   const willOverwrite = useMemo(() => {
-    const target = composeSavePath(saveDir, saveName)
+    const target = composeSavePath(saveDir, saveName, PICKLE_EXTS)
     return !!target && dirEntries.some((e) => e.type === 'file' && e.path === target)
   }, [saveDir, saveName, dirEntries])
 
@@ -628,7 +631,7 @@ export default function PyscnModal() {
                   onNavigate={(dir, entries) => {
                     setSaveDir(dir)
                     setDirEntries(entries)
-                    setOutPath(composeSavePath(dir, saveName))
+                    setOutPath(composeSavePath(dir, saveName, PICKLE_EXTS))
                   }}
                   onSelect={(p) => {
                     // Clicking an existing file means "overwrite this one".
@@ -644,7 +647,7 @@ export default function PyscnModal() {
                     value={saveName}
                     onChange={(e) => {
                       setSaveName(e.target.value)
-                      setOutPath(composeSavePath(saveDir, e.target.value))
+                      setOutPath(composeSavePath(saveDir, e.target.value, PICKLE_EXTS))
                     }}
                     placeholder="my_classifier.pkl"
                     style={{ ...inputStyle, flex: 1 }}

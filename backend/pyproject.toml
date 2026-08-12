@@ -34,4 +34,10 @@ where = ["."]
 include = ["xcell*"]
 
 [tool.setuptools.package-data]
-xcell = ["data/*.h5ad", "data/gene_sets/*.json", "config.yaml"]
+# *.tsv.gz is the Ensembl symbol tables; *.csv is lr_pairs.csv, which was
+# already needed at runtime and already missing here — the editable install
+# used everywhere in development hides both.
+xcell = [
+    "data/*.h5ad", "data/*.tsv.gz", "data/*.csv",
+    "data/gene_sets/*.json", "config.yaml",
+]

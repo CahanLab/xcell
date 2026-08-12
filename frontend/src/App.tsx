@@ -22,6 +22,7 @@ import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import SelectByExpressionModal from './components/SelectByExpressionModal'
 import GeneMaskModal from './components/GeneMaskModal'
+import GeneSymbolModal from './components/GeneSymbolModal'
 import PyscnModal from './components/PyscnModal'
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './components/LayerScaleInfo'
 import { MESSAGES } from './messages'
@@ -2381,6 +2382,7 @@ export default function App() {
       <ClusterGeneSetModal />
       <SelectByExpressionModal />
       <GeneMaskModal />
+      <GeneSymbolModal />
 
       {/* Export modal */}
       {isExportModalOpen && (

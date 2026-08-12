@@ -1612,6 +1612,130 @@ class DataAdaptor:
                          {'n_genes': int(self.n_genes)})
         return self.get_schema()
 
+    # Columns whose name already says "these are symbols", checked before
+    # offering to create another one.
+    _SYMBOL_COLUMNS = ('gene_symbol', 'gene_symbols', 'symbol', 'SYMBOL',
+                       'gene_name', 'gene_names', 'feature_name')
+
+    def _gene_symbol_state(self) -> tuple[dict[str, Any], str | None]:
+        """(species detection over var_names, an existing symbol column or None)."""
+        from xcell import gene_symbols as gs
+
+        ids = [str(n) for n in self.adata.var_names]
+        existing = next(
+            (c for c in self._SYMBOL_COLUMNS if c in self.adata.var.columns), None)
+        return gs.detect_species(ids), existing
+
+    def preview_gene_symbol_mapping(self) -> dict[str, Any]:
+        """What mapping Ensembl ids to symbols would do here. Mutates nothing.
+
+        The cost is shown while the decision is still the user's, the same
+        contract as the gene-overlap panel in Localize. It is also how the
+        feature says *you do not need this*.
+        """
+        from xcell import gene_symbols as gs
+
+        detection, existing = self._gene_symbol_state()
+        ids = [str(n) for n in self.adata.var_names]
+        out: dict[str, Any] = {
+            'species': detection['species'],
+            'n_genes': int(len(ids)),
+            'n_recognized': int(detection['n_recognized']),
+            'existing_symbol_column': existing,
+            'n_mapped': 0,
+            'n_unmapped': 0,
+            'n_duplicate_symbols': 0,
+            'examples': [],
+            'applicable': False,
+            'reason': '',
+        }
+
+        if detection['species'] is None:
+            if detection['unsupported']:
+                out['reason'] = (
+                    f"These look like {detection['unsupported']} Ensembl ids. "
+                    'xcell ships symbol tables for human and mouse only.')
+            else:
+                out['reason'] = (
+                    'These gene names are not Ensembl ids, so there is nothing '
+                    'to map — they are already symbols, or another identifier.')
+            return out
+
+        mapped = gs.map_ids(ids, gs.load_table(detection['species']))
+        out.update({
+            'n_mapped': int(mapped['n_mapped']),
+            'n_unmapped': int(mapped['n_unmapped']),
+            'n_duplicate_symbols': int(mapped['n_duplicate_symbols']),
+            'examples': mapped['examples'],
+            'applicable': True,
+        })
+        if existing:
+            # Not a refusal — the existing column may be stale or partial. Say
+            # it is there so a user whose column is fine can just switch to it.
+            out['reason'] = (
+                f".var['{existing}'] already looks like symbols, so you may not "
+                'need this — the Gene IDs picker can switch to it.')
+        return out
+
+    def map_gene_symbols(
+        self, *, column: str = 'gene_symbol', set_as_index: bool = False,
+    ) -> dict[str, Any]:
+        """Write official symbols for Ensembl ids into ``.var[column]``.
+
+        Unmapped ids keep their own id, so no gene becomes unaddressable.
+        Duplicate symbols are reported rather than refused: unlike a rename
+        pattern, where a collision means the user typed something too broad, a
+        collision here is a fact about the annotation with nothing to correct.
+        """
+        from xcell import gene_symbols as gs
+
+        if not column:
+            raise ValueError('column must be a non-empty name')
+        detection, _ = self._gene_symbol_state()
+        if detection['species'] is None:
+            if detection['unsupported']:
+                raise ValueError(
+                    f"These look like {detection['unsupported']} Ensembl ids; "
+                    'xcell ships symbol tables for human and mouse only.')
+            raise ValueError(
+                'These gene names are not Ensembl ids, so there is nothing to '
+                'map.')
+
+        ids = [str(n) for n in self.adata.var_names]
+        mapped = gs.map_ids(ids, gs.load_table(detection['species']))
+        # Plain strings, not Categorical: with set_as_index this column becomes
+        # the .var index, and AnnData wants that to be strings — a categorical
+        # index warns on assignment and is a hazard on save.
+        self.adata.var[column] = pd.Index(mapped['symbols'], dtype=object)
+
+        result = {
+            'species': detection['species'],
+            'column': column,
+            'n_genes': int(len(ids)),
+            'n_mapped': int(mapped['n_mapped']),
+            'n_unmapped': int(mapped['n_unmapped']),
+            'n_duplicate_symbols': int(mapped['n_duplicate_symbols']),
+            'examples': mapped['examples'],
+            'set_as_index': bool(set_as_index),
+        }
+        self._log_action('map_gene_symbols',
+                         {'column': column, 'set_as_index': set_as_index},
+                         result)
+        if set_as_index:
+            # Name the outgoing index first. swap_var_index parks it in a
+            # column called after it, falling back to '_prev_index' — which is
+            # what the Gene IDs picker would then offer as the way back to the
+            # ids. Naming it says what it is.
+            if not self.adata.var.index.name:
+                fallback = 'ensembl_id'
+                if fallback not in self.adata.var.columns:
+                    self.adata.var.index.name = fallback
+            # The one implementation of this operation, cache invalidation and
+            # gene-mask regeneration included. Re-doing it here is how caches
+            # get out of step with the axis.
+            self.swap_var_index(column)
+        return result
+
     def search_genes(self, query: str, limit: int = 20) -> list[str]:
         """Search for genes by name prefix.
 

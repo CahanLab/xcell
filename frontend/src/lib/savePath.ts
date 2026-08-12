@@ -7,24 +7,28 @@
  * a path field can stay the single source of truth.
  */
 
-const PICKLE_SUFFIXES = ['.pkl', '.pickle']
-
-function hasPickleSuffix(name: string): boolean {
-  const lower = name.toLowerCase()
-  return PICKLE_SUFFIXES.some((ext) => lower.endsWith(ext))
-}
-
 /**
  * Join a directory and filename into an absolute path, or '' if either is
- * missing. A name without a pickle extension gets `.pkl`, matching what the
- * backend does anyway — better to show it than to surprise someone with a
- * different filename than the one they typed.
+ * missing.
+ *
+ * `ext` is what a bare name gets appended, so the field shows the filename that
+ * will actually be written rather than surprising someone afterwards. Pass a
+ * list — `['.pkl', '.pickle']` — where several suffixes are equally valid: the
+ * first is appended, any of them counts as already present.
+ *
+ * There is deliberately no default. A silent fallback is exactly how an h5ad
+ * ends up named `.pkl`.
  */
-export function composeSavePath(dir: string, filename: string): string {
+export function composeSavePath(
+  dir: string, filename: string, ext: string | string[],
+): string {
   const d = dir.trim()
   const name = filename.trim()
   if (!d || !name) return ''
-  const withExt = hasPickleSuffix(name) ? name : `${name}.pkl`
+  const exts = (Array.isArray(ext) ? ext : [ext]).filter(Boolean)
+  const lower = name.toLowerCase()
+  const has = exts.length === 0 || exts.some((e) => lower.endsWith(e.toLowerCase()))
+  const withExt = has ? name : `${name}${exts[0]}`
   const base = d.endsWith('/') ? d.slice(0, -1) : d
   return `${base}/${withExt}`
 }

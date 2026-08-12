@@ -1722,6 +1722,14 @@ class DataAdaptor:
                          {'column': column, 'set_as_index': set_as_index},
                          result)
         if set_as_index:
+            # Name the outgoing index first. swap_var_index parks it in a
+            # column called after it, falling back to '_prev_index' — which is
+            # what the Gene IDs picker would then offer as the way back to the
+            # ids. Naming it says what it is.
+            if not self.adata.var.index.name:
+                fallback = 'ensembl_id'
+                if fallback not in self.adata.var.columns:
+                    self.adata.var.index.name = fallback
             # The one implementation of this operation, cache invalidation and
             # gene-mask regeneration included. Re-doing it here is how caches
             # get out of step with the axis.

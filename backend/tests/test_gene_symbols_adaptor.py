@@ -77,6 +77,18 @@ def test_map_with_set_as_index_promotes_symbols_and_keeps_them_unique():
     assert len(set(a.var_names)) == len(a.var_names)
 
 
+def test_the_displaced_ids_are_named_rather_than_prev_index():
+    # The Gene IDs picker offers this column as the way back to the ids, so
+    # '_prev_index' would be a dead end with a meaningless label.
+    a = _adata(MOUSE)
+    d = _adaptor(a)
+    d.map_gene_symbols(set_as_index=True)
+    assert 'ensembl_id' in a.var.columns
+    assert list(a.var['ensembl_id']) == MOUSE
+    assert '_prev_index' not in a.var.columns
+    assert 'ensembl_id' in d.get_var_identifier_columns()['columns']
+
+
 def test_the_promoted_index_is_strings_not_categorical(recwarn):
     # A categorical .var index is what AnnData warns about on assignment and is
     # a hazard on save, so the column is written as plain strings.

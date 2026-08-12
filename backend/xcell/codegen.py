@@ -703,6 +703,17 @@ REGISTRY: dict[str, ActionSpec] = {
             f"({p.get('match_mode')} `{p.get('pattern')}` → `{p.get('replacement')}`)."
         ),
     ),
+    'map_gene_symbols': ActionSpec(
+        label='Add gene symbols', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('map_gene_symbols', ('column', 'set_as_index')),
+        summary=lambda p, r: (
+            f"Mapped {_n(r.get('n_mapped'))} of {_n(r.get('n_genes'))} "
+            f"{r.get('species')} Ensembl ids to symbols → "
+            f"`.var['{p.get('column')}']`"
+            + (' and promoted them to the gene index.'
+               if p.get('set_as_index') else '.')
+        ),
+    ),
     'swap_var_index': ActionSpec(
         label='Swap gene identifiers', fidelity=XCELL, imports=XCELL_API,
         code=_direct('swap_var_index', ('column_name',)),

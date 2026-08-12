@@ -2478,6 +2478,43 @@ def get_var_identifier_columns(dataset: str | None = Query(None)):
     return adaptor.get_var_identifier_columns()
 
 
+@router.get("/var/symbol_mapping_preview")
+def symbol_mapping_preview(dataset: str | None = Query(None)):
+    """What mapping Ensembl ids to official symbols would do here.
+
+    Mutates nothing, so the cost is visible while the decision is still the
+    user's.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.preview_gene_symbol_mapping()
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class MapGeneSymbolsRequest(BaseModel):
+    column: str = "gene_symbol"
+    set_as_index: bool = False
+
+
+@router.post("/var/map_symbols")
+def map_gene_symbols(request: MapGeneSymbolsRequest,
+                     dataset: str | None = Query(None)):
+    """Write official gene symbols into .var, optionally as the gene index."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.map_gene_symbols(
+            column=request.column, set_as_index=request.set_as_index)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.post("/var/swap_index")
 def swap_var_index(request: SwapVarIndexRequest, dataset: str | None = Query(None)):
     """Swap the .var index with another column.

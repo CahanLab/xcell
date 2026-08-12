@@ -18,7 +18,9 @@ import { assertJsonResponse } from '../lib/foreignServer'
  * separately rather than as a side effect of adding a second caller.
  */
 
-export type BrowseKind = 'data' | 'classifier'
+// Mirrors BROWSE_KINDS in the backend's routes.py: each kind decides which
+// files are surfaced and which directory is remembered for next time.
+export type BrowseKind = 'data' | 'classifier' | 'tabular' | 'geneset'
 
 export interface BrowseEntry {
   name: string

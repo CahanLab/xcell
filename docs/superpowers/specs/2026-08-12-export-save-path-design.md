@@ -32,13 +32,20 @@ and giving the export routes somewhere to write.
 
 ## Approach
 
-### 1. The picker is extracted, not copied
+### 1. A reusable picker, and PyscnModal deliberately left alone
 
 `components/SavePathPicker.tsx` — a `FileBrowser` plus a filename field plus the
-composed absolute path, emitting one `path` string. `PyscnModal` is refactored
-onto it, so there is one implementation rather than two that drift. That
-refactor is the point of extracting rather than copying: a second inline copy is
-how the two diverge on the details that matter, like overwrite warnings.
+composed absolute path, emitting one `path` string, and warning when the name
+already exists in the folder being shown.
+
+**PyscnModal is not refactored onto it**, and that was decided after looking at
+what it would take. Its picker is woven into its own style tokens, an `onError`
+sink, a "Done" button that collapses a `Browse` toggle, and an outer path field
+it keeps in sync. Serving it would mean adding `footer` and `onError` props to a
+component that otherwise needs neither — and a shared component that grows props
+to satisfy its second caller is evidence the two uses are not the same thing.
+The duplication is a recorded choice rather than an oversight: the alternative
+was destabilising a working feature with no UI tests for a tidiness gain.
 
 ### 2. `savePath.ts` becomes extension-agnostic
 

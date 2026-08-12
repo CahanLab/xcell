@@ -23,6 +23,7 @@ import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import SelectByExpressionModal from './components/SelectByExpressionModal'
 import GeneMaskModal from './components/GeneMaskModal'
 import GeneSymbolModal from './components/GeneSymbolModal'
+import ExportModal from './components/ExportModal'
 import PyscnModal from './components/PyscnModal'
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './components/LayerScaleInfo'
 import { MESSAGES } from './messages'
@@ -907,10 +908,8 @@ export default function App() {
   const [showAdjustMenu, setShowAdjustMenu] = useState(false)
   const [showFileMenu, setShowFileMenu] = useState(false)
   const [adjustSubMode, setAdjustSubMode] = useState<'adjust' | 'quilt'>('adjust')
-
   // State for export modal
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
-  const [exportLoading, setExportLoading] = useState<string | null>(null)
 
   // State for load data modal
   const [loadSlot, setLoadSlot] = useState<DatasetSlot>('primary')
@@ -1171,7 +1170,6 @@ export default function App() {
   }, [geneSetCategories])
 
   const handleExportH5ad = useCallback(async () => {
-    setExportLoading('h5ad')
     try {
       // First, send drawn lines to backend so they can be included in export
       if (drawnLines.length > 0) {
@@ -1209,13 +1207,10 @@ export default function App() {
       setIsExportModalOpen(false)
     } catch (err) {
       alert(`Failed to export h5ad: ${(err as Error).message}`)
-    } finally {
-      setExportLoading(null)
     }
   }, [drawnLines])
 
   const handleExportMetadata = useCallback(async () => {
-    setExportLoading('metadata')
     try {
       const tsv = await exportAnnotations()
       const blob = new Blob([tsv], { type: 'text/tab-separated-values' })
@@ -1230,13 +1225,10 @@ export default function App() {
       setIsExportModalOpen(false)
     } catch (err) {
       alert(`Failed to export metadata: ${(err as Error).message}`)
-    } finally {
-      setExportLoading(null)
     }
   }, [])
 
   const handleExportGeneSets = useCallback(() => {
-    setExportLoading('genesets')
     try {
       if (allGeneSets.length === 0) {
         alert('No gene sets to export')
@@ -1256,8 +1248,6 @@ export default function App() {
       setIsExportModalOpen(false)
     } catch (err) {
       alert(`Failed to export gene sets: ${(err as Error).message}`)
-    } finally {
-      setExportLoading(null)
     }
   }, [allGeneSets])
 
@@ -2385,134 +2375,18 @@ export default function App() {
       <GeneSymbolModal />
 
       {/* Export modal */}
-      {isExportModalOpen && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.6)',
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-          onClick={() => setIsExportModalOpen(false)}
-        >
-          <div
-            style={{
-              backgroundColor: '#16213e',
-              border: '1px solid #0f3460',
-              borderRadius: '8px',
-              padding: '24px',
-              minWidth: '360px',
-              maxWidth: '400px',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ fontSize: '16px', fontWeight: 600, color: '#e94560', marginBottom: '20px' }}>
-              Export Data
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {/* Export H5AD */}
-              <button
-                onClick={handleExportH5ad}
-                disabled={exportLoading !== null}
-                style={{
-                  padding: '12px 16px',
-                  fontSize: '14px',
-                  backgroundColor: '#0f3460',
-                  color: '#eee',
-                  border: '1px solid #1a1a2e',
-                  borderRadius: '6px',
-                  cursor: exportLoading !== null ? 'wait' : 'pointer',
-                  textAlign: 'left',
-                  opacity: exportLoading !== null && exportLoading !== 'h5ad' ? 0.5 : 1,
-                }}
-              >
-                <div style={{ fontWeight: 500, marginBottom: '4px' }}>
-                  {exportLoading === 'h5ad' ? 'Exporting...' : 'AnnData (.h5ad)'}
-                </div>
-                <div style={{ fontSize: '12px', color: '#888' }}>
-                  Full dataset with any new annotation columns
-                </div>
-              </button>
-
-              {/* Export Cell Metadata */}
-              <button
-                onClick={handleExportMetadata}
-                disabled={exportLoading !== null}
-                style={{
-                  padding: '12px 16px',
-                  fontSize: '14px',
-                  backgroundColor: '#0f3460',
-                  color: '#eee',
-                  border: '1px solid #1a1a2e',
-                  borderRadius: '6px',
-                  cursor: exportLoading !== null ? 'wait' : 'pointer',
-                  textAlign: 'left',
-                  opacity: exportLoading !== null && exportLoading !== 'metadata' ? 0.5 : 1,
-                }}
-              >
-                <div style={{ fontWeight: 500, marginBottom: '4px' }}>
-                  {exportLoading === 'metadata' ? 'Exporting...' : 'Cell Metadata (.tsv)'}
-                </div>
-                <div style={{ fontSize: '12px', color: '#888' }}>
-                  All cell annotations as tab-separated values
-                </div>
-              </button>
-
-              {/* Export Gene Sets */}
-              <button
-                onClick={handleExportGeneSets}
-                disabled={exportLoading !== null || allGeneSets.length === 0}
-                style={{
-                  padding: '12px 16px',
-                  fontSize: '14px',
-                  backgroundColor: '#0f3460',
-                  color: allGeneSets.length === 0 ? '#666' : '#eee',
-                  border: '1px solid #1a1a2e',
-                  borderRadius: '6px',
-                  cursor: exportLoading !== null || allGeneSets.length === 0 ? 'not-allowed' : 'pointer',
-                  textAlign: 'left',
-                  opacity: exportLoading !== null && exportLoading !== 'genesets' ? 0.5 : 1,
-                }}
-              >
-                <div style={{ fontWeight: 500, marginBottom: '4px' }}>
-                  {exportLoading === 'genesets' ? 'Exporting...' : 'Gene Sets (.json)'}
-                </div>
-                <div style={{ fontSize: '12px', color: '#666' }}>
-                  {allGeneSets.length === 0
-                    ? 'No gene sets defined'
-                    : `${allGeneSets.length} gene set${allGeneSets.length === 1 ? '' : 's'}`
-                  }
-                </div>
-              </button>
-            </div>
-
-            <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => setIsExportModalOpen(false)}
-                disabled={exportLoading !== null}
-                style={{
-                  padding: '8px 16px',
-                  fontSize: '13px',
-                  backgroundColor: 'transparent',
-                  color: '#aaa',
-                  border: '1px solid #0f3460',
-                  borderRadius: '4px',
-                  cursor: exportLoading !== null ? 'wait' : 'pointer',
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ExportModal
+        open={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        datasetName={schema?.filename}
+        geneSetsJson={JSON.stringify(allGeneSets, null, 2)}
+        nGeneSets={allGeneSets.length}
+        onDownload={(format) => {
+          if (format === 'h5ad') handleExportH5ad()
+          else if (format === 'metadata') handleExportMetadata()
+          else handleExportGeneSets()
+        }}
+      />
 
       {/* Load data modal */}
       {isLoadModalOpen && (

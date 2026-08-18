@@ -18,6 +18,11 @@ class TaskEntry:
     result: dict[str, Any] | None = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
+    # When the task reached a terminal state. The TTL reaper measures from
+    # here, never from created_at: a task's *runtime* must not count against
+    # its result's lifetime, or any run longer than the TTL is deleted the
+    # instant it finishes and the poller reads that as "task not found".
+    finished_at: float | None = None
     progress: float | None = None  # 0..1 fraction, if the task reports it
     message: str | None = None  # human-readable progress message
 
@@ -90,6 +95,9 @@ class TaskManager:
                 else:
                     entry.error = str(e)
                     entry.status = 'error'
+            finally:
+                # Every path above ends in a terminal status.
+                entry.finished_at = time.time()
 
         self._executor.submit(_run)
         return task_id
@@ -113,12 +121,12 @@ class TaskManager:
             return self._tasks.get(task_id)
 
     def _cleanup_expired(self) -> None:
-        """Remove terminal tasks older than TTL_SECONDS. Must hold _lock."""
+        """Remove tasks finished more than TTL_SECONDS ago. Must hold _lock."""
         now = time.time()
         expired = [
             tid for tid, entry in self._tasks.items()
-            if entry.status in ('completed', 'cancelled', 'error')
-            and now - entry.created_at > self.TTL_SECONDS
+            if entry.finished_at is not None
+            and now - entry.finished_at > self.TTL_SECONDS
         ]
         for tid in expired:
             del self._tasks[tid]

@@ -2,6 +2,7 @@ import { useEffect, useCallback, useState, useRef } from 'react'
 import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
 import { assertJsonResponse } from '../lib/foreignServer'
+import { pollTaskLoop, TaskStatus } from '../lib/taskPolling'
 import { MESSAGES } from '../messages'
 
 let _highlightIdSeq = 0
@@ -24,7 +25,9 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options)
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(error.detail || `HTTP ${response.status}`)
+    const err = new Error(error.detail || `HTTP ${response.status}`) as Error & { status?: number }
+    err.status = response.status
+    throw err
   }
   // A successful reply that isn't JSON never comes from xcell's backend — it
   // comes from whatever else grabbed the port first.
@@ -34,49 +37,25 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 // --- Background task polling for cancellable operations ---
 
-export interface TaskStatus {
-  task_id: string
-  status: 'running' | 'completed' | 'cancelled' | 'error'
-  result?: Record<string, unknown>
-  error?: string
-  progress?: number  // 0..1 fraction, if the task reports it
-  message?: string  // human-readable progress message
-}
+export type { TaskStatus } from '../lib/taskPolling'
 
-/** Poll a background task until it reaches a terminal state. */
+/** Poll a background task until it reaches a terminal state.
+ *
+ * Retry semantics live in lib/taskPolling: transient failures are retried,
+ * while a 404 ends the poll immediately — the server answered but no longer
+ * knows the task, which means the backend process restarted mid-run and the
+ * task died with it.
+ */
 export async function pollTask(
   taskId: string,
   slot?: DatasetSlot,
   onProgress?: (status: TaskStatus) => void
 ): Promise<TaskStatus> {
-  const POLL_INTERVAL = 1000
-  const MAX_RETRIES = 3
-
-  let retries = 0
-  while (true) {
-    try {
-      const status = await fetchJson<TaskStatus>(
-        appendDataset(`${API_BASE}/tasks/${taskId}`, slot)
-      )
-      retries = 0
-
-      if (status.status !== 'running') {
-        return status
-      }
-      onProgress?.(status)
-    } catch (err) {
-      retries++
-      if (retries >= MAX_RETRIES) {
-        return {
-          task_id: taskId,
-          status: 'error',
-          error: `Lost connection to task: ${(err as Error).message}`,
-        }
-      }
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL))
-  }
+  return pollTaskLoop(
+    taskId,
+    () => fetchJson<TaskStatus>(appendDataset(`${API_BASE}/tasks/${taskId}`, slot)),
+    { onProgress }
+  )
 }
 
 /** Cancel a running background task. */

@@ -40,37 +40,62 @@ def _nullable(arr: np.ndarray) -> list:
     return [[None if not np.isfinite(v) else v for v in row] for row in out]
 
 
-def combine_spatial_h5ads(
+def _combine_spatial_key(a: "anndata.AnnData") -> str | None:
+    """Which .obsm array holds this input's spatial coordinates, if any.
+
+    Same precedence the adaptor's own detection uses: an explicit
+    ``uns['xcell_spatial_key']`` (an xcell export says which array it meant),
+    then the ``spatial`` convention, then ``X_spatial``.
+    """
+    candidates = []
+    explicit = a.uns.get('xcell_spatial_key')
+    if isinstance(explicit, str):
+        candidates.append(explicit)
+    candidates += ['spatial', 'X_spatial']
+    for key in candidates:
+        if key in a.obsm:
+            arr = a.obsm[key]
+            if getattr(arr, 'ndim', 0) == 2 and arr.shape[1] >= 2:
+                return key
+    return None
+
+
+def combine_h5ads(
     file_paths: list[Path],
     labels: list[str],
     gap_fraction: float = 0.05,
 ) -> anndata.AnnData:
-    """Combine multiple spatial-transcriptomics h5ads into one side-by-side adata.
+    """Combine multiple h5ads into one adata, spatially aware when possible.
 
-    Used for cross-sample comparison (e.g. two time points of the same tissue).
-    Sections are laid out left-to-right along the spatial x-axis with a gap
-    proportional to the mean section width; y is unchanged. The resulting adata
-    has a new ``sample`` categorical .obs column identifying which source file
-    each cell came from, the intersection of input gene indices, and only
-    ``X_spatial`` in .obsm (per-file UMAPs/PCAs are dropped — re-run scanpy on
-    the combined data).
+    Two modes, chosen by what the inputs carry:
+
+    **spatial** — every input has spatial coordinates (``spatial`` or
+    ``X_spatial``, or whatever ``uns['xcell_spatial_key']`` names). Sections
+    are laid out left-to-right along x with a gap proportional to the mean
+    section width; the result keeps only ``X_spatial`` in .obsm (per-file
+    UMAPs/PCAs are dropped — re-run scanpy on the combined data).
+
+    **concat** — anything else. Rows are concatenated with no geometry
+    invented: .obsm arrays present in *every* input are kept (for dissociated
+    data those embeddings are the only geometry there is), everything
+    one-sided is dropped.
+
+    Either way the result has a ``sample`` categorical .obs column naming each
+    cell's source file, the intersection of input gene indices, collision-safe
+    obs_names, and ``uns['xcell_combine'] = {'mode': ..., 'labels': [...]}``
+    recording what was done. Per-file ``.raw`` / ``.varm`` / ``.obsp`` /
+    ``.uns`` are dropped in both modes.
 
     Args:
-        file_paths: List of >=2 absolute paths to .h5ad files. Each must have
-                    ``obsm['X_spatial']``.
+        file_paths: List of >=2 absolute paths to .h5ad files.
         labels: Per-file labels for the new ``sample`` column. Must match
                 ``file_paths`` length; collisions are de-duplicated by suffix.
         gap_fraction: Horizontal gap between adjacent sections, as a fraction
-                      of mean section width (default 0.05 = 5%).
-
-    Returns:
-        Combined AnnData. ``.var.index`` is the intersection across inputs;
-        ``.obs`` is outer-joined (missing values become NaN); ``.raw``,
-        per-file ``.varm`` / ``.obsp`` / ``.uns`` / other ``.obsm`` are dropped.
+                      of mean section width (default 0.05 = 5%). Spatial mode
+                      only.
 
     Raises:
-        ValueError: if fewer than 2 files, missing X_spatial, no shared genes,
-                    or non-.h5ad input.
+        ValueError: if fewer than 2 files, no shared genes, or non-.h5ad input.
     """
     if len(file_paths) < 2:
         raise ValueError("At least 2 files required for combination")
@@ -90,37 +115,51 @@ def combine_spatial_h5ads(
             unique_labels.append(base)
 
     adatas: list[anndata.AnnData] = []
-    widths: list[float] = []
+    spatial_keys: list[str | None] = []
     for p in file_paths:
         if p.suffix != '.h5ad':
             raise ValueError(f"Combine supports .h5ad only; got {p.name}")
         a = anndata.read_h5ad(p)
-        if 'X_spatial' not in a.obsm:
-            raise ValueError(f"{p.name} lacks obsm['X_spatial']")
         adatas.append(a)
-        sp = np.asarray(a.obsm['X_spatial'][:, :2])
-        widths.append(float(sp[:, 0].max() - sp[:, 0].min()))
+        spatial_keys.append(_combine_spatial_key(a))
 
-    mean_width = float(np.mean(widths)) if widths else 0.0
-    gap = mean_width * gap_fraction
+    mode = 'spatial' if all(k is not None for k in spatial_keys) else 'concat'
 
-    # Shift each section's spatial x so they lay out left-to-right with gaps.
     cleaned: list[anndata.AnnData] = []
-    current_offset = 0.0
-    for a, w in zip(adatas, widths):
-        sp = np.asarray(a.obsm['X_spatial'][:, :2], dtype=np.float64).copy()
-        sp[:, 0] = sp[:, 0] - sp[:, 0].min() + current_offset
-        b = a.copy()
-        # Reset obsm/obsp/varm/uns; drop .raw. The concat below operates on .X
-        # via the intersection of var indices — keeping per-file .raw with
-        # different gene spaces would conflict on concat.
-        b.obsm = {'X_spatial': sp}
-        b.obsp = {}
-        b.varm = {}
-        b.uns = {}
-        b.raw = None
-        cleaned.append(b)
-        current_offset += w + gap
+    if mode == 'spatial':
+        coords = [
+            np.asarray(a.obsm[k][:, :2], dtype=np.float64).copy()
+            for a, k in zip(adatas, spatial_keys)
+        ]
+        widths = [float(sp[:, 0].max() - sp[:, 0].min()) for sp in coords]
+        gap = float(np.mean(widths)) * gap_fraction
+
+        # Shift each section's spatial x so they lay out left-to-right.
+        current_offset = 0.0
+        for a, sp, w in zip(adatas, coords, widths):
+            sp[:, 0] = sp[:, 0] - sp[:, 0].min() + current_offset
+            b = a.copy()
+            # Reset obsm/obsp/varm/uns; drop .raw. The concat below operates
+            # on .X via the intersection of var indices — keeping per-file
+            # .raw with different gene spaces would conflict on concat.
+            b.obsm = {'X_spatial': sp}
+            b.obsp = {}
+            b.varm = {}
+            b.uns = {}
+            b.raw = None
+            cleaned.append(b)
+            current_offset += w + gap
+    else:
+        for a in adatas:
+            b = a.copy()
+            # .obsm is left alone: anndata.concat keeps the keys every input
+            # shares and drops the rest, which is exactly the honest outcome —
+            # a one-sided embedding cannot describe the combined cells.
+            b.obsp = {}
+            b.varm = {}
+            b.uns = {}
+            b.raw = None
+            cleaned.append(b)
 
     combined = anndata.concat(
         cleaned,
@@ -139,6 +178,7 @@ def combine_spatial_h5ads(
         )
     # Ensure the `sample` column is a clean categorical for downstream UI.
     combined.obs['sample'] = pd.Categorical(combined.obs['sample'], categories=unique_labels, ordered=False)
+    combined.uns['xcell_combine'] = {'mode': mode, 'labels': list(unique_labels)}
     return combined
 
 

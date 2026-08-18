@@ -557,21 +557,26 @@ Expression-based analyses (PCA, Neighbors, UMAP, Leiden, differential expression
 gene clustering) use expression rather than geometry, so they are not affected by
 the gaps (batch effects across sections are a separate concern).
 
-### Combining Spatial Sections
+### Combining Datasets
 
-To compare the same tissue across timepoints (or any cross-sample analysis), you can load 2+ spatial-transcriptomics h5ads into one dataset:
+To compare samples in one view (timepoints of a tissue, replicates, or any cross-sample analysis), you can load 2+ h5ads into one dataset:
 
-- Click **File → Combine spatial sections…** in the toolbar
-- In the load modal, switch the mode toggle to **Combine sections** (already set when you arrive via the menu)
+- Click **File → Combine datasets…** in the toolbar
+- In the load modal, switch the mode toggle to **Combine** (already set when you arrive via the menu)
 - Click `.h5ad` files in the browser to add them to the list — each file gets an editable label (defaults to the filename stem)
-- Adjust the gap (% of mean section width) and the slot to load into
-- Click **Combine N sections** — sections are placed left-to-right along the spatial x-axis with the configured gap; a new `sample` categorical `.obs` column tags each cell with its source file label
-- The combined dataset behaves like any other — color by `sample` to see the layout, run Compare Cells across timepoints, etc.
+- Choose the slot to load into, and — for spatial inputs — the gap (% of mean section width)
+- Click **Combine** — a new `sample` categorical `.obs` column tags each cell with its source file label
+- The combined dataset behaves like any other — color by `sample`, run Compare Cells across samples, etc.
+
+What happens depends on the inputs:
+- **All spatial** (each file has `spatial` or `X_spatial` coordinates, or names its array in `uns['xcell_spatial_key']`): sections are placed left-to-right along the spatial x-axis with the configured gap, and the result keeps only `X_spatial`.
+- **Anything else**: rows are concatenated with no geometry invented. `.obsm` arrays present in *every* input (a shared `X_pca`, say) are kept, so the combined dataset opens with a usable view; one-sided arrays are dropped.
 
 Notes:
 - Genes = intersection of the input files' var indices. Use **Gene IDs** swap in the Gene Panel beforehand if your files use different identifier columns.
-- v1 supports `.h5ad` only. For `.rds` / 10x files, load them once via single-file Load and export as h5ad first.
-- Per-file UMAPs/PCAs are dropped — re-run PCA/UMAP via the Scanpy modal on the combined data.
+- `.h5ad` only. For `.rds` / 10x files, load them once via single-file Load and export as h5ad first.
+- In spatial mode per-file UMAPs/PCAs are dropped — re-run PCA/UMAP via the Scanpy modal on the combined data.
+- The result records what was done in `uns['xcell_combine']` (`mode: "spatial" | "concat"` plus the labels).
 
 ### 13. Load a Second Dataset
 

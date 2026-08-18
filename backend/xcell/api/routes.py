@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from xcell.adaptor import DataAdaptor, combine_spatial_h5ads
+from xcell.adaptor import DataAdaptor, combine_h5ads
 from xcell.task_manager import task_manager
 from xcell import config as user_config
 from xcell import gene_set_store
@@ -320,21 +320,22 @@ class CombineSpatialRequest(BaseModel):
     gap_fraction: float = 0.05
 
 
-@router.post("/combine_spatial")
-def combine_spatial(request: CombineSpatialRequest):
-    """Combine multiple spatial-transcriptomics h5ads into one side-by-side adata.
+@router.post("/combine")
+def combine_datasets(request: CombineSpatialRequest):
+    """Combine multiple h5ads into one adata and load it into a slot.
 
-    The combined adata is loaded into the chosen slot just like any other
-    dataset. Sections are laid out left-to-right along the x-axis with a small
-    gap; gene index = intersection across inputs; a new ``sample`` categorical
-    .obs column tags each cell with its source file label.
+    When every input has spatial coordinates, sections are laid out
+    left-to-right along the x-axis with a small gap (``mode: "spatial"``).
+    Otherwise rows are concatenated with no geometry invented, keeping the
+    .obsm arrays every input shares (``mode: "concat"``). Either way: gene
+    index = intersection across inputs; a new ``sample`` categorical .obs
+    column tags each cell with its source file label.
 
     Args:
-        files: List of {file_path, label?} entries. >=2 required; each must be
-               an existing .h5ad with obsm['X_spatial'].
+        files: List of {file_path, label?} entries. >=2 existing .h5ad files.
         slot: Named slot to load the combined adata into.
         gap_fraction: Gap between adjacent sections as a fraction of mean
-                      section width (default 0.05 = 5%).
+                      section width (default 0.05 = 5%). Spatial mode only.
     """
     if len(request.files) < 2:
         raise HTTPException(status_code=400, detail="At least 2 files required to combine")
@@ -350,19 +351,32 @@ def combine_spatial(request: CombineSpatialRequest):
         labels.append((entry.label or p.stem).strip() or p.stem)
 
     try:
-        combined = combine_spatial_h5ads(paths, labels, gap_fraction=request.gap_fraction)
+        combined = combine_h5ads(paths, labels, gap_fraction=request.gap_fraction)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Combine failed: {e}")
 
+    mode = combined.uns['xcell_combine']['mode']
     # Wrap the in-memory adata in a DataAdaptor and store under the slot.
     # The "filepath" is synthetic — used only for display in the header bar.
-    virtual_path = Path(f"combined_{len(paths)}_sections.h5ad")
+    virtual_path = Path(f"combined_{len(paths)}_datasets.h5ad")
     adaptor = DataAdaptor(virtual_path, adata=combined)
     adaptor.filepath = virtual_path
     set_adaptor(adaptor, slot=request.slot)
-    return {"slot": request.slot, "n_sections": len(paths), "labels": labels, **adaptor.get_schema()}
+    return {
+        "slot": request.slot,
+        "n_sections": len(paths),
+        "labels": labels,
+        "mode": mode,
+        **adaptor.get_schema(),
+    }
+
+
+@router.post("/combine_spatial")
+def combine_spatial(request: CombineSpatialRequest):
+    """Deprecated alias for POST /combine, kept for old clients."""
+    return combine_datasets(request)
 
 
 @router.get("/datasets")

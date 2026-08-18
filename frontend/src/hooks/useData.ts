@@ -160,6 +160,57 @@ export function useEmbedding() {
   return embedding
 }
 
+/** Fetch the split view's second embedding for the active slot.
+ *
+ * Mirrors useEmbedding, with two differences: 2D only (the second pane is a
+ * companion view, not a second 3D scene), and it refetches when the active
+ * slot changes or a scanpy op runs, since the same name can now mean new
+ * coordinates.
+ */
+export function useSecondEmbedding() {
+  const splitView = useStore((s) => s.splitView)
+  const secondEmbedding = useStore((s) => s.secondEmbedding)
+  const secondEmbeddingData = useStore((s) => s.secondEmbeddingData)
+  const setSecondEmbeddingData = useStore((s) => s.setSecondEmbeddingData)
+  const activeSlot = useStore((s) => s.activeSlot)
+  const schema = useStore((s) => s.datasets[s.activeSlot]?.schema)
+  const historyLength = useStore(
+    (s) => s.datasets[s.activeSlot]?.scanpyActionHistory.length ?? 0
+  )
+  const dims = useStore(
+    (s) => (secondEmbedding ? s.embeddingDims[secondEmbedding] : undefined)
+  )
+  const dimX = dims?.x ?? 0
+  const dimY = dims?.y ?? 1
+  const loadedForRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!splitView || !secondEmbedding) return
+    if (!schema || !schema.embeddings.includes(secondEmbedding)) {
+      // The dataset changed under the split; drop stale coordinates rather
+      // than draw another dataset's geometry.
+      if (secondEmbeddingData) setSecondEmbeddingData(null)
+      return
+    }
+    const signature = `${activeSlot}:${secondEmbedding}:${dimX}:${dimY}:${historyLength}`
+    if (
+      loadedForRef.current === signature &&
+      secondEmbeddingData?.name === secondEmbedding
+    ) return
+
+    fetchJson<EmbeddingData>(appendDataset(
+      `${API_BASE}/embedding/${secondEmbedding}?dim_x=${dimX}&dim_y=${dimY}`, activeSlot))
+      .then((data) => {
+        loadedForRef.current = signature
+        setSecondEmbeddingData(data)
+      })
+      .catch(() => setSecondEmbeddingData(null))
+  }, [splitView, secondEmbedding, secondEmbeddingData, schema, activeSlot,
+      dimX, dimY, historyLength, setSecondEmbeddingData])
+
+  return secondEmbeddingData
+}
+
 export function useColorBy() {
   const { selectedColorColumn, colorBy, colorMode, setColorBy, setLoading, setError } = useStore()
 

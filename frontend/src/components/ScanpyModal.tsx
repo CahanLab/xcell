@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useStore, ScanpyActionRecord, PCASubsetSummary, userConfigGet } from '../store'
 import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset } from '../hooks/useData'
+import { defaultGraphKey } from '../lib/graphChoice'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -310,7 +311,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         description: 'Compute UMAP embedding',
         prerequisites: ['neighbors'],
         params: [
-          { name: 'graph_key', label: 'kNN graph', type: 'graph_select', default: '', emptyLabel: 'Expression neighbors (default)', description: 'Which cell-cell graph to embed. Spatial or a Combine Neighbors result gives a different map of the same cells.' },
+          { name: 'graph_key', label: 'kNN graph', type: 'graph_select', default: '', emptyLabel: 'Dataset default graph', description: 'Which cell-cell graph to embed. Spatial or a Combine Neighbors result gives a different map of the same cells.' },
           { name: 'key_added', label: 'Embedding name', type: 'text', default: '', description: 'obsm key for the result. Blank uses the name derived from the graph, so embeddings from different graphs coexist.' },
           { name: 'min_dist', label: 'Min distance', type: 'number', default: 0.5, description: 'Minimum distance between points' },
           { name: 'spread', label: 'Spread', type: 'number', default: 1.0, description: 'Spread of embedding' },
@@ -322,7 +323,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         description: 'Leiden clustering algorithm',
         prerequisites: ['neighbors'],
         params: [
-          { name: 'graph_key', label: 'kNN graph', type: 'graph_select', default: '', emptyLabel: 'Expression neighbors (default)', description: 'Which cell-cell graph to cluster. Clustering the spatial graph finds spatial domains rather than cell types.' },
+          { name: 'graph_key', label: 'kNN graph', type: 'graph_select', default: '', emptyLabel: 'Dataset default graph', description: 'Which cell-cell graph to cluster. Clustering the spatial graph finds spatial domains rather than cell types.' },
           { name: 'resolution', label: 'Resolution', type: 'number', default: 0.5, description: 'Higher = more clusters' },
           { name: 'key_added', label: 'Column name', type: 'text', default: 'leiden', description: 'Name for cluster labels' },
         ],
@@ -965,6 +966,22 @@ export default function ScanpyModal() {
       if (current !== derived) handleParamChange('key_added', derived)
     }
   }, [selectedFunction, paramValues.graph_key, paramValues.key_added, availableGraphs])
+
+  // Preselect the expression kNN graph once the list arrives, so the dropdown
+  // names the graph that will actually run instead of the implicit empty
+  // option. A choice the user made by hand — including clearing back to the
+  // empty option — is never overridden; the flag resets when they move to a
+  // different function.
+  const userChoseGraphRef = useRef(false)
+  useEffect(() => { userChoseGraphRef.current = false }, [selectedFunction])
+  useEffect(() => {
+    if (selectedFunction !== 'umap' && selectedFunction !== 'leiden') return
+    if (userChoseGraphRef.current) return
+    const pick = defaultGraphKey(availableGraphs, (paramValues.graph_key as string) || '')
+    // Not handleParamChange: that path is how *user* edits arrive, and the
+    // graph select's onChange marks the choice as theirs.
+    if (pick) setParamValues((prev) => ({ ...prev, graph_key: pick }))
+  }, [selectedFunction, availableGraphs, paramValues.graph_key])
 
   // Load available neighbor graphs when combine_neighbors is selected.
   useEffect(() => {
@@ -2365,7 +2382,10 @@ export default function ScanpyModal() {
                         <select
                           style={styles.paramInput}
                           value={paramValues[param.name] ?? ''}
-                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                          onChange={(e) => {
+                            userChoseGraphRef.current = true
+                            handleParamChange(param.name, e.target.value)
+                          }}
                         >
                           {availableGraphs.length === 0 ? (
                             <option value="">No kNN graph found — run Spatial / Cell Neighbors first</option>

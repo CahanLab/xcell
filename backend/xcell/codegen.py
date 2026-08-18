@@ -262,6 +262,23 @@ def _scanpy(fn: str, only: tuple[str, ...] | None = None):
     return build
 
 
+def _code_filter_cells(step: Step) -> list[str]:
+    """One sc.pp.filter_cells call per threshold.
+
+    scanpy accepts exactly one of min_counts/max_counts/min_genes/max_genes
+    per call, so a single splatted call raises in the exported notebook when
+    the UI sent several. Sequential calls compute the same AND the adaptor
+    applies.
+    """
+    order = ('min_counts', 'max_counts', 'min_genes', 'max_genes')
+    lines = [
+        _call('sc.pp.filter_cells', {k: step.params[k]})
+        for k in order
+        if step.params.get(k) is not None
+    ]
+    return lines or [_call('sc.pp.filter_cells', step.params)]
+
+
 # Must equal adaptor._GRAPH_META_KEY. Spelled twice rather than imported: this
 # module promises no adaptor and no AnnData, and importing the constant would
 # drag scanpy in behind it. test_codegen asserts the two stay equal.
@@ -324,7 +341,7 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'filter_cells': ActionSpec(
         label='Filter cells', fidelity=EXACT, imports=SCANPY,
-        code=_scanpy('sc.pp.filter_cells'),
+        code=_code_filter_cells,
         summary=lambda p, r: (
             f"Filtered cells ({_splat(p) or 'no thresholds'}): "
             f"{_n(r.get('n_cells_removed'))} removed, {_n(r.get('n_cells_after'))} remain."

@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { useStore, ScanpyActionRecord, PCASubsetSummary, userConfigGet } from '../store'
 import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset } from '../hooks/useData'
 import { defaultGraphKey } from '../lib/graphChoice'
+import { FilterCellsQcPanel, FilterCellsDistributions } from './FilterCellsQcPanel'
 import { MESSAGES } from '../messages'
 
 const API_BASE = '/api'
@@ -923,6 +924,22 @@ export default function ScanpyModal() {
       })
       .catch(() => { setAvailableObsColumns([]); setAvailableNumericObsColumns([]) })
   }, [selectedFunction, functionDef, activeSlot, scanpyActionHistory])
+
+  // Filter Cells: per-cell counts/genes distributions for the threshold
+  // histograms. Refetched after any run — a filter changes the distributions.
+  const [qcDist, setQcDist] = useState<FilterCellsDistributions | null>(null)
+  const [qcError, setQcError] = useState<string | null>(null)
+  useEffect(() => {
+    if (selectedFunction !== 'filter_cells') return
+    let stale = false
+    setQcDist(null)
+    setQcError(null)
+    fetch(appendDataset(`${API_BASE}/scanpy/filter_cells/qc`))
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+      .then((data) => { if (!stale) setQcDist(data) })
+      .catch((err) => { if (!stale) setQcError(err instanceof Error ? err.message : String(err)) })
+    return () => { stale = true }
+  }, [selectedFunction, activeSlot, scanpyActionHistory])
 
   // Load layer + graph lists when any function that consumes them is selected.
   useEffect(() => {
@@ -2255,6 +2272,21 @@ export default function ScanpyModal() {
               </>
             )}
           </div>
+        )}
+
+        {/* Filter Cells: distributions with draggable thresholds, above the
+            numeric inputs they drive. */}
+        {selectedFunction === 'filter_cells' && (
+          <FilterCellsQcPanel
+            dist={qcDist}
+            error={qcError}
+            minCounts={typeof paramValues.min_counts === 'number' ? paramValues.min_counts : null}
+            maxCounts={typeof paramValues.max_counts === 'number' ? paramValues.max_counts : null}
+            minGenes={typeof paramValues.min_genes === 'number' ? paramValues.min_genes : null}
+            maxGenes={typeof paramValues.max_genes === 'number' ? paramValues.max_genes : null}
+            onChangeThreshold={(name, value) =>
+              handleParamChange(name, value == null ? '' : String(value))}
+          />
         )}
 
         {/* Parameters */}

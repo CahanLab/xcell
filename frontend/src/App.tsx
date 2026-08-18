@@ -1304,7 +1304,7 @@ export default function App() {
     setLoadLoading(true)
     setLoadError(null)
     try {
-      const response = await fetch('/api/combine_spatial', {
+      const response = await fetch('/api/combine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1456,7 +1456,7 @@ export default function App() {
                 >
                   <span style={{ fontSize: '14px', width: '18px', textAlign: 'center' }}>{'☰'}</span>
                   <div>
-                    <div>Combine spatial sections…</div>
+                    <div>Combine datasets…</div>
                     <div style={{ fontSize: '10px', color: '#888' }}>Place 2+ ST h5ads left-to-right</div>
                   </div>
                 </div>
@@ -2436,7 +2436,7 @@ export default function App() {
             {/* Header row: title + mode toggle + slot selector */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', gap: '12px' }}>
               <div style={{ fontSize: '16px', fontWeight: 600, color: '#e94560' }}>
-                {loadMode === 'combine' ? 'Combine Spatial Sections' : 'Load Dataset'}
+                {loadMode === 'combine' ? 'Combine Datasets' : 'Load Dataset'}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 {/* Mode toggle */}
@@ -2455,7 +2455,7 @@ export default function App() {
                         cursor: 'pointer',
                       }}
                     >
-                      {m === 'single' ? 'Single file' : 'Combine sections'}
+                      {m === 'single' ? 'Single file' : 'Combine'}
                     </button>
                   ))}
                 </div>
@@ -2517,7 +2517,7 @@ export default function App() {
                     onChange={(e) => setCombineGapPct(parseFloat(e.target.value) || 0)}
                     style={{ width: '50px', padding: '3px 6px', fontSize: '11px', backgroundColor: '#1a1a2e', color: '#eee', border: '1px solid #0f3460', borderRadius: '3px' }}
                   />
-                  <span style={{ fontSize: '11px', color: '#888' }}>% of mean section width</span>
+                  <span style={{ fontSize: '11px', color: '#888' }}>% of mean section width (spatial inputs only — others concatenate)</span>
                 </div>
               </div>
             )}
@@ -2702,7 +2702,7 @@ export default function App() {
                           } else if (loadMode === 'combine') {
                             // Combine mode rejects non-.h5ad files for now and de-dupes.
                             if (entry.type !== 'file' || !entry.path.endsWith('.h5ad')) {
-                              setLoadError('Combine sections supports .h5ad files only.')
+                              setLoadError('Combine supports .h5ad files only.')
                               return
                             }
                             setLoadError(null)

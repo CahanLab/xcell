@@ -774,6 +774,13 @@ interface AppState {
   // Layout mode (single vs side-by-side dual scatter)
   layoutMode: LayoutMode
 
+  // Split view: a second pane showing another embedding of the ACTIVE
+  // dataset (single layout only — dual layout already owns the split).
+  // Selection and coloring are shared: the same cells, two geometries.
+  splitView: boolean
+  secondEmbedding: string | null
+  secondEmbeddingData: EmbeddingData | null
+
   // Embedding view mode: 2D scatter (default) or 3D (uses a third .obsm dim)
   viewMode: '2d' | '3d'
 
@@ -989,6 +996,11 @@ interface AppState {
   // Layout mode actions
   setLayoutMode: (mode: LayoutMode) => void
 
+  // Split view actions
+  setSplitView: (on: boolean) => void
+  setSecondEmbedding: (name: string | null) => void
+  setSecondEmbeddingData: (data: EmbeddingData | null) => void
+
   // Embedding view mode action
   setViewMode: (m: '2d' | '3d') => void
 
@@ -1158,6 +1170,9 @@ export const useStore = create<AppState>((set, get) => {
 
     // Layout mode
     layoutMode: 'single' as LayoutMode,
+    splitView: false,
+    secondEmbedding: null as string | null,
+    secondEmbeddingData: null as EmbeddingData | null,
 
     // Embedding view mode
     viewMode: '2d' as '2d' | '3d',
@@ -2435,6 +2450,10 @@ export const useStore = create<AppState>((set, get) => {
 
     // Layout mode actions
     setLayoutMode: (mode) => set({ layoutMode: mode }),
+    setSplitView: (on) => set({ splitView: on }),
+    setSecondEmbedding: (name) =>
+      set({ secondEmbedding: name, secondEmbeddingData: null }),
+    setSecondEmbeddingData: (data) => set({ secondEmbeddingData: data }),
 
     // Embedding view mode action
     setViewMode: (m) => set({ viewMode: m }),

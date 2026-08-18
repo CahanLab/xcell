@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, DatasetSlot } from './store'
 import { meanOf, convexHull, type ShapeAffine } from './utils/shapeTransform'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, appendDataset, fetchGeneMask } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, useSecondEmbedding, appendDataset, fetchGeneMask } from './hooks/useData'
+import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
 import EmbeddingPlot from './components/EmbeddingPlot'
 import { BIVARIATE_COLORMAPS, getBivariateColor, resolveCategoryPalette } from './lib/cellColors'
 import GenePanel from './components/GenePanel'
@@ -835,6 +836,27 @@ export default function App() {
     return ds.displayPreferences.showScaleBar ? sc.umPerUnit : null
   }
 
+  // Split view: a second embedding of the active dataset beside the first.
+  const splitView = useStore((s) => s.splitView)
+  const setSplitView = useStore((s) => s.setSplitView)
+  const secondEmbedding = useStore((s) => s.secondEmbedding)
+  const setSecondEmbedding = useStore((s) => s.setSecondEmbedding)
+  const secondEmbeddingData = useSecondEmbedding()
+  const umPerUnitForSecond = (): number | null => {
+    const ds = datasets[activeSlot]
+    const sc = ds?.spatialScale
+    if (!sc || sc.umPerUnit == null) return null
+    if (!secondEmbeddingData || secondEmbeddingData.name !== sc.spatialKey) return null
+    return ds.displayPreferences.showScaleBar ? sc.umPerUnit : null
+  }
+  const toggleSplitView = () => {
+    if (splitView) { setSplitView(false); return }
+    if (!secondEmbedding && schema) {
+      setSecondEmbedding(pickSecondEmbedding(schema.embeddings, selectedEmbedding))
+    }
+    setSplitView(true)
+  }
+
   // Re-fetch expression data when transform setting changes
   useExpressionTransformEffect()
   useBivariateTransformEffect()
@@ -1516,6 +1538,20 @@ export default function App() {
               </button>
             </>
           )}
+          {schema && layoutMode === 'single' && schema.embeddings.length > 1 && (
+            <button
+              style={{
+                ...styles.toolButton,
+                ...(splitView ? styles.toolButtonActive : {}),
+              }}
+              onClick={toggleSplitView}
+              title={splitView
+                ? 'Back to one embedding'
+                : 'Show two embeddings of this dataset side by side — same cells, shared selection'}
+            >
+              ◫ Compare
+            </button>
+          )}
           {schema && (
             <>
               <div style={{ position: 'relative', display: 'inline-flex' }}>
@@ -2163,21 +2199,64 @@ export default function App() {
                   <>
                     {embedding && (
                       <>
-                        <EmbeddingPlot
-                          umPerUnit={umPerUnitFor(activeSlot)}
-                          embedding={embedding}
-                          colorBy={colorBy}
-                          expressionData={expressionData}
-                          bivariateData={bivariateData}
-                          highlightLayers={highlightLayers}
-                          colorMode={colorMode}
-                          interactionMode={interactionMode}
-                          selectedCellIndices={selectedCellIndices}
-                          onSelectionComplete={handleSelectionComplete}
-                          onLineDrawn={handleLineDrawn}
-                          onTransformEmbedding={handleRotateEmbedding}
-                          onTransformEmbeddingSubset={handleTransformEmbeddingSubset}
-                        />
+                        <div style={{ display: 'flex', width: '100%', height: '100%' }}>
+                          <div style={{ flex: 1, position: 'relative', minWidth: 0, borderRight: splitView && secondEmbeddingData ? '1px solid #0f3460' : undefined }}>
+                            <EmbeddingPlot
+                              umPerUnit={umPerUnitFor(activeSlot)}
+                              embedding={embedding}
+                              colorBy={colorBy}
+                              expressionData={expressionData}
+                              bivariateData={bivariateData}
+                              highlightLayers={highlightLayers}
+                              colorMode={colorMode}
+                              interactionMode={interactionMode}
+                              selectedCellIndices={selectedCellIndices}
+                              onSelectionComplete={handleSelectionComplete}
+                              onLineDrawn={handleLineDrawn}
+                              onTransformEmbedding={handleRotateEmbedding}
+                              onTransformEmbeddingSubset={handleTransformEmbeddingSubset}
+                            />
+                          </div>
+                          {splitView && secondEmbeddingData && (
+                            <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+                              {/* Same cells, second geometry. Selection is shared
+                                  (index-based); draw and adjust act on the first
+                                  pane's embedding, so they are inert here. */}
+                              <EmbeddingPlot
+                                umPerUnit={umPerUnitForSecond()}
+                                embedding={secondEmbeddingData}
+                                colorBy={colorBy}
+                                expressionData={expressionData}
+                                bivariateData={bivariateData}
+                                highlightLayers={highlightLayers}
+                                colorMode={colorMode}
+                                interactionMode={interactionMode === 'lasso' || interactionMode === 'pan' ? interactionMode : 'pan'}
+                                selectedCellIndices={selectedCellIndices}
+                                onSelectionComplete={handleSelectionComplete}
+                                onLineDrawn={() => {}}
+                                onTransformEmbedding={() => {}}
+                                onTransformEmbeddingSubset={() => {}}
+                              />
+                              <div style={{
+                                position: 'absolute', bottom: 12, left: 12, zIndex: 12,
+                                display: 'flex', alignItems: 'center', gap: '6px',
+                                background: 'rgba(22, 33, 62, 0.85)', border: '1px solid #0f3460',
+                                borderRadius: '4px', padding: '4px 8px',
+                              }}>
+                                <span style={styles.embeddingLabel}>Embedding:</span>
+                                <select
+                                  style={styles.embeddingSelect}
+                                  value={secondEmbedding ?? ''}
+                                  onChange={(e) => setSecondEmbedding(e.target.value || null)}
+                                >
+                                  {(schema?.embeddings ?? []).map((name) => (
+                                    <option key={name} value={name}>{name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                          )}
+                        </div>
 
                         {/* Embedding + Source matrix selectors — bottom left.
                             The Source row renders as soon as any matrix is

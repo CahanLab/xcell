@@ -110,9 +110,19 @@ def test_pca_on_an_explicit_gene_list_falls_back_to_the_xcell_api():
     assert t.fidelity == XCELL
 
 
-def test_filter_cells_forwards_whatever_thresholds_were_used():
+def test_filter_cells_emits_one_scanpy_call_per_threshold():
+    # scanpy accepts exactly one threshold per call; a single splatted call
+    # would raise in the exported notebook. Sequential calls compute the same
+    # AND the adaptor applies.
     t = translate(_step('filter_cells', {'min_genes': 200, 'max_counts': 50000}, {}))
-    assert t.code == ['sc.pp.filter_cells(adata, min_genes=200, max_counts=50000)']
+    assert t.code == ['sc.pp.filter_cells(adata, max_counts=50000)',
+                      'sc.pp.filter_cells(adata, min_genes=200)']
+    assert t.fidelity == EXACT
+
+
+def test_filter_cells_with_one_threshold_is_a_single_call():
+    t = translate(_step('filter_cells', {'min_genes': 200}, {}))
+    assert t.code == ['sc.pp.filter_cells(adata, min_genes=200)']
 
 
 def test_highly_variable_genes_emits_every_logged_parameter():

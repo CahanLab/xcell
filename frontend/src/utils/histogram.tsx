@@ -136,6 +136,7 @@ export function HistogramChart({
   width = DEFAULT_CHART_WIDTH,
   height = DEFAULT_CHART_HEIGHT,
   barColor = '#4ecdc4',
+  formatValue,
 }: {
   histogram: Histogram
   mode: ThresholdMode
@@ -146,6 +147,8 @@ export function HistogramChart({
   width?: number
   height?: number
   barColor?: string
+  /** Axis labels; lets a log-space chart label its ends in data units. */
+  formatValue?: (v: number) => string
 }) {
   const innerW = width - CHART_PADDING.left - CHART_PADDING.right
   const innerH = height - CHART_PADDING.top - CHART_PADDING.bottom
@@ -221,7 +224,7 @@ export function HistogramChart({
       )}
 
       <text x={CHART_PADDING.left} y={height - 6} fill="#888" fontSize="10">
-        {histogram.min.toFixed(2)}
+        {formatValue ? formatValue(histogram.min) : histogram.min.toFixed(2)}
       </text>
       <text
         x={CHART_PADDING.left + innerW}
@@ -230,7 +233,7 @@ export function HistogramChart({
         fontSize="10"
         textAnchor="end"
       >
-        {histogram.max.toFixed(2)}
+        {formatValue ? formatValue(histogram.max) : histogram.max.toFixed(2)}
       </text>
     </svg>
   )

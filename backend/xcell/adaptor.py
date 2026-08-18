@@ -4909,6 +4909,30 @@ class DataAdaptor:
         }, result)
         return result
 
+    def _filter_cells_metrics(self) -> tuple[np.ndarray, np.ndarray]:
+        """Per-cell total counts and expressed-gene counts, from .X.
+
+        Same quantities ``sc.pp.filter_cells`` thresholds on: the sum of a
+        cell's row, and how many of its entries are > 0.
+        """
+        X = self.adata.X
+        counts = np.ravel(np.asarray(X.sum(axis=1))).astype(np.float64)
+        genes = np.ravel(np.asarray((X > 0).sum(axis=1))).astype(np.int64)
+        return counts, genes
+
+    def filter_cells_qc(self) -> dict[str, Any]:
+        """The distributions Filter Cells thresholds against, per cell.
+
+        Lets the UI draw counts/genes histograms before anything is removed.
+        Values are plain python numbers; a non-finite sum (pathological .X)
+        becomes None rather than NaN, which is not JSON.
+        """
+        counts, genes = self._filter_cells_metrics()
+        return {
+            'counts': [float(v) if np.isfinite(v) else None for v in counts],
+            'genes': [int(g) for g in genes],
+        }
+
     def run_filter_cells(
         self,
         min_counts: int | None = None,
@@ -4918,6 +4942,11 @@ class DataAdaptor:
         active_cell_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         """Filter cells based on counts or number of genes expressed.
+
+        All given thresholds apply together (a cell must satisfy every one),
+        with scanpy's inclusive semantics. Not delegated to
+        ``sc.pp.filter_cells``, which accepts exactly one threshold per call;
+        the mask below is what its sequential calls would compute.
 
         Args:
             min_counts: Minimum total counts for a cell
@@ -4943,24 +4972,24 @@ class DataAdaptor:
 
         indices = None  # also read by _log_action below
         if kwargs:
-            adata_sub, indices = self._get_active_adata(active_cell_indices)
+            indices = self._validate_cell_indices(active_cell_indices)
+            counts, genes = self._filter_cells_metrics()
+            keep = np.ones(self.n_cells, dtype=bool)
+            if min_counts is not None:
+                keep &= counts >= min_counts
+            if max_counts is not None:
+                keep &= counts <= max_counts
+            if min_genes is not None:
+                keep &= genes >= min_genes
+            if max_genes is not None:
+                keep &= genes <= max_genes
             if indices is not None:
-                # Run filter on subset copy to find which cells fail
-                adata_test = adata_sub.copy()
-                n_before_sub = adata_test.n_obs
-                sc.pp.filter_cells(adata_test, **kwargs)
-                n_after_sub = adata_test.n_obs
-                # Identify surviving cell names
-                surviving_names = set(adata_test.obs_names)
-                # Find the indices in the full adata that failed
-                failing_mask = np.ones(self.n_cells, dtype=bool)
-                for idx in indices:
-                    cell_name = self.adata.obs_names[idx]
-                    if cell_name not in surviving_names:
-                        failing_mask[idx] = False
-                self.adata = self.adata[failing_mask].copy()
-            else:
-                sc.pp.filter_cells(self.adata, **kwargs)
+                # Cells outside the active set are not evaluated and survive.
+                mask = np.ones(self.n_cells, dtype=bool)
+                mask[indices] = keep[indices]
+                keep = mask
+            if not keep.all():
+                self.adata = self.adata[keep].copy()
 
         n_cells_after = self.n_cells
 

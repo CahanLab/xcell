@@ -1757,6 +1757,22 @@ def run_filter_genes(request: FilterGenesRequest, dataset: str | None = Query(No
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/scanpy/filter_cells/qc")
+def filter_cells_qc(dataset: str | None = Query(None)):
+    """Per-cell counts/genes distributions, for threshold histograms.
+
+    Returns:
+        {'counts': [...], 'genes': [...]} — one value per cell, from .X
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.filter_cells_qc()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/scanpy/filter_cells")
 def run_filter_cells(request: FilterCellsRequest, dataset: str | None = Query(None)):
     """Filter cells based on counts or number of genes expressed.

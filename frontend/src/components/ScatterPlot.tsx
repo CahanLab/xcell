@@ -6,6 +6,7 @@ import { useStore, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpres
 import { transformPoints, meanOf, convexHull, shapeOverlapsHull, type Pt } from '../utils/shapeTransform'
 import { SnapshotLayer, renderSnapshotToCanvas } from './SnapshotPanel'
 import { layerWeightFn, useCellColor } from '../lib/cellColors'
+import { pickScaleBar } from '../lib/scaleBar'
 import { appendDataset } from '../hooks/useData'
 
 interface ScatterPlotProps {
@@ -29,6 +30,10 @@ interface ScatterPlotProps {
     translate_y?: number
     cell_indices: number[]
   }, preCoords?: [number, number][]) => void
+  /** µm per coordinate unit; when set, a scale bar renders bottom-left.
+   * The caller passes it only when the shown embedding is the dataset's
+   * spatial coordinates — a UMAP has no physical scale. */
+  umPerUnit?: number | null
 }
 
 // Generate Catmull-Rom spline points through control points
@@ -89,6 +94,39 @@ function formatTick(v: number, step: number): string {
 // Screen-aligned grid overlay with data-coordinate tick labels. Re-derives the
 // visible data range from viewState + canvas size, then draws gridlines at
 // "nice" data values (1/2/5 × 10^k spacing).
+/** Physical scale bar, bottom-left. Rendered only when the shown embedding
+ * is the dataset's spatial coordinates and their µm-per-unit is known. */
+function ScaleBar({ umPerUnit, viewState }: {
+  umPerUnit: number
+  viewState: OrthographicViewState
+}) {
+  const zoomValue = viewState.zoom
+  const zoom = typeof zoomValue === 'number' ? zoomValue : (zoomValue?.[0] ?? 0)
+  const spec = pickScaleBar(umPerUnit / Math.pow(2, zoom))
+  if (!spec) return null
+  return (
+    <div
+      style={{
+        // Bottom-right: the View panel owns the bottom-left corner, and the
+        // legends that live bottom-right are draggable while this is not.
+        position: 'absolute', right: 12, bottom: 12, zIndex: 11,
+        pointerEvents: 'none',
+        background: 'rgba(22, 33, 62, 0.78)', border: '1px solid #0f3460',
+        borderRadius: 4, padding: '5px 8px 4px',
+      }}
+    >
+      <svg width={Math.max(spec.px, 2)} height={7} style={{ display: 'block', overflow: 'visible' }}>
+        <line x1={0.75} y1={0} x2={0.75} y2={7} stroke="#ddd" strokeWidth={1.5} />
+        <line x1={spec.px - 0.75} y1={0} x2={spec.px - 0.75} y2={7} stroke="#ddd" strokeWidth={1.5} />
+        <line x1={0} y1={3.5} x2={spec.px} y2={3.5} stroke="#ddd" strokeWidth={1.5} />
+      </svg>
+      <div style={{ fontSize: 11, color: '#ddd', lineHeight: 1.4, fontVariantNumeric: 'tabular-nums' }}>
+        {spec.label}
+      </div>
+    </div>
+  )
+}
+
 function CoordinateGrid({
   viewState,
   containerRect,
@@ -244,6 +282,7 @@ export default function ScatterPlot({
   onLineDrawn,
   onTransformEmbedding,
   onTransformEmbeddingSubset,
+  umPerUnit,
 }: ScatterPlotProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [lassoPoints, setLassoPoints] = useState<[number, number][]>([])
@@ -1591,6 +1630,10 @@ export default function ScatterPlot({
       </button>
 
       {/* Pinned snapshots for this plot */}
+      {umPerUnit != null && viewState && (
+        <ScaleBar umPerUnit={umPerUnit} viewState={viewState} />
+      )}
+
       <SnapshotLayer slotKey={slotKey} />
     </div>
   )

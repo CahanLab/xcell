@@ -570,6 +570,21 @@ REGISTRY: dict[str, ActionSpec] = {
             f"{_n(r.get('n_unplaced'))} cells left unplaced."
         ),
     ),
+    'set_spatial_scale': ActionSpec(
+        label='Set the spatial scale', fidelity=EXACT, imports=(),
+        # One assignment, but it defines what every µm in the export means.
+        code=lambda s: (
+            [f"{ADATA}.uns['xcell_spatial_scale'] = "
+             f"{{'um_per_unit': {_lit(s.params.get('um_per_unit'))}}}"]
+            if s.params.get('um_per_unit') is not None
+            else [f"{ADATA}.uns.pop('xcell_spatial_scale', None)"]
+        ),
+        summary=lambda p, r: (
+            f"Declared one spatial coordinate unit = {p.get('um_per_unit')} µm."
+            if p.get('um_per_unit') is not None
+            else 'Cleared the spatial scale.'
+        ),
+    ),
     'set_spatial_key': ActionSpec(
         label='Choose the spatial coordinates', fidelity=EXACT, imports=(),
         # A one-line assignment, but it belongs in the export: every spatial

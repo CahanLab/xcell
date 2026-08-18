@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useStore, ColorScale, ExpressionTransform, BivariateColormap, GeneSetPerGeneNorm, GeneSetAggregation } from '../store'
 import { getBivariateColor } from '../lib/cellColors'
+import { appendDataset } from '../hooks/useData'
 
 const styles = {
   container: {
@@ -279,6 +280,35 @@ function BivariateColormapPreview({ colormap, size = 40 }: { colormap: Bivariate
 export default function DisplaySettings() {
   const { displayPreferences, setDisplayPreferences } = useStore()
   const [isOpen, setIsOpen] = useState(false)
+  const activeSlot = useStore((s) => s.activeSlot)
+  const spatialScale = useStore((s) => s.datasets[s.activeSlot]?.spatialScale ?? null)
+  const patchSlotState = useStore((s) => s.patchSlotState)
+  // Draft for the µm-per-unit input; committed on blur/Enter.
+  const [scaleDraft, setScaleDraft] = useState<string | null>(null)
+
+  const commitSpatialScale = async (raw: string) => {
+    setScaleDraft(null)
+    const trimmed = raw.trim()
+    const value = trimmed === '' ? null : Number(trimmed)
+    if (value !== null && (!isFinite(value) || value <= 0)) return
+    try {
+      const res = await fetch(appendDataset('/api/spatial_scale', activeSlot), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ um_per_unit: value }),
+      })
+      if (!res.ok) return
+      const out = await res.json()
+      patchSlotState(activeSlot, {
+        spatialScale: {
+          spatialKey: spatialScale?.spatialKey ?? null,
+          umPerUnit: out.um_per_unit ?? null,
+        },
+      })
+    } catch {
+      // leave the stored value as-is; the input shows it again on reopen
+    }
+  }
 
   const handlePointSizeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setDisplayPreferences({ pointSize: parseFloat(e.target.value) })
@@ -632,6 +662,63 @@ export default function DisplaySettings() {
                   </div>
                 </div>
               </div>
+
+              {/* Spatial scale — only meaningful when the dataset has spatial
+                  coordinates. The h5ad carries no units, so this is where the
+                  user declares them; Visium HD is recognized automatically. */}
+              {spatialScale?.spatialKey && (
+                <div style={styles.settingGroup}>
+                  <div style={styles.toggleContainer}>
+                    <div>
+                      <span style={styles.toggleLabel}>Scale Bar</span>
+                      <div style={styles.toggleDescription}>
+                        Show a µm scale bar on spatial coordinates
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        ...styles.toggle,
+                        ...(displayPreferences.showScaleBar ? styles.toggleActive : {}),
+                      }}
+                      onClick={() => setDisplayPreferences({ showScaleBar: !displayPreferences.showScaleBar })}
+                    >
+                      <div
+                        style={{
+                          ...styles.toggleKnob,
+                          ...(displayPreferences.showScaleBar ? styles.toggleKnobActive : {}),
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ marginTop: '8px' }}>
+                    <span style={styles.toggleLabel}>µm per coordinate unit</span>
+                    <div style={styles.toggleDescription}>
+                      Physical size of one unit of{' '}
+                      <code>{spatialScale.spatialKey}</code>. Curio Seeker and
+                      Visium HD coordinates are already µm — enter 1. Leave
+                      empty if unknown; the bar hides.
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      placeholder="unknown"
+                      value={scaleDraft ?? (spatialScale.umPerUnit ?? '')}
+                      onChange={(e) => setScaleDraft(e.target.value)}
+                      onBlur={(e) => commitSpatialScale(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') commitSpatialScale((e.target as HTMLInputElement).value)
+                      }}
+                      style={{
+                        marginTop: '6px', width: '120px', padding: '4px 8px',
+                        fontSize: '12px', backgroundColor: '#0f3460',
+                        color: '#eee', border: '1px solid #1a1a2e',
+                        borderRadius: '4px',
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </>

@@ -457,6 +457,7 @@ export interface DisplayPreferences {
   expressionTransform: ExpressionTransform  // Transformation for expression values
   clipPercentile: number  // Symmetric percentile clip for color-ramp anchors (0 = off)
   showGrid: boolean  // When true, ScatterPlot draws a screen-aligned grid with data-coord tick labels
+  showScaleBar: boolean  // When true and the spatial scale is known, ScatterPlot draws a µm scale bar
 }
 
 // Scanpy action history entry
@@ -503,6 +504,9 @@ export interface DatasetState {
   // multi-gene, bivariate). 'X' (default) reads adata.X; any other value reads
   // adata.layers[displayLayer]. Per-dataset because layers are per-dataset.
   displayLayer: string
+  // Which .obsm array is this dataset's spatial coordinates and how many µm
+  // one coordinate unit spans (null = not fetched yet / no spatial data).
+  spatialScale: { spatialKey: string | null; umPerUnit: number | null } | null
 }
 
 // Hardcoded fallback defaults for display preferences. Kept as a factory so
@@ -521,6 +525,7 @@ export function defaultDisplayPreferences(): DisplayPreferences {
     expressionTransform: 'none',
     clipPercentile: 1.0,
     showGrid: false,
+    showScaleBar: true,
   }
 }
 
@@ -561,6 +566,7 @@ export function displayPreferencesFromConfig(
   const gsm = str(d.gene_set_scoring_method)
   if (gsm === 'mean' || gsm === 'ucell') out.geneSetScoringMethod = gsm
   if (typeof d.show_grid === 'boolean') out.showGrid = d.show_grid
+  if (typeof d.show_scale_bar === 'boolean') out.showScaleBar = d.show_scale_bar
   return out
 }
 
@@ -596,6 +602,7 @@ export function createDefaultDatasetState(
     geneMaskConfig: null,
     pcaSubsets: [],
     displayLayer: 'X',
+    spatialScale: null,
   }
 }
 

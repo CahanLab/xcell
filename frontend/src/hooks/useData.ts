@@ -65,6 +65,44 @@ export async function cancelTask(taskId: string, slot?: DatasetSlot): Promise<vo
   })
 }
 
+/** Keep a slot's spatial identity current: which .obsm array is its spatial
+ * coordinates, and how many µm one coordinate unit spans. Written into the
+ * slot's `spatialScale` so the scale bar and Display settings agree. */
+export function useSpatialScale(slot: DatasetSlot) {
+  const schema = useStore((s) => s.datasets[slot]?.schema)
+  const historyLength = useStore(
+    (s) => s.datasets[slot]?.scanpyActionHistory.length ?? 0
+  )
+  const patchSlotState = useStore((s) => s.patchSlotState)
+
+  useEffect(() => {
+    if (!schema) {
+      patchSlotState(slot, { spatialScale: null })
+      return
+    }
+    let stale = false
+    Promise.all([
+      fetchJson<{ current: string | null }>(
+        appendDataset(`${API_BASE}/spatial_key`, slot)),
+      fetchJson<{ um_per_unit: number | null }>(
+        appendDataset(`${API_BASE}/spatial_scale`, slot)),
+    ])
+      .then(([keys, scale]) => {
+        if (stale) return
+        patchSlotState(slot, {
+          spatialScale: {
+            spatialKey: keys.current ?? null,
+            umPerUnit: scale.um_per_unit ?? null,
+          },
+        })
+      })
+      .catch(() => {
+        if (!stale) patchSlotState(slot, { spatialScale: null })
+      })
+    return () => { stale = true }
+  }, [slot, schema, historyLength, patchSlotState])
+}
+
 export function useSchema() {
   const { schema, setSchema, setLoading, setError, setSelectedEmbedding } = useStore()
 

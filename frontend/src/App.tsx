@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, DatasetSlot } from './store'
 import { meanOf, convexHull, type ShapeAffine } from './utils/shapeTransform'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, appendDataset, fetchGeneMask } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, appendDataset, fetchGeneMask } from './hooks/useData'
 import EmbeddingPlot from './components/EmbeddingPlot'
 import { BIVARIATE_COLORMAPS, getBivariateColor, resolveCategoryPalette } from './lib/cellColors'
 import GenePanel from './components/GenePanel'
@@ -822,6 +822,18 @@ export default function App() {
   const embedding = useEmbedding()
   const colorBy = useColorBy()
   const { selectEmbedding } = useDataActions()
+
+  // Spatial identity per slot, for the scale bar and Display's scale setting.
+  useSpatialScale('primary')
+  useSpatialScale('secondary')
+  const umPerUnitFor = (slot: DatasetSlot): number | null => {
+    const ds = datasets[slot]
+    const sc = ds?.spatialScale
+    if (!sc || sc.umPerUnit == null) return null
+    // Only actual spatial coordinates have a physical scale — never a UMAP.
+    if (!ds.embedding || ds.embedding.name !== sc.spatialKey) return null
+    return ds.displayPreferences.showScaleBar ? sc.umPerUnit : null
+  }
 
   // Re-fetch expression data when transform setting changes
   useExpressionTransformEffect()
@@ -1985,6 +1997,7 @@ export default function App() {
                         <>
                           <EmbeddingPlot
                             slot="primary"
+                            umPerUnit={umPerUnitFor('primary')}
                             embedding={datasets.primary.embedding}
                             colorBy={datasets.primary.colorBy}
                             expressionData={datasets.primary.expressionData}
@@ -2072,6 +2085,7 @@ export default function App() {
                         <>
                           <EmbeddingPlot
                             slot="secondary"
+                            umPerUnit={umPerUnitFor('secondary')}
                             embedding={datasets.secondary.embedding}
                             colorBy={datasets.secondary.colorBy}
                             expressionData={datasets.secondary.expressionData}
@@ -2150,6 +2164,7 @@ export default function App() {
                     {embedding && (
                       <>
                         <EmbeddingPlot
+                          umPerUnit={umPerUnitFor(activeSlot)}
                           embedding={embedding}
                           colorBy={colorBy}
                           expressionData={expressionData}

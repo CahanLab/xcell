@@ -2832,6 +2832,28 @@ def put_spatial_key(request: SpatialKeyRequest, dataset: str | None = Query(None
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.get("/spatial_scale")
+def get_spatial_scale(dataset: str | None = Query(None)):
+    """How many µm one spatial coordinate unit spans, if known."""
+    return get_adaptor(dataset).spatial_scale()
+
+
+class SpatialScaleRequest(BaseModel):
+    um_per_unit: float | None = None
+
+
+@router.put("/spatial_scale")
+def put_spatial_scale(request: SpatialScaleRequest, dataset: str | None = Query(None)):
+    """Set the physical scale of the spatial coordinates. None clears it."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.spatial_scale_set(request.um_per_unit)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/scanpy/spatial_neighbors", status_code=202)
 def run_spatial_neighbors(request: SpatialNeighborsRequest, dataset: str | None = Query(None)):
     """Compute spatial neighborhood graph (cancellable background task)."""

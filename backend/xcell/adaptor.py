@@ -4395,6 +4395,40 @@ class DataAdaptor:
             'options': options,
         }
 
+    SPATIAL_SCALE_UNS = 'xcell_spatial_scale'
+
+    def spatial_scale(self) -> dict[str, Any]:
+        """Physical size of one spatial coordinate unit, in µm.
+
+        The h5ad itself carries no units — Curio Seeker writes µm, plain
+        Visium writes full-res image pixels, a Localize map inherits whatever
+        its reference used — so this is an explicit per-dataset setting. The
+        one safe auto-detection: the Visium HD loader builds its coordinates
+        in µm and leaves ``bin_size_um`` in ``uns['spatial']`` saying so.
+        """
+        stored = self.adata.uns.get(self.SPATIAL_SCALE_UNS)
+        if isinstance(stored, dict) and stored.get('um_per_unit') is not None:
+            return {'um_per_unit': float(stored['um_per_unit']), 'source': 'user'}
+        spatial_meta = self.adata.uns.get('spatial')
+        if isinstance(spatial_meta, dict) and spatial_meta.get('bin_size_um') is not None:
+            return {'um_per_unit': 1.0, 'source': 'visium_hd'}
+        return {'um_per_unit': None, 'source': None}
+
+    def spatial_scale_set(self, um_per_unit: float | None) -> dict[str, Any]:
+        """Set (or clear, with None) how many µm one coordinate unit spans."""
+        if um_per_unit is None:
+            self.adata.uns.pop(self.SPATIAL_SCALE_UNS, None)
+        else:
+            value = float(um_per_unit)
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(
+                    f'µm per coordinate unit must be a positive number, got {um_per_unit}'
+                )
+            self.adata.uns[self.SPATIAL_SCALE_UNS] = {'um_per_unit': value}
+        out = self.spatial_scale()
+        self._log_action('set_spatial_scale', {'um_per_unit': um_per_unit}, out)
+        return out
+
     def _split_present_genes(self, genes: list[str]) -> tuple[list[str], list[str]]:
         """Partition gene names into (present in .var_names, missing).
 

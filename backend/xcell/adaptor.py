@@ -7571,6 +7571,280 @@ class DataAdaptor:
             'metrics': metrics,
         }
 
+    def prepare_meta_programs(
+        self,
+        *,
+        sample_column: str,
+        ks: list[int] | tuple[int, ...] = (4, 5, 6),
+        n_mp: int = 10,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        layer: str | None = None,
+        transform: str = 'log1p',
+        key: str = 'MP',
+        min_cells: int = 10,
+        l1_w: float = 0.0,
+        l1_h: float = 0.0,
+        max_iter: int = 500,
+        tol: float = 1e-4,
+        seed: int = 0,
+        specificity_weight: float = 5.0,
+        weight_explained: float = 0.8,
+        max_genes: int = 200,
+        metric: str = 'cosine',
+        min_confidence: float = 0.5,
+        n_threads: int | None = None,
+        overwrite: bool = False,
+    ) -> tuple[Callable[[Callable], dict], Callable[[dict], dict]]:
+        """Meta-programs: NMF per sample per rank, consolidated (GeneNMF).
+
+        Factorizes each group of ``sample_column`` on its own at every rank in
+        ``ks``, then clusters all the resulting programs into ``n_mp``
+        consensus meta-programs. A program fitted on pooled data can be a batch
+        effect; one that recurs independently across samples and ranks cannot,
+        and ``sample_coverage`` is what separates the two.
+
+        apply_fn persists ``.obsm[key]`` (per-cell meta-program score, weighted
+        mean of the consensus genes) plus a score-matrix registry entry, and
+        ``.uns['xcell_gene_nmf_meta'][key]`` with the gene sets, metrics,
+        per-sample composition, and the program similarity matrix / clustering
+        / leaf order the heatmap needs.
+        """
+        import scipy.sparse
+
+        from xcell import gene_nmf as gnmf
+
+        if sample_column not in self.adata.obs.columns:
+            raise ValueError(f"Column '{sample_column}' not found in .obs")
+        series = self.adata.obs[sample_column]
+        if pd.api.types.is_float_dtype(series):
+            raise ValueError(
+                f"Column '{sample_column}' is continuous; meta-programs need a "
+                "categorical column identifying samples, sections or donors"
+            )
+        if isinstance(series.dtype, pd.CategoricalDtype):
+            categories = [str(c) for c in series.cat.categories]
+        else:
+            categories = [str(c) for c in pd.unique(series)]
+        labels = np.asarray(series.astype(str).values)
+        present = [c for c in categories if (labels == c).sum() > 0]
+        if len(present) < 2:
+            raise ValueError(
+                f"Column '{sample_column}' has {len(present)} sample(s); "
+                "meta-programs need at least 2 to find what recurs"
+            )
+        if len(present) > 100:
+            raise ValueError(
+                f"Column '{sample_column}' has {len(present)} values; that "
+                "looks like a per-cell identifier, not a sample grouping"
+            )
+
+        ks_list = sorted({int(k) for k in (ks or ())})
+        if not ks_list or any(k < 2 for k in ks_list):
+            raise ValueError(f"ks must be one or more integers >= 2, got {list(ks)!r}")
+        if not isinstance(n_mp, (int, np.integer)) or n_mp < 1:
+            raise ValueError(f"n_mp must be an integer >= 1, got {n_mp!r}")
+        if not key or not isinstance(key, str):
+            raise ValueError("key must be a non-empty string")
+        if key in self.adata.obsm and not overwrite:
+            raise ValueError(
+                f"'{key}' already exists (pass overwrite=True to replace it)"
+            )
+
+        gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+        gene_idx = np.flatnonzero(gene_mask)
+        gene_names = [str(g) for g in self.adata.var_names[gene_idx]]
+
+        if layer is not None and layer != 'X':
+            source = self._resolve_source_matrix(layer)
+        elif transform == 'log1p':
+            source = self.normalized_adata.X
+        else:
+            source = self.adata.X
+
+        sub = source[:, gene_idx]
+        if scipy.sparse.issparse(sub):
+            sub = sub.tocsr()
+            values = sub.data
+        else:
+            sub = np.asarray(sub)
+            values = sub
+        if values.size and float(np.min(values)) < 0.0:
+            raise ValueError(
+                "NMF needs non-negative expression, but the selected matrix "
+                "has negative values. Scaled or centered data will not work — "
+                "use raw counts or a log-normalized layer."
+            )
+
+        snap = {
+            'ks': ks_list, 'n_mp': int(n_mp), 'min_cells': int(min_cells),
+            'l1_w': float(l1_w), 'l1_h': float(l1_h), 'max_iter': int(max_iter),
+            'tol': float(tol), 'seed': int(seed),
+            'specificity_weight': float(specificity_weight),
+            'weight_explained': float(weight_explained),
+            'max_genes': int(max_genes), 'metric': metric,
+            'min_confidence': float(min_confidence),
+        }
+        snap_meta = {
+            'key': key, 'sample_column': sample_column, 'layer': layer,
+            'transform': transform, 'gene_subset': subset_type,
+            'n_genes_used': len(gene_names), 'n_samples': len(present),
+        }
+        labels_snap = labels.copy()
+
+        def compute_fn(report: Callable) -> dict:
+            return gnmf.run_meta_programs(
+                sub, gene_names, labels_snap, samples=present,
+                n_threads=n_threads, progress_callback=report, **snap,
+            )
+
+        def apply_fn(result: dict) -> dict:
+            mps = result['metaprograms']
+            names = [mp['name'] for mp in mps]
+
+            self.adata.obsm[key] = np.asarray(
+                result['cell_scores'], dtype=np.float64
+            )
+            reg = self.adata.uns.get('xcell_score_matrices')
+            reg = dict(reg) if isinstance(reg, dict) else {}
+            reg[key] = {'columns': list(names), 'source': 'gene_nmf_meta'}
+            self.adata.uns['xcell_score_matrices'] = reg
+
+            record = {
+                'params': {**snap, **snap_meta},
+                'metaprogram_names': list(names),
+                'metaprograms': {
+                    mp['name']: {
+                        'genes': list(mp['genes']),
+                        'weights': [float(w) for w in mp['weights']],
+                        'n_programs': int(mp['n_programs']),
+                        'n_genes': int(mp['n_genes']),
+                        'sample_coverage': float(mp['sample_coverage']),
+                        'silhouette': float(mp['silhouette']),
+                        'mean_similarity': float(mp['mean_similarity']),
+                    }
+                    for mp in mps
+                },
+                'composition': {
+                    name: dict(counts)
+                    for name, counts in result['composition'].items()
+                },
+                'samples': [str(s) for s in result['samples']],
+                'program_labels': list(result['program_labels']),
+                'program_samples': list(result['program_samples']),
+                'program_ks': [int(k) for k in result['program_ks']],
+                'clusters': [int(c) for c in result['clusters']],
+                'order': [int(i) for i in result['order']],
+                'similarity': np.asarray(result['similarity'], dtype=np.float32),
+                'skipped': [dict(s) for s in result['skipped']],
+                'ks_used': [int(k) for k in result['ks_used']],
+                'n_dropped': int(result['n_dropped']),
+                'n_programs': int(result['n_programs']),
+            }
+            runs = self.adata.uns.get('xcell_gene_nmf_meta')
+            runs = dict(runs) if isinstance(runs, dict) else {}
+            runs[key] = record
+            self.adata.uns['xcell_gene_nmf_meta'] = runs
+
+            self._log_action('gene_nmf_meta', {**snap, **snap_meta}, {
+                'obsm_key': key,
+                'n_metaprograms': len(names),
+                'n_programs': int(result['n_programs']),
+                'metaprograms': names,
+            })
+
+            return {
+                'obsm_key': key,
+                'metaprograms': mps,
+                'composition': result['composition'],
+                'samples': [str(s) for s in result['samples']],
+                'program_labels': list(result['program_labels']),
+                'program_samples': list(result['program_samples']),
+                'program_ks': [int(k) for k in result['program_ks']],
+                'clusters': [int(c) for c in result['clusters']],
+                'order': [int(i) for i in result['order']],
+                'similarity': np.asarray(result['similarity']).tolist(),
+                'skipped': [dict(s) for s in result['skipped']],
+                'ks_used': [int(k) for k in result['ks_used']],
+                'n_dropped': int(result['n_dropped']),
+                'n_programs': int(result['n_programs']),
+                **snap_meta,
+                'params': dict(snap),
+            }
+
+        return compute_fn, apply_fn
+
+    def get_meta_programs_result(self, key: str = 'MP') -> dict[str, Any] | None:
+        """A stored meta-program run for instant re-display, or None."""
+        runs = self.adata.uns.get('xcell_gene_nmf_meta')
+        if not isinstance(runs, dict) or key not in runs:
+            return None
+        rec = runs[key]
+        stored = rec.get('metaprograms') or {}
+        mps = []
+        for name in [str(n) for n in rec.get('metaprogram_names', [])]:
+            entry = stored.get(name)
+            if entry is None:
+                continue
+            mps.append({
+                'name': name,
+                'genes': [str(g) for g in entry['genes']],
+                'weights': [float(w) for w in entry['weights']],
+                'n_programs': int(entry['n_programs']),
+                'n_genes': int(entry['n_genes']),
+                'sample_coverage': float(entry['sample_coverage']),
+                'silhouette': float(entry['silhouette']),
+                'mean_similarity': float(entry['mean_similarity']),
+            })
+        return {
+            'key': key,
+            'metaprograms': mps,
+            'composition': {
+                str(n): {str(s): int(v) for s, v in dict(c).items()}
+                for n, c in dict(rec.get('composition', {})).items()
+            },
+            'samples': [str(s) for s in rec.get('samples', [])],
+            'program_labels': [str(x) for x in rec.get('program_labels', [])],
+            'program_samples': [str(x) for x in rec.get('program_samples', [])],
+            'program_ks': [int(k) for k in rec.get('program_ks', [])],
+            'clusters': [int(c) for c in rec.get('clusters', [])],
+            'order': [int(i) for i in rec.get('order', [])],
+            'similarity': np.asarray(rec.get('similarity', [])).tolist(),
+            'skipped': [dict(s) for s in rec.get('skipped', [])],
+            'ks_used': [int(k) for k in rec.get('ks_used', [])],
+            'n_dropped': int(rec.get('n_dropped', 0)),
+            'n_programs': int(rec.get('n_programs', 0)),
+            'params': dict(rec.get('params', {})),
+        }
+
+    def list_meta_program_runs(self) -> list[str]:
+        """Keys of every stored meta-program run."""
+        runs = self.adata.uns.get('xcell_gene_nmf_meta')
+        return sorted(str(k) for k in runs) if isinstance(runs, dict) else []
+
+    def sample_column_candidates(self, max_samples: int = 100) -> list[dict[str, Any]]:
+        """Categorical .obs columns that could identify samples.
+
+        Continuous columns are out, and so is anything with one value or with
+        so many that it is plainly a per-cell identifier.
+        """
+        out: list[dict[str, Any]] = []
+        for col in self.adata.obs.columns:
+            series = self.adata.obs[col]
+            if pd.api.types.is_float_dtype(series):
+                continue
+            values = series.astype(str)
+            counts = values.value_counts()
+            counts = counts[counts > 0]
+            if not (2 <= len(counts) <= max_samples):
+                continue
+            out.append({
+                'name': str(col),
+                'n_samples': int(len(counts)),
+                'min_cells': int(counts.min()),
+                'samples': [str(v) for v in counts.index[:100]],
+            })
+        return out
+
     def list_gene_nmf_runs(self) -> list[str]:
         """Keys of every stored NMF run, so the UI can offer them."""
         runs = self.adata.uns.get('xcell_gene_nmf')

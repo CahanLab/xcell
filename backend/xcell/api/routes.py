@@ -3286,6 +3286,91 @@ def gene_nmf_run(request: GeneNmfRequest, dataset: str | None = Query(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class MetaProgramsRequest(BaseModel):
+    sample_column: str
+    ks: list[int] = [4, 5, 6]
+    n_mp: int = 10
+    gene_subset: str | list[str] | None = None
+    layer: str | None = None
+    transform: str = 'log1p'
+    key: str = 'MP'
+    min_cells: int = 10
+    l1_w: float = 0.0
+    l1_h: float = 0.0
+    max_iter: int = 500
+    tol: float = 1e-4
+    seed: int = 0
+    specificity_weight: float = 5.0
+    weight_explained: float = 0.8
+    max_genes: int = 200
+    metric: str = 'cosine'
+    min_confidence: float = 0.5
+    overwrite: bool = False
+
+
+@router.get("/gene_nmf/meta/columns")
+def meta_program_columns(dataset: str | None = Query(None)):
+    """Categorical .obs columns that could identify samples."""
+    adaptor = get_adaptor(dataset)
+    return {"columns": adaptor.sample_column_candidates()}
+
+
+@router.get("/gene_nmf/meta/result")
+def meta_programs_result(key: str = Query('MP'), dataset: str | None = Query(None)):
+    """A stored meta-program run, or null if that key has never been run."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.get_meta_programs_result(key)
+
+
+@router.get("/gene_nmf/meta/runs")
+def meta_programs_runs(dataset: str | None = Query(None)):
+    """Keys of every meta-program run stored on this dataset."""
+    adaptor = get_adaptor(dataset)
+    return {"keys": adaptor.list_meta_program_runs()}
+
+
+@router.post("/gene_nmf/meta/run", status_code=202)
+def meta_programs_run(request: MetaProgramsRequest, dataset: str | None = Query(None)):
+    """Meta-programs: NMF per sample per rank, then consensus (GeneNMF).
+
+    Validates synchronously (400 on a bad sample column, k list or key); the
+    sweep runs in the background with progress. Poll /tasks/{id}; the result
+    holds the meta-program gene sets, their metrics and per-sample
+    composition, and the program similarity matrix for the heatmap.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_meta_programs(
+            sample_column=request.sample_column,
+            ks=request.ks,
+            n_mp=request.n_mp,
+            gene_subset=request.gene_subset,
+            layer=request.layer,
+            transform=request.transform,
+            key=request.key,
+            min_cells=request.min_cells,
+            l1_w=request.l1_w,
+            l1_h=request.l1_h,
+            max_iter=request.max_iter,
+            tol=request.tol,
+            seed=request.seed,
+            specificity_weight=request.specificity_weight,
+            weight_explained=request.weight_explained,
+            max_genes=request.max_genes,
+            metric=request.metric,
+            min_confidence=request.min_confidence,
+            overwrite=request.overwrite,
+        )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =========================================================================
 # Export endpoints
 # =========================================================================

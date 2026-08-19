@@ -296,6 +296,31 @@ def nmf(
 # ---------------------------------------------------------------------------
 # programs — GeneNMF's getNMFgenes()
 # ---------------------------------------------------------------------------
+def cumulative_cutoff(
+    values: np.ndarray, weight_explained: float, max_genes: int | float = np.inf
+):
+    """GeneNMF's ``weightCumul``: the top entries that together account for
+    ``weight_explained`` of the total.
+
+    Returns ``(indices, shares)`` ordered by descending weight, where ``shares``
+    are fractions of the *whole* vector, so they sum to just under
+    ``weight_explained``.
+
+    The cutoff is a strict ``<``, exactly as in GeneNMF — so a vector whose top
+    entry already carries ``weight_explained`` on its own yields nothing at all,
+    and the caller drops it rather than reporting a one-gene program.
+    """
+    values = np.asarray(values, dtype=float)
+    total = float(values.sum())
+    if total <= 0.0:
+        return np.empty(0, dtype=int), np.empty(0, dtype=float)
+    order = np.argsort(-values, kind="stable")
+    shares = values[order] / total
+    n_keep = int(np.count_nonzero(np.cumsum(shares) < weight_explained))
+    n_keep = int(min(n_keep, max_genes))
+    return order[:n_keep], shares[:n_keep]
+
+
 def _specificity_weighted(W: np.ndarray, specificity_weight: float) -> np.ndarray:
     """GeneNMF's ``wgtLoad``: damp genes whose loading is spread over programs.
 
@@ -366,22 +391,14 @@ def program_genes(
 
     programs: list[dict[str, Any]] = []
     for j in range(W.shape[1]):
-        col = W[:, j]
-        total = float(col.sum())
-        if total <= 0.0:
+        kept, shares = cumulative_cutoff(W[:, j], weight_explained, max_genes)
+        if kept.size == 0:
             continue
-        order = np.argsort(-col, kind="stable")
-        shares = col[order] / total
-        n_keep = int(np.count_nonzero(np.cumsum(shares) < weight_explained))
-        n_keep = min(n_keep, max_genes)
-        if n_keep == 0:
-            continue
-        kept = order[:n_keep]
         programs.append({
             "name": f"{name_prefix}_{j + 1}",
             "index": j,
             "genes": [str(gene_names[i]) for i in kept],
-            "weights": [float(v) for v in shares[:n_keep]],
+            "weights": [float(v) for v in shares],
         })
     return programs
 
@@ -462,3 +479,426 @@ def run_gene_programs(
             "max_genes": int(max_genes),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# multi-sample: meta-programs across samples and ranks
+# ---------------------------------------------------------------------------
+def multi_nmf(
+    X,
+    gene_names: list[str],
+    sample_labels,
+    *,
+    ks=(4, 5, 6),
+    samples: list[str] | None = None,
+    min_cells: int = 10,
+    l1_w: float = 0.0,
+    l1_h: float = 0.0,
+    max_iter: int = 500,
+    tol: float = 1e-4,
+    seed: int = 0,
+    n_threads: int | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> dict[str, Any]:
+    """Factorize each sample on its own, at each rank in ``ks``.
+
+    GeneNMF's ``multiNMF``. Running samples separately is the point: a program
+    fitted on pooled data can be a batch effect, whereas one that turns up
+    independently in several samples cannot. Sweeping ``k`` as well means a
+    program does not have to be an artifact of one arbitrary rank.
+
+    Args:
+        X: cells x genes, non-negative (dense or sparse).
+        sample_labels: one label per cell.
+        ks: ranks to fit per sample. A rank larger than a sample's cell or gene
+            count is dropped rather than failing the whole run.
+        samples: sample order to use; categories with no cells are ignored.
+            Defaults to first-appearance order.
+        min_cells: samples smaller than this are skipped and reported.
+
+    Returns ``{'loadings': (n_genes, n_programs), 'labels', 'samples', 'ks',
+    'model_index', 'ks_used', 'skipped'}``. Each loading column is L1
+    normalized, and ``model_index`` says which (sample, k) factorization a
+    column came from — specificity weighting is computed *within* a
+    factorization, so that grouping has to survive.
+    """
+    labels_arr = np.asarray(sample_labels).astype(str)
+    n_cells, n_genes = X.shape
+    if labels_arr.shape[0] != n_cells:
+        raise ValueError(
+            f"sample_labels has {labels_arr.shape[0]} entries but X has "
+            f"{n_cells} cells"
+        )
+    if len(gene_names) != n_genes:
+        raise ValueError(
+            f"gene_names has {len(gene_names)} entries but X has {n_genes} genes"
+        )
+    ks_req = sorted({int(k) for k in ks})
+    if not ks_req or any(k < 2 for k in ks_req):
+        raise ValueError(f"ks must be integers >= 2, got {sorted(ks)!r}")
+
+    if samples is None:
+        _, first = np.unique(labels_arr, return_index=True)
+        order = [str(labels_arr[i]) for i in sorted(first)]
+    else:
+        order = [str(s) for s in samples]
+
+    sparse = sp.issparse(X)
+    Xc = X.tocsr() if sparse else np.asarray(X)
+
+    runs: list[tuple[str, int, np.ndarray]] = []
+    skipped: list[dict[str, Any]] = []
+    for sample in order:
+        rows = np.flatnonzero(labels_arr == sample)
+        if rows.size == 0:
+            # A leftover .obs category no cell uses any more; not a skip.
+            continue
+        if rows.size < min_cells:
+            skipped.append({
+                "sample": sample, "n_cells": int(rows.size),
+                "reason": f"fewer than {min_cells} cells",
+            })
+            continue
+        runs.append((sample, rows.size, rows))
+
+    plan = [
+        (sample, k, rows)
+        for sample, n, rows in runs
+        for k in ks_req
+        if k <= min(n, n_genes)
+    ]
+    if not plan:
+        raise ValueError(
+            "Nothing to factorize: every sample was too small, or every k "
+            "exceeded the data. Lower k or min_cells."
+        )
+
+    cols: list[np.ndarray] = []
+    out_labels: list[str] = []
+    out_samples: list[str] = []
+    out_ks: list[int] = []
+    model_index: list[int] = []
+    for m, (sample, k, rows) in enumerate(plan):
+        sub = Xc[rows] if sparse else Xc[rows, :]
+        fit = nmf(
+            sub, k, l1_w=l1_w, l1_h=l1_h, max_iter=max_iter, tol=tol,
+            seed=seed, n_threads=n_threads,
+        )
+        W = fit["W"]
+        for j in range(W.shape[1]):
+            cols.append(W[:, j])
+            out_labels.append(f"{sample}.k{k}.{j + 1}")
+            out_samples.append(sample)
+            out_ks.append(k)
+            model_index.append(m)
+        if progress_callback is not None:
+            progress_callback(
+                (m + 1) / len(plan), f"{sample} k={k} ({m + 1}/{len(plan)})",
+            )
+
+    return {
+        "loadings": np.column_stack(cols),
+        "labels": out_labels,
+        "samples": out_samples,
+        "ks": out_ks,
+        "model_index": np.asarray(model_index, dtype=int),
+        "ks_used": sorted({k for _, k, _ in plan}),
+        "skipped": skipped,
+    }
+
+
+def weighted_loadings(fit: dict[str, Any], specificity_weight: float) -> np.ndarray:
+    """Specificity-weight each factorization's loadings *within* that model.
+
+    GeneNMF applies ``wgtLoad`` per model, so "how exclusive is this gene"
+    always means "among this factorization's own k factors" — comparing across
+    every program in the study would make a gene's score depend on how many
+    samples happened to be included.
+    """
+    W = np.asarray(fit["loadings"], dtype=float)
+    if not specificity_weight:
+        return W
+    out = np.empty_like(W)
+    model_index = np.asarray(fit["model_index"])
+    for m in np.unique(model_index):
+        cols = np.flatnonzero(model_index == m)
+        out[:, cols] = _specificity_weighted(W[:, cols], specificity_weight)
+    return out
+
+
+def _program_similarity(
+    Wg: np.ndarray, metric: str, weight_explained: float, max_genes: int
+) -> np.ndarray:
+    """Program x program similarity — cosine on weights, or Jaccard on sets."""
+    if metric == "cosine":
+        norms = np.linalg.norm(Wg, axis=0)
+        Z = Wg / np.where(norms > 0, norms, 1.0)
+        S = Z.T @ Z
+    elif metric == "jaccard":
+        n = Wg.shape[1]
+        member = np.zeros((Wg.shape[0], n), dtype=np.float64)
+        for j in range(n):
+            kept, _ = cumulative_cutoff(Wg[:, j], weight_explained, max_genes)
+            member[kept, j] = 1.0
+        inter = member.T @ member
+        sizes = member.sum(axis=0)
+        union = sizes[:, None] + sizes[None, :] - inter
+        S = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+    else:
+        raise ValueError(f"Unknown metric {metric!r}; expected 'cosine' or 'jaccard'")
+    S = 0.5 * (S + S.T)
+    np.clip(S, -1.0, 1.0, out=S)
+    np.fill_diagonal(S, 1.0)
+    return S
+
+
+def trimmed_mean(sub: np.ndarray) -> np.ndarray:
+    """Per-gene mean across a cluster's programs, dropping >3 SD outliers.
+
+    With fewer than three programs there is no usable SD, so it is a plain mean
+    — which is what GeneNMF does too.
+    """
+    mean = sub.mean(axis=1)
+    if sub.shape[1] < 3:
+        return mean
+    sd = sub.std(axis=1, ddof=1)
+    lo, hi = mean - 3.0 * sd, mean + 3.0 * sd
+    keep = (sub > lo[:, None]) & (sub < hi[:, None])
+    counts = keep.sum(axis=1)
+    trimmed = np.where(counts > 0, (sub * keep).sum(axis=1) / np.maximum(counts, 1), mean)
+    return trimmed
+
+
+def meta_programs(
+    fit: dict[str, Any],
+    gene_names: list[str],
+    *,
+    n_mp: int = 10,
+    # Deliberately not the single-sample defaults. The consensus average
+    # smooths the specificity weighting, so GeneNMF's exponent of 5 works here
+    # — but only paired with a higher cutoff, because after weighting the top
+    # genes carry most of a program's mass. Measured on three real limb
+    # sections: docs/measurements/2026-08-19-gene-nmf-metaprogram-defaults.md
+    specificity_weight: float = 5.0,
+    weight_explained: float = 0.8,
+    max_genes: int = 200,
+    metric: str = "cosine",
+    min_confidence: float = 0.5,
+    linkage_method: str = "ward",
+) -> dict[str, Any]:
+    """Cluster every program from :func:`multi_nmf` into consensus programs.
+
+    GeneNMF's ``getMetaPrograms``. Programs are compared by their gene weights,
+    clustered, and each cluster condensed into one gene set: the outlier-trimmed
+    mean weight across its programs, cut at ``weight_explained``, then filtered
+    to genes that actually recur (``min_confidence`` — the fraction of the
+    cluster's programs whose own gene set contains the gene).
+
+    Returns the meta-programs ranked by sample coverage then silhouette, plus
+    the program similarity matrix, cluster assignment and dendrogram leaf order
+    for the heatmap, and per-sample composition counts.
+    """
+    from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
+    from scipy.spatial.distance import squareform
+
+    labels = list(fit["labels"])
+    prog_samples = [str(s) for s in fit["samples"]]
+    n_programs = len(labels)
+    if not isinstance(n_mp, (int, np.integer)) or n_mp < 1:
+        raise ValueError(f"n_mp must be an integer >= 1, got {n_mp!r}")
+    if n_mp > n_programs:
+        raise ValueError(
+            f"n_mp={n_mp} exceeds the {n_programs} programs found; ask for "
+            f"fewer meta-programs or sweep more values of k"
+        )
+    if not (0.0 <= min_confidence <= 1.0):
+        raise ValueError(f"min_confidence must be in [0, 1], got {min_confidence!r}")
+
+    Wg = weighted_loadings(fit, specificity_weight)
+    S = _program_similarity(Wg, metric, weight_explained, max_genes)
+
+    D = np.clip(1.0 - S, 0.0, 2.0)
+    np.fill_diagonal(D, 0.0)
+    Z = linkage(squareform(D, checks=False), method=linkage_method)
+    raw = fcluster(Z, t=n_mp, criterion="maxclust") - 1
+    order = list(int(i) for i in leaves_list(Z))
+
+    # Each program's own gene set, for the recurrence (confidence) filter.
+    per_program = [
+        set(cumulative_cutoff(Wg[:, j], 0.9, 1000)[0].tolist())
+        for j in range(n_programs)
+    ]
+
+    all_samples = sorted(set(prog_samples))
+    sil = None
+    if 2 <= len(set(raw.tolist())) <= n_programs - 1:
+        from sklearn.metrics import silhouette_samples
+        sil = silhouette_samples(D, raw, metric="precomputed")
+
+    built: list[dict[str, Any]] = []
+    for c in sorted(set(raw.tolist())):
+        cols = np.flatnonzero(raw == c)
+        avg = trimmed_mean(Wg[:, cols])
+        kept, _ = cumulative_cutoff(avg, weight_explained)
+
+        if min_confidence > 0.0 and kept.size:
+            seen = np.zeros(len(gene_names), dtype=float)
+            for j in cols:
+                seen[list(per_program[j])] += 1.0
+            confidence = seen / len(cols)
+            kept = kept[confidence[kept] > min_confidence]
+        kept = kept[:max_genes]
+
+        members = [prog_samples[j] for j in cols]
+        in_cluster = S[np.ix_(cols, cols)]
+        iu = np.triu_indices(len(cols), k=1)
+        built.append({
+            "cluster": int(c),
+            "genes": [str(gene_names[i]) for i in kept],
+            "raw_weights": avg[kept],
+            "n_programs": int(len(cols)),
+            "sample_coverage": float(len(set(members)) / len(all_samples)),
+            "silhouette": float(sil[cols].mean()) if sil is not None else 0.0,
+            "mean_similarity": (
+                float(in_cluster[iu].mean()) if len(cols) > 1 else 0.0
+            ),
+            "samples": members,
+        })
+
+    kept_mps = [mp for mp in built if mp["genes"]]
+    n_dropped = len(built) - len(kept_mps)
+    kept_mps.sort(key=lambda m: (m["sample_coverage"], m["silhouette"]), reverse=True)
+
+    remap = {mp["cluster"]: i for i, mp in enumerate(kept_mps)}
+    clusters = [int(remap.get(int(c), -1)) for c in raw]
+
+    metaprograms: list[dict[str, Any]] = []
+    composition: dict[str, dict[str, int]] = {}
+    for i, mp in enumerate(kept_mps):
+        name = f"MP{i + 1}"
+        w = np.asarray(mp["raw_weights"], dtype=float)
+        total = float(w.sum())
+        metaprograms.append({
+            "name": name,
+            "genes": mp["genes"],
+            # Renormalized within the meta-program, so a weight reads as a
+            # share of it whatever the cutoff kept.
+            "weights": [float(v) for v in (w / total if total > 0 else w)],
+            "n_programs": mp["n_programs"],
+            "n_genes": len(mp["genes"]),
+            "sample_coverage": mp["sample_coverage"],
+            "silhouette": mp["silhouette"],
+            "mean_similarity": mp["mean_similarity"],
+        })
+        counts = {s: 0 for s in all_samples}
+        for s in mp["samples"]:
+            counts[s] += 1
+        composition[name] = counts
+
+    return {
+        "metaprograms": metaprograms,
+        "composition": composition,
+        "similarity": S,
+        "linkage": Z,
+        "order": order,
+        "clusters": clusters,
+        "program_labels": labels,
+        "program_samples": prog_samples,
+        "program_ks": [int(k) for k in fit["ks"]],
+        "samples": all_samples,
+        "n_dropped": int(n_dropped),
+        "n_programs": n_programs,
+    }
+
+
+def score_metaprograms(X, gene_names: list[str], metaprograms) -> np.ndarray:
+    """Per-cell score for each meta-program: its weighted mean expression.
+
+    GeneNMF leaves scoring to the user (its demos reach for UCell on the MP
+    gene sets); this is the same idea with the consensus weights already in
+    hand, so a meta-program is colorable the moment it exists.
+    """
+    index = {str(g): i for i, g in enumerate(gene_names)}
+    n_cells = X.shape[0]
+    out = np.zeros((n_cells, len(metaprograms)), dtype=np.float64)
+    for j, mp in enumerate(metaprograms):
+        idx = [index[g] for g in mp["genes"] if g in index]
+        if not idx:
+            continue
+        w = np.asarray(
+            [mp["weights"][i] for i, g in enumerate(mp["genes"]) if g in index],
+            dtype=float,
+        )
+        total = float(w.sum())
+        if total <= 0:
+            continue
+        sub = X[:, idx]
+        vals = sub.toarray() if sp.issparse(sub) else np.asarray(sub)
+        out[:, j] = (vals @ w) / total
+    return out
+
+
+def run_meta_programs(
+    X,
+    gene_names: list[str],
+    sample_labels,
+    *,
+    ks=(4, 5, 6),
+    n_mp: int = 10,
+    samples: list[str] | None = None,
+    min_cells: int = 10,
+    l1_w: float = 0.0,
+    l1_h: float = 0.0,
+    max_iter: int = 500,
+    tol: float = 1e-4,
+    seed: int = 0,
+    specificity_weight: float = 5.0,   # see meta_programs()
+    weight_explained: float = 0.8,
+    max_genes: int = 200,
+    metric: str = "cosine",
+    min_confidence: float = 0.5,
+    linkage_method: str = "ward",
+    n_threads: int | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> dict[str, Any]:
+    """Factorize every sample at every k, then consolidate into meta-programs.
+
+    Adds ``cell_scores`` (cells x meta-programs) to what :func:`meta_programs`
+    returns. Everything except ``cell_scores``, ``similarity`` and ``linkage``
+    is JSON-serializable.
+    """
+    inner = None
+    if progress_callback is not None:
+        def inner(frac: float, msg: str) -> None:
+            progress_callback(min(0.9, 0.9 * float(frac)), msg)
+
+    fit = multi_nmf(
+        X, gene_names, sample_labels, ks=ks, samples=samples, min_cells=min_cells,
+        l1_w=l1_w, l1_h=l1_h, max_iter=max_iter, tol=tol, seed=seed,
+        n_threads=n_threads, progress_callback=inner,
+    )
+    if progress_callback is not None:
+        progress_callback(0.92, f"clustering {len(fit['labels'])} programs")
+
+    out = meta_programs(
+        fit, gene_names, n_mp=n_mp, specificity_weight=specificity_weight,
+        weight_explained=weight_explained, max_genes=max_genes, metric=metric,
+        min_confidence=min_confidence, linkage_method=linkage_method,
+    )
+    out["cell_scores"] = score_metaprograms(X, gene_names, out["metaprograms"])
+    out["skipped"] = fit["skipped"]
+    out["ks_used"] = fit["ks_used"]
+    out["params"] = {
+        "ks": [int(k) for k in fit["ks_used"]], "n_mp": int(n_mp),
+        "min_cells": int(min_cells), "seed": int(seed),
+        "specificity_weight": float(specificity_weight),
+        "weight_explained": float(weight_explained),
+        "max_genes": int(max_genes), "metric": metric,
+        "min_confidence": float(min_confidence),
+        "linkage_method": linkage_method,
+        "l1_w": float(l1_w), "l1_h": float(l1_h),
+        "max_iter": int(max_iter), "tol": float(tol),
+    }
+    if progress_callback is not None:
+        progress_callback(1.0, f"{len(out['metaprograms'])} meta-programs")
+    return out

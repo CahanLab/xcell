@@ -424,6 +424,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         custom: true,
         params: [],
       },
+      gene_nmf_meta: {
+        label: 'NMF Meta-Programs',
+        description: 'Find gene programs that recur across samples. Factorizes each sample (or section, or donor) separately at several ranks, then clusters every resulting program into consensus meta-programs, scored by how many samples they turn up in. A program found once can be a batch effect; one found independently across samples cannot. Opens the Meta-Programs tool.',
+        prerequisites: [],
+        custom: true,
+        params: [],
+      },
       cluster_genes: {
         label: 'Cluster Genes',
         description: 'Cluster genes into co-expression modules (Leiden)',
@@ -797,7 +804,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setGeneNmfModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2642,6 +2649,13 @@ export default function ScanpyModal() {
               onClick={() => { setGeneNmfModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open NMF tool…
+            </button>
+          ) : selectedFunction === 'gene_nmf_meta' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setMetaProgramsModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Meta-Programs tool…
             </button>
           ) : selectedFunction === 'localize' ? (
             <button

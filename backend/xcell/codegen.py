@@ -625,6 +625,20 @@ REGISTRY: dict[str, ActionSpec] = {
             f"{_n(r.get('n_avoided'))} avoided pairs at q < 0.05."
         ),
     ),
+    'gene_nmf': ActionSpec(
+        label='NMF gene programs', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_gene_nmf',
+                        ('k', 'gene_subset', 'layer', 'transform', 'key',
+                         'l1_w', 'l1_h', 'max_iter', 'tol', 'seed',
+                         'specificity_weight', 'weight_explained',
+                         'max_genes')),
+        summary=lambda p, r: (
+            f"NMF gene programs (k={_n(p.get('k'))}, "
+            f"{_n(p.get('n_genes_used'))} genes x {_n(p.get('n_cells_used'))} cells): "
+            f"{_n(r.get('n_programs'))} programs → `.obsm['{r.get('obsm_key')}']`"
+            + (f", {_n(r.get('n_dropped'))} dropped." if r.get('n_dropped') else ".")
+        ),
+    ),
     'pyscn_train': ActionSpec(
         label='Train classifier (PySingleCellNet)', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_pyscn_train',

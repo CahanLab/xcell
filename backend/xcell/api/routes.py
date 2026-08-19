@@ -3201,6 +3201,92 @@ def neighborhood_run(request: NeighborhoodRequest, dataset: str | None = Query(N
 
 
 # =========================================================================
+# NMF gene programs
+# =========================================================================
+
+
+class GeneNmfRequest(BaseModel):
+    k: int = 10
+    gene_subset: str | list[str] | None = None
+    layer: str | None = None
+    transform: str = 'log1p'
+    key: str = 'NMF'
+    l1_w: float = 0.0
+    l1_h: float = 0.0
+    max_iter: int = 500
+    tol: float = 1e-4
+    seed: int = 0
+    specificity_weight: float = 1.0
+    weight_explained: float = 0.5
+    max_genes: int = 200
+    overwrite: bool = False
+    # Cell scoping, same vocabulary as /cluster_gene_set.
+    cell_context: str = 'all'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
+
+
+@router.get("/gene_nmf/result")
+def gene_nmf_result(key: str = Query('NMF'), dataset: str | None = Query(None)):
+    """Return a stored NMF run, or null if that key has never been run."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.get_gene_nmf_result(key)
+
+
+@router.get("/gene_nmf/runs")
+def gene_nmf_runs(dataset: str | None = Query(None)):
+    """Keys of every NMF run stored on this dataset."""
+    adaptor = get_adaptor(dataset)
+    return {"keys": adaptor.list_gene_nmf_runs()}
+
+
+@router.post("/gene_nmf/run", status_code=202)
+def gene_nmf_run(request: GeneNmfRequest, dataset: str | None = Query(None)):
+    """Factorize expression into gene programs (GeneNMF, single sample).
+
+    Validates synchronously (400 on a bad k, gene subset, layer or key); the
+    factorization runs in the background with progress. Poll /tasks/{id}; the
+    result holds the per-program gene sets, and the per-cell program usage is
+    persisted to the dataset as a score matrix.
+    """
+    adaptor = get_adaptor(dataset)
+    cell_indices = _resolve_cell_context(
+        adaptor,
+        context=request.cell_context,
+        indices=request.cell_indices,
+        annotation_column=request.annotation_column,
+        annotation_values=request.annotation_values,
+    )
+    try:
+        compute_fn, apply_fn = adaptor.prepare_gene_nmf(
+            k=request.k,
+            gene_subset=request.gene_subset,
+            cell_indices=cell_indices,
+            layer=request.layer,
+            transform=request.transform,
+            key=request.key,
+            l1_w=request.l1_w,
+            l1_h=request.l1_h,
+            max_iter=request.max_iter,
+            tol=request.tol,
+            seed=request.seed,
+            specificity_weight=request.specificity_weight,
+            weight_explained=request.weight_explained,
+            max_genes=request.max_genes,
+            overwrite=request.overwrite,
+        )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =========================================================================
 # Export endpoints
 # =========================================================================
 

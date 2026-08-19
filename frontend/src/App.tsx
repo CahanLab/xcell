@@ -16,6 +16,7 @@ import AnalysisRecordPanel from './components/AnalysisRecordPanel'
 import LocalizeModal from './components/LocalizeModal'
 import LigRecModal from './components/LigRecModal'
 import NeighborhoodModal from './components/NeighborhoodModal'
+import GeneNmfModal from './components/GeneNmfModal'
 import DefineSectionsPanel from './components/DefineSectionsPanel'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
@@ -2463,6 +2464,7 @@ export default function App() {
       <LocalizeModal />
       <LigRecModal />
       <NeighborhoodModal />
+      <GeneNmfModal />
       <DefineSectionsPanel />
       <MarkerGenesModal />
       <ClusterGeneSetModal />

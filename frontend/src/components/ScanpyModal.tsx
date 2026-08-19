@@ -417,6 +417,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'use', label: 'Similarity', type: 'select', default: 'connectivities', options: ['connectivities', 'distances'], description: 'Use connectivity weights or distances' },
         ],
       },
+      gene_nmf: {
+        label: 'NMF Programs',
+        description: 'Decompose expression into additive non-negative gene programs (GeneNMF-style NMF). Unlike Cluster Genes, a gene can carry weight in several programs and each cell mixes them, which is what separates overlapping states like cycling, hypoxia or interferon response. Each program becomes a ranked gene set plus a per-cell usage score. Opens the NMF tool.',
+        prerequisites: [],
+        custom: true,
+        params: [],
+      },
       cluster_genes: {
         label: 'Cluster Genes',
         description: 'Cluster genes into co-expression modules (Leiden)',
@@ -790,7 +797,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setGeneNmfModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2628,6 +2635,13 @@ export default function ScanpyModal() {
               onClick={() => { setNeighborhoodModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Neighborhood tool…
+            </button>
+          ) : selectedFunction === 'gene_nmf' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setGeneNmfModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open NMF tool…
             </button>
           ) : selectedFunction === 'localize' ? (
             <button

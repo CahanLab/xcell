@@ -7325,6 +7325,258 @@ class DataAdaptor:
         return result
 
     # =========================================================================
+    # NMF gene programs
+    # =========================================================================
+
+    def prepare_gene_nmf(
+        self,
+        *,
+        k: int = 10,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        cell_indices: list[int] | None = None,
+        layer: str | None = None,
+        transform: str = 'log1p',
+        key: str = 'NMF',
+        l1_w: float = 0.0,
+        l1_h: float = 0.0,
+        max_iter: int = 500,
+        tol: float = 1e-4,
+        seed: int = 0,
+        specificity_weight: float = 1.0,
+        weight_explained: float = 0.5,
+        max_genes: int = 200,
+        n_threads: int | None = None,
+        overwrite: bool = False,
+    ) -> tuple[Callable[[Callable], dict], Callable[[dict], dict]]:
+        """Factorize expression into gene programs (GeneNMF, single sample).
+
+        Validates synchronously, snapshots the expression submatrix (sparse
+        stays sparse — a 250k-cell matrix is never densified), and returns
+        (compute_fn, apply_fn) for the task manager. apply_fn persists:
+
+          * ``.obsm[key]`` (cells x programs usage) + a score-matrix registry
+            entry, so each program is colorable like any other score column and
+            the matrix doubles as a k-dimensional embedding;
+          * ``.varm[f'{key}_loadings']`` (all genes x programs), zero outside
+            the fitted gene subset, mirroring how PCA stores ``varm['PCs']``;
+          * ``.uns['xcell_gene_nmf'][key]`` with the program gene sets, their
+            weights, and the run parameters.
+
+        Args:
+            k: number of programs to fit (>= 2).
+            gene_subset: None (all genes), a boolean ``.var`` column name such
+                as ``'highly_variable'``, an explicit gene list, or the dict
+                form ``_resolve_gene_mask`` accepts. NMF is normally run on
+                highly variable genes.
+            cell_indices: fit on a subset; every other cell scores NaN.
+            layer/transform: source matrix, resolved exactly like gene-set
+                scoring — a named layer wins, else log1p-normalized or raw .X.
+            specificity_weight/weight_explained/max_genes: gene-set extraction,
+                see :func:`xcell.gene_nmf.program_genes`.
+        """
+        import scipy.sparse
+
+        from xcell import gene_nmf as gnmf
+
+        if not isinstance(k, (int, np.integer)) or k < 2:
+            raise ValueError(f"k must be an integer >= 2, got {k!r}")
+        if not key or not isinstance(key, str):
+            raise ValueError("key must be a non-empty string")
+        if key in self.adata.obsm and not overwrite:
+            raise ValueError(
+                f"'{key}' already exists (pass overwrite=True to replace it)"
+            )
+
+        gene_mask, subset_type, subset_meta = self._resolve_gene_mask(gene_subset)
+        gene_idx = np.flatnonzero(gene_mask)
+        gene_names = [str(g) for g in self.adata.var_names[gene_idx]]
+
+        if layer is not None and layer != 'X':
+            source = self._resolve_source_matrix(layer)
+        elif transform == 'log1p':
+            source = self.normalized_adata.X
+        else:
+            source = self.adata.X
+
+        if cell_indices is None:
+            cell_arr = None
+            n_cells_used = self.n_cells
+        else:
+            cell_arr = np.asarray(cell_indices, dtype=np.int64)
+            if cell_arr.size == 0:
+                raise ValueError("Cell selection is empty")
+            if cell_arr.min() < 0 or cell_arr.max() >= self.n_cells:
+                raise ValueError(
+                    f"Cell indices out of range for {self.n_cells} cells"
+                )
+            n_cells_used = int(cell_arr.size)
+
+        if k > min(n_cells_used, len(gene_names)):
+            raise ValueError(
+                f"k={k} exceeds the data being factorized ({n_cells_used} "
+                f"cells x {len(gene_names)} genes); k must be <= "
+                f"{min(n_cells_used, len(gene_names))}"
+            )
+
+        # Snapshot: slice rows first (cheap on CSR), then columns, so the
+        # background thread owns a private copy and can't observe later edits.
+        sub = source if cell_arr is None else source[cell_arr, :]
+        sub = sub[:, gene_idx]
+        if scipy.sparse.issparse(sub):
+            sub = sub.tocsr()
+            values = sub.data
+        else:
+            sub = np.asarray(sub)
+            values = sub
+        if values.size and float(np.min(values)) < 0.0:
+            raise ValueError(
+                "NMF needs non-negative expression, but the selected matrix "
+                "has negative values. Scaled or centered data will not work — "
+                "use raw counts or a log-normalized layer."
+            )
+
+        snap = {
+            'k': int(k), 'l1_w': float(l1_w), 'l1_h': float(l1_h),
+            'max_iter': int(max_iter), 'tol': float(tol), 'seed': int(seed),
+            'specificity_weight': float(specificity_weight),
+            'weight_explained': float(weight_explained),
+            'max_genes': int(max_genes),
+        }
+        snap_meta = {
+            'key': key, 'layer': layer, 'transform': transform,
+            'gene_subset': subset_type, 'n_genes_used': len(gene_names),
+            'n_cells_used': n_cells_used,
+        }
+
+        def compute_fn(report: Callable) -> dict:
+            return gnmf.run_gene_programs(
+                sub, gene_names, n_threads=n_threads,
+                progress_callback=report, **snap,
+            )
+
+        def apply_fn(result: dict) -> dict:
+            programs = result['programs']
+            names = [p['name'] for p in programs]
+
+            scores = np.asarray(result['cell_scores'], dtype=np.float64)
+            if cell_arr is None:
+                full_scores = scores
+            else:
+                # Cells the model never saw stay NaN rather than 0 — a zero
+                # here would read as "this program is absent", not "not fitted".
+                full_scores = np.full(
+                    (self.n_cells, scores.shape[1]), np.nan, dtype=np.float64
+                )
+                full_scores[cell_arr, :] = scores
+            self.adata.obsm[key] = full_scores
+
+            loadings = np.asarray(result['loadings'], dtype=np.float64)
+            full_loadings = np.zeros(
+                (self.n_genes, loadings.shape[1]), dtype=np.float64
+            )
+            full_loadings[gene_idx, :] = loadings
+            self.adata.varm[f'{key}_loadings'] = full_loadings
+
+            reg = self.adata.uns.get('xcell_score_matrices')
+            reg = dict(reg) if isinstance(reg, dict) else {}
+            reg[key] = {'columns': list(names), 'source': 'gene_nmf'}
+            self.adata.uns['xcell_score_matrices'] = reg
+
+            # Programs go in as a mapping, not a list of dicts: h5ad can write
+            # nested dicts of lists but not an object array of records.
+            record = {
+                'params': {**snap, **snap_meta},
+                'program_names': list(names),
+                'programs': {
+                    p['name']: {
+                        'genes': list(p['genes']),
+                        'weights': [float(w) for w in p['weights']],
+                        'index': int(p['index']),
+                        'factor_weight': float(result['factor_weights'][i]),
+                    }
+                    for i, p in enumerate(programs)
+                },
+                'metrics': {
+                    'n_programs': int(result['n_programs']),
+                    'n_dropped': int(result['n_dropped']),
+                    'n_iter': int(result['n_iter']),
+                    'converged': bool(result['converged']),
+                    'reconstruction_error': float(result['reconstruction_error']),
+                    'relative_error': (
+                        float(result['relative_error'])
+                        if result['relative_error'] is not None else float('nan')
+                    ),
+                },
+            }
+            runs = self.adata.uns.get('xcell_gene_nmf')
+            runs = dict(runs) if isinstance(runs, dict) else {}
+            runs[key] = record
+            self.adata.uns['xcell_gene_nmf'] = runs
+
+            self._log_action('gene_nmf', {**snap, **snap_meta}, {
+                'obsm_key': key,
+                'n_programs': int(result['n_programs']),
+                'n_dropped': int(result['n_dropped']),
+                'programs': names,
+            })
+
+            return {
+                'obsm_key': key,
+                'varm_key': f'{key}_loadings',
+                'programs': programs,
+                'n_programs': int(result['n_programs']),
+                'n_dropped': int(result['n_dropped']),
+                'n_iter': int(result['n_iter']),
+                'converged': bool(result['converged']),
+                'reconstruction_error': float(result['reconstruction_error']),
+                'relative_error': result['relative_error'],
+                'factor_weights': list(result['factor_weights']),
+                **snap_meta,
+                'params': dict(snap),
+            }
+
+        return compute_fn, apply_fn
+
+    def get_gene_nmf_result(self, key: str = 'NMF') -> dict[str, Any] | None:
+        """A stored NMF run for instant re-display, or None if there isn't one.
+
+        h5ad round-trips lists as numpy arrays, so everything is re-listified
+        and the programs come back in ``program_names`` order.
+        """
+        runs = self.adata.uns.get('xcell_gene_nmf')
+        if not isinstance(runs, dict) or key not in runs:
+            return None
+        rec = runs[key]
+        stored = rec.get('programs') or {}
+        programs = []
+        for name in [str(n) for n in rec.get('program_names', [])]:
+            entry = stored.get(name)
+            if entry is None:
+                continue
+            programs.append({
+                'name': name,
+                'index': int(entry['index']),
+                'genes': [str(g) for g in entry['genes']],
+                'weights': [float(w) for w in entry['weights']],
+                'factor_weight': float(entry['factor_weight']),
+            })
+        metrics = {k: v for k, v in dict(rec.get('metrics', {})).items()}
+        rel = metrics.get('relative_error')
+        if rel is not None and not np.isfinite(rel):
+            metrics['relative_error'] = None
+        return {
+            'key': key,
+            'programs': programs,
+            'params': dict(rec.get('params', {})),
+            'metrics': metrics,
+        }
+
+    def list_gene_nmf_runs(self) -> list[str]:
+        """Keys of every stored NMF run, so the UI can offer them."""
+        runs = self.adata.uns.get('xcell_gene_nmf')
+        return sorted(str(k) for k in runs) if isinstance(runs, dict) else []
+
+    # =========================================================================
     # Spatial Analysis Methods
     # =========================================================================
 

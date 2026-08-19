@@ -739,6 +739,7 @@ interface AppState {
   isLigRecModalOpen: boolean
   isNeighborhoodModalOpen: boolean
   isGeneNmfModalOpen: boolean
+  isMetaProgramsModalOpen: boolean
   scanpyActionHistory: ScanpyActionRecord[]
 
   // Observable summaries refresh trigger
@@ -967,6 +968,7 @@ interface AppState {
   setLigRecModalOpen: (open: boolean) => void
   setNeighborhoodModalOpen: (open: boolean) => void
   setGeneNmfModalOpen: (open: boolean) => void
+  setMetaProgramsModalOpen: (open: boolean) => void
   setScanpyActionHistory: (history: ScanpyActionRecord[]) => void
   addScanpyAction: (action: ScanpyActionRecord) => void
 
@@ -1162,6 +1164,7 @@ export const useStore = create<AppState>((set, get) => {
     isLigRecModalOpen: false,
     isNeighborhoodModalOpen: false,
     isGeneNmfModalOpen: false,
+    isMetaProgramsModalOpen: false,
     scanpyActionHistory: [],
     obsSummariesVersion: 0,
     varIdentifierColumns: [],
@@ -2272,6 +2275,7 @@ export const useStore = create<AppState>((set, get) => {
     setLigRecModalOpen: (open) => set({ isLigRecModalOpen: open }),  // global
     setNeighborhoodModalOpen: (open) => set({ isNeighborhoodModalOpen: open }),  // global
     setGeneNmfModalOpen: (open) => set({ isGeneNmfModalOpen: open }),  // global
+    setMetaProgramsModalOpen: (open) => set({ isMetaProgramsModalOpen: open }),  // global
     setScanpyActionHistory: (history) => set(dsUpdate({ scanpyActionHistory: history })),  // per-dataset
     addScanpyAction: (action) =>
       set(dsUpdateFn((state) => ({

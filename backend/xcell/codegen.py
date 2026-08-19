@@ -639,6 +639,21 @@ REGISTRY: dict[str, ActionSpec] = {
             + (f", {_n(r.get('n_dropped'))} dropped." if r.get('n_dropped') else ".")
         ),
     ),
+    'gene_nmf_meta': ActionSpec(
+        label='NMF meta-programs', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_meta_programs',
+                        ('sample_column', 'ks', 'n_mp', 'gene_subset', 'layer',
+                         'transform', 'key', 'min_cells', 'l1_w', 'l1_h',
+                         'max_iter', 'tol', 'seed', 'specificity_weight',
+                         'weight_explained', 'max_genes', 'metric',
+                         'min_confidence')),
+        summary=lambda p, r: (
+            f"NMF meta-programs across `{p.get('sample_column')}` "
+            f"({_n(p.get('n_samples'))} samples x k={p.get('ks')}): "
+            f"{_n(r.get('n_programs'))} programs consolidated into "
+            f"{_n(r.get('n_metaprograms'))} → `.obsm['{r.get('obsm_key')}']`."
+        ),
+    ),
     'pyscn_train': ActionSpec(
         label='Train classifier (PySingleCellNet)', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_pyscn_train',

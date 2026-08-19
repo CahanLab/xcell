@@ -4303,6 +4303,7 @@ class DataAdaptor:
             'spatial_autocorr': ['spatial_neighbors'],
             'contourize': ['has_spatial'],
             'multicontour': ['has_spatial'],  # X_pca additionally checked in prepare
+            'neighborhood': ['has_spatial'],
         }
 
         required = prereqs.get(action, [])
@@ -8951,6 +8952,131 @@ class DataAdaptor:
             "write_significance": write_significance,
         }, result)
         return result
+
+    def prepare_neighborhood(
+        self,
+        *,
+        column: str,
+        mode: str = "knn",
+        n_neighs: int = 10,
+        radius: float | None = None,
+        n_perms: int = 1000,
+        section_col: str | None = None,
+        seed: int = 0,
+    ) -> tuple[Callable[[Callable], dict], Callable[[dict], dict]]:
+        """Cell-type neighborhood composition + co-location enrichment.
+
+        Validates synchronously, snapshots everything the job needs, and
+        returns (compute_fn, apply_fn) for the task manager. compute_fn takes
+        the task manager's ``report`` callback (permutations are the long
+        part). apply_fn persists:
+
+          * ``.obsm['neighborhood_composition']`` (cells x types neighbor
+            fractions) + a score-matrix registry entry, so each type's
+            neighborhood fraction is colorable like any score column;
+          * ``.uns['xcell_neighborhood']`` with the types x types composition,
+            z-score, p/q-value and log2 fold-change matrices for the heatmap.
+        """
+        prereq = self.check_prerequisites('neighborhood')
+        if not prereq['satisfied']:
+            raise ValueError(
+                "Neighborhood analysis needs spatial coordinates "
+                f"(missing: {prereq['missing']})"
+            )
+        if column not in self.adata.obs.columns:
+            raise ValueError(f"Column '{column}' not found in .obs")
+        series = self.adata.obs[column]
+        if pd.api.types.is_float_dtype(series):
+            raise ValueError(
+                f"Column '{column}' is continuous; neighborhood enrichment "
+                "needs a categorical column (clusters or cell types)"
+            )
+        if series.isna().any():
+            raise ValueError(
+                f"Column '{column}' has missing values; fill or subset first"
+            )
+        if isinstance(series.dtype, pd.CategoricalDtype):
+            categories = [str(c) for c in series.cat.categories
+                          if c in set(series.unique())]
+        else:
+            categories = [str(c) for c in pd.unique(series)]
+        if len(categories) < 2:
+            raise ValueError(
+                f"Column '{column}' has {len(categories)} category; need >= 2"
+            )
+        if len(categories) > 200:
+            raise ValueError(
+                f"Column '{column}' has {len(categories)} categories; that "
+                "looks like a per-cell identifier, not a clustering"
+            )
+        # Graph parameters fail here, synchronously, not inside the task.
+        if mode not in ("knn", "radius"):
+            raise ValueError(f"Unknown mode '{mode}' (expected 'knn' or 'radius')")
+        if mode == "radius" and (radius is None or radius <= 0):
+            raise ValueError("radius mode needs a positive radius")
+        if mode == "knn" and n_neighs < 1:
+            raise ValueError("n_neighs must be >= 1")
+
+        # Snapshot: the background thread must not observe later mutations.
+        coords = np.asarray(self.adata.obsm[self._get_spatial_key()])[:, :2].copy()
+        labels = np.asarray(series.astype(str).values).copy()
+        sections = self._resolve_sections(section_col)
+        snap_params = {
+            "column": column, "mode": mode, "n_neighs": n_neighs,
+            "radius": radius, "n_perms": n_perms, "section_col": section_col,
+            "seed": seed,
+        }
+
+        def compute_fn(report: Callable) -> dict:
+            from xcell import neighborhood as nb
+            return nb.compute_neighborhood(
+                coords, labels, categories=categories, mode=mode,
+                n_neighs=n_neighs, radius=radius, n_perms=n_perms,
+                sections=sections, seed=seed, progress_callback=report,
+            )
+
+        def apply_fn(result: dict) -> dict:
+            cell_comp = result.pop("cell_composition")
+            self.adata.obsm["neighborhood_composition"] = np.asarray(
+                cell_comp, dtype=np.float32
+            )
+            reg = self.adata.uns.get('xcell_score_matrices')
+            reg = dict(reg) if isinstance(reg, dict) else {}
+            reg["neighborhood_composition"] = {
+                "columns": list(result["categories"]),
+                "source_column": column,
+            }
+            self.adata.uns['xcell_score_matrices'] = reg
+
+            stored = {**result, "params": dict(snap_params)}
+            self.adata.uns["xcell_neighborhood"] = stored
+
+            q = np.array(result["qvals"])
+            z = np.array(result["zscores"])
+            self._log_action('neighborhood_enrichment', dict(snap_params), {
+                "n_types": len(result["categories"]),
+                "n_edges": result["n_edges"],
+                "n_attracted": int(((q < 0.05) & (z > 0)).sum()),
+                "n_avoided": int(((q < 0.05) & (z < 0)).sum()),
+            })
+            return stored
+
+        return compute_fn, apply_fn
+
+    def get_neighborhood_result(self) -> dict[str, Any] | None:
+        """The stored neighborhood result for instant re-display, or None."""
+        stored = self.adata.uns.get("xcell_neighborhood")
+        if stored is None or "neighborhood_composition" not in self.adata.obsm:
+            return None
+        out = dict(stored)
+        # h5ad round-trips lists as numpy arrays; re-listify for JSON.
+        for key in ("composition", "counts", "zscores", "pvals", "qvals",
+                    "log2fc", "expected", "categories"):
+            if key in out and hasattr(out[key], "tolist"):
+                out[key] = out[key].tolist()
+        if "params" in out:
+            out["params"] = dict(out["params"])
+        return out
 
     def get_spatially_variable_genes(
         self,

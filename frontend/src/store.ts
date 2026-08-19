@@ -737,6 +737,7 @@ interface AppState {
   isMultiContourModalOpen: boolean
   isDefineSectionsOpen: boolean
   isLigRecModalOpen: boolean
+  isNeighborhoodModalOpen: boolean
   scanpyActionHistory: ScanpyActionRecord[]
 
   // Observable summaries refresh trigger
@@ -963,6 +964,7 @@ interface AppState {
   setMultiContourModalOpen: (open: boolean) => void
   setDefineSectionsOpen: (open: boolean) => void
   setLigRecModalOpen: (open: boolean) => void
+  setNeighborhoodModalOpen: (open: boolean) => void
   setScanpyActionHistory: (history: ScanpyActionRecord[]) => void
   addScanpyAction: (action: ScanpyActionRecord) => void
 
@@ -1156,6 +1158,7 @@ export const useStore = create<AppState>((set, get) => {
     isMultiContourModalOpen: false,
     isDefineSectionsOpen: false,
     isLigRecModalOpen: false,
+    isNeighborhoodModalOpen: false,
     scanpyActionHistory: [],
     obsSummariesVersion: 0,
     varIdentifierColumns: [],
@@ -2264,6 +2267,7 @@ export const useStore = create<AppState>((set, get) => {
     setMultiContourModalOpen: (open) => set({ isMultiContourModalOpen: open }),  // global
     setDefineSectionsOpen: (open) => set({ isDefineSectionsOpen: open }),  // global
     setLigRecModalOpen: (open) => set({ isLigRecModalOpen: open }),  // global
+    setNeighborhoodModalOpen: (open) => set({ isNeighborhoodModalOpen: open }),  // global
     setScanpyActionHistory: (history) => set(dsUpdate({ scanpyActionHistory: history })),  // per-dataset
     addScanpyAction: (action) =>
       set(dsUpdateFn((state) => ({

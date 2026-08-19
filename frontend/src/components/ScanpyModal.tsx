@@ -468,6 +468,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         custom: true,
         params: [],
       },
+      neighborhood: {
+        label: 'Neighborhood',
+        description: 'Quantify each cell type\'s spatial neighborhood: which types surround it, and which pairs co-locate more (or less) often than expected from their abundances (permutation test, histoCAT/squidpy-style). Renders a type × type enrichment heatmap and writes per-cell neighbor fractions as a score matrix. Opens the Neighborhood tool.',
+        prerequisites: ['has_spatial'],
+        custom: true,
+        params: [],
+      },
       ligrec: {
         label: 'Ligand-Receptor',
         description: 'Detect ligand-receptor signaling at cellular resolution (CytoSignal-style). Scores each cell for each L-R interaction from a spatial neighborhood, tests significance with a permutation null, and ranks interactions. Opens the Ligand-Receptor tool.',
@@ -783,7 +790,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2614,6 +2621,13 @@ export default function ScanpyModal() {
               onClick={() => { setLigRecModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Ligand-Receptor tool…
+            </button>
+          ) : selectedFunction === 'neighborhood' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setNeighborhoodModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Neighborhood tool…
             </button>
           ) : selectedFunction === 'localize' ? (
             <button

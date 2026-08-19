@@ -3118,6 +3118,53 @@ def ligrec_finalize(request: LigRecFinalizeRequest, dataset: str | None = Query(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class NeighborhoodRequest(BaseModel):
+    column: str
+    mode: str = "knn"
+    n_neighs: int = 10
+    radius: float | None = None
+    n_perms: int = 1000
+    section_col: str | None = None
+    seed: int = 0
+
+
+@router.get("/scanpy/neighborhood/result")
+def neighborhood_result(dataset: str | None = Query(None)):
+    """Return the stored neighborhood enrichment result, or null if none."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.get_neighborhood_result()
+
+
+@router.post("/scanpy/neighborhood/run", status_code=202)
+def neighborhood_run(request: NeighborhoodRequest, dataset: str | None = Query(None)):
+    """Cell-type neighborhood composition + co-location enrichment.
+
+    Validates synchronously (400 on bad column / graph params); the
+    permutation test runs in the background with progress. Poll /tasks/{id};
+    the result holds the types x types composition and enrichment matrices,
+    and the per-cell composition is persisted to the dataset.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_neighborhood(
+            column=request.column,
+            mode=request.mode,
+            n_neighs=request.n_neighs,
+            radius=request.radius,
+            n_perms=request.n_perms,
+            section_col=request.section_col,
+            seed=request.seed,
+        )
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =========================================================================
 # Export endpoints
 # =========================================================================

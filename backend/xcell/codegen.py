@@ -612,6 +612,19 @@ REGISTRY: dict[str, ActionSpec] = {
             f"{_n(r.get('n_significant'))} significant."
         ),
     ),
+    'neighborhood_enrichment': ActionSpec(
+        label='Neighborhood enrichment', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_neighborhood',
+                        ('column', 'mode', 'n_neighs', 'radius', 'n_perms',
+                         'section_col', 'seed')),
+        summary=lambda p, r: (
+            f"Cell-type neighborhood enrichment on `.obs['{p.get('column')}']` "
+            f"({'radius ' + str(p.get('radius')) if p.get('mode') == 'radius' else _n(p.get('n_neighs')) + ' neighbors'}, "
+            f"{_n(p.get('n_perms'))} permutations): "
+            f"{_n(r.get('n_attracted'))} attracted, "
+            f"{_n(r.get('n_avoided'))} avoided pairs at q < 0.05."
+        ),
+    ),
     'pyscn_train': ActionSpec(
         label='Train classifier (PySingleCellNet)', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_pyscn_train',

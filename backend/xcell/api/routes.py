@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from xcell.adaptor import DataAdaptor, combine_h5ads
+from xcell.adaptor import DataAdaptor, combine_datasets
 from xcell.task_manager import task_manager
 from xcell import config as user_config
 from xcell import gene_set_store
@@ -320,9 +320,28 @@ class CombineSpatialRequest(BaseModel):
     gap_fraction: float = 0.05
 
 
+def _dataset_label(path: Path) -> str:
+    """Default `sample` label for a combine input: the dataset's bare name.
+
+    A 10x matrix folder is named by the folder; a prefixed trio by its
+    prefix (GSM1234_matrix.mtx.gz -> GSM1234); a file by its stem.
+    """
+    if path.is_dir():
+        return path.name
+    import re
+    m = re.match(r'^(.+)_matrix\.mtx(\.gz)?$', path.name)
+    if m:
+        return m.group(1)
+    return path.stem
+
+
 @router.post("/combine")
-def combine_datasets(request: CombineSpatialRequest):
-    """Combine multiple h5ads into one adata and load it into a slot.
+def combine(request: CombineSpatialRequest):
+    """Combine multiple datasets into one adata and load it into a slot.
+
+    Inputs may be any format File -> Load accepts: .h5ad, 10x .h5 (including
+    Visium HD feature_slice.h5), .rds (Seurat, converted via R), 10x
+    CellRanger matrix directories, and prefixed *_matrix.mtx(.gz) trios.
 
     When every input has spatial coordinates, sections are laid out
     left-to-right along the x-axis with a small gap (``mode: "spatial"``).
@@ -332,7 +351,7 @@ def combine_datasets(request: CombineSpatialRequest):
     column tags each cell with its source file label.
 
     Args:
-        files: List of {file_path, label?} entries. >=2 existing .h5ad files.
+        files: List of {file_path, label?} entries. >=2 existing datasets.
         slot: Named slot to load the combined adata into.
         gap_fraction: Gap between adjacent sections as a fraction of mean
                       section width (default 0.05 = 5%). Spatial mode only.
@@ -345,13 +364,29 @@ def combine_datasets(request: CombineSpatialRequest):
         p = Path(entry.file_path)
         if not p.exists():
             raise HTTPException(status_code=404, detail=f"File not found: {entry.file_path}")
-        if p.suffix != '.h5ad':
-            raise HTTPException(status_code=400, detail=f"Combine supports .h5ad only; got {p.name}")
-        paths.append(p)
-        labels.append((entry.label or p.stem).strip() or p.stem)
+        # Same accepted kinds as /api/load, and the same .rds conversion.
+        if p.is_dir():
+            children = {c.name for c in p.iterdir()}
+            has_matrix = bool(children & {'matrix.mtx', 'matrix.mtx.gz'})
+            has_barcodes = bool(children & {'barcodes.tsv', 'barcodes.tsv.gz'})
+            has_features = bool(children & {'features.tsv', 'features.tsv.gz', 'genes.tsv', 'genes.tsv.gz'})
+            if not (has_matrix and has_barcodes and has_features):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{p.name} is not a valid 10x CellRanger matrix folder")
+        elif DataAdaptor._find_10x_trio_files(p) is not None:
+            pass  # Valid prefixed 10x file trio — the loader handles it
+        elif p.suffix not in ('.h5ad', '.h5', '.rds'):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot combine {p.name}: expected .h5ad, .h5, .rds, "
+                       "a 10x matrix folder, or a *_matrix.mtx trio")
+        load_path = _convert_rds_to_h5ad(p) if p.suffix == '.rds' else p
+        paths.append(load_path)
+        labels.append((entry.label or _dataset_label(p)).strip() or _dataset_label(p))
 
     try:
-        combined = combine_h5ads(paths, labels, gap_fraction=request.gap_fraction)
+        combined = combine_datasets(paths, labels, gap_fraction=request.gap_fraction)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -376,7 +411,7 @@ def combine_datasets(request: CombineSpatialRequest):
 @router.post("/combine_spatial")
 def combine_spatial(request: CombineSpatialRequest):
     """Deprecated alias for POST /combine, kept for old clients."""
-    return combine_datasets(request)
+    return combine(request)
 
 
 @router.get("/datasets")

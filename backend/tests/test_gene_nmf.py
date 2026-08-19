@@ -292,6 +292,56 @@ def test_specificity_weighting_promotes_an_exclusive_gene():
     assert spec[0]["genes"].index("specific") < flat[0]["genes"].index("specific")
 
 
+def _realistic_loadings(n_genes: int = 1500, k: int = 12, seed: int = 0):
+    """Gene loadings shaped like a real single-cell factorization.
+
+    Calibrated against an actual 24k-cell E11.5 limb run (k=12, 5001 HVGs) on
+    the two properties that drive gene selection:
+
+    * per-gene specificity — the largest share any one program takes of a
+      gene's loading — percentiles [0.16, 0.20, 0.24, 0.30, 0.43] here against
+      [0.16, 0.21, 0.27, 0.36, 0.57] measured. Nearly every gene is shared
+      across several programs; nothing is exclusive.
+    * heavy-tailed columns, so a few percent of genes carry half a program.
+
+    Toy fixtures with disjoint gene blocks have specificity 1.0 for every gene
+    and so cannot exercise this path at all.
+    """
+    rng = np.random.default_rng(seed)
+    gene_scale = rng.normal(0.0, 1.5, size=(n_genes, 1))     # heavy-tailed columns
+    W = np.exp(gene_scale + rng.normal(0.0, 0.9, size=(n_genes, k)))  # sets specificity
+    W /= W.sum(axis=0, keepdims=True)
+    return W, [f"g{i:04d}" for i in range(n_genes)]
+
+
+def test_default_specificity_weight_keeps_programs_usable():
+    """Specificity weighting is exponential: too large an exponent piles a
+    program's whole mass onto its few most exclusive genes, and the cumulative
+    cutoff then keeps almost nothing. GeneNMF's default of 5 gets away with it
+    because it always feeds the *averaged* consensus of many programs; on one
+    factorization it guts them. See
+    docs/measurements/2026-08-19-gene-nmf-specificity-weight.md.
+    """
+    W, names = _realistic_loadings()
+    progs = gene_nmf.program_genes(W, names)  # shipped defaults
+    assert len(progs) == 12, f"defaults kept only {len(progs)}/12 programs"
+    sizes = sorted(len(p["genes"]) for p in progs)
+    assert sizes[0] >= 20, f"smallest program is not a program: {sizes}"
+    assert sizes[len(sizes) // 2] >= 40, f"programs are stunted: {sizes}"
+
+
+def test_specificity_weight_trades_program_size_for_exclusivity():
+    """Raising it monotonically narrows programs — the knob works, and 5 (the
+    meta-program default) is past the point where a program survives."""
+    W, names = _realistic_loadings()
+    sizes = []
+    for sw in (0.0, 1.0, 3.0, 5.0):
+        progs = gene_nmf.program_genes(W, names, specificity_weight=sw)
+        sizes.append(int(np.median([len(p["genes"]) for p in progs])))
+    assert sizes == sorted(sizes, reverse=True), sizes
+    assert sizes[-1] < 20, f"specificity weighting is not biting: {sizes}"
+
+
 def test_program_gene_weights_are_shares_of_the_whole_program():
     """Weights are normalized over the full program before truncation, so the
     kept ones sum to just under weight_explained (GeneNMF's convention)."""

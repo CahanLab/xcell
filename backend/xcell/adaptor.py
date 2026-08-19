@@ -7342,7 +7342,7 @@ class DataAdaptor:
         max_iter: int = 500,
         tol: float = 1e-4,
         seed: int = 0,
-        specificity_weight: float = 5.0,
+        specificity_weight: float = 1.0,
         weight_explained: float = 0.5,
         max_genes: int = 200,
         n_threads: int | None = None,

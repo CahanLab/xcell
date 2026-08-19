@@ -303,6 +303,18 @@ def _specificity_weighted(W: np.ndarray, specificity_weight: float) -> np.ndarra
     total loading — 1 for an exclusive gene, 1/k for one split evenly — raised
     to ``specificity_weight``. Housekeeping genes load on everything, so
     without this they dominate every program's top of list.
+
+    The exponent bites hard, because on real data almost no gene is exclusive:
+    in a 24k-cell E11.5 limb run the median gene's best program took only 27%
+    of its loading, so at GeneNMF's default of 5 the most exclusive gene ends
+    up ~600x ahead of the median and takes the whole program — after which the
+    cumulative cutoff keeps nothing and the program is dropped (4 of 12
+    survived, median 4 genes). GeneNMF gets away with 5 because it only ever
+    applies this to the *averaged* consensus of many programs, which smooths
+    the distribution first; there is no such averaging in the single-sample
+    path, so the default here is 1.0 (11-12 of 12 survive, and the programs
+    are visibly crisper than with no weighting at all). Measurements:
+    docs/measurements/2026-08-19-gene-nmf-specificity-weight.md.
     """
     row_sums = W.sum(axis=1, keepdims=True)
     share = W / np.where(row_sums > 0.0, row_sums, 1.0)
@@ -314,7 +326,7 @@ def program_genes(
     W: np.ndarray,
     gene_names: list[str],
     *,
-    specificity_weight: float = 5.0,
+    specificity_weight: float = 1.0,
     weight_explained: float = 0.5,
     max_genes: int = 200,
     name_prefix: str = "NMF",
@@ -387,7 +399,7 @@ def run_gene_programs(
     max_iter: int = 500,
     tol: float = 1e-4,
     seed: int = 0,
-    specificity_weight: float = 5.0,
+    specificity_weight: float = 1.0,
     weight_explained: float = 0.5,
     max_genes: int = 200,
     n_threads: int | None = None,

@@ -2555,11 +2555,11 @@ export default function App() {
             {loadMode === 'combine' && (
               <div style={{ marginBottom: '12px', padding: '10px 12px', backgroundColor: '#0f3460', border: '1px solid #1a1a2e', borderRadius: '4px' }}>
                 <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>
-                  Click .h5ad files below to add them to the list. Sections will be laid out left-to-right along X with a gap. Genes = intersection of inputs.
+                  Click datasets below to add them to the list — .h5ad, .h5, .rds, 10x matrix folders and file trios all work. All-spatial inputs are laid out left-to-right along X with a gap; anything else concatenates. Genes = intersection of inputs.
                 </div>
                 {combineFiles.length === 0 ? (
                   <div style={{ fontSize: '12px', color: '#666', fontStyle: 'italic' }}>
-                    No sections added yet. Pick at least 2 .h5ad files from the browser.
+                    No datasets added yet. Pick at least 2 from the browser.
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -2781,15 +2781,17 @@ export default function App() {
                           if (entry.type === 'directory') {
                             browseDirectory(entry.path)
                           } else if (loadMode === 'combine') {
-                            // Combine mode rejects non-.h5ad files for now and de-dupes.
-                            if (entry.type !== 'file' || !entry.path.endsWith('.h5ad')) {
-                              setLoadError('Combine supports .h5ad files only.')
-                              return
-                            }
+                            // Combine accepts everything Load does; de-dupes by path.
                             setLoadError(null)
                             setCombineFiles(prev => {
                               if (prev.some(f => f.path === entry.path)) return prev
-                              const stem = (entry.name.replace(/\.h5ad$/i, ''))
+                              // Bare dataset name: folder as-is, trio by its
+                              // prefix, files without their extension.
+                              const stem = entry.type === '10x_mtx'
+                                ? entry.name
+                                : entry.name
+                                    .replace(/_matrix\.mtx(\.gz)?$/i, '')
+                                    .replace(/\.(h5ad|h5|rds)$/i, '')
                               return [...prev, { path: entry.path, label: stem }]
                             })
                           } else {

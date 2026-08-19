@@ -60,12 +60,72 @@ def _combine_spatial_key(a: "anndata.AnnData") -> str | None:
     return None
 
 
-def combine_h5ads(
+def _read_10x_mtx_trio(matrix: Path, barcodes: Path, features: Path) -> anndata.AnnData:
+    """Read a prefixed 10x file trio via a temp directory with symlinks."""
+    import os
+    import shutil
+    import tempfile
+
+    # Build standard filenames preserving .gz extension
+    mtx_name = 'matrix.mtx.gz' if matrix.name.endswith('.gz') else 'matrix.mtx'
+    bar_name = 'barcodes.tsv.gz' if barcodes.name.endswith('.gz') else 'barcodes.tsv'
+    if '_genes.' in features.name:
+        feat_name = 'genes.tsv.gz' if features.name.endswith('.gz') else 'genes.tsv'
+    else:
+        feat_name = 'features.tsv.gz' if features.name.endswith('.gz') else 'features.tsv'
+
+    tmpdir = tempfile.mkdtemp(prefix='xcell_10x_')
+    try:
+        os.symlink(matrix, os.path.join(tmpdir, mtx_name))
+        os.symlink(barcodes, os.path.join(tmpdir, bar_name))
+        os.symlink(features, os.path.join(tmpdir, feat_name))
+        a = sc.read_10x_mtx(tmpdir)
+        a.var_names_make_unique()
+        return a
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def load_dataset_file(path: Path) -> tuple[anndata.AnnData, str]:
+    """Load a dataset in any on-disk format xcell supports.
+
+    The single sniffing chain behind both File -> Load and File -> Combine:
+    10x CellRanger matrix directory, prefixed *_matrix.mtx(.gz) trio,
+    .h5 (Visium HD feature_slice.h5 rebinned to 8 um, or a plain 10x
+    feature-barcode matrix), and .h5ad for everything else. (.rds arrives
+    here already converted — the R subprocess lives at the route layer.)
+
+    Returns:
+        (adata, source_kind) where source_kind is one of '10x_mtx',
+        '10x_h5', 'h5ad' — the key the exported notebook uses to re-open
+        the file the same way.
+    """
+    path = Path(path)
+    trio = DataAdaptor._find_10x_trio_files(path)
+    if path.is_dir():
+        a = sc.read_10x_mtx(path)
+        a.var_names_make_unique()
+        return a, '10x_mtx'
+    if trio is not None:
+        return _read_10x_mtx_trio(*trio), '10x_mtx'
+    if path.suffix == '.h5':
+        from xcell.visium_hd import is_feature_slice, load_feature_slice_cached
+        if is_feature_slice(path):
+            # 10x Visium HD feature_slice.h5 — not a feature-barcode
+            # matrix; rebin to 8 um and attach spatial coords/clusters.
+            return load_feature_slice_cached(path, bin_size=8), '10x_h5'
+        a = sc.read_10x_h5(path)
+        a.var_names_make_unique()
+        return a, '10x_h5'
+    return anndata.read_h5ad(path), 'h5ad'
+
+
+def combine_datasets(
     file_paths: list[Path],
     labels: list[str],
     gap_fraction: float = 0.05,
 ) -> anndata.AnnData:
-    """Combine multiple h5ads into one adata, spatially aware when possible.
+    """Combine multiple datasets into one adata, spatially aware when possible.
 
     Two modes, chosen by what the inputs carry:
 
@@ -87,7 +147,9 @@ def combine_h5ads(
     ``.uns`` are dropped in both modes.
 
     Args:
-        file_paths: List of >=2 absolute paths to .h5ad files.
+        file_paths: List of >=2 absolute paths in any format
+            ``load_dataset_file`` accepts (.h5ad, 10x .h5, Visium HD
+            feature_slice.h5, 10x matrix directory, *_matrix.mtx trio).
         labels: Per-file labels for the new ``sample`` column. Must match
                 ``file_paths`` length; collisions are de-duplicated by suffix.
         gap_fraction: Horizontal gap between adjacent sections, as a fraction
@@ -95,7 +157,8 @@ def combine_h5ads(
                       only.
 
     Raises:
-        ValueError: if fewer than 2 files, no shared genes, or non-.h5ad input.
+        ValueError: if fewer than 2 files, no shared genes, or an input
+            that fails to load (the message names the file).
     """
     if len(file_paths) < 2:
         raise ValueError("At least 2 files required for combination")
@@ -117,9 +180,10 @@ def combine_h5ads(
     adatas: list[anndata.AnnData] = []
     spatial_keys: list[str | None] = []
     for p in file_paths:
-        if p.suffix != '.h5ad':
-            raise ValueError(f"Combine supports .h5ad only; got {p.name}")
-        a = anndata.read_h5ad(p)
+        try:
+            a, _kind = load_dataset_file(p)
+        except Exception as e:
+            raise ValueError(f"Could not load {Path(p).name}: {e}")
         adatas.append(a)
         spatial_keys.append(_combine_spatial_key(a))
 
@@ -411,27 +475,7 @@ class DataAdaptor:
         if adata is not None:
             self.adata = adata
         else:
-            trio = self._find_10x_trio_files(self.filepath)
-            if self.filepath.is_dir():
-                source_kind = '10x_mtx'
-                self.adata = sc.read_10x_mtx(self.filepath)
-                self.adata.var_names_make_unique()
-            elif trio is not None:
-                source_kind = '10x_mtx'
-                self._load_10x_mtx_trio(*trio)
-            elif self.filepath.suffix == '.h5':
-                source_kind = '10x_h5'
-                from xcell.visium_hd import is_feature_slice, load_feature_slice_cached
-                if is_feature_slice(self.filepath):
-                    # 10x Visium HD feature_slice.h5 — not a feature-barcode
-                    # matrix; rebin to 8 um and attach spatial coords/clusters.
-                    self.adata = load_feature_slice_cached(self.filepath, bin_size=8)
-                else:
-                    self.adata = sc.read_10x_h5(self.filepath)
-                self.adata.var_names_make_unique()
-            else:
-                source_kind = 'h5ad'
-                self.adata = anndata.read_h5ad(self.filepath)
+            self.adata, source_kind = load_dataset_file(self.filepath)
         self._normalized_adata: anndata.AnnData | None = None
         self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
         self._action_history: list[dict[str, Any]] = []  # Track scanpy operations
@@ -566,30 +610,6 @@ class DataAdaptor:
         if barcodes and features:
             return (filepath, barcodes, features)
         return None
-
-    def _load_10x_mtx_trio(self, matrix: Path, barcodes: Path, features: Path) -> None:
-        """Load a prefixed 10x file trio via a temp directory with symlinks."""
-        import os
-        import shutil
-        import tempfile
-
-        # Build standard filenames preserving .gz extension
-        mtx_name = 'matrix.mtx.gz' if matrix.name.endswith('.gz') else 'matrix.mtx'
-        bar_name = 'barcodes.tsv.gz' if barcodes.name.endswith('.gz') else 'barcodes.tsv'
-        if '_genes.' in features.name:
-            feat_name = 'genes.tsv.gz' if features.name.endswith('.gz') else 'genes.tsv'
-        else:
-            feat_name = 'features.tsv.gz' if features.name.endswith('.gz') else 'features.tsv'
-
-        tmpdir = tempfile.mkdtemp(prefix='xcell_10x_')
-        try:
-            os.symlink(matrix, os.path.join(tmpdir, mtx_name))
-            os.symlink(barcodes, os.path.join(tmpdir, bar_name))
-            os.symlink(features, os.path.join(tmpdir, feat_name))
-            self.adata = sc.read_10x_mtx(tmpdir)
-            self.adata.var_names_make_unique()
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
 
     @property
     def n_cells(self) -> int:

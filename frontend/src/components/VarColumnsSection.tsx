@@ -5,6 +5,11 @@ import { fetchVarBooleanColumns, fetchVarColumnGenes, type VarBooleanColumn } fr
 /** Lists boolean .var columns; each can be materialized as a frozen gene set. */
 export default function VarColumnsSection() {
   const addGeneSetToCategory = useStore((s) => s.addGeneSetToCategory)
+  // Re-fetch whenever the schema is replaced. Anything that writes a boolean
+  // .var column (HVG — split or pooled, spatial autocorr, add_var_boolean)
+  // calls refreshSchema(), and fetching only on mount left those columns
+  // invisible until a page reload.
+  const schema = useStore((s) => s.schema)
   const [columns, setColumns] = useState<VarBooleanColumn[]>([])
   const [expanded, setExpanded] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -14,7 +19,7 @@ export default function VarColumnsSection() {
     fetchVarBooleanColumns()
       .then(setColumns)
       .catch(() => setColumns([]))
-  }, [])
+  }, [schema])
 
   if (columns.length === 0) return null
 

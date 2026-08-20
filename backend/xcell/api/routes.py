@@ -1725,6 +1725,11 @@ class HighlyVariableGenesRequest(BaseModel):
     n_bins: int = 20
     subset: bool = False
     active_cell_indices: list[int] | None = None
+    #: Detect HVGs within each group of this .obs column instead of pooled.
+    split_by: str | None = None
+    add_union: bool = False
+    add_intersection: bool = False
+    min_cells_per_group: int = 10
 
 
 class GeneSubsetSpec(BaseModel):
@@ -1918,10 +1923,14 @@ def run_log1p(request: Log1pRequest = Log1pRequest(), dataset: str | None = Quer
 def run_highly_variable_genes(request: HighlyVariableGenesRequest, dataset: str | None = Query(None)):
     """Identify highly variable genes.
 
-    Adds 'highly_variable' boolean column to .var.
+    Adds a 'highly_variable' boolean column to .var. With ``split_by``, the
+    detection runs *within* each group of that .obs column instead, writing
+    ``highly_variable__<group>`` plus an optional union / intersection — and
+    leaving the pooled ``highly_variable`` column untouched.
 
     Returns:
-        Operation status and number of HVGs
+        Operation status and number of HVGs; a split run also returns the
+        per-group counts, every column written, and any groups skipped.
     """
     adaptor = get_adaptor(dataset)
     try:
@@ -1934,6 +1943,12 @@ def run_highly_variable_genes(request: HighlyVariableGenesRequest, dataset: str 
             n_bins=request.n_bins,
             subset=request.subset,
             active_cell_indices=request.active_cell_indices,
+            # The generic Scanpy panel always sends the field; empty means
+            # "no split", not a column whose name is the empty string.
+            split_by=request.split_by or None,
+            add_union=request.add_union,
+            add_intersection=request.add_intersection,
+            min_cells_per_group=request.min_cells_per_group,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

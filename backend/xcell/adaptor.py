@@ -5524,6 +5524,134 @@ class DataAdaptor:
         self._log_action('log1p', {}, result, subset=indices)
         return result
 
+    def _run_hvg_split(
+        self, *, split_by, n_top_genes, min_mean, max_mean, min_disp, flavor,
+        n_bins, active_cell_indices, add_union, add_intersection,
+        min_cells_per_group,
+    ) -> dict[str, Any]:
+        """HVG detection within each group of ``split_by``. See the caller."""
+        groups, skipped = self._prepare_hvg_groups(
+            split_by, min_cells_per_group, active_cell_indices,
+        )
+
+        columns: list[str] = []
+        per_group: dict[str, Any] = {}
+        masks: list[np.ndarray] = []
+        for name, rows in groups:
+            mask = self._hvg_mask_for_cells(
+                self.adata[rows].copy(), n_top_genes=n_top_genes,
+                min_mean=min_mean, max_mean=max_mean, min_disp=min_disp,
+                flavor=flavor, n_bins=n_bins,
+            )
+            col = f'highly_variable__{name}'
+            self.adata.var[col] = mask
+            columns.append(col)
+            masks.append(mask)
+            per_group[name] = {
+                'n_cells': int(rows.size),
+                'n_highly_variable': int(mask.sum()),
+                'column': col,
+            }
+
+        stacked = np.vstack(masks)
+        union, intersection = stacked.any(axis=0), stacked.all(axis=0)
+        if add_union:
+            self.adata.var['highly_variable__union'] = union
+            columns.append('highly_variable__union')
+        if add_intersection:
+            self.adata.var['highly_variable__intersection'] = intersection
+            columns.append('highly_variable__intersection')
+
+        result = {
+            'status': 'completed',
+            'split_by': split_by,
+            'groups': per_group,
+            'columns': columns,
+            'skipped': skipped,
+            'n_union': int(union.sum()),
+            'n_intersection': int(intersection.sum()),
+            'n_total_genes': self.n_genes,
+            'flavor': flavor,
+        }
+        self._log_action('highly_variable_genes', {
+            'n_top_genes': n_top_genes,
+            'min_mean': min_mean,
+            'max_mean': max_mean,
+            'min_disp': min_disp,
+            'flavor': flavor,
+            'subset': False,
+            'split_by': split_by,
+            'add_union': add_union,
+            'add_intersection': add_intersection,
+            'min_cells_per_group': min_cells_per_group,
+        }, result, subset=active_cell_indices)
+        return result
+
+    def _hvg_mask_for_cells(
+        self, adata_cells, *, n_top_genes, min_mean, max_mean, min_disp,
+        flavor, n_bins,
+    ) -> np.ndarray:
+        """Boolean HVG mask over the *full* gene index, from a cell subset.
+
+        Genes with no counts in the subset are dropped before scanpy sees them
+        — they produce degenerate dispersion bins — and come back as not
+        variable, which is the honest answer for a gene nobody expressed.
+        """
+        totals = np.asarray(adata_cells.X.sum(axis=0)).ravel()
+        expressed = totals > 0
+        sub = adata_cells[:, expressed].copy()
+        sc.pp.highly_variable_genes(
+            sub, n_top_genes=n_top_genes, min_mean=min_mean, max_mean=max_mean,
+            min_disp=min_disp, flavor=flavor, n_bins=n_bins, subset=False,
+        )
+        mask = pd.Series(False, index=self.adata.var_names)
+        mask.loc[sub.var_names] = sub.var['highly_variable'].values
+        return mask.values.astype(bool)
+
+    def _prepare_hvg_groups(
+        self, split_by: str, min_cells_per_group: int, active_cell_indices,
+    ):
+        """(usable groups, skipped) for a split HVG run — validated eagerly."""
+        if split_by not in self.adata.obs.columns:
+            raise ValueError(f"Column '{split_by}' not found in .obs")
+        series = self.adata.obs[split_by]
+        if pd.api.types.is_float_dtype(series):
+            raise ValueError(
+                f"Column '{split_by}' is continuous; splitting HVG detection "
+                "needs a categorical column naming samples, sections or donors"
+            )
+        labels = np.asarray(series.astype(str).values)
+        mask = np.ones(self.n_cells, dtype=bool)
+        if active_cell_indices is not None:
+            mask = np.zeros(self.n_cells, dtype=bool)
+            mask[np.asarray(active_cell_indices, dtype=np.int64)] = True
+
+        if isinstance(series.dtype, pd.CategoricalDtype):
+            order = [str(c) for c in series.cat.categories]
+        else:
+            _, first = np.unique(labels, return_index=True)
+            order = [str(labels[i]) for i in sorted(first)]
+
+        groups, skipped = [], []
+        for name in order:
+            rows = np.flatnonzero((labels == name) & mask)
+            if rows.size == 0:
+                continue          # a leftover category no cell uses
+            if rows.size < min_cells_per_group:
+                skipped.append({
+                    'group': name, 'n_cells': int(rows.size),
+                    'reason': f'fewer than {min_cells_per_group} cells',
+                })
+                continue
+            groups.append((name, rows))
+        if len(groups) < 2:
+            raise ValueError(
+                f"Column '{split_by}' yields {len(groups)} usable group(s); "
+                f"splitting HVG detection needs at least 2 "
+                f"(groups under {min_cells_per_group} cells are skipped)"
+            )
+        return groups, skipped
+
     def run_highly_variable_genes(
         self,
         n_top_genes: int | None = None,
@@ -5534,6 +5662,10 @@ class DataAdaptor:
         n_bins: int = 20,
         subset: bool = False,
         active_cell_indices: list[int] | None = None,
+        split_by: str | None = None,
+        add_union: bool = False,
+        add_intersection: bool = False,
+        min_cells_per_group: int = 10,
     ) -> dict[str, Any]:
         """Identify highly variable genes.
 
@@ -5548,10 +5680,41 @@ class DataAdaptor:
             n_bins: Number of bins for dispersion normalization
             subset: If True, subset adata to only highly variable genes (destructive)
             active_cell_indices: If provided, compute HVGs using only these cells
+            split_by: Categorical .obs column. When set, HVGs are detected
+                *within* each group separately and written to
+                ``highly_variable__<group>`` — pooled detection on a
+                multi-sample dataset scores genes that vary *between* samples
+                as readily as genes that vary within them, so a batch effect
+                reads as biology. The pooled ``highly_variable`` column is left
+                exactly as it was, since every gene_subset picker points at it.
+            add_union: With split_by, also write ``highly_variable__union``
+                (variable in any group).
+            add_intersection: With split_by, also write
+                ``highly_variable__intersection`` (variable in every group) —
+                the conservative choice for multi-sample work.
+            min_cells_per_group: Groups smaller than this are skipped and
+                reported rather than contributing a noisy answer.
 
         Returns:
-            Dict with operation status and number of HVGs
+            Dict with operation status and number of HVGs. A split run returns
+            ``groups`` (per-group counts), ``columns`` (everything written),
+            ``skipped``, and the union / intersection sizes.
         """
+        if split_by is not None:
+            if subset:
+                raise ValueError(
+                    "subset=True cannot be combined with split_by: there is no "
+                    "single gene set to subset to. Run the split first, then "
+                    "subset on the union or intersection column."
+                )
+            return self._run_hvg_split(
+                split_by=split_by, n_top_genes=n_top_genes, min_mean=min_mean,
+                max_mean=max_mean, min_disp=min_disp, flavor=flavor,
+                n_bins=n_bins, active_cell_indices=active_cell_indices,
+                add_union=add_union, add_intersection=add_intersection,
+                min_cells_per_group=min_cells_per_group,
+            )
+
         adata_sub, indices = self._get_active_adata(active_cell_indices)
         if indices is not None:
             from scipy import sparse

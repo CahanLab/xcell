@@ -18,6 +18,7 @@ import LigRecModal from './components/LigRecModal'
 import NeighborhoodModal from './components/NeighborhoodModal'
 import GeneNmfModal from './components/GeneNmfModal'
 import MetaProgramsModal from './components/MetaProgramsModal'
+import CombineColumnsPanel from './components/CombineColumnsPanel'
 import DefineSectionsPanel from './components/DefineSectionsPanel'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
@@ -956,6 +957,8 @@ export default function App() {
   const [loadMode, setLoadMode] = useState<'single' | 'combine'>('single')
   const [combineFiles, setCombineFiles] = useState<{ path: string; label: string }[]>([])
   const [combineGapPct, setCombineGapPct] = useState<number>(5)
+  const [combineObsPolicy, setCombineObsPolicy] = useState<Record<string, string>>({})
+  const [combineVarPolicy, setCombineVarPolicy] = useState<Record<string, string>>({})
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loadLoading, setLoadLoading] = useState(false)
 
@@ -1336,6 +1339,8 @@ export default function App() {
           files: combineFiles.map(f => ({ file_path: f.path, label: f.label || undefined })),
           slot: loadSlot,
           gap_fraction: combineGapPct / 100,
+          obs_policy: combineObsPolicy,
+          var_policy: combineVarPolicy,
         }),
       })
       if (!response.ok) {
@@ -1358,7 +1363,7 @@ export default function App() {
     } finally {
       setLoadLoading(false)
     }
-  }, [combineFiles, loadSlot, combineGapPct, activeSlot, loadDatasetIntoSlot, setActiveSlot])
+  }, [combineFiles, loadSlot, combineGapPct, combineObsPolicy, combineVarPolicy, activeSlot, loadDatasetIntoSlot, setActiveSlot])
 
   const handleLoadDataset = useCallback(async () => {
     if (!loadFilePath.trim()) return
@@ -2604,6 +2609,12 @@ export default function App() {
                   />
                   <span style={{ fontSize: '11px', color: '#888' }}>% of mean section width (spatial inputs only — others concatenate)</span>
                 </div>
+                <CombineColumnsPanel
+                  files={combineFiles}
+                  obsPolicy={combineObsPolicy}
+                  varPolicy={combineVarPolicy}
+                  onChange={(obs, vars) => { setCombineObsPolicy(obs); setCombineVarPolicy(vars) }}
+                />
               </div>
             )}
 

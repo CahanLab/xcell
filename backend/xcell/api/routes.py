@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from xcell.adaptor import DataAdaptor, combine_datasets
+from xcell.adaptor import DataAdaptor, combine_datasets, describe_combine_columns
 from xcell.task_manager import task_manager
 from xcell import config as user_config
 from xcell import gene_set_store
@@ -318,6 +318,14 @@ class CombineSpatialRequest(BaseModel):
     files: list[CombineSpatialFile]
     slot: str = "primary"
     gap_fraction: float = 0.05
+    #: Per-column handling; see combine_datasets. Omitted columns take the
+    #: suggestion /combine/columns reports.
+    obs_policy: dict[str, str] | None = None
+    var_policy: dict[str, str] | None = None
+
+
+class CombineColumnsRequest(BaseModel):
+    files: list[CombineSpatialFile]
 
 
 def _dataset_label(path: Path) -> str:
@@ -335,32 +343,17 @@ def _dataset_label(path: Path) -> str:
     return path.stem
 
 
-@router.post("/combine")
-def combine(request: CombineSpatialRequest):
-    """Combine multiple datasets into one adata and load it into a slot.
+def _resolve_combine_inputs(files) -> tuple[list[Path], list[str]]:
+    """Validate combine inputs and return (load paths, sample labels).
 
-    Inputs may be any format File -> Load accepts: .h5ad, 10x .h5 (including
-    Visium HD feature_slice.h5), .rds (Seurat, converted via R), 10x
-    CellRanger matrix directories, and prefixed *_matrix.mtx(.gz) trios.
-
-    When every input has spatial coordinates, sections are laid out
-    left-to-right along the x-axis with a small gap (``mode: "spatial"``).
-    Otherwise rows are concatenated with no geometry invented, keeping the
-    .obsm arrays every input shares (``mode: "concat"``). Either way: gene
-    index = intersection across inputs; a new ``sample`` categorical .obs
-    column tags each cell with its source file label.
-
-    Args:
-        files: List of {file_path, label?} entries. >=2 existing datasets.
-        slot: Named slot to load the combined adata into.
-        gap_fraction: Gap between adjacent sections as a fraction of mean
-                      section width (default 0.05 = 5%). Spatial mode only.
+    Shared by /combine and /combine/columns so the column picker can never
+    accept a set of files the combine itself would reject.
     """
-    if len(request.files) < 2:
+    if len(files) < 2:
         raise HTTPException(status_code=400, detail="At least 2 files required to combine")
     paths: list[Path] = []
     labels: list[str] = []
-    for entry in request.files:
+    for entry in files:
         p = Path(entry.file_path)
         if not p.exists():
             raise HTTPException(status_code=404, detail=f"File not found: {entry.file_path}")
@@ -385,8 +378,55 @@ def combine(request: CombineSpatialRequest):
         paths.append(load_path)
         labels.append((entry.label or _dataset_label(p)).strip() or _dataset_label(p))
 
+    return paths, labels
+
+
+@router.post("/combine/columns")
+def combine_columns(request: CombineColumnsRequest):
+    """Every .obs / .var column across the inputs, with a suggested policy.
+
+    Called before /combine so the column choices are made with the collision
+    map in hand — which datasets carry each name, whether their .var values
+    already agree, and why the suggestion is what it is. Reads annotations
+    only; an h5ad is opened backed rather than loaded.
+    """
+    paths, labels = _resolve_combine_inputs(request.files)
     try:
-        combined = combine_datasets(paths, labels, gap_fraction=request.gap_fraction)
+        return describe_combine_columns(paths, labels)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read columns: {e}")
+
+
+@router.post("/combine")
+def combine(request: CombineSpatialRequest):
+    """Combine multiple datasets into one adata and load it into a slot.
+
+    Inputs may be any format File -> Load accepts: .h5ad, 10x .h5 (including
+    Visium HD feature_slice.h5), .rds (Seurat, converted via R), 10x
+    CellRanger matrix directories, and prefixed *_matrix.mtx(.gz) trios.
+
+    When every input has spatial coordinates, sections are laid out
+    left-to-right along the x-axis with a small gap (``mode: "spatial"``).
+    Otherwise rows are concatenated with no geometry invented, keeping the
+    .obsm arrays every input shares (``mode: "concat"``). Either way: gene
+    index = intersection across inputs; a new ``sample`` categorical .obs
+    column tags each cell with its source file label.
+
+    Args:
+        files: List of {file_path, label?} entries. >=2 existing datasets.
+        slot: Named slot to load the combined adata into.
+        gap_fraction: Gap between adjacent sections as a fraction of mean
+                      section width (default 0.05 = 5%). Spatial mode only.
+    """
+    paths, labels = _resolve_combine_inputs(request.files)
+
+    try:
+        combined = combine_datasets(
+            paths, labels, gap_fraction=request.gap_fraction,
+            obs_policy=request.obs_policy, var_policy=request.var_policy,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1685,6 +1725,11 @@ class HighlyVariableGenesRequest(BaseModel):
     n_bins: int = 20
     subset: bool = False
     active_cell_indices: list[int] | None = None
+    #: Detect HVGs within each group of this .obs column instead of pooled.
+    split_by: str | None = None
+    add_union: bool = False
+    add_intersection: bool = False
+    min_cells_per_group: int = 10
 
 
 class GeneSubsetSpec(BaseModel):
@@ -1878,10 +1923,14 @@ def run_log1p(request: Log1pRequest = Log1pRequest(), dataset: str | None = Quer
 def run_highly_variable_genes(request: HighlyVariableGenesRequest, dataset: str | None = Query(None)):
     """Identify highly variable genes.
 
-    Adds 'highly_variable' boolean column to .var.
+    Adds a 'highly_variable' boolean column to .var. With ``split_by``, the
+    detection runs *within* each group of that .obs column instead, writing
+    ``highly_variable__<group>`` plus an optional union / intersection — and
+    leaving the pooled ``highly_variable`` column untouched.
 
     Returns:
-        Operation status and number of HVGs
+        Operation status and number of HVGs; a split run also returns the
+        per-group counts, every column written, and any groups skipped.
     """
     adaptor = get_adaptor(dataset)
     try:
@@ -1894,6 +1943,12 @@ def run_highly_variable_genes(request: HighlyVariableGenesRequest, dataset: str 
             n_bins=request.n_bins,
             subset=request.subset,
             active_cell_indices=request.active_cell_indices,
+            # The generic Scanpy panel always sends the field; empty means
+            # "no split", not a column whose name is the empty string.
+            split_by=request.split_by or None,
+            add_union=request.add_union,
+            add_intersection=request.add_intersection,
+            min_cells_per_group=request.min_cells_per_group,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

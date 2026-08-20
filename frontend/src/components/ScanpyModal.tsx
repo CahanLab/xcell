@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { isParamVisible } from '../lib/paramVisibility'
 import { useStore, ScanpyActionRecord, PCASubsetSummary, userConfigGet } from '../store'
 import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset } from '../hooks/useData'
 import { defaultGraphKey } from '../lib/graphChoice'
@@ -249,6 +250,10 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'max_mean', label: 'Max mean', type: 'number', default: 6, description: 'Maximum mean expression' },
           { name: 'min_disp', label: 'Min dispersion', type: 'number', default: 0.5, description: 'Minimum normalized dispersion' },
           { name: 'flavor', label: 'Method', type: 'select', default: 'cell_ranger', options: ['seurat', 'cell_ranger', 'seurat_v3'], description: 'HVG selection method' },
+          { name: 'split_by', label: 'Detect within groups of', type: 'obs_column_select', default: '', description: 'Optional categorical .obs column (sample, section, donor). When set, HVGs are detected inside each group separately and written to highly_variable__<group> — pooled detection scores genes that differ between samples as readily as genes that vary within them, so a batch effect reads as biology. The pooled highly_variable column is left untouched.' },
+          { name: 'add_union', label: 'Add union column', type: 'select', default: 'false', options: ['true', 'false'], description: 'Also write highly_variable__union — variable in any group.', visibleWhen: { param: 'split_by', value: '*' } },
+          { name: 'add_intersection', label: 'Add intersection column', type: 'select', default: 'false', options: ['true', 'false'], description: 'Also write highly_variable__intersection — variable in every group. The conservative choice for multi-sample work.', visibleWhen: { param: 'split_by', value: '*' } },
+          { name: 'min_cells_per_group', label: 'Min cells per group', type: 'number', default: 10, description: 'Groups smaller than this are skipped and reported rather than contributing a noisy answer.', visibleWhen: { param: 'split_by', value: '*' } },
         ],
       },
       smooth: {
@@ -1315,7 +1320,7 @@ export default function ScanpyModal() {
       // Build set of hidden param names (visibleWhen condition not met)
       const hiddenParams = new Set<string>()
       for (const p of functionDef.params) {
-        if (p.visibleWhen && String(paramValues[p.visibleWhen.param]) !== p.visibleWhen.value) {
+        if (!isParamVisible(p.visibleWhen, paramValues)) {
           hiddenParams.add(p.name)
         }
       }
@@ -1454,7 +1459,26 @@ export default function ScanpyModal() {
 
       // Build result message
       let message = 'Completed successfully'
-      if (data.prefixes !== undefined && data.species_column === undefined) {
+      if (data.split_by !== undefined && data.groups !== undefined) {
+        // Split HVG: the counts are the result, so say them rather than "done".
+        const groups = data.groups as Record<string, { n_highly_variable: number; n_cells: number }>
+        const per = Object.entries(groups)
+          .map(([g, v]) => `${g} ${v.n_highly_variable.toLocaleString()}`)
+          .join(', ')
+        const extras: string[] = []
+        if ((data.columns as string[]).includes('highly_variable__union')) {
+          extras.push(`union ${Number(data.n_union).toLocaleString()}`)
+        }
+        if ((data.columns as string[]).includes('highly_variable__intersection')) {
+          extras.push(`intersection ${Number(data.n_intersection).toLocaleString()}`)
+        }
+        const skipped = (data.skipped as { group: string; n_cells: number }[]) || []
+        message =
+          `HVGs per ${data.split_by}: ${per}` +
+          `${extras.length ? ` · ${extras.join(', ')}` : ''}` +
+          `${skipped.length ? ` · skipped ${skipped.map((sk) => `${sk.group} (${sk.n_cells} cells)`).join(', ')}` : ''}` +
+          `. Pooled highly_variable left unchanged.`
+      } else if (data.prefixes !== undefined && data.species_column === undefined) {
         // detect_species_prefixes — read-only preview
         const found = (data.prefixes as { prefix: string; n_genes: number }[]) || []
         message = found.length === 0
@@ -2316,8 +2340,7 @@ export default function ScanpyModal() {
             {functionDef.params.map((param) => {
               // Skip params whose visibleWhen condition is not met
               if (param.visibleWhen) {
-                const refValue = paramValues[param.visibleWhen.param]
-                if (String(refValue) !== param.visibleWhen.value) return null
+                if (!isParamVisible(param.visibleWhen, paramValues)) return null
               }
               return (
               <div key={param.name}>

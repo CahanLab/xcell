@@ -120,10 +120,200 @@ def load_dataset_file(path: Path) -> tuple[anndata.AnnData, str]:
     return anndata.read_h5ad(path), 'h5ad'
 
 
+#: What a policy value may be, per annotation axis.
+_OBS_POLICIES = ('merge', 'separate', 'drop')
+_VAR_POLICIES = ('first', 'separate', 'drop')
+
+#: Integer columns with at most this many distinct values read as cluster ids
+#: rather than measurements, so they default to being kept apart.
+_LABEL_LIKE_MAX_CARDINALITY = 50
+
+
+def _column_kind(series: pd.Series) -> str:
+    """Coarse type used to guess whether a column is a label or a measurement."""
+    if isinstance(series.dtype, pd.CategoricalDtype):
+        return 'category'
+    if pd.api.types.is_bool_dtype(series):
+        return 'bool'
+    if pd.api.types.is_float_dtype(series):
+        return 'numeric'
+    if pd.api.types.is_integer_dtype(series):
+        return 'integer'
+    return 'string'
+
+
+def _suggest_obs_policy(datasets, kind, n_unique) -> tuple[str, str]:
+    """Default handling for one .obs column, with the reason to show the user.
+
+    Merging is only safe when a value means the same thing in every dataset. A
+    per-cell measurement does; a cluster id from an independent clustering does
+    not, and pooling those invents a comparison nobody made.
+    """
+    if len(datasets) < 2:
+        return 'merge', f"only {datasets[0]} has it — nothing to collide with"
+    if kind in ('category', 'string'):
+        return 'separate', 'labels from independent analyses are not comparable'
+    if kind == 'integer' and n_unique is not None and n_unique <= _LABEL_LIKE_MAX_CARDINALITY:
+        return 'separate', f'looks like ids, not a measurement ({n_unique} distinct values)'
+    return 'merge', 'a per-cell measurement, comparable across datasets'
+
+
+def _suggest_var_policy(datasets, identical) -> tuple[str, str]:
+    """Default handling for one .var column. Genes are shared, so unlike .obs
+    the values can be compared directly — and if they already agree everywhere,
+    one copy is the whole story."""
+    if len(datasets) < 2:
+        return 'first', f"only {datasets[0]} has it"
+    if identical:
+        return 'first', 'identical in every dataset'
+    return 'separate', 'each dataset annotates these genes differently'
+
+
+class _NameAllocator:
+    """Hands out column names, never reusing one already taken."""
+
+    def __init__(self, reserved):
+        self.taken = set(reserved)
+
+    def take(self, name: str) -> str:
+        if name not in self.taken:
+            self.taken.add(name)
+            return name
+        i = 1
+        while f'{name}_{i}' in self.taken:
+            i += 1
+        out = f'{name}_{i}'
+        self.taken.add(out)
+        return out
+
+
+def _read_annotations(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(.obs, .var) of a dataset without pulling the matrix into memory."""
+    if Path(path).suffix.lower() == '.h5ad':
+        backed = anndata.read_h5ad(path, backed='r')
+        try:
+            return backed.obs.copy(), backed.var.copy()
+        finally:
+            if backed.file is not None:
+                backed.file.close()
+    a, _kind = load_dataset_file(Path(path))
+    return a.obs.copy(), a.var.copy()
+
+
+def describe_combine_columns(
+    file_paths: list[Path], labels: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Every .obs / .var column across the inputs, with a suggested policy.
+
+    Feeds the column picker so the choice is made before anything is combined.
+    Reads annotations only — an h5ad is opened backed, so this stays cheap on
+    matrices too large to load twice.
+
+    Returns ``{'obs': [...], 'var': [...]}`` where each entry carries ``name``,
+    the ``datasets`` holding it, its ``kind``, the ``suggested`` policy and a
+    human ``reason``; .var entries add ``identical`` (do the datasets already
+    agree over the shared genes).
+    """
+    labels = [str(lbl) for lbl in labels]
+    obs_frames: list[pd.DataFrame] = []
+    var_frames: list[pd.DataFrame] = []
+    for path in file_paths:
+        try:
+            o, v = _read_annotations(Path(path))
+        except Exception as e:
+            raise ValueError(f"Could not read {Path(path).name}: {e}")
+        obs_frames.append(o)
+        var_frames.append(v)
+
+    shared_genes = None
+    for v in var_frames:
+        idx = set(v.index)
+        shared_genes = idx if shared_genes is None else (shared_genes & idx)
+    shared = sorted(shared_genes or set())
+
+    obs_out: list[dict[str, Any]] = []
+    for name in sorted({c for f in obs_frames for c in f.columns}):
+        holders = [lbl for lbl, f in zip(labels, obs_frames) if name in f.columns]
+        first = next(f[name] for f in obs_frames if name in f.columns)
+        kind = _column_kind(first)
+        n_unique = None
+        if kind in ('integer', 'category', 'string'):
+            n_unique = int(max(
+                f[name].nunique(dropna=True) for f in obs_frames if name in f.columns
+            ))
+        suggested, reason = _suggest_obs_policy(holders, kind, n_unique)
+        obs_out.append({
+            'name': name, 'datasets': holders, 'kind': kind,
+            'n_unique': n_unique, 'suggested': suggested, 'reason': reason,
+        })
+
+    var_out: list[dict[str, Any]] = []
+    for name in sorted({c for f in var_frames for c in f.columns}):
+        holders = [lbl for lbl, f in zip(labels, var_frames) if name in f.columns]
+        held = [f for f in var_frames if name in f.columns]
+        # Compare over the shared genes only — the rest are dropped anyway, so
+        # disagreement outside the intersection is not a reason to split.
+        rendered = [f[name].reindex(shared).astype(str).tolist() for f in held]
+        identical = all(r == rendered[0] for r in rendered[1:]) if shared else True
+        first = held[0][name]
+        suggested, reason = _suggest_var_policy(holders, identical)
+        var_out.append({
+            'name': name, 'datasets': holders, 'kind': _column_kind(first),
+            'identical': bool(identical), 'suggested': suggested, 'reason': reason,
+        })
+
+    return {'obs': obs_out, 'var': var_out}
+
+
+def _resolve_policy(
+    frames, labels, requested, axis: str, shared=None
+) -> dict[str, str]:
+    """Fill in defaults for every column the caller did not decide on."""
+    allowed = _OBS_POLICIES if axis == 'obs' else _VAR_POLICIES
+    requested = dict(requested or {})
+    known = {c for f in frames for c in f.columns}
+    for name, value in requested.items():
+        if name not in known:
+            raise ValueError(
+                f"No input dataset has a .{axis} column named '{name}'; "
+                f"available: {sorted(known)}"
+            )
+        if value not in allowed:
+            raise ValueError(
+                f"Unknown .{axis} policy '{value}' for '{name}'; "
+                f"expected one of {list(allowed)}"
+            )
+
+    resolved: dict[str, str] = {}
+    for name in sorted(known):
+        if name in requested:
+            resolved[name] = requested[name]
+            continue
+        holders = [lbl for lbl, f in zip(labels, frames) if name in f.columns]
+        if axis == 'obs':
+            first = next(f[name] for f in frames if name in f.columns)
+            kind = _column_kind(first)
+            n_unique = None
+            if kind in ('integer', 'category', 'string'):
+                n_unique = int(max(
+                    f[name].nunique(dropna=True) for f in frames if name in f.columns
+                ))
+            resolved[name] = _suggest_obs_policy(holders, kind, n_unique)[0]
+        else:
+            held = [f for f in frames if name in f.columns]
+            rendered = [f[name].reindex(shared).astype(str).tolist() for f in held]
+            identical = all(r == rendered[0] for r in rendered[1:]) if shared else True
+            resolved[name] = _suggest_var_policy(holders, identical)[0]
+    return resolved
+
+
 def combine_datasets(
     file_paths: list[Path],
     labels: list[str],
     gap_fraction: float = 0.05,
+    *,
+    obs_policy: dict[str, str] | None = None,
+    var_policy: dict[str, str] | None = None,
 ) -> anndata.AnnData:
     """Combine multiple datasets into one adata, spatially aware when possible.
 
@@ -155,6 +345,16 @@ def combine_datasets(
         gap_fraction: Horizontal gap between adjacent sections, as a fraction
                       of mean section width (default 0.05 = 5%). Spatial mode
                       only.
+        obs_policy: Per .obs column, one of ``merge`` (one column, every cell
+            keeps its own value), ``separate`` (``<col>__<label>`` per dataset,
+            empty for the others) or ``drop``. Columns left out follow
+            :func:`describe_combine_columns`' suggestion — measurements merge,
+            labels stay apart, because pooling two independent clusterings into
+            one column invents a comparison nobody made. ``sample`` is always
+            written and cannot be overridden.
+        var_policy: Per .var column, one of ``first`` (one copy), ``separate``
+            or ``drop``. Genes are shared, so the default is ``first`` when
+            every dataset already agrees and ``separate`` when they do not.
 
     Raises:
         ValueError: if fewer than 2 files, no shared genes, or an input
@@ -189,6 +389,63 @@ def combine_datasets(
 
     mode = 'spatial' if all(k is not None for k in spatial_keys) else 'concat'
 
+    # Resolve the column policy before anything is rewritten, so a bad request
+    # fails before any work is done.
+    obs_frames = [a.obs for a in adatas]
+    var_frames = [a.var for a in adatas]
+    shared_genes: set[str] | None = None
+    for v in var_frames:
+        idx = set(v.index)
+        shared_genes = idx if shared_genes is None else (shared_genes & idx)
+    shared = sorted(shared_genes or set())
+    # `sample` is written by the concat itself; a policy for it is meaningless.
+    obs_requested = {k: v for k, v in (obs_policy or {}).items() if k != 'sample'}
+    obs_resolved = _resolve_policy(obs_frames, unique_labels, obs_requested, 'obs')
+    var_resolved = _resolve_policy(
+        var_frames, unique_labels, var_policy, 'var', shared=shared
+    )
+
+    # Allocate final .obs names up front: merged columns keep their own name,
+    # split ones become `<col>__<label>`, and nothing may land on a name that
+    # is already spoken for.
+    obs_alloc = _NameAllocator({'sample'})
+    merged_obs: dict[str, str] = {}
+    for name in sorted(obs_resolved):
+        if obs_resolved[name] == 'merge':
+            merged_obs[name] = obs_alloc.take(name)
+    split_obs: dict[tuple[str, str], str] = {}
+    for name in sorted(obs_resolved):
+        if obs_resolved[name] != 'separate':
+            continue
+        for lbl, f in zip(unique_labels, obs_frames):
+            if name in f.columns:
+                split_obs[(name, lbl)] = obs_alloc.take(f'{name}__{lbl}')
+
+    # Categorical columns lose their dtype when reindexed in with NaN, so the
+    # categories are carried across the concat and restored afterwards.
+    obs_categories: dict[str, list] = {}
+    for name, policy in obs_resolved.items():
+        for lbl, f in zip(unique_labels, obs_frames):
+            if name not in f.columns or policy == 'drop':
+                continue
+            col = f[name]
+            if not isinstance(col.dtype, pd.CategoricalDtype):
+                continue
+            final = merged_obs[name] if policy == 'merge' else split_obs[(name, lbl)]
+            prev = obs_categories.setdefault(final, [])
+            for c in col.cat.categories:
+                if c not in prev:
+                    prev.append(c)
+
+    def _apply_obs_policy(b: anndata.AnnData, lbl: str) -> None:
+        new_obs = pd.DataFrame(index=b.obs.index)
+        for name, policy in obs_resolved.items():
+            if policy == 'drop' or name not in b.obs.columns:
+                continue
+            final = merged_obs[name] if policy == 'merge' else split_obs[(name, lbl)]
+            new_obs[final] = b.obs[name].values
+        b.obs = new_obs
+
     cleaned: list[anndata.AnnData] = []
     if mode == 'spatial':
         coords = [
@@ -200,7 +457,7 @@ def combine_datasets(
 
         # Shift each section's spatial x so they lay out left-to-right.
         current_offset = 0.0
-        for a, sp, w in zip(adatas, coords, widths):
+        for a, sp, w, lbl in zip(adatas, coords, widths, unique_labels):
             sp[:, 0] = sp[:, 0] - sp[:, 0].min() + current_offset
             b = a.copy()
             # Reset obsm/obsp/varm/uns; drop .raw. The concat below operates
@@ -211,10 +468,11 @@ def combine_datasets(
             b.varm = {}
             b.uns = {}
             b.raw = None
+            _apply_obs_policy(b, lbl)
             cleaned.append(b)
             current_offset += w + gap
     else:
-        for a in adatas:
+        for a, lbl in zip(adatas, unique_labels):
             b = a.copy()
             # .obsm is left alone: anndata.concat keeps the keys every input
             # shares and drops the rest, which is exactly the honest outcome —
@@ -223,7 +481,15 @@ def combine_datasets(
             b.varm = {}
             b.uns = {}
             b.raw = None
+            _apply_obs_policy(b, lbl)
             cleaned.append(b)
+
+    # join='inner' below drops any .obs column not present in every input, and
+    # a split column is by construction present in exactly one — so line the
+    # frames up on the union first.
+    all_obs_cols = sorted({c for b in cleaned for c in b.obs.columns})
+    for b in cleaned:
+        b.obs = b.obs.reindex(columns=all_obs_cols)
 
     combined = anndata.concat(
         cleaned,
@@ -232,7 +498,7 @@ def combine_datasets(
         label='sample',
         keys=unique_labels,
         index_unique='-',      # collision-safe obs_names
-        merge='first',
+        merge=None,            # .var is rebuilt below, under var_policy
     )
     if combined.n_vars == 0:
         raise ValueError(
@@ -240,9 +506,35 @@ def combine_datasets(
             "Check that each h5ad uses the same gene identifiers (consider "
             "Gene IDs swap in xcell before exporting)."
         )
+    for col, cats in obs_categories.items():
+        if col in combined.obs.columns:
+            combined.obs[col] = pd.Categorical(combined.obs[col], categories=cats)
+
+    # Every combined gene is present in every input (join='inner'), so these
+    # reindexes are exact and a boolean flag stays boolean.
+    var_alloc = _NameAllocator(set(combined.var.columns))
+    for name in sorted(var_resolved):
+        if var_resolved[name] != 'first':
+            continue
+        src = next(f for f in var_frames if name in f.columns)
+        combined.var[var_alloc.take(name)] = src[name].reindex(combined.var_names).values
+    for name in sorted(var_resolved):
+        if var_resolved[name] != 'separate':
+            continue
+        for lbl, f in zip(unique_labels, var_frames):
+            if name in f.columns:
+                combined.var[var_alloc.take(f'{name}__{lbl}')] = (
+                    f[name].reindex(combined.var_names).values
+                )
+
     # Ensure the `sample` column is a clean categorical for downstream UI.
     combined.obs['sample'] = pd.Categorical(combined.obs['sample'], categories=unique_labels, ordered=False)
-    combined.uns['xcell_combine'] = {'mode': mode, 'labels': list(unique_labels)}
+    combined.uns['xcell_combine'] = {
+        'mode': mode,
+        'labels': list(unique_labels),
+        'obs_policy': dict(obs_resolved),
+        'var_policy': dict(var_resolved),
+    }
     return combined
 
 
@@ -5232,6 +5524,134 @@ class DataAdaptor:
         self._log_action('log1p', {}, result, subset=indices)
         return result
 
+    def _run_hvg_split(
+        self, *, split_by, n_top_genes, min_mean, max_mean, min_disp, flavor,
+        n_bins, active_cell_indices, add_union, add_intersection,
+        min_cells_per_group,
+    ) -> dict[str, Any]:
+        """HVG detection within each group of ``split_by``. See the caller."""
+        groups, skipped = self._prepare_hvg_groups(
+            split_by, min_cells_per_group, active_cell_indices,
+        )
+
+        columns: list[str] = []
+        per_group: dict[str, Any] = {}
+        masks: list[np.ndarray] = []
+        for name, rows in groups:
+            mask = self._hvg_mask_for_cells(
+                self.adata[rows].copy(), n_top_genes=n_top_genes,
+                min_mean=min_mean, max_mean=max_mean, min_disp=min_disp,
+                flavor=flavor, n_bins=n_bins,
+            )
+            col = f'highly_variable__{name}'
+            self.adata.var[col] = mask
+            columns.append(col)
+            masks.append(mask)
+            per_group[name] = {
+                'n_cells': int(rows.size),
+                'n_highly_variable': int(mask.sum()),
+                'column': col,
+            }
+
+        stacked = np.vstack(masks)
+        union, intersection = stacked.any(axis=0), stacked.all(axis=0)
+        if add_union:
+            self.adata.var['highly_variable__union'] = union
+            columns.append('highly_variable__union')
+        if add_intersection:
+            self.adata.var['highly_variable__intersection'] = intersection
+            columns.append('highly_variable__intersection')
+
+        result = {
+            'status': 'completed',
+            'split_by': split_by,
+            'groups': per_group,
+            'columns': columns,
+            'skipped': skipped,
+            'n_union': int(union.sum()),
+            'n_intersection': int(intersection.sum()),
+            'n_total_genes': self.n_genes,
+            'flavor': flavor,
+        }
+        self._log_action('highly_variable_genes', {
+            'n_top_genes': n_top_genes,
+            'min_mean': min_mean,
+            'max_mean': max_mean,
+            'min_disp': min_disp,
+            'flavor': flavor,
+            'subset': False,
+            'split_by': split_by,
+            'add_union': add_union,
+            'add_intersection': add_intersection,
+            'min_cells_per_group': min_cells_per_group,
+        }, result, subset=active_cell_indices)
+        return result
+
+    def _hvg_mask_for_cells(
+        self, adata_cells, *, n_top_genes, min_mean, max_mean, min_disp,
+        flavor, n_bins,
+    ) -> np.ndarray:
+        """Boolean HVG mask over the *full* gene index, from a cell subset.
+
+        Genes with no counts in the subset are dropped before scanpy sees them
+        — they produce degenerate dispersion bins — and come back as not
+        variable, which is the honest answer for a gene nobody expressed.
+        """
+        totals = np.asarray(adata_cells.X.sum(axis=0)).ravel()
+        expressed = totals > 0
+        sub = adata_cells[:, expressed].copy()
+        sc.pp.highly_variable_genes(
+            sub, n_top_genes=n_top_genes, min_mean=min_mean, max_mean=max_mean,
+            min_disp=min_disp, flavor=flavor, n_bins=n_bins, subset=False,
+        )
+        mask = pd.Series(False, index=self.adata.var_names)
+        mask.loc[sub.var_names] = sub.var['highly_variable'].values
+        return mask.values.astype(bool)
+
+    def _prepare_hvg_groups(
+        self, split_by: str, min_cells_per_group: int, active_cell_indices,
+    ):
+        """(usable groups, skipped) for a split HVG run — validated eagerly."""
+        if split_by not in self.adata.obs.columns:
+            raise ValueError(f"Column '{split_by}' not found in .obs")
+        series = self.adata.obs[split_by]
+        if pd.api.types.is_float_dtype(series):
+            raise ValueError(
+                f"Column '{split_by}' is continuous; splitting HVG detection "
+                "needs a categorical column naming samples, sections or donors"
+            )
+        labels = np.asarray(series.astype(str).values)
+        mask = np.ones(self.n_cells, dtype=bool)
+        if active_cell_indices is not None:
+            mask = np.zeros(self.n_cells, dtype=bool)
+            mask[np.asarray(active_cell_indices, dtype=np.int64)] = True
+
+        if isinstance(series.dtype, pd.CategoricalDtype):
+            order = [str(c) for c in series.cat.categories]
+        else:
+            _, first = np.unique(labels, return_index=True)
+            order = [str(labels[i]) for i in sorted(first)]
+
+        groups, skipped = [], []
+        for name in order:
+            rows = np.flatnonzero((labels == name) & mask)
+            if rows.size == 0:
+                continue          # a leftover category no cell uses
+            if rows.size < min_cells_per_group:
+                skipped.append({
+                    'group': name, 'n_cells': int(rows.size),
+                    'reason': f'fewer than {min_cells_per_group} cells',
+                })
+                continue
+            groups.append((name, rows))
+        if len(groups) < 2:
+            raise ValueError(
+                f"Column '{split_by}' yields {len(groups)} usable group(s); "
+                f"splitting HVG detection needs at least 2 "
+                f"(groups under {min_cells_per_group} cells are skipped)"
+            )
+        return groups, skipped
+
     def run_highly_variable_genes(
         self,
         n_top_genes: int | None = None,
@@ -5242,6 +5662,10 @@ class DataAdaptor:
         n_bins: int = 20,
         subset: bool = False,
         active_cell_indices: list[int] | None = None,
+        split_by: str | None = None,
+        add_union: bool = False,
+        add_intersection: bool = False,
+        min_cells_per_group: int = 10,
     ) -> dict[str, Any]:
         """Identify highly variable genes.
 
@@ -5256,10 +5680,41 @@ class DataAdaptor:
             n_bins: Number of bins for dispersion normalization
             subset: If True, subset adata to only highly variable genes (destructive)
             active_cell_indices: If provided, compute HVGs using only these cells
+            split_by: Categorical .obs column. When set, HVGs are detected
+                *within* each group separately and written to
+                ``highly_variable__<group>`` — pooled detection on a
+                multi-sample dataset scores genes that vary *between* samples
+                as readily as genes that vary within them, so a batch effect
+                reads as biology. The pooled ``highly_variable`` column is left
+                exactly as it was, since every gene_subset picker points at it.
+            add_union: With split_by, also write ``highly_variable__union``
+                (variable in any group).
+            add_intersection: With split_by, also write
+                ``highly_variable__intersection`` (variable in every group) —
+                the conservative choice for multi-sample work.
+            min_cells_per_group: Groups smaller than this are skipped and
+                reported rather than contributing a noisy answer.
 
         Returns:
-            Dict with operation status and number of HVGs
+            Dict with operation status and number of HVGs. A split run returns
+            ``groups`` (per-group counts), ``columns`` (everything written),
+            ``skipped``, and the union / intersection sizes.
         """
+        if split_by is not None:
+            if subset:
+                raise ValueError(
+                    "subset=True cannot be combined with split_by: there is no "
+                    "single gene set to subset to. Run the split first, then "
+                    "subset on the union or intersection column."
+                )
+            return self._run_hvg_split(
+                split_by=split_by, n_top_genes=n_top_genes, min_mean=min_mean,
+                max_mean=max_mean, min_disp=min_disp, flavor=flavor,
+                n_bins=n_bins, active_cell_indices=active_cell_indices,
+                add_union=add_union, add_intersection=add_intersection,
+                min_cells_per_group=min_cells_per_group,
+            )
+
         adata_sub, indices = self._get_active_adata(active_cell_indices)
         if indices is not None:
             from scipy import sparse

@@ -259,6 +259,29 @@ export interface DrawnLine {
   fillColor: string | null  // Fill color (null = no fill)
 }
 
+// A territory type's geometry while it is being drawn. Cuts are the stored
+// truth; the regions between them are derived by the backend on every edit,
+// which is what makes a boundary one object shared by both its neighbours.
+export interface TerritoryCut {
+  id: string
+  points: [number, number][]
+  closed: boolean
+}
+
+export interface TerritorySectionDraft {
+  ring: [number, number][]
+  cuts: TerritoryCut[]
+  anchors: { name: string; x: number; y: number }[]
+}
+
+export interface TerritoryDraft {
+  typeName: string
+  embedding: string
+  sectionCol: string | null
+  activeSection: string
+  sections: Record<string, TerritorySectionDraft>
+}
+
 // Cell projection onto a line
 export interface CellProjection {
   cellIndex: number
@@ -736,6 +759,11 @@ interface AppState {
   isAnalysisRecordOpen: boolean
   isLocalizeModalOpen: boolean
   isMultiContourModalOpen: boolean
+  isTerritoryPanelOpen: boolean
+  isAssignTerritoriesOpen: boolean
+  // Non-null while the Territory panel is armed: drawn cuts route here instead
+  // of becoming ordinary shapes in `drawnLines`.
+  territoryDraft: TerritoryDraft | null
   isDefineSectionsOpen: boolean
   isLigRecModalOpen: boolean
   isNeighborhoodModalOpen: boolean
@@ -967,6 +995,14 @@ interface AppState {
   setLocalizeModalOpen: (open: boolean) => void
   setMultiContourModalOpen: (open: boolean) => void
   setDefineSectionsOpen: (open: boolean) => void
+  setTerritoryPanelOpen: (open: boolean) => void
+  setAssignTerritoriesOpen: (open: boolean) => void
+  setTerritoryDraft: (draft: TerritoryDraft | null) => void
+  addTerritoryCut: (points: [number, number][], closed: boolean) => void
+  removeTerritoryCut: (id: string) => void
+  updateTerritoryCut: (id: string, points: [number, number][]) => void
+  setTerritorySection: (section: string) => void
+  setTerritoryAnchor: (name: string, x: number, y: number) => void
   setLigRecModalOpen: (open: boolean) => void
   setNeighborhoodModalOpen: (open: boolean) => void
   setGeneNmfModalOpen: (open: boolean) => void
@@ -2284,6 +2320,101 @@ export const useStore = create<AppState>((set, get) => {
     setLocalizeModalOpen: (open) => set({ isLocalizeModalOpen: open }),  // global
     setMultiContourModalOpen: (open) => set({ isMultiContourModalOpen: open }),  // global
     setDefineSectionsOpen: (open) => set({ isDefineSectionsOpen: open }),  // global
+    isTerritoryPanelOpen: false,
+    setTerritoryPanelOpen: (open) => set({ isTerritoryPanelOpen: open }),
+    isAssignTerritoriesOpen: false,
+    setAssignTerritoriesOpen: (open) => set({ isAssignTerritoriesOpen: open }),
+    territoryDraft: null,
+    setTerritoryDraft: (draft) => set({ territoryDraft: draft }),
+
+    addTerritoryCut: (points, closed) =>
+      set((state) => {
+        const draft = state.territoryDraft
+        if (!draft) return {}
+        const section = draft.sections[draft.activeSection]
+        if (!section) return {}
+        const cut = { id: `cut_${Date.now()}_${section.cuts.length}`, points, closed }
+        return {
+          territoryDraft: {
+            ...draft,
+            sections: {
+              ...draft.sections,
+              [draft.activeSection]: { ...section, cuts: [...section.cuts, cut] },
+            },
+          },
+        }
+      }),
+
+    removeTerritoryCut: (id) =>
+      set((state) => {
+        const draft = state.territoryDraft
+        if (!draft) return {}
+        const section = draft.sections[draft.activeSection]
+        if (!section) return {}
+        return {
+          territoryDraft: {
+            ...draft,
+            sections: {
+              ...draft.sections,
+              [draft.activeSection]: {
+                ...section,
+                cuts: section.cuts.filter((c) => c.id !== id),
+              },
+            },
+          },
+        }
+      }),
+
+    updateTerritoryCut: (id, points) =>
+      set((state) => {
+        const draft = state.territoryDraft
+        if (!draft) return {}
+        const section = draft.sections[draft.activeSection]
+        if (!section) return {}
+        return {
+          territoryDraft: {
+            ...draft,
+            sections: {
+              ...draft.sections,
+              [draft.activeSection]: {
+                ...section,
+                cuts: section.cuts.map((c) => (c.id === id ? { ...c, points } : c)),
+              },
+            },
+          },
+        }
+      }),
+
+    setTerritorySection: (section) =>
+      set((state) =>
+        state.territoryDraft
+          ? { territoryDraft: { ...state.territoryDraft, activeSection: section } }
+          : {},
+      ),
+
+    // Naming a face drops an anchor at the point the backend reported for it.
+    // Re-naming replaces any anchor already sitting in the same face, which is
+    // what makes renaming a region idempotent rather than additive.
+    setTerritoryAnchor: (name, x, y) =>
+      set((state) => {
+        const draft = state.territoryDraft
+        if (!draft) return {}
+        const section = draft.sections[draft.activeSection]
+        if (!section) return {}
+        const kept = section.anchors.filter((a) => a.x !== x || a.y !== y)
+        return {
+          territoryDraft: {
+            ...draft,
+            sections: {
+              ...draft.sections,
+              [draft.activeSection]: {
+                ...section,
+                anchors: name.trim() ? [...kept, { name: name.trim(), x, y }] : kept,
+              },
+            },
+          },
+        }
+      }),
     setLigRecModalOpen: (open) => set({ isLigRecModalOpen: open }),  // global
     setNeighborhoodModalOpen: (open) => set({ isNeighborhoodModalOpen: open }),  // global
     setGeneNmfModalOpen: (open) => set({ isGeneNmfModalOpen: open }),  // global

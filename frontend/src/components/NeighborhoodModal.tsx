@@ -6,7 +6,9 @@
  * and tests every pair of types for co-location against a label-shuffling null
  * (histoCAT / squidpy-style permutation test, abundance-controlled). Results
  * render as a types × types heatmap: Enrichment (z, red = together more than
- * chance, blue = less) or Composition (% of a type's neighbors).
+ * chance, blue = less) or Composition (% of a type's neighbors), ordered by
+ * hierarchical clustering so co-locating types sit together, and exportable
+ * as CSV (long or matrix) or SVG.
  *
  * Backend: /scanpy/neighborhood/run (background task), /scanpy/neighborhood/result.
  * Per-cell fractions land in obsm['neighborhood_composition'] → score pills.
@@ -14,11 +16,16 @@
  * Rollback: delete this file, remove its mount in App.tsx, the Spatial
  * "Neighborhood" launcher in ScanpyModal, and isNeighborhoodModalOpen in store.ts.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { appendDataset, pollTask, refreshSchema, type ObsSummary } from '../hooks/useData'
 import { resolveCategoryPalette } from '../lib/cellColors'
 import { zDomain, divergingColor, seqColor, formatZ, formatPct } from '../lib/neighborhoodViz'
+import {
+  hierarchicalOrder, dendrogramSegments, type Linkage, type DistanceMetric,
+} from '../lib/hclust'
+import { toLongCsv, toMatrixCsv } from '../lib/neighborhoodExport'
+import { standaloneSvg, downloadText } from '../lib/svgExport'
 
 const API_BASE = '/api'
 
@@ -40,6 +47,7 @@ interface NeighborhoodResult {
 
 type Phase = 'config' | 'running' | 'results'
 type View = 'z' | 'comp'
+type Ordering = 'clustered' | 'input'
 
 const TIPS: Record<string, string> = {
   column: 'Categorical .obs column (clusters or cell types) whose spatial neighborhoods to quantify.',
@@ -48,6 +56,13 @@ const TIPS: Record<string, string> = {
   radius: 'Neighborhood radius in coordinate units (only for radius mode).',
   n_perms: 'Label permutations for the null. 1000 gives stable z-scores and q-values ≥ 0.002 resolution.',
   section_col: 'Optional categorical .obs column of tissue sections. When set, neighborhoods and the permutation null never cross section boundaries.',
+}
+
+const ORDER_TIPS: Record<string, string> = {
+  order: 'Clustered orders types by how similar their neighborhoods are, which is what makes blocks of co-locating types visible. Input order is the column\u2019s own category order.',
+  clusterOn: 'Which matrix the ordering is computed from. Enrichment groups types that like (or avoid) the same partners; composition groups types whose neighborhoods have the same makeup.',
+  metric: 'Correlation compares the shape of two types\u2019 profiles and ignores how strong they are \u2014 the usual choice. Euclidean also weights magnitude; cosine sits between the two.',
+  linkage: 'Average is the robust default. Complete makes tight, equal-sized blocks; single chains types together and can produce one long ladder; ward minimises within-block variance and pairs with euclidean.',
 }
 
 function Field({ label, tip, children }: { label: string; tip: string; children: React.ReactNode }) {
@@ -93,6 +108,12 @@ export default function NeighborhoodModal() {
   const [progress, setProgress] = useState<{ frac: number; message: string; startedAt: number; now: number } | null>(null)
   const [view, setView] = useState<View>('z')
   const [hover, setHover] = useState<{ i: number; j: number } | null>(null)
+  // Ordering lives here, not in Results, so switching views does not reshuffle
+  // the heatmap under the user.
+  const [ordering, setOrdering] = useState<Ordering>('clustered')
+  const [clusterOn, setClusterOn] = useState<View>('z')
+  const [metric, setMetric] = useState<DistanceMetric>('correlation')
+  const [linkage, setLinkage] = useState<Linkage>('average')
 
   const close = () => {
     setOpen(false)
@@ -326,6 +347,14 @@ export default function NeighborhoodModal() {
             onBack={() => setPhase('config')}
             onClose={close}
             error={error}
+            ordering={ordering}
+            setOrdering={setOrdering}
+            clusterOn={clusterOn}
+            setClusterOn={setClusterOn}
+            metric={metric}
+            setMetric={setMetric}
+            linkage={linkage}
+            setLinkage={setLinkage}
           />
         )}
       </div>
@@ -333,7 +362,10 @@ export default function NeighborhoodModal() {
   )
 }
 
-function Results({ result, palette, view, setView, hover, setHover, reusedPrior, onBack, onClose, error }: {
+function Results({
+  result, palette, view, setView, hover, setHover, reusedPrior, onBack, onClose, error,
+  ordering, setOrdering, clusterOn, setClusterOn, metric, setMetric, linkage, setLinkage,
+}: {
   result: NeighborhoodResult
   palette: [number, number, number][]
   view: View
@@ -344,19 +376,46 @@ function Results({ result, palette, view, setView, hover, setHover, reusedPrior,
   onBack: () => void
   onClose: () => void
   error: string | null
+  ordering: Ordering
+  setOrdering: (o: Ordering) => void
+  clusterOn: View
+  setClusterOn: (v: View) => void
+  metric: DistanceMetric
+  setMetric: (m: DistanceMetric) => void
+  linkage: Linkage
+  setLinkage: (l: Linkage) => void
 }) {
   const cats = result.categories
   const K = cats.length
   const dom = useMemo(() => zDomain(result.zscores), [result])
   const maxComp = useMemo(() => Math.max(...result.composition.flat(), 1e-9), [result])
+  const svgRef = useRef<SVGSVGElement>(null)
+  const [exportOpen, setExportOpen] = useState(false)
+
+  // Types are ordered by the similarity of their *rows* — each row being one
+  // type's neighborhood profile. Columns take the same order: the matrix is
+  // near-symmetric (i next to j implies j next to i), and a shared order is
+  // what keeps self-neighborhood on the diagonal where it can be read.
+  const clustering = useMemo(() => {
+    if (ordering !== 'clustered' || K < 3) return null
+    const source = clusterOn === 'z' ? result.zscores : result.composition
+    return hierarchicalOrder(source, { metric, linkage })
+  }, [ordering, clusterOn, metric, linkage, result, K])
+
+  const order = useMemo(
+    () => clustering?.order ?? cats.map((_, i) => i),
+    [clustering, cats],
+  )
+  const dendro = useMemo(() => (clustering ? dendrogramSegments(clustering) : null), [clustering])
 
   const cell = Math.max(13, Math.min(26, Math.floor(440 / K)))
   const labelW = 108
   const labelH = 84
+  const dendroH = dendro ? 46 : 0
   const grid = K * cell
   const legendH = 46
   const width = labelW + grid + 16
-  const height = labelH + grid + legendH
+  const height = dendroH + labelH + grid + legendH
 
   const fill = (i: number, j: number) =>
     view === 'z' ? divergingColor(result.zscores[i][j], dom) : seqColor(result.composition[i][j] / maxComp)
@@ -366,6 +425,27 @@ function Results({ result, palette, view, setView, hover, setHover, reusedPrior,
   const h = hover
   const params = result.params ?? {}
   const graphDesc = params.mode === 'radius' ? `radius ${params.radius}` : `k=${params.n_neighs ?? 10}`
+
+  const fileBase = `neighborhood_${String(params.column ?? 'types')}`.replace(/[^\w.-]+/g, '_')
+  const doExport = (kind: 'long' | 'matrix' | 'svg') => {
+    setExportOpen(false)
+    if (kind === 'long') {
+      downloadText(`${fileBase}_stats.csv`, toLongCsv(result, order), 'text/csv')
+    } else if (kind === 'matrix') {
+      const values = view === 'z' ? result.zscores : result.composition
+      downloadText(
+        `${fileBase}_${view === 'z' ? 'zscore' : 'composition'}.csv`,
+        toMatrixCsv(values, cats, order),
+        'text/csv',
+      )
+    } else if (svgRef.current) {
+      downloadText(
+        `${fileBase}_${view === 'z' ? 'zscore' : 'composition'}.svg`,
+        standaloneSvg(svgRef.current.outerHTML, { background: '#16213e' }),
+        'image/svg+xml',
+      )
+    }
+  }
 
   return (
     <>
@@ -383,36 +463,115 @@ function Results({ result, palette, view, setView, hover, setHover, reusedPrior,
           Showing a previous run on this dataset. Use ← Change parameters to re-run.
         </div>
       )}
+
+      {/* Ordering controls — defaults are the answer for most datasets; they
+          are exposed because linkage changes what the blocks look like. */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        padding: '6px 8px', marginBottom: 8, backgroundColor: '#0f1625',
+        border: '1px solid #0f3460', borderRadius: 4,
+      }}>
+        <MiniSelect
+          label="Order" tip={ORDER_TIPS.order} value={ordering}
+          onChange={(v) => setOrdering(v as Ordering)}
+          options={[['clustered', 'Clustered'], ['input', 'Input order']]}
+          disabled={K < 3}
+        />
+        {ordering === 'clustered' && K >= 3 && (
+          <>
+            <MiniSelect
+              label="Cluster on" tip={ORDER_TIPS.clusterOn} value={clusterOn}
+              onChange={(v) => setClusterOn(v as View)}
+              options={[['z', 'Enrichment'], ['comp', 'Composition']]}
+            />
+            <MiniSelect
+              label="Distance" tip={ORDER_TIPS.metric} value={metric}
+              onChange={(v) => setMetric(v as DistanceMetric)}
+              options={[['correlation', 'Correlation'], ['euclidean', 'Euclidean'], ['cosine', 'Cosine']]}
+            />
+            <MiniSelect
+              label="Linkage" tip={ORDER_TIPS.linkage} value={linkage}
+              onChange={(v) => setLinkage(v as Linkage)}
+              options={[['average', 'Average'], ['complete', 'Complete'], ['single', 'Single'], ['ward', 'Ward']]}
+            />
+          </>
+        )}
+        <div style={{ marginLeft: 'auto', position: 'relative' }}>
+          <button onClick={() => setExportOpen((o) => !o)} style={toggle(exportOpen)}>Export ▾</button>
+          {exportOpen && (
+            <>
+              <div onClick={() => setExportOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 10 }} />
+              <div style={{
+                position: 'absolute', right: 0, top: '100%', marginTop: 4, zIndex: 11,
+                backgroundColor: '#16213e', border: '1px solid #0f3460', borderRadius: 4,
+                minWidth: 210, boxShadow: '0 4px 14px rgba(0,0,0,0.5)', overflow: 'hidden',
+              }}>
+                {([
+                  ['long', 'Statistics table (CSV)', 'every pair, all statistics'],
+                  ['matrix', `${view === 'z' ? 'Enrichment' : 'Composition'} matrix (CSV)`, 'as shown, in display order'],
+                  ['svg', 'Figure (SVG)', 'vector, editable in Illustrator'],
+                ] as const).map(([kind, label, hint]) => (
+                  <button
+                    key={kind}
+                    onClick={() => doExport(kind)}
+                    style={{
+                      display: 'block', width: '100%', textAlign: 'left', padding: '7px 10px',
+                      fontSize: 11, backgroundColor: 'transparent', color: '#eee',
+                      border: 'none', borderBottom: '1px solid #0f3460', cursor: 'pointer',
+                    }}
+                  >
+                    {label}
+                    <div style={{ fontSize: 10, color: '#777' }}>{hint}</div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
       <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>
         {view === 'z'
           ? 'Row × column: are the two types spatial neighbors more (red) or less (blue) often than chance, given their abundances? Dot = q < 0.05.'
           : 'Row × column: what fraction of the row type’s neighbors are the column type? Rows sum to 100%.'}
       </div>
 
-      <svg width={width} height={height} style={{ display: 'block', margin: '0 auto' }}>
-        {/* column labels (rotated) + swatches */}
-        {cats.map((c, j) => {
-          const x = labelW + j * cell + cell / 2
-          const [r, g, b] = palette[j] ?? [136, 136, 136]
+      <svg ref={svgRef} width={width} height={height} style={{ display: 'block', margin: '0 auto' }}>
+        {/* dendrogram over the shared row/column order */}
+        {dendro && dendro.segments.map((seg, idx) => {
+          const px = (x: number) => labelW + x * cell + cell / 2
+          const py = (y: number) => dendroH - 4 - (y / dendro.maxHeight) * (dendroH - 10)
           return (
-            <g key={`c${j}`}>
-              <rect x={labelW + j * cell + cell / 2 - 4} y={labelH - 12} width={8} height={8} rx={2}
+            <line
+              key={`d${idx}`}
+              x1={px(seg.x1)} y1={py(seg.y1)} x2={px(seg.x2)} y2={py(seg.y2)}
+              stroke="#4a6a8a" strokeWidth={1}
+            />
+          )
+        })}
+        {/* column labels (rotated) + swatches */}
+        {order.map((c, jPos) => {
+          const x = labelW + jPos * cell + cell / 2
+          const [r, g, b] = palette[c] ?? [136, 136, 136]
+          return (
+            <g key={`c${c}`}>
+              <rect x={x - 4} y={dendroH + labelH - 12} width={8} height={8} rx={2}
                 fill={`rgb(${r},${g},${b})`} />
-              <text x={x} y={labelH - 18} fill={h && h.j === j ? '#fff' : '#aaa'} fontSize={10}
-                textAnchor="start" transform={`rotate(-45 ${x} ${labelH - 18})`}>
-                {trunc(c)}<title>{c}</title>
+              <text x={x} y={dendroH + labelH - 18} fill={h && h.j === c ? '#fff' : '#aaa'} fontSize={10}
+                textAnchor="start" transform={`rotate(-45 ${x} ${dendroH + labelH - 18})`}>
+                {trunc(cats[c])}<title>{cats[c]}</title>
               </text>
             </g>
           )
         })}
         {/* row labels + swatches */}
-        {cats.map((c, i) => {
-          const y = labelH + i * cell + cell / 2
-          const [r, g, b] = palette[i] ?? [136, 136, 136]
+        {order.map((c, iPos) => {
+          const y = dendroH + labelH + iPos * cell + cell / 2
+          const [r, g, b] = palette[c] ?? [136, 136, 136]
           return (
-            <g key={`r${i}`}>
-              <text x={labelW - 16} y={y + 3} fill={h && h.i === i ? '#fff' : '#aaa'} fontSize={10} textAnchor="end">
-                {trunc(c)}<title>{c}</title>
+            <g key={`r${c}`}>
+              <text x={labelW - 16} y={y + 3} fill={h && h.i === c ? '#fff' : '#aaa'} fontSize={10} textAnchor="end">
+                {trunc(cats[c])}<title>{cats[c]}</title>
               </text>
               <rect x={labelW - 12} y={y - 4} width={8} height={8} rx={2} fill={`rgb(${r},${g},${b})`} />
             </g>
@@ -420,15 +579,15 @@ function Results({ result, palette, view, setView, hover, setHover, reusedPrior,
         })}
         {/* cells */}
         <g onMouseLeave={() => setHover(null)}>
-          {cats.map((_, i) =>
-            cats.map((_2, j) => {
+          {order.map((i, iPos) =>
+            order.map((j, jPos) => {
               const bg = fill(i, j)
               const sig = view === 'z' && result.qvals[i][j] < 0.05
               const hovered = h && h.i === i && h.j === j
               return (
                 <g key={`${i}-${j}`}>
                   <rect
-                    x={labelW + j * cell + 1} y={labelH + i * cell + 1}
+                    x={labelW + jPos * cell + 1} y={dendroH + labelH + iPos * cell + 1}
                     width={cell - 2} height={cell - 2} rx={2}
                     fill={bg}
                     stroke={hovered ? '#eee' : 'none'} strokeWidth={1.5}
@@ -436,7 +595,7 @@ function Results({ result, palette, view, setView, hover, setHover, reusedPrior,
                   />
                   {sig && (
                     <circle
-                      cx={labelW + j * cell + cell - 5} cy={labelH + i * cell + 5} r={1.8}
+                      cx={labelW + jPos * cell + cell - 5} cy={dendroH + labelH + iPos * cell + 5} r={1.8}
                       fill={luma(rgbTuple(bg)) > 140 ? '#101418' : '#eee'}
                       pointerEvents="none"
                     />
@@ -455,18 +614,18 @@ function Results({ result, palette, view, setView, hover, setHover, reusedPrior,
             ))}
           </linearGradient>
         </defs>
-        <rect x={labelW} y={labelH + grid + 18} width={150} height={8} rx={2} fill="url(#nbLegend)" />
-        <text x={labelW} y={labelH + grid + 40} fill="#888" fontSize={9} textAnchor="start">
+        <rect x={labelW} y={dendroH + labelH + grid + 18} width={150} height={8} rx={2} fill="url(#nbLegend)" />
+        <text x={labelW} y={dendroH + labelH + grid + 40} fill="#888" fontSize={9} textAnchor="start">
           {view === 'z' ? `≤ ${formatZ(-dom)}` : '0%'}
         </text>
-        <text x={labelW + 75} y={labelH + grid + 40} fill="#888" fontSize={9} textAnchor="middle">
+        <text x={labelW + 75} y={dendroH + labelH + grid + 40} fill="#888" fontSize={9} textAnchor="middle">
           {view === 'z' ? 'z = 0' : ''}
         </text>
-        <text x={labelW + 150} y={labelH + grid + 40} fill="#888" fontSize={9} textAnchor="end">
+        <text x={labelW + 150} y={dendroH + labelH + grid + 40} fill="#888" fontSize={9} textAnchor="end">
           {view === 'z' ? `≥ ${formatZ(dom)}` : formatPct(maxComp)}
         </text>
         {view === 'z' && (
-          <text x={labelW + 190} y={labelH + grid + 27} fill="#888" fontSize={9}>
+          <text x={labelW + 190} y={dendroH + labelH + grid + 27} fill="#888" fontSize={9}>
             • q &lt; 0.05
           </text>
         )}
@@ -507,6 +666,36 @@ function Results({ result, palette, view, setView, hover, setHover, reusedPrior,
         <button onClick={onClose} style={primary(true)}>Done</button>
       </div>
     </>
+  )
+}
+
+/** Compact labelled select for the ordering strip. The tip rides on the
+ *  title attribute rather than a caption line — four of these stacked with
+ *  captions would push the heatmap off screen. */
+function MiniSelect({ label, tip, value, onChange, options, disabled }: {
+  label: string
+  tip: string
+  value: string
+  onChange: (v: string) => void
+  options: [string, string][]
+  disabled?: boolean
+}) {
+  return (
+    <label title={tip} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#888' }}>
+      {label}
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          padding: '3px 6px', fontSize: 11, backgroundColor: '#0f3460',
+          color: disabled ? '#666' : '#eee', border: '1px solid #1a1a2e', borderRadius: 3,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+    </label>
   )
 }
 

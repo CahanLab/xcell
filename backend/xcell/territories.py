@@ -58,3 +58,22 @@ def _project(end: tuple[float, float], inward: tuple[float, float],
     if norm == 0:
         return end
     return (end[0] + dx / norm * reach, end[1] + dy / norm * reach)
+
+
+def derive_faces(ring: list[list[float]], cuts: list[dict[str, Any]]) -> list[Polygon]:
+    """The regions the cuts divide the ring into.
+
+    ``unary_union`` nodes every crossing (including a freehand cut crossing
+    itself), and ``polygonize`` then builds the faces bounded by that noded
+    network. Faces come out exhaustive and disjoint by construction, which is
+    the whole reason boundaries rather than regions are the stored object.
+
+    Ordered top-to-bottom then left-to-right so the UI's face list is stable
+    across re-derivations.
+    """
+    ring_poly = Polygon(ring)
+    network = unary_union([ring_poly.exterior] + extend_cuts(ring, cuts))
+    faces = [f for f in polygonize(network)
+             if f.representative_point().within(ring_poly)]
+    return sorted(faces, key=lambda f: (-round(f.centroid.y, 9),
+                                        round(f.centroid.x, 9)))

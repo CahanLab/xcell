@@ -21,6 +21,7 @@ import GeneNmfModal from './components/GeneNmfModal'
 import MetaProgramsModal from './components/MetaProgramsModal'
 import CombineColumnsPanel from './components/CombineColumnsPanel'
 import DefineSectionsPanel from './components/DefineSectionsPanel'
+import TerritoryPanel from './components/TerritoryPanel'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
 import FigureBuilder from './components/FigureBuilder'
@@ -2485,6 +2486,7 @@ export default function App() {
       <GeneNmfModal />
       <MetaProgramsModal />
       <DefineSectionsPanel />
+      <TerritoryPanel />
       <MarkerGenesModal />
       <ClusterGeneSetModal />
       <SelectByExpressionModal />

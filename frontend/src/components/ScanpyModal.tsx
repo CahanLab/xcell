@@ -498,6 +498,20 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         custom: true,
         params: [],
       },
+      territories: {
+        label: 'Define Territories',
+        description: "Draw named regions on the spatial plot and save them with the dataset. You draw the dividing cuts; xcell derives the regions between them, so neighbouring territories share a boundary exactly and cannot overlap or leave gaps. Opens the Territory tool.",
+        prerequisites: ['has_spatial'],
+        custom: true,
+        params: [],
+      },
+      assign_territories: {
+        label: 'Assign Territories',
+        description: 'Annotate cells by which territory they occupy, one .obs column per territory type, optionally plus a combined column crossing two of them. Opens the Assign Territories tool.',
+        prerequisites: ['has_spatial'],
+        custom: true,
+        params: [],
+      },
       ligrec: {
         label: 'Ligand-Receptor',
         description: 'Detect ligand-receptor signaling at cellular resolution (CytoSignal-style). Scores each cell for each L-R interaction from a spatial neighborhood, tests significance with a permutation null, and ranks interactions. Opens the Ligand-Receptor tool.',
@@ -813,7 +827,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2707,6 +2721,20 @@ export default function ScanpyModal() {
               onClick={() => { setNeighborhoodModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Neighborhood tool…
+            </button>
+          ) : selectedFunction === 'territories' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setTerritoryPanelOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Territory tool…
+            </button>
+          ) : selectedFunction === 'assign_territories' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setAssignTerritoriesOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Assign Territories…
             </button>
           ) : selectedFunction === 'gene_nmf' ? (
             <button

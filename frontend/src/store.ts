@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/shapeTransform'
 import { sortGeneSetInCategory } from './lib/geneSetOps'
+import { sectionForCut } from './lib/territoryGeometry'
 
 export interface Schema {
   n_cells: number
@@ -2331,15 +2332,21 @@ export const useStore = create<AppState>((set, get) => {
       set((state) => {
         const draft = state.territoryDraft
         if (!draft) return {}
-        const section = draft.sections[draft.activeSection]
+        // The cut belongs to the section it was drawn across, not to whichever
+        // one the panel had selected — on a multi-section slide those differ
+        // constantly, and a cut filed against the wrong section divides
+        // nothing while looking like a drawing failure.
+        const target = sectionForCut(points, draft.sections) ?? draft.activeSection
+        const section = draft.sections[target]
         if (!section) return {}
         const cut = { id: `cut_${Date.now()}_${section.cuts.length}`, points, closed }
         return {
           territoryDraft: {
             ...draft,
+            activeSection: target,
             sections: {
               ...draft.sections,
-              [draft.activeSection]: { ...section, cuts: [...section.cuts, cut] },
+              [target]: { ...section, cuts: [...section.cuts, cut] },
             },
           },
         }

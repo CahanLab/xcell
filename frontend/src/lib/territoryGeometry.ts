@@ -51,3 +51,53 @@ export function polygonPath(screenPoints: string[]): string {
   if (screenPoints.length < 3) return ''
   return `M ${screenPoints.join(' L ')} Z`
 }
+
+/** The labels `.obs` actually holds, from what `/api/obs/<column>` returns.
+ *
+ * That endpoint sends a categorical column as integer *codes* plus a separate
+ * `categories` array, while the backend matches territory sections against the
+ * column's string labels. Keying sections by the code produces sections named
+ * "1"/"2" that match no cell, and every cell then falls through to unassigned —
+ * a total failure that looks exactly like a drawing mistake.
+ */
+export function sectionLabels(
+  values: (string | number | null)[],
+  categories: string[] | undefined,
+): string[] {
+  return values.map((v) => {
+    if (v === null || v === undefined) return 'unassigned'
+    if (typeof v === 'number' && categories && categories[v] !== undefined) {
+      return categories[v]
+    }
+    return String(v)
+  })
+}
+
+/** Which section a freshly drawn cut belongs to.
+ *
+ * The user draws where they are looking, not where the panel's active section
+ * happens to be. On a multi-section slide the sections sit side by side, so the
+ * cut's own position says which one it divides — filing it against the wrong
+ * one produces a cut that divides nothing, which looks like the drawing failed.
+ *
+ * The midpoint is the test, not the endpoints: cuts are deliberately drawn to
+ * overhang the tissue edge so their ends can be extended to the ring.
+ */
+export function sectionForCut(
+  points: [number, number][],
+  sections: Record<string, { ring: [number, number][] }>,
+): string | null {
+  if (points.length === 0) return null
+  const [mx, my] = points[Math.floor(points.length / 2)]
+  for (const [name, section] of Object.entries(sections)) {
+    const ring = section.ring
+    if (ring.length < 3) continue
+    const xs = ring.map((p) => p[0])
+    const ys = ring.map((p) => p[1])
+    if (mx >= Math.min(...xs) && mx <= Math.max(...xs)
+      && my >= Math.min(...ys) && my <= Math.max(...ys)) {
+      return name
+    }
+  }
+  return null
+}

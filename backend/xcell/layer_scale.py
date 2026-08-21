@@ -97,6 +97,12 @@ def _sample_rows(M, max_cells: int, seed: int):
     return np.asarray(sub, dtype=np.float64)
 
 
+# Above this, a matrix cannot be log-transformed expression: log1p of a
+# library-normalized count is under 10, and log1p of a raw count of a million
+# is under 14. Used to skip — not merely to protect — the expm1 check.
+_MAX_LOG_SCALE_VALUE = 50.0
+
+
 def _cv(values: np.ndarray) -> float | None:
     """Coefficient of variation, or None when it isn't defined.
 
@@ -207,12 +213,19 @@ def assess_matrix_scale(
     stats['row_sum_median'] = float(np.median(row_sums))
     stats['row_sum_cv'] = _cv(row_sums)
 
-    # expm1 only makes sense on non-negative data, and overflows on large
-    # values — both cases just leave the log-scale check unavailable.
-    if not has_negative and vmax < 700:
+    # expm1 only makes sense on non-negative data, and only answers a question
+    # worth asking when the values could be on a log scale at all: log1p of a
+    # library-normalized count tops out near 9, and even log1p of a millionfold
+    # count is under 14. Past _MAX_LOG_SCALE_VALUE the matrix is certainly not
+    # log-transformed, and expm1 of it overflows — element-wise below 700, but
+    # the row *sums* and the squares inside the standard deviation overflow far
+    # sooner, which is how inf reached the JSON encoder and 500'd the route.
+    if not has_negative and vmax < _MAX_LOG_SCALE_VALUE:
         expm1_sums = np.expm1(A).sum(axis=1)
-        stats['expm1_row_sum_median'] = float(np.median(expm1_sums))
-        stats['expm1_row_sum_cv'] = _cv(expm1_sums)
+        median = float(np.median(expm1_sums))
+        if np.isfinite(median):
+            stats['expm1_row_sum_median'] = median
+            stats['expm1_row_sum_cv'] = _cv(expm1_sums)
 
     reasons = list(nonfinite_reason)
 
@@ -340,8 +353,16 @@ def provenance_from_history(history: list[dict], layer_name: str) -> list[str]:
             out.append('xcell ran scale on .X (genes centered/scaled)')
         elif action == 'smooth' and result.get('output_layer') == layer_name:
             src = result.get('source_layer') or params.get('source_layer') or 'X'
+            post = result.get('post_transform') or params.get('post_transform') or 'none'
+            # What was averaged, and what was done to the average, are both
+            # needed to know what the numbers mean — a smoothed counts layer
+            # and a smoothed-then-log-normalized one look nothing alike.
+            after = {
+                'cp10k': ', then normalized each cell to 10,000',
+                'lognorm': ', then normalized each cell to 10,000 and took log1p',
+            }.get(post, '')
             out.append(
                 f'xcell produced this layer by smoothing {src} over '
-                f'{result.get("graph_key", "a kNN graph")}'
+                f'{result.get("graph_key", "a kNN graph")}{after}'
             )
     return out

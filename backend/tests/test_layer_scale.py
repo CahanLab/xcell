@@ -229,3 +229,54 @@ def test_route_layers_exposes_scale(monkeypatch):
     assert layers['counts']['scale']['label'] == 'raw counts'
     assert isinstance(layers['X']['scale']['reasons'], list)
     assert isinstance(layers['X']['scale']['stats']['max'], float)
+
+
+# --------------------------------------------------------------------------
+# Deep counts. A raw-count matrix with a few large values is ordinary; it used
+# to make the log-scale hypothesis check overflow, and inf has no JSON
+# encoding, so /api/scanpy/layers answered 500 and every layer picker in the
+# app silently fell back to a bare ".X" with no scale shown.
+# --------------------------------------------------------------------------
+
+def _deep_counts(n=60, n_genes=400, seed=0):
+    rng = np.random.default_rng(seed)
+    X = rng.poisson(0.4, (n, n_genes)).astype(np.float32)
+    # A handful of very highly expressed genes, as in any real dataset with
+    # haemoglobin or mitochondrial reads.
+    X[:, :5] = rng.integers(300, 600, (n, 5))
+    return csr_matrix(X)
+
+
+def test_deep_counts_produce_no_infinities():
+    stats = assess_matrix_scale(_deep_counts())['stats']
+    bad = {k: v for k, v in stats.items()
+           if isinstance(v, float) and not np.isfinite(v)}
+    assert bad == {}, bad
+
+
+def test_deep_counts_leave_the_log_check_unavailable_not_infinite():
+    """None means "no evidence", which is what the classifier's rules expect;
+    inf would be read as a number."""
+    stats = assess_matrix_scale(_deep_counts())['stats']
+    assert stats['expm1_row_sum_cv'] is None
+
+
+def test_deep_counts_are_still_called_raw_counts():
+    assert assess_matrix_scale(_deep_counts())['verdict'] == 'raw_counts'
+
+
+def test_the_layers_route_serves_deep_counts_rather_than_500ing():
+    import json
+
+    ad = anndata.AnnData(X=_deep_counts())
+    ad.var_names = [f'g{i}' for i in range(ad.n_vars)]
+    ad.obs_names = [f'c{i}' for i in range(ad.n_obs)]
+    a = DataAdaptor('deep.h5ad', adata=ad)
+    routes.set_adaptor(a, slot='primary')
+
+    client = TestClient(app)
+    resp = client.get('/api/scanpy/layers')
+    assert resp.status_code == 200, resp.text
+    # The response really is encodable — the failure was at serialization time.
+    json.dumps(resp.json())
+    assert resp.json()['layers'][0]['scale']['verdict'] == 'raw_counts'

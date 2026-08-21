@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useStore, type DatasetSlot } from '../store'
 import { appendDataset, pollTask, refreshSchema } from '../hooks/useData'
 import { assignRoles, type RefSlot } from '../lib/localizeRoles'
-import { adviseParameters, type PopulationGeometry } from '../lib/localizeAdvice'
+import { adviseParameters, adviseLayers, type PopulationGeometry } from '../lib/localizeAdvice'
+import { layerOptionLabel, LayerScaleBadge, type LayerInfo } from './LayerScaleInfo'
 
 /**
  * Localize — predict where each dissociated cell came from, using a spatial
@@ -84,6 +85,8 @@ const TIPS: Record<string, string> = {
   k: 'How many spatial cells vote on each prediction. Too few is noisy; too many drags every cell toward the tissue centre.',
   transform: 'Applied to each dataset separately — that is what removes platform-level differences in per-gene capture. z-score is the safe default across platforms; rank additionally survives any monotone difference.',
   metric: 'How similarity between two cells is measured. Correlation on z-scored data and cosine coincide.',
+  reference_layer: 'Which matrix on the spatial reference the profiles come from. A layer smoothed over the reference\u2019s spatial graph is the one worth trying: it averages out spot-level counting noise in the thing every query cell is matched against.',
+  query_layer: 'Which matrix on the dataset being localized the profiles come from. Usually .X; a layer smoothed over an expression kNN graph is an option for very sparse query data.',
   aggregation: 'How the k neighbours become one point. weighted_mean is the classic estimator; densest lands the cell in real tissue when its neighbours sit in two separate patches, though it cannot say which patch; best_match snaps to a real reference cell; injective does the same but gives every cell a different one, which removes pile-up and asserts that the query’s composition matches the tissue’s; transport solves for all cells at once, subject to the tissue being occupied, which is the only option that trades between filling the tissue and keeping the gradient rather than sitting at one end.',
   epsilon: 'How much each cell is allowed to hedge across reference spots, in units of the cost matrix’s own spread — so the same value means the same thing whatever transform and metric you chose. Lower fills more of the tissue and behaves more like best match; higher averages more and eventually collapses toward the tissue centre. Measured on an E11.5 limb pair the useful band is roughly 0.03 to 0.3: at 0.05 the map covers 44% of the tissue over 1,774 distinct spots, at 0.5 it is down to 5.5% with the epidermis inverted again. Below 0.03 it converges too slowly to be worth it.',
   min_confidence: 'Cells whose neighbours disagree about location this badly get no coordinate at all, rather than a fabricated one. Leave at 0 to place everything and filter later.',
@@ -142,6 +145,13 @@ export default function LocalizeModal() {
   const [minConfidence, setMinConfidence] = useState('0')
   const [sectionCol, setSectionCol] = useState('')
   const [keyAdded, setKeyAdded] = useState('X_spatial_pred')
+  // Which matrix each side is read from. 'X' means .X, matching the backend's
+  // layer=None. The two are independent: a smoothed ST reference paired with
+  // an unsmoothed dissociated query is a normal thing to want.
+  const [queryLayer, setQueryLayer] = useState('X')
+  const [refLayer, setRefLayer] = useState('X')
+  const [queryLayers, setQueryLayers] = useState<LayerInfo[]>([])
+  const [refLayers, setRefLayers] = useState<LayerInfo[]>([])
 
   const [mapMetrics, setMapMetrics] = useState<MapMetrics[] | null>(null)
   const [scoring, setScoring] = useState(false)
@@ -249,6 +259,32 @@ export default function LocalizeModal() {
     if (isOpen) loadSlots()
   }, [isOpen, loadSlots])
 
+  // The readable matrices on each side, with the scale classification that
+  // makes the choice meaningful. Fetched per slot: the query and the reference
+  // are different datasets and rarely carry the same layers.
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    const load = (slot: string | null, set: (v: LayerInfo[]) => void) => {
+      if (!slot) { set([]); return }
+      fetch(appendDataset(`${API}/scanpy/layers`, slot as DatasetSlot))
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (!cancelled && d?.layers) set(d.layers as LayerInfo[]) })
+        .catch(() => { /* the picker falls back to .X */ })
+    }
+    load(querySlot, setQueryLayers)
+    load(reference, setRefLayers)
+    return () => { cancelled = true }
+  }, [isOpen, querySlot, reference])
+
+  // A layer chosen on one dataset need not exist on the next one loaded.
+  useEffect(() => {
+    if (queryLayers.length && !queryLayers.some((l) => l.name === queryLayer)) setQueryLayer('X')
+  }, [queryLayers, queryLayer])
+  useEffect(() => {
+    if (refLayers.length && !refLayers.some((l) => l.name === refLayer)) setRefLayer('X')
+  }, [refLayers, refLayer])
+
   useEffect(() => {
     // Only a .var flag can be previewed by name; a gene list is checked when
     // the run starts, and the count below reports it either way.
@@ -297,6 +333,8 @@ export default function LocalizeModal() {
     epsilon: Number(epsilon) || 0.05,
     section_col: sectionCol || null,
     gene_subset: geneSubset,
+    layer: queryLayer === 'X' ? null : queryLayer,
+    reference_layer: refLayer === 'X' ? null : refLayer,
   })
 
   /** Score every predicted embedding in the query against the reference. */
@@ -346,7 +384,12 @@ export default function LocalizeModal() {
       const r = await fetch(appendDataset(`${API}/localize/cross_validate`, querySlot as DatasetSlot), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body(), holdout_fraction: 0.2 }),
+        // Cross-validation holds out part of the *reference* and predicts it
+        // from the rest, so the matrix it reads is the reference's.
+        body: JSON.stringify({
+          ...body(), holdout_fraction: 0.2,
+          layer: refLayer === 'X' ? null : refLayer,
+        }),
       })
       const payload = await r.json()
       if (!r.ok) throw new Error(payload.detail || `HTTP ${r.status}`)
@@ -395,16 +438,25 @@ export default function LocalizeModal() {
   const basisGenes = basis.startsWith('set:')
     ? (geneSets.find((g) => g.id === basis.slice(4))?.genes.length ?? null)
     : (overlap?.n_shared ?? null)
-  const advice = adviseParameters({
-    k: Number(k) || 0,
-    transform, metric, aggregation,
-    minConfidence: Number(minConfidence) || 0,
-    epsilon: Number(epsilon) || 0.05,
-    nReferenceCells: chosenRef?.n_cells ?? 0,
-    nQueryCells: queryInfo?.n_cells ?? 0,
-    nSharedGenes: basisGenes,
-    populations,
-  })
+  const queryLayerInfo = queryLayers.find((l) => l.name === queryLayer)
+  const refLayerInfo = refLayers.find((l) => l.name === refLayer)
+  const advice = [
+    ...adviseParameters({
+      k: Number(k) || 0,
+      transform, metric, aggregation,
+      minConfidence: Number(minConfidence) || 0,
+      epsilon: Number(epsilon) || 0.05,
+      nReferenceCells: chosenRef?.n_cells ?? 0,
+      nQueryCells: queryInfo?.n_cells ?? 0,
+      nSharedGenes: basisGenes,
+      populations,
+    }),
+    ...adviseLayers({
+      queryScale: queryLayerInfo?.scale?.verdict ?? null,
+      referenceScale: refLayerInfo?.scale?.verdict ?? null,
+      transform,
+    }),
+  ]
 
   return (
     <div onClick={close} style={overlayStyle}>
@@ -525,6 +577,40 @@ export default function LocalizeModal() {
             about position.
             {geneColumns.length === 0 &&
               ' This reference carries no .var flags yet — run Spatial → Spatial Autocorrelation on it to create one.'}
+          </div>
+
+          {/* Source matrix — which matrix each side is read from. Kept next to
+              the gene basis: both answer "what expression is being compared",
+              and both are invisible in the result if you get them wrong. */}
+          <div style={{ ...sectionLabel, marginTop: 14 }}>Source matrix</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <Field label="Reference matrix" tip={TIPS.reference_layer}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <select value={refLayer} onChange={(e) => setRefLayer(e.target.value)} style={input}>
+                  {(refLayers.length ? refLayers : [{ name: 'X', density: 0 } as LayerInfo])
+                    .map((L) => <option key={L.name} value={L.name}>{layerOptionLabel(L)}</option>)}
+                </select>
+                <LayerScaleBadge layer={refLayerInfo} align="right" />
+              </div>
+            </Field>
+            <Field label="Query matrix" tip={TIPS.query_layer}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <select value={queryLayer} onChange={(e) => setQueryLayer(e.target.value)} style={input}>
+                  {(queryLayers.length ? queryLayers : [{ name: 'X', density: 0 } as LayerInfo])
+                    .map((L) => <option key={L.name} value={L.name}>{layerOptionLabel(L)}</option>)}
+                </select>
+                <LayerScaleBadge layer={queryLayerInfo} align="right" />
+              </div>
+            </Field>
+          </div>
+          <div style={{ fontSize: 10.5, color: dark.faint, marginTop: 4 }}>
+            Smoothing the <i>reference</i> over its spatial graph (Preprocess →
+            Smooth on the spatial dataset) raises the positional signal
+            substantially: on an E11.5 limb held-out test it roughly tripled the
+            share of spots placed within 10% of the tissue radius, and the
+            transform it was smoothed on barely mattered — the per-dataset
+            transform below absorbs that. See
+            <code> docs/measurements/2026-08-21-smoothing-transform.md</code>.
           </div>
 
           {/* Parameters */}

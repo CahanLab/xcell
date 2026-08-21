@@ -129,3 +129,66 @@ export function adviseParameters(o: LocalizeSettings): Advice[] {
   }
   return out
 }
+
+/** Which matrices are comparable without a per-dataset transform.
+ *
+ * Localize compares two datasets directly, so what matters is not the exact
+ * scale of either matrix but whether the two live in the same space — and
+ * whether the transform closes the gap. Anything the classifier could not call
+ * is left out: silence beats a warning derived from a guess.
+ */
+const SCALE_FAMILY: Record<string, string> = {
+  raw_counts: 'linear',
+  normalized_linear: 'linear',
+  log_normalized: 'log',
+  log_transformed: 'log',
+  z_scored: 'z',
+  binary: 'binary',
+}
+
+export interface LayerSettings {
+  /** `scale.verdict` for the matrix each side reads, or null when unknown. */
+  queryScale?: string | null
+  referenceScale?: string | null
+  transform: string
+}
+
+export function adviseLayers(o: LayerSettings): Advice[] {
+  const out: Advice[] = []
+  const qf = SCALE_FAMILY[o.queryScale ?? '']
+  const rf = SCALE_FAMILY[o.referenceScale ?? '']
+
+  // A per-dataset transform is exactly what makes two platforms comparable, so
+  // only 'none' leaves a scale difference standing.
+  if (o.transform === 'none' && qf && rf && qf !== rf) {
+    out.push({ level: 'warn', text:
+      `The query matrix is on a different scale to the reference (${o.queryScale} vs ${o.referenceScale}) ` +
+      'and the transform is "none", so the similarity will be driven by that difference rather than by ' +
+      'biology. Pick z-score or rank, or read matching matrices on both sides.' })
+  }
+
+  // z-scoring linear counts standardises a heavy-tailed column: the handful of
+  // cells carrying most of a gene's counts end up dominating the correlation.
+  if (o.transform === 'zscore' && (qf === 'linear' || rf === 'linear')) {
+    const which = qf === 'linear' && rf === 'linear' ? 'Both matrices are'
+      : qf === 'linear' ? 'The query matrix is' : 'The reference matrix is'
+    out.push({ level: 'warn', text:
+      `${which} on a linear count scale. z-scoring counts leaves the distribution heavy-tailed, so a ` +
+      'few high-expressing cells dominate each gene — a log-normalized matrix, or the rank transform, ' +
+      'is the steadier basis.' })
+  }
+
+  if (o.transform === 'rank') {
+    out.push({ level: 'info', text:
+      'Rank is invariant to any monotone transform, so log versus linear makes no difference to the ' +
+      'result — but which matrix you read still does, since smoothing changes the ordering of genes ' +
+      'within a cell.' })
+  }
+
+  if (o.transform === 'zscore' && (qf === 'z' || rf === 'z')) {
+    out.push({ level: 'info', text:
+      'One side is already z-scored; re-standardizing it is harmless but redundant.' })
+  }
+
+  return out
+}

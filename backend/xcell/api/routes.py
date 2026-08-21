@@ -3968,6 +3968,132 @@ def export_analysis_record(request: RecordExportRequest, dataset: str | None = Q
 
 
 # =========================================================================
+# Territories — hand-drawn regions that annotate cells by occupancy
+# =========================================================================
+
+
+class TerritoryCut(BaseModel):
+    id: str
+    points: list[list[float]]
+    closed: bool = False
+
+
+class TerritoryAnchor(BaseModel):
+    name: str
+    x: float
+    y: float
+
+
+class TerritoryFacesRequest(BaseModel):
+    ring: list[list[float]]
+    cuts: list[TerritoryCut] = []
+    anchors: list[TerritoryAnchor] = []
+
+
+@router.post("/territories/faces")
+def territory_faces(request: TerritoryFacesRequest):
+    """Derive the regions a set of cuts divides a ring into.
+
+    Deliberately stateless — no dataset, no adaptor. The drawing panel calls
+    this on every edit, and a preview that could observe (or block on) live
+    dataset state would couple a drag gesture to whatever else is running.
+    """
+    from xcell import territories as terr
+
+    if len(request.ring) < 3:
+        raise HTTPException(status_code=400, detail='A ring needs at least 3 points')
+    try:
+        cuts = [c.model_dump() for c in request.cuts]
+        faces = terr.derive_faces(request.ring, cuts)
+        names = terr.name_faces(faces, [a.model_dump() for a in request.anchors])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        'faces': [
+            {
+                'polygon': [[float(x), float(y)] for x, y in f.exterior.coords],
+                'name': n,
+                'area': float(f.area),
+                # Where the panel would drop an anchor to name this face, so it
+                # needs no geometry of its own.
+                'anchor': [float(f.representative_point().x),
+                           float(f.representative_point().y)],
+            }
+            for f, n in zip(faces, names)
+        ]
+    }
+
+
+class TerritorySection(BaseModel):
+    ring: list[list[float]]
+    cuts: list[TerritoryCut] = []
+    anchors: list[TerritoryAnchor] = []
+
+
+class TerritoryTypeRequest(BaseModel):
+    embedding: str = 'spatial'
+    section_col: str | None = None
+    sections: dict[str, TerritorySection]
+    source: str = 'drawn'
+
+
+@router.get("/territories")
+def list_territories(dataset: str | None = Query(None)):
+    """Every territory type saved on this dataset."""
+    adaptor = get_adaptor(dataset)
+    return {"territories": adaptor.get_territories()}
+
+
+@router.put("/territories/{type_name}")
+def put_territory(
+    type_name: str,
+    request: TerritoryTypeRequest,
+    dataset: str | None = Query(None),
+):
+    """Save (or replace) one territory type on this dataset."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.save_territories(type_name, request.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/territories/{type_name}")
+def delete_territory(type_name: str, dataset: str | None = Query(None)):
+    """Forget one territory type. Any .obs columns it produced are left alone."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.delete_territories(type_name)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class TerritoryAssignRequest(BaseModel):
+    types: list[str]
+    combine: bool = False
+    embedding: str | None = None
+
+
+@router.post("/territories/assign")
+def assign_territories(
+    request: TerritoryAssignRequest,
+    dataset: str | None = Query(None),
+):
+    """Annotate cells by which territory they occupy."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.assign_territories(
+            types=request.types,
+            combine=request.combine,
+            embedding=request.embedding,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
 # Localize — predicting spatial coordinates from a spatial reference
 # =========================================================================
 

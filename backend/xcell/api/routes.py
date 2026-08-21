@@ -2320,6 +2320,7 @@ class SmoothRequest(BaseModel):
     source_layer: str | None = None
     output_layer: str = 'smoothed'
     self_loop_weight: float = 1.0
+    post_transform: str = 'none'
 
 
 @router.post("/scanpy/smooth")
@@ -2333,6 +2334,7 @@ def run_smooth(request: SmoothRequest, dataset: str | None = Query(None)):
             source_layer=request.source_layer,
             output_layer=request.output_layer,
             self_loop_weight=request.self_loop_weight,
+            post_transform=request.post_transform,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

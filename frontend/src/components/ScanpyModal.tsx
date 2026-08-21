@@ -154,6 +154,9 @@ interface ParamDef {
   default: string | number | null
   description: string
   options?: string[]
+  /** Human labels for `options`, keyed by value. Absent keys show the value,
+   *  which is right for options that already read as words ('true'/'false'). */
+  optionLabels?: Record<string, string>
   /** The name the backend expects, when it differs from the one shown here. */
   sendAs?: string
   obsDtype?: 'numeric' | 'category'
@@ -266,6 +269,7 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'output_layer', label: 'Output layer', type: 'text', default: 'smoothed', description: 'Name of the layer to write the smoothed matrix to (overwrites if exists)' },
           { name: 'n_steps', label: 'Steps', type: 'number', default: 1, description: 'Number of smoothing iterations (1 is usually plenty)' },
           { name: 'self_loop_weight', label: 'Self-loop weight', type: 'number', default: 1.0, description: 'α in (D⁻¹·(A+α·I))·X. 0 = pure neighbor average; ≥1 = blend with own value (less smoothing).' },
+          { name: 'post_transform', label: 'After averaging', type: 'select', default: 'none', options: ['none', 'cp10k', 'lognorm'], optionLabels: { none: 'nothing — keep the source scale', cp10k: 'normalize each cell to 10,000', lognorm: 'normalize, then log1p (recommended from counts)' }, description: 'Averaging does not commute with the log, so the matrix you average matters. Averaging counts and transforming afterwards is the better-scoring pipeline on held-out data; this applies that transform in one step, since Normalize Total and Log1p can only write .X.' },
         ],
       },
     },
@@ -864,7 +868,10 @@ export default function ScanpyModal() {
   const [combineTargetKey, setCombineTargetKey] = useState<string>('combined_connectivities')
 
   // Layer + graph dropdowns (smooth + gene_pca/gene_neighbors source overrides)
-  type LayerInfo = { name: string; nnz: number; density: number; is_default?: boolean }
+  type LayerInfo = {
+    name: string; nnz: number; density: number; is_default?: boolean
+    scale?: { verdict: string; label: string }
+  }
   const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
   const [availableGraphs, setAvailableGraphs] = useState<NeighborGraphInfo[]>([])
   // The last output name this component filled in, so a name the user typed is
@@ -1835,6 +1842,40 @@ export default function ScanpyModal() {
           </div>
         )}
 
+        {/* Which matrix is being averaged decides what the layer means.
+            Measured, not asserted: docs/measurements/2026-08-21-smoothing-transform.md */}
+        {selectedFunction === 'smooth' && (() => {
+          const src = availableLayers.find(
+            (L) => L.name === (paramValues['source_layer'] ?? 'X'),
+          )
+          const verdict = src?.scale?.verdict
+          const post = paramValues['post_transform'] ?? 'none'
+          let tone = '#4ecdc4'
+          let text: string | null = null
+          if (verdict === 'log_normalized' || verdict === 'log_transformed') {
+            tone = '#e9a23b'
+            text = 'This matrix is on a log scale, and the average of logs is not the log of the average. '
+              + 'On E11.5 limb ST data a smoothed log layer landed 70–83% below log1p of the smoothed '
+              + 'expression, the gap widening with expression level — so the values keep their ordering '
+              + 'but stop meaning "log expression". For a denoised matrix you can read as expression, '
+              + 'smooth a counts layer instead and set “After averaging” to normalize + log1p.'
+          } else if (verdict === 'raw_counts' && post === 'none') {
+            text = 'Counts average well — this is the pipeline that scored best on held-out data. The '
+              + 'result stays on a raw count scale, though, so set “After averaging” to normalize + log1p '
+              + 'if you want a matrix downstream tools can read as expression.'
+          } else if (verdict === 'raw_counts' && post === 'lognorm') {
+            text = 'Counts → average → normalize → log1p: the best-scoring pipeline on held-out molecular '
+              + 'cross-validation, and the one that keeps a deeper neighbour counting for more.'
+          }
+          if (!text) return null
+          return (
+            <div style={{ fontSize: '12px', padding: '8px', borderRadius: '4px', marginBottom: '16px',
+              borderLeft: `3px solid ${tone}`, backgroundColor: `${tone}1a`, color: tone, lineHeight: 1.5 }}>
+              {text}
+            </div>
+          )
+        })()}
+
         {/* Cell PCA variance chart for Neighbors */}
         {selectedFunction === 'neighbors' && cellVarianceData && (
           <div style={{ marginBottom: '12px' }}>
@@ -2450,6 +2491,7 @@ export default function ScanpyModal() {
                           {availableLayers.map((L) => (
                             <option key={L.name} value={L.name}>
                               {L.name === 'X' ? '.X (default)' : L.name}
+                              {L.scale ? ` — ${L.scale.label}` : ''}
                               {L.density > 0 ? ` — ${(L.density * 100).toFixed(1)}% dense` : ''}
                             </option>
                           ))}
@@ -2531,7 +2573,7 @@ export default function ScanpyModal() {
                         >
                           {param.options?.map((opt) => (
                             <option key={opt} value={opt}>
-                              {opt}
+                              {param.optionLabels?.[opt] ?? opt}
                             </option>
                           ))}
                         </select>

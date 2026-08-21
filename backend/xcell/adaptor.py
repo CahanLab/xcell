@@ -9304,6 +9304,94 @@ class DataAdaptor:
         self._log_action('save_territories', {'type': type_name}, result)
         return result
 
+    TERRITORY_PREFIX = 'territory_'
+    TERRITORY_UNASSIGNED = 'unassigned'
+
+    def assign_territories(
+        self,
+        types: list[str],
+        combine: bool = False,
+        embedding: str | None = None,
+    ) -> dict[str, Any]:
+        """Label every cell by the territory it occupies, one column per type.
+
+        Coordinates come from the embedding each type was drawn in, so a type
+        imported from a spatial reference reads the *predicted* coordinates on
+        this dataset while a locally drawn type reads the real ones.
+        """
+        from xcell import territories as terr
+
+        stored = self.get_territories()
+        missing = [t for t in types if t not in stored]
+        if missing:
+            raise KeyError(f"No territory type(s): {missing}")
+        if combine and len(types) < 2:
+            raise ValueError('Combining needs at least two types')
+
+        out: dict[str, Any] = {'types': {}}
+        written: list[str] = []
+
+        for type_name in types:
+            spec = stored[type_name]
+            emb = embedding or spec.get('embedding') or 'spatial'
+            if emb not in self.adata.obsm:
+                raise ValueError(
+                    f"Territory type '{type_name}' was drawn in embedding "
+                    f"'{emb}', which this dataset does not have."
+                )
+            coords = np.asarray(self.adata.obsm[emb], dtype=float)[:, :2]
+            placed = np.isfinite(coords).all(axis=1)
+
+            labels = np.full(self.n_cells, self.TERRITORY_UNASSIGNED, dtype=object)
+            section_col = spec.get('section_col')
+            if section_col and section_col in self.adata.obs.columns:
+                section_of = self.adata.obs[section_col].astype(str).values
+            else:
+                # One tissue: every cell belongs to whatever single section the
+                # geometry defines.
+                only = next(iter(spec['sections']))
+                section_of = np.full(self.n_cells, only, dtype=object)
+
+            for section_name, block in spec['sections'].items():
+                mask = (section_of == section_name) & placed
+                if not mask.any():
+                    continue
+                faces = terr.derive_faces(block['ring'], block.get('cuts') or [])
+                names = terr.name_faces(faces, block.get('anchors') or [])
+                labels[mask] = terr.assign(
+                    coords[mask], faces, names,
+                    unassigned=self.TERRITORY_UNASSIGNED,
+                )
+
+            series = pd.Series(labels, index=self.adata.obs_names, dtype=object)
+            series[~placed] = np.nan          # no coordinate is not "outside"
+            column = f'{self.TERRITORY_PREFIX}{type_name}'
+            self.adata.obs[column] = pd.Categorical(series)
+            written.append(column)
+
+            counts = series.dropna().value_counts()
+            out['types'][type_name] = {
+                'column': column,
+                'counts': {str(k): int(v) for k, v in counts.items()},
+                'n_unplaced': int((~placed).sum()),
+            }
+
+        if combine:
+            parts = [self.adata.obs[f'{self.TERRITORY_PREFIX}{t}'].astype(str)
+                     for t in types]
+            joined = parts[0]
+            for p in parts[1:]:
+                joined = joined.str.cat(p, sep='|')
+            column = f'{self.TERRITORY_PREFIX}{"__".join(types)}'
+            self.adata.obs[column] = pd.Categorical(joined)
+            written.append(column)
+            out['combined_column'] = column
+
+        out['columns'] = written
+        self._log_action('assign_territories',
+                         {'types': list(types), 'combine': bool(combine)}, out)
+        return out
+
     def delete_territories(self, type_name: str) -> dict[str, Any]:
         """Forget one territory type. Its .obs columns are left alone."""
         stored = self.get_territories()

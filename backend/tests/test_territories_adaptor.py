@@ -124,3 +124,106 @@ def test_territories_survive_an_h5ad_round_trip(tmp_path):
     reloaded = DataAdaptor(str(path), adata=anndata.read_h5ad(path))
     assert reloaded.get_territories()["prox-dist"]["sections"]["A"]["cuts"][0]["points"] \
         == [[1.0, 5.0], [9.0, 5.0]]
+
+
+# --- assignment -----------------------------------------------------------
+
+def test_assignment_writes_a_prefixed_categorical_column():
+    a = _adaptor()
+    a.save_territories("prox-dist", _payload())
+    a.assign_territories(["prox-dist"])
+    col = a.adata.obs["territory_prox-dist"]
+    assert isinstance(col.dtype, pd.CategoricalDtype)
+    assert set(col.dropna().unique()) <= {"proximal", "distal", "unassigned"}
+
+
+def test_every_cell_above_the_cut_is_proximal():
+    a = _adaptor()
+    a.save_territories("prox-dist", _payload())
+    a.assign_territories(["prox-dist"])
+    ys = a.adata.obsm["spatial"][:, 1]
+    labels = a.adata.obs["territory_prox-dist"].astype(str).values
+    assert set(labels[ys > 5.0]) == {"proximal"}
+    assert set(labels[ys < 5.0]) == {"distal"}
+
+
+def test_the_result_reports_counts_per_territory():
+    a = _adaptor()
+    a.save_territories("prox-dist", _payload())
+    result = a.assign_territories(["prox-dist"])
+    counts = result["types"]["prox-dist"]["counts"]
+    assert counts["proximal"] + counts["distal"] == a.n_cells
+
+
+def test_a_section_is_only_assigned_by_its_own_faces():
+    """Sections sit side by side in one coordinate space; a section-blind
+    implementation looks perfectly correct here and is wrong."""
+    a = _adaptor()
+    payload = _payload(sections=("A",))          # geometry for A only
+    a.save_territories("prox-dist", payload)
+    a.assign_territories(["prox-dist"])
+    labels = a.adata.obs["territory_prox-dist"].astype(str).values
+    is_b = (a.adata.obs["section"].astype(str) == "B").values
+    assert set(labels[is_b]) == {"unassigned"}
+    assert "proximal" in set(labels[~is_b])
+
+
+def test_the_same_name_in_two_sections_yields_one_label():
+    a = _adaptor()
+    a.save_territories("prox-dist", _payload())
+    a.assign_territories(["prox-dist"])
+    labels = a.adata.obs["territory_prox-dist"].astype(str)
+    by_section = labels.groupby(a.adata.obs["section"].astype(str)).unique()
+    assert set(by_section["A"]) == set(by_section["B"])
+
+
+def test_a_dataset_without_the_section_column_uses_the_single_ring():
+    ad = _adata(sections=False)
+    a = DataAdaptor("t.h5ad", adata=ad)
+    a.save_territories("prox-dist", _payload(section_col=None, sections=("all",)))
+    a.assign_territories(["prox-dist"])
+    assert "unassigned" not in set(a.adata.obs["territory_prox-dist"].astype(str))
+
+
+def test_combining_two_types_writes_a_third_column():
+    a = _adaptor()
+    a.save_territories("prox-dist", _payload())
+    a.save_territories("ant-post", _payload())
+    a.assign_territories(["prox-dist", "ant-post"], combine=True)
+    combined = a.adata.obs["territory_prox-dist__ant-post"].astype(str)
+    assert combined.iloc[0] == "|".join([
+        a.adata.obs["territory_prox-dist"].astype(str).iloc[0],
+        a.adata.obs["territory_ant-post"].astype(str).iloc[0],
+    ])
+
+
+def test_combining_needs_at_least_two_types():
+    a = _adaptor()
+    a.save_territories("prox-dist", _payload())
+    with pytest.raises(ValueError, match="at least two"):
+        a.assign_territories(["prox-dist"], combine=True)
+
+
+def test_assigning_an_unknown_type_is_an_error():
+    a = _adaptor()
+    with pytest.raises(KeyError, match="nope"):
+        a.assign_territories(["nope"])
+
+
+def test_a_cell_with_no_coordinate_gets_na_not_unassigned():
+    """NaN means "no position"; unassigned means "positioned outside every
+    territory". Collapsing them would hide unplaced cells."""
+    a = _adaptor()
+    a.save_territories("prox-dist", _payload())
+    coords = a.adata.obsm["spatial"].copy()
+    coords[0] = [np.nan, np.nan]
+    a.adata.obsm["spatial"] = coords
+    a.assign_territories(["prox-dist"])
+    assert pd.isna(a.adata.obs["territory_prox-dist"].iloc[0])
+
+
+def test_assignment_is_recorded_in_the_analysis_record():
+    a = _adaptor()
+    a.save_territories("prox-dist", _payload())
+    a.assign_territories(["prox-dist"])
+    assert any(e["action"] == "assign_territories" for e in a._action_history)

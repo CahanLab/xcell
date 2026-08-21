@@ -8,6 +8,7 @@ import { SnapshotLayer, renderSnapshotToCanvas } from './SnapshotPanel'
 import { layerWeightFn, useCellColor } from '../lib/cellColors'
 import { pickScaleBar } from '../lib/scaleBar'
 import { appendDataset } from '../hooks/useData'
+import { faceColor, polygonPath } from '../lib/territoryGeometry'
 
 interface ScatterPlotProps {
   slot?: DatasetSlot
@@ -347,6 +348,10 @@ export default function ScatterPlot({
   const cellSortVersion = useStore((state) =>
     slot ? state.datasets[slot].cellSortVersion : state.cellSortVersion
   )
+  const territoryDraft = useStore((state) => state.territoryDraft)
+  const [territoryFaces, setTerritoryFaces] = useState<
+    { polygon: [number, number][]; name: string | null; anchor: [number, number] }[]
+  >([])
   const drawnLines = useStore((state) =>
     slot ? state.datasets[slot].drawnLines : state.drawnLines
   )
@@ -966,6 +971,34 @@ export default function ScatterPlot({
   }, [linePoints, dataToScreen])
 
   // Filter and convert stored lines to SVG paths (only for current embedding and visible)
+  // Faces are derived by the backend on every edit. Debounced: a freehand cut
+  // fires many updates and each one is a fresh polygonize.
+  useEffect(() => {
+    const section = territoryDraft?.sections[territoryDraft.activeSection]
+    if (!section || section.ring.length < 3) { setTerritoryFaces([]); return }
+    if (territoryDraft.embedding !== embedding.name) { setTerritoryFaces([]); return }
+    let cancelled = false
+    const timer = setTimeout(() => {
+      fetch('/api/territories/faces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ring: section.ring, cuts: section.cuts, anchors: section.anchors }),
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (!cancelled && d) setTerritoryFaces(d.faces) })
+        .catch(() => { /* preview only; the panel reports save failures */ })
+    }, 120)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [territoryDraft, embedding.name])
+
+  const territoryFacePaths = useMemo(() => {
+    return territoryFaces.map((face, i) => ({
+      path: polygonPath(dataToScreen(face.polygon)),
+      fill: faceColor(i, territoryFaces.length),
+      name: face.name,
+    }))
+  }, [territoryFaces, dataToScreen])
+
   const storedLinePaths = useMemo(() => {
     const viewDimX = embedding.dim_x ?? 0
     const viewDimY = embedding.dim_y ?? 1
@@ -1279,6 +1312,11 @@ export default function ScatterPlot({
           pointerEvents: 'none',
         }}
       >
+        {/* Territory faces, under the cuts that define them */}
+        {territoryFacePaths.map((f, i) => f.path && (
+          <path key={`face-${i}`} d={f.path} fill={f.fill} stroke="#4ecdc4"
+                strokeWidth={1} strokeOpacity={0.5} pointerEvents="none" />
+        ))}
         {/* Stored lines */}
         {storedLinePaths.map((line) => line.path && (
           <g key={line.id}>

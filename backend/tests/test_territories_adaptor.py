@@ -227,3 +227,44 @@ def test_assignment_is_recorded_in_the_analysis_record():
     a.save_territories("prox-dist", _payload())
     a.assign_territories(["prox-dist"])
     assert any(e["action"] == "assign_territories" for e in a._action_history)
+
+
+def test_geometry_whose_section_column_is_missing_falls_back_to_all_sections():
+    """The import case. A query dataset has no `section` column of the
+    reference's, but the predicted coordinates land in the reference's whole
+    space, where sections are spatially disjoint anyway — so every section's
+    faces get a chance rather than pinning every cell to the first one."""
+    ad = _adata(sections=False)
+    # Two rings side by side; cells sit in the left one.
+    ad.obsm["spatial"] = np.column_stack([
+        np.linspace(1.0, 9.0, ad.n_obs), np.full(ad.n_obs, 7.0)])
+    a = DataAdaptor("t.h5ad", adata=ad)
+
+    left = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
+    right = [[20.0, 0.0], [30.0, 0.0], [30.0, 10.0], [20.0, 10.0]]
+    a.save_territories("prox-dist", {
+        "embedding": "spatial", "section_col": "section_not_here", "source": "drawn",
+        # B first on purpose: pinning every cell to whichever section happens
+        # to come first is exactly the bug this guards.
+        "sections": {
+            "B": {"ring": right, "cuts": [], "anchors": [{"name": "other", "x": 25.0, "y": 5.0}]},
+            "A": {"ring": left,
+                  "cuts": [{"id": "c", "points": [[1.0, 5.0], [9.0, 5.0]], "closed": False}],
+                  "anchors": [{"name": "proximal", "x": 5.0, "y": 8.0},
+                              {"name": "distal", "x": 5.0, "y": 2.0}]},
+        },
+    })
+    a.assign_territories(["prox-dist"])
+    labels = set(a.adata.obs["territory_prox-dist"].astype(str))
+    assert labels == {"proximal"}, labels
+
+
+def test_a_present_section_column_still_confines_each_section():
+    """The fallback must not weaken the real case: with the column present,
+    a cell in section B is never assigned by section A's faces."""
+    a = _adaptor()
+    a.save_territories("prox-dist", _payload(sections=("A",)))
+    a.assign_territories(["prox-dist"])
+    labels = a.adata.obs["territory_prox-dist"].astype(str).values
+    is_b = (a.adata.obs["section"].astype(str) == "B").values
+    assert set(labels[is_b]) == {"unassigned"}

@@ -9304,6 +9304,37 @@ class DataAdaptor:
         self._log_action('save_territories', {'type': type_name}, result)
         return result
 
+    def import_territories(self, payload: dict[str, Any], embedding: str) -> dict[str, Any]:
+        """Adopt another dataset's territories, retargeted at a local embedding.
+
+        The geometry belongs to the *reference's* coordinate space, which on
+        this dataset is the predicted embedding — so the embedding key is
+        rewritten, and the source is stamped so a later reader can tell drawn
+        regions from borrowed ones.
+        """
+        import datetime
+
+        if embedding not in self.adata.obsm:
+            raise ValueError(
+                f"Cannot import territories into '{embedding}': this dataset "
+                f"has no such embedding."
+            )
+        stored = self.get_territories()
+        imported: list[str] = []
+        stamp = datetime.datetime.now().isoformat(timespec='seconds')
+        for name, spec in (payload or {}).items():
+            stored[name] = {
+                **spec,
+                'embedding': embedding,
+                'source': f'imported:{self.filepath.name}@{stamp}',
+            }
+            imported.append(name)
+        if imported:
+            self.adata.uns[self.TERRITORY_UNS_KEY] = json.dumps(stored)
+        self._log_action('import_territories',
+                         {'embedding': embedding}, {'imported': imported})
+        return {'imported': imported}
+
     TERRITORY_PREFIX = 'territory_'
     TERRITORY_UNASSIGNED = 'unassigned'
 
@@ -9347,21 +9378,34 @@ class DataAdaptor:
             if section_col and section_col in self.adata.obs.columns:
                 section_of = self.adata.obs[section_col].astype(str).values
             else:
-                # One tissue: every cell belongs to whatever single section the
-                # geometry defines.
-                only = next(iter(spec['sections']))
-                section_of = np.full(self.n_cells, only, dtype=object)
+                # No column to go on — either the geometry was drawn on one
+                # tissue, or it was imported from a reference whose section
+                # column this dataset does not have. Either way every section's
+                # faces get a chance: the sections are spatially disjoint, so a
+                # coordinate falls inside at most one of their rings. Pinning
+                # every cell to whichever section came first would leave the
+                # whole dataset unassigned whenever that one is not theirs.
+                section_of = None
 
             for section_name, block in spec['sections'].items():
-                mask = (section_of == section_name) & placed
+                mask = placed if section_of is None else (
+                    (section_of == section_name) & placed)
                 if not mask.any():
                     continue
                 faces = terr.derive_faces(block['ring'], block.get('cuts') or [])
                 names = terr.name_faces(faces, block.get('anchors') or [])
-                labels[mask] = terr.assign(
+                found = terr.assign(
                     coords[mask], faces, names,
                     unassigned=self.TERRITORY_UNASSIGNED,
                 )
+                if section_of is None:
+                    # Every section sees every cell here, so a later section
+                    # must not overwrite a hit an earlier one already made.
+                    slots = np.flatnonzero(mask)
+                    keep = found != self.TERRITORY_UNASSIGNED
+                    labels[slots[keep]] = found[keep]
+                else:
+                    labels[mask] = found
 
             series = pd.Series(labels, index=self.adata.obs_names, dtype=object)
             series[~placed] = np.nan          # no coordinate is not "outside"
@@ -9448,6 +9492,10 @@ class DataAdaptor:
             'gene_subset_type': subset_type,
             'section_col': section_col,
             'layer': layer or 'X',
+            # Hand-drawn regions travel with the reference: the query's
+            # predicted coordinates land in *this* dataset's space, so this
+            # geometry is what describes them.
+            'territories': self.get_territories(),
         }
 
     def _align_to_reference(
@@ -9518,6 +9566,8 @@ class DataAdaptor:
         max_iterations: int = 300,
         layer: str | None = None,
         key_added: str = 'X_spatial_pred',
+        import_territories: bool = False,
+        assign_territories: bool = False,
     ) -> tuple[Callable[..., Any], Callable[[dict[str, Any]], dict[str, Any]]]:
         """Predict a coordinate for every cell here from a spatial reference.
 
@@ -9550,6 +9600,12 @@ class DataAdaptor:
                     f'max_iterations must be at least 1, got {max_iterations}')
         if not key_added:
             raise ValueError('key_added must be a non-empty name')
+        if assign_territories and not import_territories:
+            raise ValueError(
+                'Assigning territories needs the boundaries imported too — '
+                'tick "import territory boundaries".'
+            )
+        snap_territories = dict(bundle.get('territories') or {})
 
         query_expr, ref_expr, shared, missing = self._align_to_reference(bundle, layer)
         if len(shared) < self.MIN_LOCALIZE_GENES:
@@ -9646,6 +9702,19 @@ class DataAdaptor:
                     'n_below_0.5': int((conf < 0.5).sum()),
                 },
             }
+            # Territories are carried over only when asked: importing rewrites
+            # this dataset's saved geometry, which is not a side effect a
+            # coordinate prediction should have by default.
+            territory_report: dict[str, Any] = {'imported': [], 'assigned': []}
+            if import_territories and snap_territories:
+                territory_report.update(
+                    self.import_territories(snap_territories, embedding=key))
+                if assign_territories and territory_report['imported']:
+                    assigned = self.assign_territories(
+                        territory_report['imported'], embedding=key)
+                    territory_report['assigned'] = assigned['columns']
+            out['territories'] = territory_report
+
             self._log_action('localize', {
                 'k': snap['k'], 'metric': snap['metric'],
                 'transform': snap['transform'], 'aggregation': snap['aggregation'],

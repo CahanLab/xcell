@@ -4179,6 +4179,8 @@ class LocalizeRequest(BaseModel):
     layer: str | None = None
     reference_layer: str | None = None
     key_added: str = "X_spatial_pred"
+    import_territories: bool = False
+    assign_territories: bool = False
     dataset: str | None = None
 
 
@@ -4205,6 +4207,8 @@ def localize_prepare(request: LocalizeRequest, dataset: str | None = Query(None)
             max_iterations=request.max_iterations,
             layer=request.layer,
             key_added=request.key_added,
+            import_territories=request.import_territories,
+            assign_territories=request.assign_territories,
         )
         task_id = task_manager.submit(compute_fn, apply_fn)
         return {"task_id": task_id, "status": "running"}

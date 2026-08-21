@@ -624,6 +624,13 @@ REGISTRY: dict[str, ActionSpec] = {
             "so they are carried in the exported .h5ad rather than reproduced here."
         ),
     ),
+    'import_territories': ActionSpec(
+        label='Import territories', fidelity=MANUAL, imports=(),
+        summary=lambda p, r: (
+            f"Imported territory type(s) {', '.join(r.get('imported') or []) or '(none)'} "
+            f"from the spatial reference, against `.obsm['{p.get('embedding')}']`."
+        ),
+    ),
     'delete_territories': ActionSpec(
         label='Delete territories', fidelity=XCELL, imports=XCELL_API,
         code=lambda step: [_xcall('delete_territories', step.params, ('type',))],

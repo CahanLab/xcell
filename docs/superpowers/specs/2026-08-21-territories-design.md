@@ -192,8 +192,9 @@ squidpy's dependency graph holding still.
   naming the embedding, not an empty column.
 - A cell with a coordinate outside every face gets `unassigned`; a cell with no
   coordinate gets NaN. The two are distinct on purpose.
-- Self-intersecting freehand cuts are repaired with `buffer(0)` before
-  polygonizing, which is the standard shapely idiom.
+- Self-intersecting freehand cuts need no repair: `unary_union` nodes a line
+  where it crosses itself, and `polygonize` then makes the extra loop its own
+  face. (`buffer(0)` is the idiom for invalid *polygons*, not for lines.)
 
 ## Testing
 

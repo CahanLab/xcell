@@ -768,6 +768,7 @@ function CategoryGeneSetComponent({
     addGenesToCategorySet,
     removeGenesFromCategorySet,
     renameCategoryGeneSet,
+    sortCategoryGeneSet,
     toggleSetPinned,
     moveGeneSetToFolder,
     reorderGeneSet,
@@ -1022,6 +1023,12 @@ function CategoryGeneSetComponent({
               {
                 label: geneSet.pinned ? 'Unpin' : 'Pin to top',
                 onClick: () => toggleSetPinned(categoryType, folderId ?? null, geneSet.id),
+              },
+              {
+                label: 'Sort genes A→Z',
+                onClick: () => sortCategoryGeneSet(categoryType, geneSet.id),
+                disabled: geneSet.genes.length < 2,
+                tooltip: geneSet.genes.length < 2 ? 'Nothing to reorder' : undefined,
               },
               {
                 label: 'Cluster genes…',

@@ -45,3 +45,49 @@ export const OP_LABEL: Record<SetOp, string> = {
   difference: 'Difference (A − B)',
   symmetric: 'Symmetric difference (A △ B)',
 }
+
+/** Alphabetical order for gene names: case-insensitive and numeric-aware, so
+ *  Hoxd2 precedes Hoxd10 rather than following it. A pure reorder — membership
+ *  (duplicates included) is preserved, unlike the set operations above. */
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+
+export function sortGenes(genes: string[]): string[] {
+  return [...genes].sort(collator.compare)
+}
+
+/** Sort one gene set's genes in place within its category, wherever it lives.
+ *
+ * A gene set sits either directly on the category or inside one of its
+ * folders, and the caller (a menu item) knows only its id. Untouched objects
+ * keep their identity so React re-renders just the set that changed; an
+ * unknown id returns the category itself, so a no-op never invalidates state.
+ */
+export function sortGeneSetInCategory<
+  S extends { id: string; genes: string[]; genesDown?: string[] },
+  F extends { geneSets: S[] },
+  C extends { geneSets: S[]; folders: F[] },
+>(category: C, geneSetId: string): C {
+  const sortSet = (gs: S): S => ({
+    ...gs,
+    genes: sortGenes(gs.genes),
+    ...(gs.genesDown ? { genesDown: sortGenes(gs.genesDown) } : {}),
+  })
+
+  if (category.geneSets.some((gs) => gs.id === geneSetId)) {
+    return {
+      ...category,
+      geneSets: category.geneSets.map((gs) => (gs.id === geneSetId ? sortSet(gs) : gs)),
+    }
+  }
+  if (category.folders.some((f) => f.geneSets.some((gs) => gs.id === geneSetId))) {
+    return {
+      ...category,
+      folders: category.folders.map((f) =>
+        f.geneSets.some((gs) => gs.id === geneSetId)
+          ? { ...f, geneSets: f.geneSets.map((gs) => (gs.id === geneSetId ? sortSet(gs) : gs)) }
+          : f,
+      ),
+    }
+  }
+  return category
+}

@@ -342,3 +342,91 @@ def test_the_candidate_path_is_reported_as_such(monkeypatch):
     assert out['assignment'] == 'candidate'
     assert out['n_candidates'] > 0
     json.dumps(out, allow_nan=False)
+
+
+# --- source matrices ------------------------------------------------------
+#
+# Either side can be read from a layer instead of .X — the case that motivates
+# it is a spatial reference smoothed over its own spatial graph, which is a
+# layer, matched against an unsmoothed query.
+
+def _with_layer(ad, name='smoothed', factor=7.0):
+    """A copy carrying a layer whose values are unmistakably not .X."""
+    out = ad.copy()
+    out.layers[name] = csr_matrix(np.asarray(out.X.todense()) * factor)
+    return out
+
+
+def test_the_reference_bundle_reads_a_named_layer():
+    ref_ad, _ = _spatial()
+    ref = DataAdaptor('spatial.h5ad', adata=_with_layer(ref_ad))
+    bundle = ref.spatial_reference_bundle(layer='smoothed')
+    np.testing.assert_allclose(
+        bundle['expr'], np.asarray(ref_ad.X.todense()) * 7.0, rtol=1e-5,
+    )
+    assert bundle['layer'] == 'smoothed'
+
+
+def test_the_bundle_defaults_to_x_and_says_so():
+    ref_ad, _ = _spatial()
+    ref = DataAdaptor('spatial.h5ad', adata=_with_layer(ref_ad))
+    bundle = ref.spatial_reference_bundle()
+    np.testing.assert_allclose(bundle['expr'], np.asarray(ref_ad.X.todense()), rtol=1e-5)
+    assert bundle['layer'] == 'X'
+
+
+def test_an_unknown_reference_layer_is_refused_by_name():
+    ref_ad, _ = _spatial()
+    ref = DataAdaptor('spatial.h5ad', adata=_with_layer(ref_ad))
+    with pytest.raises(ValueError, match='smoothd'):
+        ref.spatial_reference_bundle(layer='smoothd')
+
+
+def test_the_query_is_matched_on_its_chosen_layer_not_on_x():
+    """The layer carries the biology and .X is flat, so a prediction that read
+    .X could not recover position at all."""
+    ref_ad, coords = _spatial()
+    q_ad, truth = _query_from(ref_ad, coords)
+    real = np.asarray(q_ad.X.todense())
+    q_ad.layers['real'] = csr_matrix(real)
+    q_ad.X = csr_matrix(np.ones_like(real))          # .X says nothing
+    query = DataAdaptor('scrna.h5ad', adata=q_ad)
+    ref = DataAdaptor('spatial.h5ad', adata=ref_ad)
+    bundle = ref.spatial_reference_bundle()
+
+    from_layer = _run(query, bundle, layer='real', key_added='X_from_layer')
+    pred = np.asarray(query.adata.obsm['X_from_layer'])
+    err = np.linalg.norm(pred - truth, axis=1)
+    assert np.median(err) < 25.0, from_layer
+
+    # The same run off the flat .X cannot do better than the tissue centre.
+    _run(query, bundle, key_added='X_from_x')
+    flat = np.asarray(query.adata.obsm['X_from_x'])
+    assert np.median(np.linalg.norm(flat - truth, axis=1)) > np.median(err)
+
+
+def test_an_unknown_query_layer_is_refused_before_the_task_starts():
+    """Synchronously, so the route answers 400 rather than starting a
+    background task that dies."""
+    ref, query, _ = _pair()
+    bundle = ref.spatial_reference_bundle()
+    with pytest.raises(ValueError, match='nope'):
+        query.prepare_localize(bundle, layer='nope')
+
+
+def test_cross_validation_reads_the_reference_layer():
+    """Cross-validation runs inside the reference, so its layer is the
+    reference's — checking a smoothed reference before committing to it is the
+    point of the control. The layer here holds no positional signal at all, so
+    a run that quietly read .X instead would score far better than this."""
+    ref_ad, _ = _spatial()
+    ref_ad.layers['flat'] = csr_matrix(np.ones(ref_ad.shape, dtype=np.float32))
+    ref = DataAdaptor('spatial.h5ad', adata=ref_ad)
+
+    from_x = ref.prepare_localize_cross_validation(seed=0)
+    baseline = from_x[1](from_x[0]())
+    from_layer = ref.prepare_localize_cross_validation(layer='flat', seed=0)
+    flat = from_layer[1](from_layer[0]())
+
+    assert flat['n_holdout'] == baseline['n_holdout'] > 0
+    assert flat['median_error'] > baseline['median_error']

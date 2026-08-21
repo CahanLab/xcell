@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/shapeTransform'
+import { sortGeneSetInCategory } from './lib/geneSetOps'
 
 export interface Schema {
   n_cells: number
@@ -847,6 +848,7 @@ interface AppState {
   addGenesToCategorySet: (categoryType: GeneSetCategoryType, geneSetId: string, genes: string[]) => void
   removeGenesFromCategorySet: (categoryType: GeneSetCategoryType, geneSetId: string, genes: string[]) => void
   renameCategoryGeneSet: (categoryType: GeneSetCategoryType, geneSetId: string, newName: string) => void
+  sortCategoryGeneSet: (categoryType: GeneSetCategoryType, geneSetId: string) => void
   toggleSetPinned: (categoryType: GeneSetCategoryType, folderId: string | null, geneSetId: string) => void
   toggleFolderPinned: (categoryType: GeneSetCategoryType, folderId: string) => void
   toggleCategoryVisible: (categoryType: GeneSetCategoryType) => void
@@ -1535,6 +1537,16 @@ export const useStore = create<AppState>((set, get) => {
               })),
             },
           },
+        }
+      }),
+
+    sortCategoryGeneSet: (categoryType, geneSetId) =>
+      set((state) => {
+        const category = state.geneSetCategories[categoryType]
+        const sorted = sortGeneSetInCategory(category, geneSetId)
+        if (sorted === category) return {}
+        return {
+          geneSetCategories: { ...state.geneSetCategories, [categoryType]: sorted },
         }
       }),
 

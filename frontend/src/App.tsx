@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
-import { useStore, DatasetSlot } from './store'
+import { useStore, createDefaultCategories, DatasetSlot } from './store'
+import { mergeHydratedCategories } from './lib/geneSetHydration'
 import { meanOf, convexHull, type ShapeAffine } from './utils/shapeTransform'
 import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, useSecondEmbedding, appendDataset, fetchGeneMask } from './hooks/useData'
 import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
@@ -908,7 +909,12 @@ export default function App() {
         if (cancelled) return
         const payload = data?.gene_sets
         if (payload && typeof payload === 'object' && Object.keys(payload).length > 0) {
-          useStore.setState({ geneSetCategories: payload })
+          // Merged onto the defaults, never assigned over them: a payload
+          // written before a category existed would otherwise leave that key
+          // undefined and crash the Gene panel on the next render.
+          useStore.setState({
+            geneSetCategories: mergeHydratedCategories(createDefaultCategories(), payload),
+          })
         }
       })
       .catch(() => { /* nothing to hydrate */ })

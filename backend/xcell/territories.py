@@ -77,3 +77,56 @@ def derive_faces(ring: list[list[float]], cuts: list[dict[str, Any]]) -> list[Po
              if f.representative_point().within(ring_poly)]
     return sorted(faces, key=lambda f: (-round(f.centroid.y, 9),
                                         round(f.centroid.x, 9)))
+
+
+def name_faces(faces: list[Polygon],
+               anchors: list[dict[str, Any]]) -> list[str | None]:
+    """Each face takes the name of an anchor point it contains.
+
+    Names live on points rather than on faces so that editing a boundary
+    cannot orphan a label: re-derive the faces, and every anchor is still
+    inside whichever face now surrounds it.
+    """
+    out: list[str | None] = []
+    for face in faces:
+        hit = None
+        for anchor in anchors:
+            if face.contains(Point(float(anchor["x"]), float(anchor["y"]))):
+                hit = str(anchor["name"])
+                break
+        out.append(hit)
+    return out
+
+
+def assign(coords, faces: list[Polygon], names: list[str | None],
+           *, unassigned: str = "unassigned") -> np.ndarray:
+    """Label every coordinate by the face containing it.
+
+    A coordinate outside every face, or inside an unnamed one, gets
+    ``unassigned`` — never the nearest face. Snapping to the nearest region
+    would invent an annotation the user never drew.
+    """
+    import shapely
+    from shapely import STRtree
+
+    coords = np.asarray(coords, dtype=float)
+    labels = np.full(len(coords), unassigned, dtype=object)
+    if not faces or len(coords) == 0:
+        return labels
+
+    tree = STRtree(faces)
+    # The predicate is evaluated as input.predicate(tree) — so the point must be
+    # *within* the face. "contains" reads the right way round in English and
+    # silently matches nothing, which is why this is spelled out.
+    input_idx, tree_idx = tree.query(shapely.points(coords), predicate="within")
+
+    claimed = np.zeros(len(coords), dtype=bool)
+    for i, t in zip(input_idx, tree_idx):
+        # A point landing exactly on a shared edge matches both neighbours;
+        # first match wins, deterministically, because faces are ordered.
+        if claimed[i]:
+            continue
+        claimed[i] = True
+        if names[t] is not None:
+            labels[i] = names[t]
+    return labels

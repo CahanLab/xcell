@@ -96,3 +96,49 @@ def test_a_self_intersecting_freehand_cut_still_yields_valid_faces():
     faces = terr.derive_faces(SQUARE, [squiggle])
     assert all(f.is_valid for f in faces)
     assert sum(f.area for f in faces) == pytest.approx(100.0)
+
+
+def test_an_anchor_names_the_face_that_contains_it():
+    faces = terr.derive_faces(SQUARE, [_cut([[1.0, 5.0], [9.0, 5.0]])])
+    names = terr.name_faces(faces, [{"name": "proximal", "x": 5.0, "y": 8.0},
+                                    {"name": "distal", "x": 5.0, "y": 2.0}])
+    assert names == ["proximal", "distal"]
+
+
+def test_a_face_with_no_anchor_is_unnamed_rather_than_guessed():
+    faces = terr.derive_faces(SQUARE, [_cut([[1.0, 5.0], [9.0, 5.0]])])
+    assert terr.name_faces(faces, [{"name": "proximal", "x": 5.0, "y": 8.0}]) \
+        == ["proximal", None]
+
+
+def test_names_survive_moving_a_cut():
+    """The point of anchoring names to points instead of to faces: edit the
+    boundary and the labels stay put."""
+    anchors = [{"name": "proximal", "x": 5.0, "y": 8.0},
+               {"name": "distal", "x": 5.0, "y": 2.0}]
+    before = terr.name_faces(terr.derive_faces(SQUARE, [_cut([[1.0, 5.0], [9.0, 5.0]])]), anchors)
+    after = terr.name_faces(terr.derive_faces(SQUARE, [_cut([[1.0, 6.5], [9.0, 6.5]])]), anchors)
+    assert before == after == ["proximal", "distal"]
+
+
+def test_every_cell_inside_the_ring_gets_exactly_one_label():
+    faces = terr.derive_faces(SQUARE, [_cut([[1.0, 5.0], [9.0, 5.0]])])
+    names = ["proximal", "distal"]
+    coords = np.array([[5.0, 9.0], [5.0, 1.0], [2.0, 7.0]])
+    assert list(terr.assign(coords, faces, names)) == ["proximal", "distal", "proximal"]
+
+
+def test_a_cell_outside_the_ring_is_unassigned_not_nearest():
+    faces = terr.derive_faces(SQUARE, [])
+    labels = terr.assign(np.array([[50.0, 50.0]]), faces, ["whole"])
+    assert list(labels) == ["unassigned"]
+
+
+def test_a_cell_in_an_unnamed_face_is_unassigned():
+    faces = terr.derive_faces(SQUARE, [_cut([[1.0, 5.0], [9.0, 5.0]])])
+    labels = terr.assign(np.array([[5.0, 2.0]]), faces, ["proximal", None])
+    assert list(labels) == ["unassigned"]
+
+
+def test_assignment_handles_no_faces_without_erroring():
+    assert list(terr.assign(np.array([[1.0, 1.0]]), [], [])) == ["unassigned"]

@@ -112,7 +112,7 @@ export interface GeneSetCategory {
 }
 
 // Default category configuration
-const createDefaultCategories = (): Record<GeneSetCategoryType, GeneSetCategory> => ({
+export const createDefaultCategories = (): Record<GeneSetCategoryType, GeneSetCategory> => ({
   manual: {
     type: 'manual',
     name: 'Manual',

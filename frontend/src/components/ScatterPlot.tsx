@@ -8,6 +8,7 @@ import { SnapshotLayer, renderSnapshotToCanvas } from './SnapshotPanel'
 import { layerWeightFn, useCellColor } from '../lib/cellColors'
 import { pickScaleBar } from '../lib/scaleBar'
 import { appendDataset } from '../hooks/useData'
+import { faceColor, polygonPath } from '../lib/territoryGeometry'
 
 interface ScatterPlotProps {
   slot?: DatasetSlot
@@ -347,6 +348,14 @@ export default function ScatterPlot({
   const cellSortVersion = useStore((state) =>
     slot ? state.datasets[slot].cellSortVersion : state.cellSortVersion
   )
+  const territoryDraft = useStore((state) => state.territoryDraft)
+  const updateTerritoryCut = useStore((state) => state.updateTerritoryCut)
+  // Which cut vertex is being dragged. A ref, not state: it is read inside the
+  // mouse handlers on every move and must not schedule a render of its own.
+  const draggingVertex = useRef<{ cutId: string; index: number } | null>(null)
+  const [territoryFaces, setTerritoryFaces] = useState<
+    { polygon: [number, number][]; name: string | null; anchor: [number, number] }[]
+  >([])
   const drawnLines = useStore((state) =>
     slot ? state.datasets[slot].drawnLines : state.drawnLines
   )
@@ -517,6 +526,16 @@ export default function ScatterPlot({
 
   // Handle lasso, line drawing, adjust rotation, and quilt mode
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Dragging a cut's vertex takes precedence over drawing or panning: the
+    // handles are small and sit on top of the plot, so a press on one is
+    // unambiguous.
+    const grabbed = (e.target as HTMLElement)?.dataset?.territoryVertex
+    if (grabbed) {
+      const [cutId, index] = grabbed.split('|')
+      draggingVertex.current = { cutId, index: Number(index) }
+      e.stopPropagation()
+      return
+    }
     if (interactionMode === 'lasso') {
       if (selectionTool === 'polygon') {
         // Polygon selection: clicks handled in handleClick/handleDoubleClick
@@ -602,6 +621,19 @@ export default function ScatterPlot({
   }, [interactionMode, selectionTool, drawTool, screenToData, embedding.coordinates, quiltPhase, viewState, computeAffectedShapeIds])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    // Moving a boundary moves *both* regions it divides, because the regions
+    // are derived from it — that is the whole point of storing cuts.
+    const dragging = draggingVertex.current
+    if (dragging && territoryDraft) {
+      const section = territoryDraft.sections[territoryDraft.activeSection]
+      const cut = section?.cuts.find((c) => c.id === dragging.cutId)
+      const point = screenToData(e.clientX, e.clientY)
+      if (cut && point) {
+        const next = cut.points.map((p, i) => (i === dragging.index ? point : p))
+        updateTerritoryCut(cut.id, next)
+      }
+      return
+    }
     // Track cursor for click-based draw tool preview
     if (interactionMode === 'draw' && drawTool !== 'pencil' && drawTool !== 'lasso' && linePoints.length > 0) {
       const point = screenToData(e.clientX, e.clientY)
@@ -718,6 +750,10 @@ export default function ScatterPlot({
   }, [isDrawing, interactionMode, drawTool, selectionTool, selectPolygonPoints.length, linePoints.length, screenToData, embedding.name, quiltPhase, viewState])
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    if (draggingVertex.current) {
+      draggingVertex.current = null
+      return
+    }
     // Handle adjust rotation release
     if (isRotating.current) {
       isRotating.current = false
@@ -966,6 +1002,53 @@ export default function ScatterPlot({
   }, [linePoints, dataToScreen])
 
   // Filter and convert stored lines to SVG paths (only for current embedding and visible)
+  // Faces are derived by the backend on every edit. Debounced: a freehand cut
+  // fires many updates and each one is a fresh polygonize.
+  useEffect(() => {
+    const section = territoryDraft?.sections[territoryDraft.activeSection]
+    if (!section || section.ring.length < 3) { setTerritoryFaces([]); return }
+    if (territoryDraft.embedding !== embedding.name) { setTerritoryFaces([]); return }
+    let cancelled = false
+    const timer = setTimeout(() => {
+      fetch('/api/territories/faces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ring: section.ring, cuts: section.cuts, anchors: section.anchors }),
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (!cancelled && d) setTerritoryFaces(d.faces) })
+        .catch(() => { /* preview only; the panel reports save failures */ })
+    }, 120)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [territoryDraft, embedding.name])
+
+  // Draggable handles for the active section's cuts. A freehand curve is 40+
+  // points and a handle on each would be an unusable wall of dots, so every
+  // Nth vertex gets one — enough to reshape a boundary, few enough to hit.
+  const territoryHandles = useMemo(() => {
+    const section = territoryDraft?.sections[territoryDraft.activeSection]
+    if (!section || territoryDraft.embedding !== embedding.name) return []
+    const out: { key: string; cx: number; cy: number }[] = []
+    for (const cut of section.cuts) {
+      const step = Math.max(1, Math.floor(cut.points.length / 8))
+      for (let i = 0; i < cut.points.length; i += step) {
+        const [screen] = dataToScreen([cut.points[i]])
+        if (!screen) continue
+        const [cx, cy] = screen.split(',').map(Number)
+        out.push({ key: `${cut.id}|${i}`, cx, cy })
+      }
+    }
+    return out
+  }, [territoryDraft, dataToScreen, embedding.name])
+
+  const territoryFacePaths = useMemo(() => {
+    return territoryFaces.map((face, i) => ({
+      path: polygonPath(dataToScreen(face.polygon)),
+      fill: faceColor(i, territoryFaces.length),
+      name: face.name,
+    }))
+  }, [territoryFaces, dataToScreen])
+
   const storedLinePaths = useMemo(() => {
     const viewDimX = embedding.dim_x ?? 0
     const viewDimY = embedding.dim_y ?? 1
@@ -1279,6 +1362,17 @@ export default function ScatterPlot({
           pointerEvents: 'none',
         }}
       >
+        {/* Territory faces, under the cuts that define them */}
+        {territoryFacePaths.map((f, i) => f.path && (
+          <path key={`face-${i}`} d={f.path} fill={f.fill} stroke="#4ecdc4"
+                strokeWidth={1} strokeOpacity={0.5} pointerEvents="none" />
+        ))}
+        {territoryHandles.map((h) => (
+          <circle key={h.key} cx={h.cx} cy={h.cy} r={5}
+                  data-territory-vertex={h.key}
+                  fill="#4ecdc4" stroke="#16213e" strokeWidth={1.5}
+                  style={{ cursor: 'grab', pointerEvents: 'all' }} />
+        ))}
         {/* Stored lines */}
         {storedLinePaths.map((line) => line.path && (
           <g key={line.id}>

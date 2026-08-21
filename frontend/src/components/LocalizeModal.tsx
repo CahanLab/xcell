@@ -152,6 +152,10 @@ export default function LocalizeModal() {
   const [refLayer, setRefLayer] = useState('X')
   const [queryLayers, setQueryLayers] = useState<LayerInfo[]>([])
   const [refLayers, setRefLayers] = useState<LayerInfo[]>([])
+  // Territories drawn on the reference can be carried over with the map.
+  const [refTerritories, setRefTerritories] = useState<string[]>([])
+  const [importTerritories, setImportTerritories] = useState(false)
+  const [assignTerritories, setAssignTerritories] = useState(false)
 
   const [mapMetrics, setMapMetrics] = useState<MapMetrics[] | null>(null)
   const [scoring, setScoring] = useState(false)
@@ -274,6 +278,14 @@ export default function LocalizeModal() {
     }
     load(querySlot, setQueryLayers)
     load(reference, setRefLayers)
+    if (reference) {
+      fetch(appendDataset(`${API}/territories`, reference as DatasetSlot))
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (!cancelled && d) setRefTerritories(Object.keys(d.territories || {})) })
+        .catch(() => { /* the checkbox simply stays hidden */ })
+    } else {
+      setRefTerritories([])
+    }
     return () => { cancelled = true }
   }, [isOpen, querySlot, reference])
 
@@ -335,6 +347,8 @@ export default function LocalizeModal() {
     gene_subset: geneSubset,
     layer: queryLayer === 'X' ? null : queryLayer,
     reference_layer: refLayer === 'X' ? null : refLayer,
+    import_territories: importTerritories,
+    assign_territories: importTerritories && assignTerritories,
   })
 
   /** Score every predicted embedding in the query against the reference. */
@@ -612,6 +626,38 @@ export default function LocalizeModal() {
             transform below absorbs that. See
             <code> docs/measurements/2026-08-21-smoothing-transform.md</code>.
           </div>
+
+          {refTerritories.length > 0 && (
+            <>
+              <div style={{ ...sectionLabel, marginTop: 14 }}>Territories</div>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 6, cursor: 'pointer' }}>
+                <input type="checkbox" checked={importTerritories}
+                       onChange={(e) => setImportTerritories(e.target.checked)}
+                       style={{ marginTop: 2 }} />
+                <span style={{ fontSize: 12 }}>
+                  Import territory boundaries from the reference
+                  <span style={{ color: dark.faint }}> ({refTerritories.join(', ')})</span>
+                </span>
+              </label>
+              <label style={{
+                display: 'flex', gap: 8, alignItems: 'flex-start',
+                opacity: importTerritories ? 1 : 0.5,
+                cursor: importTerritories ? 'pointer' : 'not-allowed',
+              }}>
+                <input type="checkbox" checked={importTerritories && assignTerritories}
+                       disabled={!importTerritories}
+                       onChange={(e) => setAssignTerritories(e.target.checked)}
+                       style={{ marginTop: 2 }} />
+                <span style={{ fontSize: 12 }}>Assign cells to territories after localizing</span>
+              </label>
+              <div style={{ fontSize: 10.5, color: dark.faint, marginTop: 4 }}>
+                Boundaries are copied in against the predicted embedding, so they
+                draw over the localized cells. Every cell that got a coordinate is
+                labelled; cells that could not be placed are left blank —
+                <code> localize_confidence</code> sits beside the result for filtering.
+              </div>
+            </>
+          )}
 
           {/* Parameters */}
           <div style={{ ...sectionLabel, marginTop: 14 }}>Parameters</div>

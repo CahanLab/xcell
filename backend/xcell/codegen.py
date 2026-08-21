@@ -612,6 +612,40 @@ REGISTRY: dict[str, ActionSpec] = {
             f"{_n(r.get('n_significant'))} significant."
         ),
     ),
+    # Territories. The geometry is hand-drawn, so it cannot be re-derived from
+    # recorded parameters — but it travels in the exported h5ad's uns, so a
+    # notebook can re-run the assignment against it without redrawing anything.
+    'save_territories': ActionSpec(
+        label='Save territories', fidelity=MANUAL, imports=(),
+        summary=lambda p, r: (
+            f"Drew territory type `{p.get('type')}`: "
+            f"{_n(r.get('n_cuts'))} cuts across {_n(r.get('n_sections'))} section(s), "
+            f"{_n(r.get('n_named'))} named regions. The boundaries are hand-drawn, "
+            "so they are carried in the exported .h5ad rather than reproduced here."
+        ),
+    ),
+    'import_territories': ActionSpec(
+        label='Import territories', fidelity=MANUAL, imports=(),
+        summary=lambda p, r: (
+            f"Imported territory type(s) {', '.join(r.get('imported') or []) or '(none)'} "
+            f"from the spatial reference, against `.obsm['{p.get('embedding')}']`."
+        ),
+    ),
+    'delete_territories': ActionSpec(
+        label='Delete territories', fidelity=XCELL, imports=XCELL_API,
+        code=lambda step: [_xcall('delete_territories', step.params, ('type',))],
+        summary=lambda p, r: f"Deleted territory type `{p.get('type')}`.",
+    ),
+    'assign_territories': ActionSpec(
+        label='Assign territories', fidelity=XCELL, imports=XCELL_API,
+        code=lambda step: [_xcall('assign_territories', step.params,
+                                  ('types', 'combine'))],
+        summary=lambda p, r: (
+            f"Assigned cells to territory type(s) {', '.join(p.get('types') or [])}"
+            f"{' plus a combined column' if p.get('combine') else ''}, writing "
+            f"{_n(len(r.get('columns') or []))} .obs column(s)."
+        ),
+    ),
     'neighborhood_enrichment': ActionSpec(
         label='Neighborhood enrichment', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_neighborhood',

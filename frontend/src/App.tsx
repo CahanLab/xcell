@@ -21,6 +21,8 @@ import GeneNmfModal from './components/GeneNmfModal'
 import MetaProgramsModal from './components/MetaProgramsModal'
 import CombineColumnsPanel from './components/CombineColumnsPanel'
 import DefineSectionsPanel from './components/DefineSectionsPanel'
+import TerritoryPanel from './components/TerritoryPanel'
+import AssignTerritoriesModal from './components/AssignTerritoriesModal'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
 import FigureBuilder from './components/FigureBuilder'
@@ -1156,6 +1158,12 @@ export default function App() {
   const handleLineDrawn = useCallback((points: [number, number][]) => {
     if (!selectedEmbedding) return
     const closed = drawTool === 'polygon' || drawTool === 'lasso'
+    // While the Territory panel is armed, a drawn curve is a *cut*, not a
+    // shape: it belongs to the territory draft and never enters drawnLines.
+    if (useStore.getState().territoryDraft) {
+      useStore.getState().addTerritoryCut(points, closed)
+      return
+    }
     // Auto-name and add immediately. Don't exit draw mode — user can keep drawing.
     // (Lines can be renamed in-place from the Shapes panel.)
     addLine(`Line ${drawnLines.length + 1}`, points, selectedEmbedding, drawTool, closed)
@@ -2479,6 +2487,8 @@ export default function App() {
       <GeneNmfModal />
       <MetaProgramsModal />
       <DefineSectionsPanel />
+      <TerritoryPanel />
+      <AssignTerritoriesModal />
       <MarkerGenesModal />
       <ClusterGeneSetModal />
       <SelectByExpressionModal />

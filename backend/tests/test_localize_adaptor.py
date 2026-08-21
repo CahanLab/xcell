@@ -430,3 +430,88 @@ def test_cross_validation_reads_the_reference_layer():
 
     assert flat['n_holdout'] == baseline['n_holdout'] > 0
     assert flat['median_error'] > baseline['median_error']
+
+
+# --- territory transfer ----------------------------------------------------
+
+def _territory_payload(coords):
+    xs, ys = coords[:, 0], coords[:, 1]
+    pad = 0.05 * max(np.ptp(xs), np.ptp(ys))
+    ring = [[xs.min() - pad, ys.min() - pad], [xs.max() + pad, ys.min() - pad],
+            [xs.max() + pad, ys.max() + pad], [xs.min() - pad, ys.max() + pad]]
+    mid = float((ys.min() + ys.max()) / 2)
+    return {"embedding": "spatial", "section_col": None, "source": "drawn",
+            "sections": {"all": {
+                "ring": ring,
+                "cuts": [{"id": "c1", "closed": False,
+                          "points": [[float(xs.min()), mid], [float(xs.max()), mid]]}],
+                "anchors": [{"name": "top", "x": float(xs.mean()), "y": float(ys.max())},
+                            {"name": "bottom", "x": float(xs.mean()), "y": float(ys.min())}]}}}
+
+
+def test_the_bundle_carries_the_reference_territories():
+    ref_ad, coords = _spatial()
+    ref = DataAdaptor('spatial.h5ad', adata=ref_ad)
+    ref.save_territories('band', _territory_payload(coords))
+    bundle = ref.spatial_reference_bundle()
+    assert 'band' in bundle['territories']
+
+
+def test_a_reference_without_territories_still_bundles():
+    ref, _, _ = _pair()
+    assert ref.spatial_reference_bundle()['territories'] == {}
+
+
+def test_importing_rewrites_the_embedding_to_the_predicted_key():
+    """Geometry drawn on the reference's `spatial` is only meaningful over the
+    query's *predicted* coordinates, so the key has to be rewritten or the
+    faces would be drawn over the query's own UMAP."""
+    ref_ad, coords = _spatial()
+    ref = DataAdaptor('spatial.h5ad', adata=ref_ad)
+    ref.save_territories('band', _territory_payload(coords))
+    _, query, _ = _pair()
+    query.adata.obsm['X_spatial_pred'] = np.zeros((query.n_cells, 2))
+
+    query.import_territories(ref.get_territories(), embedding='X_spatial_pred')
+    imported = query.get_territories()['band']
+    assert imported['embedding'] == 'X_spatial_pred'
+    assert imported['source'].startswith('imported:')
+
+
+def test_localize_can_import_and_assign_in_one_run():
+    ref_ad, coords = _spatial()
+    ref = DataAdaptor('spatial.h5ad', adata=ref_ad)
+    ref.save_territories('band', _territory_payload(coords))
+    q_ad, truth = _query_from(ref_ad, coords)
+    query = DataAdaptor('scrna.h5ad', adata=q_ad)
+
+    bundle = ref.spatial_reference_bundle()
+    compute_fn, apply_fn = query.prepare_localize(
+        bundle, import_territories=True, assign_territories=True)
+    result = apply_fn(compute_fn())
+
+    assert 'territory_band' in query.adata.obs.columns
+    assert set(query.adata.obs['territory_band'].dropna().astype(str)) <= {'top', 'bottom', 'unassigned'}
+    assert result['territories']['imported'] == ['band']
+
+
+def test_unplaced_cells_get_no_territory():
+    ref_ad, coords = _spatial()
+    ref = DataAdaptor('spatial.h5ad', adata=ref_ad)
+    ref.save_territories('band', _territory_payload(coords))
+    q_ad, _ = _query_from(ref_ad, coords)
+    query = DataAdaptor('scrna.h5ad', adata=q_ad)
+
+    bundle = ref.spatial_reference_bundle()
+    compute_fn, apply_fn = query.prepare_localize(
+        bundle, min_confidence=2.0,      # nothing can clear this: all unplaced
+        import_territories=True, assign_territories=True)
+    apply_fn(compute_fn())
+    assert query.adata.obs['territory_band'].isna().all()
+
+
+def test_assigning_without_importing_is_refused():
+    ref, query, _ = _pair()
+    bundle = ref.spatial_reference_bundle()
+    with pytest.raises(ValueError, match='import'):
+        query.prepare_localize(bundle, import_territories=False, assign_territories=True)

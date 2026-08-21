@@ -6405,6 +6405,8 @@ class DataAdaptor:
             out.append({**_info(key, self.adata.layers[key]), 'is_default': False})
         return out
 
+    SMOOTH_POST_TRANSFORMS = ('none', 'cp10k', 'lognorm')
+
     def run_smooth(
         self,
         graph_key: str,
@@ -6412,6 +6414,7 @@ class DataAdaptor:
         source_layer: str | None = None,
         output_layer: str = 'smoothed',
         self_loop_weight: float = 1.0,
+        post_transform: str = 'none',
     ) -> dict[str, Any]:
         """Smooth expression over a kNN graph and store the result in a layer.
 
@@ -6441,6 +6444,23 @@ class DataAdaptor:
             output_layer: Layer to write the smoothed matrix to. Existing
                 layer with the same name is overwritten.
             self_loop_weight: Weight α for the self-loop term. Default 1.0.
+            post_transform: What to do to the smoothed matrix before storing it.
+                ``'none'`` (default) stores the average as-is; ``'cp10k'``
+                rescales each cell to 10,000; ``'lognorm'`` does that and takes
+                log1p.
+
+                This exists because averaging does not commute with the log.
+                Smoothing a log-normalized matrix averages logs, and the mean of
+                logs is not the log of the mean — on E11.5 limb ST data the
+                stored values come out 70–83% below log1p of the smoothed
+                expression, the gap widening with expression level. Held-out
+                molecular cross-validation on the same data ranks the pipelines
+                counts → smooth → normalize (best) < normalize → smooth <
+                log → smooth < sqrt → smooth, with the spread widening as
+                smoothing strengthens. So the recommended route to a denoised,
+                directly usable matrix is to smooth **counts** and transform
+                afterwards, which is what ``'lognorm'`` does in one step.
+                See docs/measurements/2026-08-21-smoothing-transform.md.
         """
         from scipy.sparse import csr_matrix, diags, eye, issparse
 
@@ -6454,6 +6474,11 @@ class DataAdaptor:
         if self_loop_weight < 0:
             raise ValueError(
                 f"self_loop_weight must be >= 0, got {self_loop_weight}"
+            )
+        if post_transform not in self.SMOOTH_POST_TRANSFORMS:
+            raise ValueError(
+                f"post_transform must be one of "
+                f"{list(self.SMOOTH_POST_TRANSFORMS)}, got '{post_transform}'"
             )
 
         n = self.n_cells
@@ -6500,6 +6525,16 @@ class DataAdaptor:
         S = S.tocsr().astype(np.float32)
         S.eliminate_zeros()
 
+        if post_transform in ('cp10k', 'lognorm'):
+            totals = np.asarray(S.sum(axis=1)).ravel()
+            # A cell whose neighbourhood is empty has nothing to rescale;
+            # dividing by its zero total would write NaN into the layer.
+            totals[totals == 0] = 1.0
+            S = (diags((1e4 / totals).astype(np.float32)) @ S).tocsr()
+            if post_transform == 'lognorm':
+                S.data = np.log1p(S.data)
+            S = S.astype(np.float32)
+
         self.adata.layers[output_layer] = S
 
         result = {
@@ -6509,6 +6544,7 @@ class DataAdaptor:
             'source_layer': source_label,
             'output_layer': output_layer,
             'self_loop_weight': float(self_loop_weight),
+            'post_transform': post_transform,
             'output_nnz': int(S.nnz),
             'output_density': float(S.nnz / max(n * S.shape[1], 1)),
         }
@@ -6518,6 +6554,7 @@ class DataAdaptor:
             'source_layer': source_label,
             'output_layer': output_layer,
             'self_loop_weight': float(self_loop_weight),
+            'post_transform': post_transform,
         }, result)
         return result
 

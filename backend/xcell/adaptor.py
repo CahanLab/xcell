@@ -9242,6 +9242,79 @@ class DataAdaptor:
         return result
 
     # =========================================================================
+    # Territories — hand-drawn regions that annotate cells by occupancy
+    # See xcell/territories.py for the geometry.
+    # =========================================================================
+
+    # Ragged vertex lists do not survive an h5ad round trip as nested uns
+    # structures, so the whole payload is one JSON string — the same choice
+    # xcell_lines_json and xcell_analysis_record already make.
+    TERRITORY_UNS_KEY = 'xcell_territories_json'
+
+    def get_territories(self) -> dict[str, Any]:
+        """Every saved territory type, or {} when none were ever drawn."""
+        raw = self.adata.uns.get(self.TERRITORY_UNS_KEY)
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            # A corrupt blob must not take the dataset down with it.
+            return {}
+
+    def save_territories(self, type_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Write one territory type into the live AnnData.
+
+        Validated here rather than at draw time so a payload arriving from an
+        import or a script cannot put geometry in that names an embedding this
+        dataset does not have — which would assign an empty column and look
+        like the drawing was wrong.
+        """
+        import datetime
+
+        if not type_name or not str(type_name).strip():
+            raise ValueError('Territory type needs a name')
+        embedding = payload.get('embedding') or 'spatial'
+        if embedding not in self.adata.obsm:
+            raise ValueError(
+                f"Territories reference embedding '{embedding}', which this "
+                f"dataset does not have. Available: {sorted(self.adata.obsm)}"
+            )
+        sections = payload.get('sections') or {}
+        if not sections:
+            raise ValueError(f"Territory type '{type_name}' has no sections")
+        for name, block in sections.items():
+            if len(block.get('ring') or []) < 3:
+                raise ValueError(f"Section '{name}' has no ring")
+
+        stored = self.get_territories()
+        stored[type_name] = {
+            **payload,
+            'embedding': embedding,
+            'created': datetime.datetime.now().isoformat(timespec='seconds'),
+        }
+        self.adata.uns[self.TERRITORY_UNS_KEY] = json.dumps(stored)
+        result = {
+            'type': type_name,
+            'n_sections': len(sections),
+            'n_cuts': sum(len(b.get('cuts') or []) for b in sections.values()),
+            'n_named': len({a['name'] for b in sections.values()
+                            for a in (b.get('anchors') or [])}),
+        }
+        self._log_action('save_territories', {'type': type_name}, result)
+        return result
+
+    def delete_territories(self, type_name: str) -> dict[str, Any]:
+        """Forget one territory type. Its .obs columns are left alone."""
+        stored = self.get_territories()
+        if type_name not in stored:
+            raise KeyError(f"No territory type '{type_name}'")
+        del stored[type_name]
+        self.adata.uns[self.TERRITORY_UNS_KEY] = json.dumps(stored)
+        self._log_action('delete_territories', {'type': type_name}, {'type': type_name})
+        return {'type': type_name, 'remaining': sorted(stored)}
+
+    # =========================================================================
     # Localize — predicting spatial coordinates from a spatial reference
     # See xcell/localize.py for the method and its failure modes.
     # =========================================================================

@@ -539,6 +539,21 @@ export interface DatasetState {
   // plausible answer about the wrong cells.
   comparison: ComparisonState
   diffExpResult: DiffExpResult | null
+  // Which categories of which .obs column are ticked in the Cell Manager. Two
+  // datasets both having a 'leiden' whose categories are '0','1','2' is the
+  // ordinary case, so ticks carried across look deliberate rather than stale.
+  comparisonCheckedColumn: string | null
+  comparisonCheckedCategories: Set<string>
+  // The .obs column the Marker Genes modal groups by.
+  markerGenesColumn: string | null
+  // A table about one line drawn on one dataset — the same kind of thing as
+  // diffExpResult, per-dataset for the same reason.
+  lineAssociationResult: LineAssociationResult | null
+  // Which two (or three) .obsm columns to view, per embedding name. Keyed by
+  // name, and 'X_pca' is a name both datasets have: chosen on one, these dims
+  // were applied to the other with nothing to show for it — a projection
+  // nobody asked for, or a column that dataset's X_pca does not have.
+  embeddingDims: Record<string, { x: number; y: number; z?: number }>
   // Split view's second pane: which embedding, and its fetched coordinates.
   // Per-dataset because embedding names are — 'neighborhood_composition' means
   // nothing to a dataset that never computed one.
@@ -647,6 +662,11 @@ export function createDefaultDatasetState(
     pcaSubsets: [],
     comparison: { group1: null, group2: null, group1Label: null, group2Label: null },
     diffExpResult: null,
+    comparisonCheckedColumn: null,
+    comparisonCheckedCategories: new Set<string>(),
+    markerGenesColumn: null,
+    lineAssociationResult: null,
+    embeddingDims: {},
     secondEmbedding: null,
     secondEmbeddingData: null,
     displayLayer: 'X',
@@ -868,7 +888,27 @@ interface AppState {
   quiltPhase: 'lasso' | 'transform'
   quiltUndoDepth: number
 
-  // Multi-dataset support
+  // Multi-dataset support.
+  //
+  // Everything above this line that names something inside a dataset — cell
+  // indices, an .obs column, an embedding name, a drawn line — belongs in
+  // DatasetState and in syncFlatFields, not here. `store.test.ts` checks that
+  // correspondence mechanically; it cannot check this direction, so:
+  //
+  // Deliberately global, with the reason each is safe:
+  //   embeddingLabelColumn  drawn only when colorBy.name matches it, so a name
+  //                         from another dataset renders nothing
+  //   activeLineId          an id into per-dataset drawnLines; an id from
+  //                         elsewhere matches no line and is inert
+  //   activeTaskId          drives a progress indicator, nothing numerical
+  //   activeFigure          a figure composes panels *across* datasets — that
+  //                         is what the figure builder is for
+  //   geneSets, geneSetCategories
+  //                         user-level and cross-dataset by design
+  //   heatmapConfig         names an .obs column and a drawn line, so it is
+  //                         the next candidate to move; left alone here
+  //                         because the heatmap resolves both server-side and
+  //                         fails loudly rather than silently
   datasets: Record<DatasetSlot, DatasetState>
   activeSlot: DatasetSlot
 
@@ -1184,6 +1224,11 @@ export const useStore = create<AppState>((set, get) => {
       pcaSubsets: ds.pcaSubsets,
       comparison: ds.comparison,
       diffExpResult: ds.diffExpResult,
+      comparisonCheckedColumn: ds.comparisonCheckedColumn,
+      comparisonCheckedCategories: ds.comparisonCheckedCategories,
+      markerGenesColumn: ds.markerGenesColumn,
+      lineAssociationResult: ds.lineAssociationResult,
+      embeddingDims: ds.embeddingDims,
       secondEmbedding: ds.secondEmbedding,
       secondEmbeddingData: ds.secondEmbeddingData,
       displayLayer: ds.displayLayer,
@@ -1967,7 +2012,7 @@ export const useStore = create<AppState>((set, get) => {
     setScoreGeneSetsSource: (src) => set({ scoreGeneSetsSource: src }),
 
     // Line association actions (global)
-    setLineAssociationResult: (result) => set({ lineAssociationResult: result }),
+    setLineAssociationResult: (result) => set(dsUpdate({ lineAssociationResult: result })),
     setLineAssociationLoading: (loading) => set({ isLineAssociationLoading: loading }),
     setLineAssociationModalOpen: (open) => set({ isLineAssociationModalOpen: open }),
     setActiveTaskId: (taskId) => set({ activeTaskId: taskId }),
@@ -2166,7 +2211,9 @@ export const useStore = create<AppState>((set, get) => {
     // Global-only line actions
     setActiveLine: (id) => set({ activeLineId: id }),
     setEmbeddingDims: (embeddingName, x, y, z) =>
-      set((state) => ({ embeddingDims: { ...state.embeddingDims, [embeddingName]: { x, y, z } } })),
+      set(dsUpdateFn((state) => ({
+        embeddingDims: { ...state.embeddingDims, [embeddingName]: { x, y, z } },
+      }))),
 
     // Per-dataset line actions
     renameLine: (id, name) =>
@@ -2495,7 +2542,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Marker genes modal actions (global)
     setMarkerGenesModalOpen: (open) => set({ isMarkerGenesModalOpen: open }),
-    setMarkerGenesColumn: (column) => set({ markerGenesColumn: column }),
+    setMarkerGenesColumn: (column) => set(dsUpdate({ markerGenesColumn: column })),
 
     // Var identifier switching actions
     setVarIdentifierColumns: (columns) => set(dsUpdate({ varIdentifierColumns: columns })),
@@ -2540,7 +2587,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Checkbox-based comparison actions (global)
     toggleComparisonCategory: (column, category) =>
-      set((state) => {
+      set(dsUpdateFn((state) => {
         if (state.comparisonCheckedColumn !== column) {
           // Switching columns: clear previous and start fresh
           return {
@@ -2558,9 +2605,9 @@ export const useStore = create<AppState>((set, get) => {
           comparisonCheckedColumn: next.size > 0 ? column : null,
           comparisonCheckedCategories: next,
         }
-      }),
+      })),
     clearComparisonCategories: () =>
-      set({ comparisonCheckedColumn: null, comparisonCheckedCategories: new Set<string>() }),
+      set(dsUpdate({ comparisonCheckedColumn: null, comparisonCheckedCategories: new Set<string>() })),
 
     // Heatmap tab actions (global)
     setCenterPanelView: (view) => set({ centerPanelView: view }),

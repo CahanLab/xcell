@@ -123,6 +123,99 @@ describe("the split view's second geometry is scoped to its dataset", () => {
   })
 })
 
+// The audit that came with widening DatasetSlot: state that names an .obs
+// column, an embedding's columns, or a drawn line means something only next to
+// the dataset it was chosen on, so it cannot sit at the top level. Each of
+// these was global.
+describe('analysis state that names part of a dataset stays with it', () => {
+  it('does not view one dataset at the PCs chosen on another', () => {
+    // Both datasets have an X_pca. Chosen on the primary, these dims were
+    // silently applied to whatever loaded next — a different projection than
+    // the user asked for, or a column the secondary's X_pca does not have.
+    useStore.getState().setEmbeddingDims('X_pca', 2, 4)
+
+    useStore.getState().setActiveSlot('secondary')
+
+    expect(useStore.getState().embeddingDims['X_pca']).toBeUndefined()
+  })
+
+  it('remembers each dataset the dims chosen on it', () => {
+    useStore.getState().setEmbeddingDims('X_pca', 2, 4)
+    useStore.getState().setActiveSlot('secondary')
+    useStore.getState().setEmbeddingDims('X_pca', 0, 1)
+    useStore.getState().setActiveSlot('primary')
+
+    expect(useStore.getState().embeddingDims['X_pca']).toEqual({ x: 2, y: 4, z: undefined })
+  })
+
+  it('does not carry a marker-genes column onto a dataset that may not have it', () => {
+    useStore.getState().setMarkerGenesColumn('leiden_primary')
+
+    useStore.getState().setActiveSlot('secondary')
+
+    expect(useStore.getState().markerGenesColumn).toBeNull()
+  })
+
+  it('unticks category checkboxes belonging to the other dataset', () => {
+    // Two datasets both having a 'leiden' is the ordinary case, and its
+    // categories are named '0', '1', '2' in both — so the ticks reappear on
+    // the new dataset looking deliberate.
+    useStore.getState().toggleComparisonCategory('leiden', '3')
+
+    useStore.getState().setActiveSlot('secondary')
+
+    expect(useStore.getState().comparisonCheckedColumn).toBeNull()
+    expect(useStore.getState().comparisonCheckedCategories.size).toBe(0)
+  })
+
+  it('leaves a line-association table behind with the dataset it was run on', () => {
+    useStore.getState().setLineAssociationResult({
+      positive: [], negative: [], modules: [],
+      n_cells: 4212, n_significant: 0, n_positive: 0, n_negative: 0, n_modules: 0,
+      line_name: 'a line only the primary has', test_variable: 'position',
+      fdr_threshold: 0.05,
+    })
+
+    useStore.getState().setActiveSlot('secondary')
+
+    expect(useStore.getState().lineAssociationResult).toBeNull()
+  })
+})
+
+// The flat top-level fields are a cache of the active slot's DatasetState.
+// A field that lives in both but is not copied across on a slot switch is a
+// silent staleness bug — it keeps showing the previous dataset's answer, and
+// nothing about it looks wrong. This checks the correspondence mechanically,
+// so adding a field to DatasetState forces the question rather than relying on
+// whoever adds it remembering syncFlatFields exists.
+describe('every mirrored field follows the active dataset', () => {
+  it('leaves nothing behind when the active slot changes', () => {
+    const datasetFields = Object.keys(createDefaultDatasetState())
+    const flatFields = new Set(Object.keys(pristine))
+    const mirrored = datasetFields.filter((f) => flatFields.has(f))
+
+    // A value nothing else in the store can equal, per field.
+    const marked: Record<string, unknown> = {}
+    for (const f of mirrored) marked[f] = `__${f}__`
+
+    const { datasets } = useStore.getState()
+    useStore.setState({
+      datasets: { ...datasets, secondary: { ...datasets.secondary, ...marked } as never },
+    })
+    useStore.getState().setActiveSlot('secondary')
+
+    const state = useStore.getState() as unknown as Record<string, unknown>
+    const notCopied = mirrored.filter((f) => state[f] !== marked[f])
+    expect(notCopied).toEqual([])
+  })
+
+  it('actually mirrors something — the check above is not vacuous', () => {
+    const datasetFields = Object.keys(createDefaultDatasetState())
+    const flatFields = new Set(Object.keys(pristine))
+    expect(datasetFields.filter((f) => flatFields.has(f)).length).toBeGreaterThan(20)
+  })
+})
+
 // A slot is a name, not one of two fixed positions. The backend has always
 // keyed its adaptors by an arbitrary string; these pin the frontend to the same
 // contract, and pin down what happens when a slot is named that nothing has

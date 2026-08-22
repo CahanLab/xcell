@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useStore, Schema } from './store'
+import { useStore, createDefaultDatasetState, Schema } from './store'
 
 // A comparison is a statement about *one* dataset: "these cells versus those
 // cells, in this matrix". Cell indices, the split view's second geometry, and
@@ -120,5 +120,60 @@ describe("the split view's second geometry is scoped to its dataset", () => {
     useStore.getState().setActiveSlot('secondary')
 
     expect(useStore.getState().secondEmbeddingData).toBeNull()
+  })
+})
+
+// A slot is a name, not one of two fixed positions. The backend has always
+// keyed its adaptors by an arbitrary string; these pin the frontend to the same
+// contract, and pin down what happens when a slot is named that nothing has
+// been loaded into — the case that used to be unrepresentable.
+
+const TERTIARY = makeSchema(['X_pca', 'X_umap'], 1600)
+
+describe('slots are named, not numbered', () => {
+  it('loads a dataset into a slot that did not exist before', () => {
+    useStore.getState().loadDatasetIntoSlot('sample_E11.5', TERTIARY)
+    expect(useStore.getState().datasets['sample_E11.5'].schema).toBe(TERTIARY)
+  })
+
+  it('leaves the datasets already loaded where they were', () => {
+    useStore.getState().loadDatasetIntoSlot('sample_E11.5', TERTIARY)
+    const { datasets } = useStore.getState()
+    expect(datasets.primary.schema).toBe(PRIMARY)
+    expect(datasets.secondary.schema).toBe(SECONDARY)
+  })
+
+  it('shows a named slot the same way it shows the first two', () => {
+    useStore.getState().loadDatasetIntoSlot('sample_E11.5', TERTIARY)
+    useStore.getState().setActiveSlot('sample_E11.5')
+    expect(useStore.getState().schema).toBe(TERTIARY)
+  })
+
+  it('refuses to make a slot active when there is nothing there to show', () => {
+    useStore.getState().setActiveSlot('never_loaded')
+
+    const state = useStore.getState()
+    expect(state.activeSlot).toBe('primary')
+    // The dangerous outcome is not a throw — it is the flat fields going blank
+    // while every panel keeps reading them as the active dataset.
+    expect(state.schema).toBe(PRIMARY)
+  })
+
+  it('drops a patch aimed at a slot that holds no dataset', () => {
+    // An in-flight fetch resolving after its dataset was unloaded, say.
+    useStore.getState().patchSlotState('never_loaded', { selectedGenes: ['Sox9'] })
+    expect(useStore.getState().datasets['never_loaded']).toBeUndefined()
+  })
+
+  it('still activates a slot that exists but has yet to be loaded', () => {
+    // 'secondary' exists from the start with a null schema; switching to it is
+    // how the UI has always worked and has to keep working.
+    useStore.setState({
+      datasets: { ...useStore.getState().datasets, secondary: createDefaultDatasetState() },
+    })
+    useStore.getState().setActiveSlot('secondary')
+
+    expect(useStore.getState().activeSlot).toBe('secondary')
+    expect(useStore.getState().schema).toBeNull()
   })
 })

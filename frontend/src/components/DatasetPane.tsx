@@ -81,6 +81,9 @@ export default function DatasetPane({
   const setActiveSlot = useStore((s) => s.setActiveSlot)
   const interactionMode = useStore((s) => s.interactionMode)
 
+  // The slot was unloaded out from under us. No pane, rather than an empty one.
+  if (!ds) return null
+
   const isActive = activeSlot === slot
   // Acting on a pane makes it the active dataset first, so the panels down the
   // left and the modals all follow the plot the user just touched.

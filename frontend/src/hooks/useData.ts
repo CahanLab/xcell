@@ -3,6 +3,7 @@ import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, Expression
 import { defaultThresholds } from '../utils/histogram'
 import { assertJsonResponse } from '../lib/foreignServer'
 import { pollTaskLoop, TaskStatus } from '../lib/taskPolling'
+import { mirrorTargets } from '../lib/datasetSlots'
 import { MESSAGES } from '../messages'
 
 let _highlightIdSeq = 0
@@ -298,8 +299,8 @@ export function useExpressionTransformEffect() {
         // Mirror to other slot in dual mode. The other slot uses ITS OWN
         // displayLayer (read inside the helper), since layers are per-dataset.
         if (layoutMode === 'dual') {
-          mirrorExpressionToSlot(
-            otherSlot(activeSlot),
+          mirrorSlots(activeSlot).forEach((target) => mirrorExpressionToSlot(
+            target,
             selectedGenes,
             transform,
             {
@@ -308,7 +309,7 @@ export function useExpressionTransformEffect() {
               aggregation: displayPreferences.geneSetAggregation,
             },
             clipPct,
-          )
+          ))
         }
       } catch (err) {
         setError((err as Error).message)
@@ -377,8 +378,8 @@ export function useBivariateTransformEffect() {
 
         // Mirror to other slot in dual mode
         if (layoutMode === 'dual') {
-          mirrorBivariateToSlot(
-            otherSlot(activeSlot),
+          mirrorSlots(activeSlot).forEach((target) => mirrorBivariateToSlot(
+            target,
             genes1,
             genes2,
             transform,
@@ -388,7 +389,7 @@ export function useBivariateTransformEffect() {
               aggregation: displayPreferences.geneSetAggregation,
             },
             clipPct,
-          )
+          ))
         }
       } catch (err) {
         setError((err as Error).message)
@@ -522,9 +523,12 @@ async function mirrorBivariateToSlot(
   }
 }
 
-// Helper: get the other slot (for dual-mode mirroring)
-function otherSlot(slot: DatasetSlot): DatasetSlot {
-  return slot === 'primary' ? 'secondary' : 'primary'
+// Helper: the datasets a colouring applied to the active one gets copied onto.
+// Reads the store at call time rather than taking `datasets` as an argument, so
+// the eight mirroring call sites keep the dependency lists they already have —
+// and so they mirror onto what is loaded now, not what was loaded at render.
+function mirrorSlots(activeSlot: DatasetSlot): DatasetSlot[] {
+  return mirrorTargets(activeSlot, useStore.getState().datasets)
 }
 
 export function useDataActions() {
@@ -597,7 +601,7 @@ export function useDataActions() {
 
         // Mirror to other slot in dual mode (fire-and-forget)
         if (layoutMode === 'dual') {
-          mirrorExpressionToSlot(otherSlot(activeSlot), [gene], effectiveTransform, undefined as AggregationParams | undefined, clipPct)
+          mirrorSlots(activeSlot).forEach((target) => mirrorExpressionToSlot(target, [gene], effectiveTransform, undefined as AggregationParams | undefined, clipPct))
         }
       } catch (err) {
         setError((err as Error).message)
@@ -617,10 +621,10 @@ export function useDataActions() {
         clearSelectedGenes()
         // Mirror clear to other slot in dual mode
         if (layoutMode === 'dual') {
-          patchSlotState(otherSlot(activeSlot), {
+          mirrorSlots(activeSlot).forEach((target) => patchSlotState(target, {
             selectedGenes: [], selectedGeneSetName: null, expressionData: null, colorMode: 'none',
             cellSortOrder: null, cellSortVersion: 0,
-          })
+          }))
         }
         return
       }
@@ -683,8 +687,8 @@ export function useDataActions() {
 
         // Mirror to other slot in dual mode (fire-and-forget)
         if (layoutMode === 'dual') {
-          mirrorExpressionToSlot(
-            otherSlot(activeSlot),
+          mirrorSlots(activeSlot).forEach((target) => mirrorExpressionToSlot(
+            target,
             genes,
             effectiveTransform,
             {
@@ -693,7 +697,7 @@ export function useDataActions() {
               aggregation: displayPreferences.geneSetAggregation,
             },
             clipPct,
-          )
+          ))
         }
       } catch (err) {
         setError((err as Error).message)
@@ -710,10 +714,10 @@ export function useDataActions() {
     clearSelectedGenes()
     // Mirror clear to other slot in dual mode
     if (layoutMode === 'dual') {
-      patchSlotState(otherSlot(activeSlot), {
+      mirrorSlots(activeSlot).forEach((target) => patchSlotState(target, {
         selectedGenes: [], expressionData: null, colorMode: 'none',
         cellSortOrder: null, cellSortVersion: 0,
-      })
+      }))
     }
   }, [clearSelectedGenes, layoutMode, activeSlot, patchSlotState])
 
@@ -780,8 +784,8 @@ export function useDataActions() {
 
         // Mirror to other slot in dual mode (fire-and-forget)
         if (layoutMode === 'dual') {
-          mirrorBivariateToSlot(
-            otherSlot(activeSlot),
+          mirrorSlots(activeSlot).forEach((target) => mirrorBivariateToSlot(
+            target,
             genes1,
             genes2,
             transform,
@@ -791,7 +795,7 @@ export function useDataActions() {
               aggregation: displayPreferences.geneSetAggregation,
             },
             clipPct,
-          )
+          ))
         }
       } catch (err) {
         setError((err as Error).message)
@@ -806,10 +810,10 @@ export function useDataActions() {
     clearBivariateMode()
     // Mirror clear to other slot in dual mode
     if (layoutMode === 'dual') {
-      patchSlotState(otherSlot(activeSlot), {
+      mirrorSlots(activeSlot).forEach((target) => patchSlotState(target, {
         bivariateData: null, colorMode: 'none',
         cellSortOrder: null, cellSortVersion: 0,
-      })
+      }))
     }
   }, [clearBivariateMode, layoutMode, activeSlot, patchSlotState])
 

@@ -494,8 +494,15 @@ export interface ScanpyActionRecord {
   timestamp: string
 }
 
-// Multi-dataset slot identifiers
-export type DatasetSlot = 'primary' | 'secondary'
+// A dataset slot is a name. The backend has always keyed its adaptors by an
+// arbitrary string, and `lib/localizeRoles.ts` already types slots this way;
+// this is the frontend catching up. 'primary' and 'secondary' are the two the
+// UI offers today, not the two that exist.
+//
+// The cost of widening is that a typo is no longer a type error, so a slot that
+// isn't there must be a *quiet* no-op rather than a crash or, worse, a
+// half-built DatasetState. Every lookup below is written that way.
+export type DatasetSlot = string
 
 // Per-dataset state: fields that are unique to each loaded dataset
 export interface DatasetState {
@@ -659,6 +666,7 @@ function repairSecondEmbedding(
   datasets: Record<DatasetSlot, DatasetState>,
 ): Record<DatasetSlot, DatasetState> {
   const ds = datasets[slot]
+  if (!ds) return datasets
   const names = ds.schema?.embeddings
   if (!names || names.length === 0) return datasets
   if (ds.secondEmbedding && names.includes(ds.secondEmbedding)) return datasets
@@ -1113,11 +1121,13 @@ export const useStore = create<AppState>((set, get) => {
   // Helper: dual-write a per-dataset patch to both flat fields and datasets[activeSlot]
   function dsUpdate(patch: Partial<DatasetState>): Partial<AppState> {
     const { activeSlot, datasets } = get()
+    const ds = datasets[activeSlot]
+    if (!ds) return {}
     return {
       ...patch,
       datasets: {
         ...datasets,
-        [activeSlot]: { ...datasets[activeSlot], ...patch },
+        [activeSlot]: { ...ds, ...patch },
       },
     } as Partial<AppState>
   }
@@ -1128,18 +1138,22 @@ export const useStore = create<AppState>((set, get) => {
     const patch = fn(state)
     if (Object.keys(patch).length === 0) return {}
     const { activeSlot, datasets } = state
+    const ds = datasets[activeSlot]
+    if (!ds) return {}
     return {
       ...patch,
       datasets: {
         ...datasets,
-        [activeSlot]: { ...datasets[activeSlot], ...patch },
+        [activeSlot]: { ...ds, ...patch },
       },
     } as Partial<AppState>
   }
 
   // Helper: copy all per-dataset fields from a slot to flat top-level fields
   function syncFlatFields(slot: DatasetSlot, datasets: Record<DatasetSlot, DatasetState>): Partial<AppState> {
-    const ds = datasets[slot]
+    // Callers guard against an absent slot; falling back to a blank dataset
+    // rather than throwing keeps a bug here from taking the whole app down.
+    const ds = datasets[slot] ?? createDefaultDatasetState()
     return {
       schema: ds.schema,
       embedding: ds.embedding,
@@ -2667,6 +2681,9 @@ export const useStore = create<AppState>((set, get) => {
     setActiveSlot: (slot) => {
       const state = get()
       if (slot === state.activeSlot) return
+      // Nothing to make active. Leaving the flat fields pointed at the dataset
+      // that *is* showing beats blanking them: every panel reads them.
+      if (!state.datasets[slot]) return
       const datasets = repairSecondEmbedding(slot, state.datasets)
       set({
         activeSlot: slot,
@@ -2703,9 +2720,14 @@ export const useStore = create<AppState>((set, get) => {
 
     patchSlotState: (slot, patch) => {
       const state = get()
+      const ds = state.datasets[slot]
+      // A patch for a dataset that isn't loaded — a fetch that outlived it,
+      // say. Spreading it would mint a DatasetState with only these few fields
+      // set, which then fails much later and somewhere else.
+      if (!ds) return
       const newDatasets = {
         ...state.datasets,
-        [slot]: { ...state.datasets[slot], ...patch },
+        [slot]: { ...ds, ...patch },
       }
       if (slot === state.activeSlot) {
         set({ ...patch, datasets: newDatasets } as Partial<AppState>)
@@ -2718,7 +2740,7 @@ export const useStore = create<AppState>((set, get) => {
 
 /** Convenience hook: returns the DatasetState for the active slot. */
 export function useActiveDataset(): DatasetState {
-  return useStore((state) => state.datasets[state.activeSlot])
+  return useStore((state) => state.datasets[state.activeSlot]) ?? createDefaultDatasetState()
 }
 
 // Dev-only debug hook: exposes the store on window so the running app's state

@@ -8,6 +8,7 @@ import EmbeddingPlot from './components/EmbeddingPlot'
 import DatasetPane from './components/DatasetPane'
 import { FloatingPanel, CategoryLegend, ContinuousLegend, ExpressionLegend, BivariateLegend } from './components/PlotLegends'
 import { umPerUnitForSlot, expressionLegendTitle, paneDescriptors } from './lib/datasetPanes'
+import { loadedSlots } from './lib/datasetSlots'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
 import DisplaySettings from './components/DisplaySettings'
@@ -1186,7 +1187,7 @@ export default function App() {
             <>
               <select
                 value={activeSlot}
-                onChange={(e) => setActiveSlot(e.target.value as DatasetSlot)}
+                onChange={(e) => setActiveSlot(e.target.value)}
                 style={{ ...styles.embeddingSelect, fontSize: '12px' }}
                 title="Switch active dataset"
               >
@@ -1685,13 +1686,12 @@ export default function App() {
                   </div>
                 )}
 
-                {layoutMode === 'dual' && datasets.secondary.schema ? (
-                  /* Dual scatter layout — one pane per dataset, side by side.
-                     Slot order is the order slots were created in `datasets`,
-                     which is insertion order: primary, then secondary. */
+                {layoutMode === 'dual' && loadedSlots(datasets).length >= 2 ? (
+                  /* Dual scatter layout — one pane per loaded dataset, side by
+                     side. Slot order is the order the slots were created in
+                     `datasets`: primary, then secondary. */
                   <div style={{ display: 'flex', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' }}>
-                    {/* The cast goes away once DatasetSlot is a plain string. */}
-                    {paneDescriptors(Object.keys(datasets) as DatasetSlot[]).map((pane) => (
+                    {paneDescriptors(loadedSlots(datasets)).map((pane) => (
                       <DatasetPane
                         key={pane.slot}
                         slot={pane.slot}
@@ -2058,7 +2058,7 @@ export default function App() {
                 <span style={{ fontSize: '12px', color: '#888' }}>Load into:</span>
                 <select
                   value={loadSlot}
-                  onChange={(e) => setLoadSlot(e.target.value as DatasetSlot)}
+                  onChange={(e) => setLoadSlot(e.target.value)}
                   style={styles.embeddingSelect}
                 >
                   <option value="primary">Primary</option>

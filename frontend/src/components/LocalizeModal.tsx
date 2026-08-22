@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useStore, type DatasetSlot } from '../store'
+import { useStore } from '../store'
 import { appendDataset, pollTask, refreshSchema } from '../hooks/useData'
 import { assignRoles, type RefSlot } from '../lib/localizeRoles'
 import { adviseParameters, adviseLayers, type PopulationGeometry } from '../lib/localizeAdvice'
@@ -239,7 +239,7 @@ export default function LocalizeModal() {
     try {
       const q = column ? `&gene_subset=${encodeURIComponent(column)}` : ''
       const r = await fetch(
-        appendDataset(`${API}/localize/suggest?reference=${refSlot}${q}`, qSlot as DatasetSlot),
+        appendDataset(`${API}/localize/suggest?reference=${refSlot}${q}`, qSlot),
       )
       const body = await r.json()
       if (!r.ok) {
@@ -271,7 +271,7 @@ export default function LocalizeModal() {
     let cancelled = false
     const load = (slot: string | null, set: (v: LayerInfo[]) => void) => {
       if (!slot) { set([]); return }
-      fetch(appendDataset(`${API}/scanpy/layers`, slot as DatasetSlot))
+      fetch(appendDataset(`${API}/scanpy/layers`, slot))
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (!cancelled && d?.layers) set(d.layers as LayerInfo[]) })
         .catch(() => { /* the picker falls back to .X */ })
@@ -279,7 +279,7 @@ export default function LocalizeModal() {
     load(querySlot, setQueryLayers)
     load(reference, setRefLayers)
     if (reference) {
-      fetch(appendDataset(`${API}/territories`, reference as DatasetSlot))
+      fetch(appendDataset(`${API}/territories`, reference))
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (!cancelled && d) setRefTerritories(Object.keys(d.territories || {})) })
         .catch(() => { /* the checkbox simply stays hidden */ })
@@ -319,7 +319,7 @@ export default function LocalizeModal() {
     if (Object.keys(sets).length === 0) { setPopulations([]); return }
 
     let cancelled = false
-    fetch(appendDataset(`${API}/localize/reference_geometry`, querySlot as DatasetSlot), {
+    fetch(appendDataset(`${API}/localize/reference_geometry`, querySlot), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reference, dataset: querySlot, gene_sets: sets }),
@@ -362,7 +362,7 @@ export default function LocalizeModal() {
       // a run refreshes the *active* slot, which is not necessarily the query,
       // so the cached list can be stale exactly when it matters.
       const sr = await fetch(
-        appendDataset(`${API}/schema`, querySlot as DatasetSlot))
+        appendDataset(`${API}/schema`, querySlot))
       const all: string[] = sr.ok ? ((await sr.json()).embeddings || []) : []
       // Only things that could be a predicted map. The query's own PCA/UMAP
       // are embeddings too and scoring them against tissue coordinates is
@@ -374,7 +374,7 @@ export default function LocalizeModal() {
         return
       }
       const r = await fetch(
-        appendDataset(`${API}/localize/evaluate_map`, querySlot as DatasetSlot),
+        appendDataset(`${API}/localize/evaluate_map`, querySlot),
         {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -395,7 +395,7 @@ export default function LocalizeModal() {
   const runCheck = async () => {
     setBusy('check'); setError(null); setCv(null); setProgress(0)
     try {
-      const r = await fetch(appendDataset(`${API}/localize/cross_validate`, querySlot as DatasetSlot), {
+      const r = await fetch(appendDataset(`${API}/localize/cross_validate`, querySlot ?? undefined), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // Cross-validation holds out part of the *reference* and predicts it
@@ -421,7 +421,7 @@ export default function LocalizeModal() {
   const runLocalize = async () => {
     setBusy('run'); setError(null); setResult(null); setProgress(0)
     try {
-      const r = await fetch(appendDataset(`${API}/localize/prepare`, querySlot as DatasetSlot), {
+      const r = await fetch(appendDataset(`${API}/localize/prepare`, querySlot ?? undefined), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...body(), key_added: keyAdded }),

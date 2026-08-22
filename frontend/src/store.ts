@@ -494,8 +494,15 @@ export interface ScanpyActionRecord {
   timestamp: string
 }
 
-// Multi-dataset slot identifiers
-export type DatasetSlot = 'primary' | 'secondary'
+// A dataset slot is a name. The backend has always keyed its adaptors by an
+// arbitrary string, and `lib/localizeRoles.ts` already types slots this way;
+// this is the frontend catching up. 'primary' and 'secondary' are the two the
+// UI offers today, not the two that exist.
+//
+// The cost of widening is that a typo is no longer a type error, so a slot that
+// isn't there must be a *quiet* no-op rather than a crash or, worse, a
+// half-built DatasetState. Every lookup below is written that way.
+export type DatasetSlot = string
 
 // Per-dataset state: fields that are unique to each loaded dataset
 export interface DatasetState {
@@ -532,6 +539,21 @@ export interface DatasetState {
   // plausible answer about the wrong cells.
   comparison: ComparisonState
   diffExpResult: DiffExpResult | null
+  // Which categories of which .obs column are ticked in the Cell Manager. Two
+  // datasets both having a 'leiden' whose categories are '0','1','2' is the
+  // ordinary case, so ticks carried across look deliberate rather than stale.
+  comparisonCheckedColumn: string | null
+  comparisonCheckedCategories: Set<string>
+  // The .obs column the Marker Genes modal groups by.
+  markerGenesColumn: string | null
+  // A table about one line drawn on one dataset — the same kind of thing as
+  // diffExpResult, per-dataset for the same reason.
+  lineAssociationResult: LineAssociationResult | null
+  // Which two (or three) .obsm columns to view, per embedding name. Keyed by
+  // name, and 'X_pca' is a name both datasets have: chosen on one, these dims
+  // were applied to the other with nothing to show for it — a projection
+  // nobody asked for, or a column that dataset's X_pca does not have.
+  embeddingDims: Record<string, { x: number; y: number; z?: number }>
   // Split view's second pane: which embedding, and its fetched coordinates.
   // Per-dataset because embedding names are — 'neighborhood_composition' means
   // nothing to a dataset that never computed one.
@@ -640,6 +662,11 @@ export function createDefaultDatasetState(
     pcaSubsets: [],
     comparison: { group1: null, group2: null, group1Label: null, group2Label: null },
     diffExpResult: null,
+    comparisonCheckedColumn: null,
+    comparisonCheckedCategories: new Set<string>(),
+    markerGenesColumn: null,
+    lineAssociationResult: null,
+    embeddingDims: {},
     secondEmbedding: null,
     secondEmbeddingData: null,
     displayLayer: 'X',
@@ -659,6 +686,7 @@ function repairSecondEmbedding(
   datasets: Record<DatasetSlot, DatasetState>,
 ): Record<DatasetSlot, DatasetState> {
   const ds = datasets[slot]
+  if (!ds) return datasets
   const names = ds.schema?.embeddings
   if (!names || names.length === 0) return datasets
   if (ds.secondEmbedding && names.includes(ds.secondEmbedding)) return datasets
@@ -860,7 +888,27 @@ interface AppState {
   quiltPhase: 'lasso' | 'transform'
   quiltUndoDepth: number
 
-  // Multi-dataset support
+  // Multi-dataset support.
+  //
+  // Everything above this line that names something inside a dataset — cell
+  // indices, an .obs column, an embedding name, a drawn line — belongs in
+  // DatasetState and in syncFlatFields, not here. `store.test.ts` checks that
+  // correspondence mechanically; it cannot check this direction, so:
+  //
+  // Deliberately global, with the reason each is safe:
+  //   embeddingLabelColumn  drawn only when colorBy.name matches it, so a name
+  //                         from another dataset renders nothing
+  //   activeLineId          an id into per-dataset drawnLines; an id from
+  //                         elsewhere matches no line and is inert
+  //   activeTaskId          drives a progress indicator, nothing numerical
+  //   activeFigure          a figure composes panels *across* datasets — that
+  //                         is what the figure builder is for
+  //   geneSets, geneSetCategories
+  //                         user-level and cross-dataset by design
+  //   heatmapConfig         names an .obs column and a drawn line, so it is
+  //                         the next candidate to move; left alone here
+  //                         because the heatmap resolves both server-side and
+  //                         fails loudly rather than silently
   datasets: Record<DatasetSlot, DatasetState>
   activeSlot: DatasetSlot
 
@@ -1113,11 +1161,13 @@ export const useStore = create<AppState>((set, get) => {
   // Helper: dual-write a per-dataset patch to both flat fields and datasets[activeSlot]
   function dsUpdate(patch: Partial<DatasetState>): Partial<AppState> {
     const { activeSlot, datasets } = get()
+    const ds = datasets[activeSlot]
+    if (!ds) return {}
     return {
       ...patch,
       datasets: {
         ...datasets,
-        [activeSlot]: { ...datasets[activeSlot], ...patch },
+        [activeSlot]: { ...ds, ...patch },
       },
     } as Partial<AppState>
   }
@@ -1128,18 +1178,22 @@ export const useStore = create<AppState>((set, get) => {
     const patch = fn(state)
     if (Object.keys(patch).length === 0) return {}
     const { activeSlot, datasets } = state
+    const ds = datasets[activeSlot]
+    if (!ds) return {}
     return {
       ...patch,
       datasets: {
         ...datasets,
-        [activeSlot]: { ...datasets[activeSlot], ...patch },
+        [activeSlot]: { ...ds, ...patch },
       },
     } as Partial<AppState>
   }
 
   // Helper: copy all per-dataset fields from a slot to flat top-level fields
   function syncFlatFields(slot: DatasetSlot, datasets: Record<DatasetSlot, DatasetState>): Partial<AppState> {
-    const ds = datasets[slot]
+    // Callers guard against an absent slot; falling back to a blank dataset
+    // rather than throwing keeps a bug here from taking the whole app down.
+    const ds = datasets[slot] ?? createDefaultDatasetState()
     return {
       schema: ds.schema,
       embedding: ds.embedding,
@@ -1170,6 +1224,11 @@ export const useStore = create<AppState>((set, get) => {
       pcaSubsets: ds.pcaSubsets,
       comparison: ds.comparison,
       diffExpResult: ds.diffExpResult,
+      comparisonCheckedColumn: ds.comparisonCheckedColumn,
+      comparisonCheckedCategories: ds.comparisonCheckedCategories,
+      markerGenesColumn: ds.markerGenesColumn,
+      lineAssociationResult: ds.lineAssociationResult,
+      embeddingDims: ds.embeddingDims,
       secondEmbedding: ds.secondEmbedding,
       secondEmbeddingData: ds.secondEmbeddingData,
       displayLayer: ds.displayLayer,
@@ -1953,7 +2012,7 @@ export const useStore = create<AppState>((set, get) => {
     setScoreGeneSetsSource: (src) => set({ scoreGeneSetsSource: src }),
 
     // Line association actions (global)
-    setLineAssociationResult: (result) => set({ lineAssociationResult: result }),
+    setLineAssociationResult: (result) => set(dsUpdate({ lineAssociationResult: result })),
     setLineAssociationLoading: (loading) => set({ isLineAssociationLoading: loading }),
     setLineAssociationModalOpen: (open) => set({ isLineAssociationModalOpen: open }),
     setActiveTaskId: (taskId) => set({ activeTaskId: taskId }),
@@ -2152,7 +2211,9 @@ export const useStore = create<AppState>((set, get) => {
     // Global-only line actions
     setActiveLine: (id) => set({ activeLineId: id }),
     setEmbeddingDims: (embeddingName, x, y, z) =>
-      set((state) => ({ embeddingDims: { ...state.embeddingDims, [embeddingName]: { x, y, z } } })),
+      set(dsUpdateFn((state) => ({
+        embeddingDims: { ...state.embeddingDims, [embeddingName]: { x, y, z } },
+      }))),
 
     // Per-dataset line actions
     renameLine: (id, name) =>
@@ -2481,7 +2542,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Marker genes modal actions (global)
     setMarkerGenesModalOpen: (open) => set({ isMarkerGenesModalOpen: open }),
-    setMarkerGenesColumn: (column) => set({ markerGenesColumn: column }),
+    setMarkerGenesColumn: (column) => set(dsUpdate({ markerGenesColumn: column })),
 
     // Var identifier switching actions
     setVarIdentifierColumns: (columns) => set(dsUpdate({ varIdentifierColumns: columns })),
@@ -2526,7 +2587,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Checkbox-based comparison actions (global)
     toggleComparisonCategory: (column, category) =>
-      set((state) => {
+      set(dsUpdateFn((state) => {
         if (state.comparisonCheckedColumn !== column) {
           // Switching columns: clear previous and start fresh
           return {
@@ -2544,9 +2605,9 @@ export const useStore = create<AppState>((set, get) => {
           comparisonCheckedColumn: next.size > 0 ? column : null,
           comparisonCheckedCategories: next,
         }
-      }),
+      })),
     clearComparisonCategories: () =>
-      set({ comparisonCheckedColumn: null, comparisonCheckedCategories: new Set<string>() }),
+      set(dsUpdate({ comparisonCheckedColumn: null, comparisonCheckedCategories: new Set<string>() })),
 
     // Heatmap tab actions (global)
     setCenterPanelView: (view) => set({ centerPanelView: view }),
@@ -2667,6 +2728,9 @@ export const useStore = create<AppState>((set, get) => {
     setActiveSlot: (slot) => {
       const state = get()
       if (slot === state.activeSlot) return
+      // Nothing to make active. Leaving the flat fields pointed at the dataset
+      // that *is* showing beats blanking them: every panel reads them.
+      if (!state.datasets[slot]) return
       const datasets = repairSecondEmbedding(slot, state.datasets)
       set({
         activeSlot: slot,
@@ -2703,9 +2767,14 @@ export const useStore = create<AppState>((set, get) => {
 
     patchSlotState: (slot, patch) => {
       const state = get()
+      const ds = state.datasets[slot]
+      // A patch for a dataset that isn't loaded — a fetch that outlived it,
+      // say. Spreading it would mint a DatasetState with only these few fields
+      // set, which then fails much later and somewhere else.
+      if (!ds) return
       const newDatasets = {
         ...state.datasets,
-        [slot]: { ...state.datasets[slot], ...patch },
+        [slot]: { ...ds, ...patch },
       }
       if (slot === state.activeSlot) {
         set({ ...patch, datasets: newDatasets } as Partial<AppState>)
@@ -2718,7 +2787,7 @@ export const useStore = create<AppState>((set, get) => {
 
 /** Convenience hook: returns the DatasetState for the active slot. */
 export function useActiveDataset(): DatasetState {
-  return useStore((state) => state.datasets[state.activeSlot])
+  return useStore((state) => state.datasets[state.activeSlot]) ?? createDefaultDatasetState()
 }
 
 // Dev-only debug hook: exposes the store on window so the running app's state

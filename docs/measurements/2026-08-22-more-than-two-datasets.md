@@ -110,6 +110,32 @@ slots, the invariant needs to be enforceable rather than remembered:
 - The flat top-level mirrors exist for component convenience. They are a
   cache of the active slot, and that is the only thing they may ever be.
 
+## What has since been done
+
+Steps 1–3 below are **done** (2026-08-22). Step 4 is not.
+
+The audit in step 3 found five top-level fields that named something inside a
+dataset. Four were staleness bugs you would notice; one returned a wrong answer
+you would not:
+
+| | |
+|---|---|
+| `embeddingDims` | keyed by embedding *name*, and both of Patrick's datasets have an `X_pca`. PCs chosen on one silently became how the other was projected. |
+| `markerGenesColumn` | an `.obs` column |
+| `comparisonCheckedColumn` / `Categories` | an `.obs` column and its ticked categories |
+| `lineAssociationResult` | a table about one line on one dataset |
+
+Deliberately left global, each with its reason, recorded beside `datasets` in
+`AppState`: `embeddingLabelColumn`, `activeLineId`, `activeTaskId`,
+`activeFigure`, the gene-set state, and `heatmapConfig` — the last being the
+next candidate, since it names both an `.obs` column and a drawn line.
+
+**The invariant is now mechanical.** `store.test.ts` derives the set of mirrored
+fields from `DatasetState` and the top-level state themselves and asserts every
+one of them follows a slot switch. It cannot see the other direction — a
+dataset-shaped field that was never in `DatasetState` at all — which is what the
+list above is for.
+
 ## Suggested order
 
 1. **Extract `<DatasetPane slot={...} />`** from the duplicated dual-layout
@@ -124,3 +150,23 @@ slots, the invariant needs to be enforceable rather than remembered:
 
 Steps 1–3 are invisible to the user and independently verifiable. Only step 4
 changes the product, and by then it is small.
+
+### What step 4 still has to touch
+
+Everything below is what remains after steps 1–3. Patrick's direction for it:
+**tabs to switch between datasets, and resizable panes.**
+
+- The two-option slot `<select>` and the Load dialog's slot picker, both of
+  which list `primary` and `secondary` by hand.
+- `layoutMode: 'single' | 'dual'` — a count, or a set of visible slots, rather
+  than two names. `paneDescriptors()` already takes a list and returns
+  `{slot, label, showDivider}`, so the pane row itself needs nothing.
+- `useSpatialScale('primary')` / `useSpatialScale('secondary')`, called once
+  per slot by hand in `App.tsx`.
+- An **unload** action. The store has none — `DELETE /api/datasets/{slot}`
+  exists on the backend and nothing calls it. The store already tolerates a
+  slot disappearing (that is what the no-op guards are for), but nothing can
+  make it happen yet.
+- Slot **naming**. `loadDatasetIntoSlot` takes any string today and pane labels
+  are derived from the slot name, so `sample_E11.5_rep3` already works end to
+  end — but nothing in the UI can produce a name other than the two fixed ones.

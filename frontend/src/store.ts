@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/shapeTransform'
 import { sortGeneSetInCategory } from './lib/geneSetOps'
 import { sectionForCut } from './lib/territoryGeometry'
+import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
 
 export interface Schema {
   n_cells: number
@@ -525,6 +526,17 @@ export interface DatasetState {
   currentVarIndex: string
   geneMaskConfig: GeneMaskConfig | null
   pcaSubsets: PCASubsetSummary[]
+  // A comparison names rows of *this* matrix, so it cannot travel to another
+  // dataset. The danger is silent rather than loud: a smaller dataset's indices
+  // are all in range for a larger one, so running them there returns a
+  // plausible answer about the wrong cells.
+  comparison: ComparisonState
+  diffExpResult: DiffExpResult | null
+  // Split view's second pane: which embedding, and its fetched coordinates.
+  // Per-dataset because embedding names are — 'neighborhood_composition' means
+  // nothing to a dataset that never computed one.
+  secondEmbedding: string | null
+  secondEmbeddingData: EmbeddingData | null
   // Layer used for visualization-side gene expression coloring (single-gene,
   // multi-gene, bivariate). 'X' (default) reads adata.X; any other value reads
   // adata.layers[displayLayer]. Per-dataset because layers are per-dataset.
@@ -626,8 +638,35 @@ export function createDefaultDatasetState(
     currentVarIndex: '_index',
     geneMaskConfig: null,
     pcaSubsets: [],
+    comparison: { group1: null, group2: null, group1Label: null, group2Label: null },
+    diffExpResult: null,
+    secondEmbedding: null,
+    secondEmbeddingData: null,
     displayLayer: 'X',
     spatialScale: null,
+  }
+}
+
+/** Ensure a slot's split-view pane names an embedding that slot actually has.
+ *
+ * Embedding names are dataset-local, so a name chosen on one dataset is often
+ * meaningless on another. Leaving it alone is not a safe default: the pane
+ * renders nothing, and its embedding picker lives *inside* the pane, so the
+ * user has no control left to fix it with. Re-pick instead.
+ */
+function repairSecondEmbedding(
+  slot: DatasetSlot,
+  datasets: Record<DatasetSlot, DatasetState>,
+): Record<DatasetSlot, DatasetState> {
+  const ds = datasets[slot]
+  const names = ds.schema?.embeddings
+  if (!names || names.length === 0) return datasets
+  if (ds.secondEmbedding && names.includes(ds.secondEmbedding)) return datasets
+  const picked = pickSecondEmbedding(names, ds.selectedEmbedding)
+  if (picked === ds.secondEmbedding) return datasets
+  return {
+    ...datasets,
+    [slot]: { ...ds, secondEmbedding: picked, secondEmbeddingData: null },
   }
 }
 
@@ -1129,6 +1168,10 @@ export const useStore = create<AppState>((set, get) => {
       currentVarIndex: ds.currentVarIndex,
       geneMaskConfig: ds.geneMaskConfig,
       pcaSubsets: ds.pcaSubsets,
+      comparison: ds.comparison,
+      diffExpResult: ds.diffExpResult,
+      secondEmbedding: ds.secondEmbedding,
+      secondEmbeddingData: ds.secondEmbeddingData,
       displayLayer: ds.displayLayer,
     }
   }
@@ -1887,21 +1930,21 @@ export const useStore = create<AppState>((set, get) => {
         displayPreferences: { ...state.displayPreferences, ...prefs },
       }))),
 
-    // Comparison actions (global)
+    // Comparison actions — per-dataset (the indices name rows of one matrix)
     setComparisonGroup1: (indices, label) =>
-      set((state) => ({
+      set(dsUpdateFn((state) => ({
         comparison: { ...state.comparison, group1: indices, group1Label: label },
-      })),
+      }))),
     setComparisonGroup2: (indices, label) =>
-      set((state) => ({
+      set(dsUpdateFn((state) => ({
         comparison: { ...state.comparison, group2: indices, group2Label: label },
-      })),
+      }))),
     clearComparison: () =>
-      set({
+      set(dsUpdate({
         comparison: { group1: null, group2: null, group1Label: null, group2Label: null },
         diffExpResult: null,
-      }),
-    setDiffExpResult: (result) => set({ diffExpResult: result }),
+      })),
+    setDiffExpResult: (result) => set(dsUpdate({ diffExpResult: result })),
     setDiffExpLoading: (loading) => set({ isDiffExpLoading: loading }),
     setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
@@ -2614,8 +2657,8 @@ export const useStore = create<AppState>((set, get) => {
     setLayoutMode: (mode) => set({ layoutMode: mode }),
     setSplitView: (on) => set({ splitView: on }),
     setSecondEmbedding: (name) =>
-      set({ secondEmbedding: name, secondEmbeddingData: null }),
-    setSecondEmbeddingData: (data) => set({ secondEmbeddingData: data }),
+      set(dsUpdate({ secondEmbedding: name, secondEmbeddingData: null })),
+    setSecondEmbeddingData: (data) => set(dsUpdate({ secondEmbeddingData: data })),
 
     // Embedding view mode action
     setViewMode: (m) => set({ viewMode: m }),
@@ -2624,9 +2667,11 @@ export const useStore = create<AppState>((set, get) => {
     setActiveSlot: (slot) => {
       const state = get()
       if (slot === state.activeSlot) return
+      const datasets = repairSecondEmbedding(slot, state.datasets)
       set({
         activeSlot: slot,
-        ...syncFlatFields(slot, state.datasets),
+        datasets,
+        ...syncFlatFields(slot, datasets),
       })
     },
 
@@ -2645,7 +2690,10 @@ export const useStore = create<AppState>((set, get) => {
         const idx = pick != null ? lower.findIndex(l => l.includes(pick)) : 0
         freshDs.selectedEmbedding = schema.embeddings[idx]
       }
-      const newDatasets = { ...state.datasets, [slot]: freshDs }
+      const newDatasets = repairSecondEmbedding(slot, {
+        ...state.datasets,
+        [slot]: freshDs,
+      })
       if (slot === state.activeSlot) {
         set({ datasets: newDatasets, ...syncFlatFields(slot, newDatasets) })
       } else {

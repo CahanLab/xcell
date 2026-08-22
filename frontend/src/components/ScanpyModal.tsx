@@ -1208,6 +1208,15 @@ export default function ScanpyModal() {
     }
   }, [])
 
+  // A column name and its category labels are dataset-local, and this modal
+  // stays mounted across a slot switch (it renders null when closed), so a pick
+  // made on one dataset would otherwise still be armed on the next.
+  useEffect(() => {
+    setCompareColumn(null)
+    setCompareCategories([])
+    setCompareChecked(new Set())
+  }, [activeSlot])
+
   // Fetch categories when compareColumn changes
   useEffect(() => {
     if (!compareColumn) { setCompareCategories([]); setCompareChecked(new Set()); return }
@@ -1327,7 +1336,7 @@ export default function ScanpyModal() {
     } finally {
       setCompareLoading(false)
     }
-  }, [compareColumn, compareChecked, compareTopN, setComparisonGroup1, setComparisonGroup2, setDiffExpLoading, setDiffExpModalOpen, setDiffExpResult, setMarkerGenesColumn, setMarkerGenesModalOpen, setScanpyModalOpen])
+  }, [compareColumn, compareChecked, compareTopN, activeSlot, setComparisonGroup1, setComparisonGroup2, setDiffExpLoading, setDiffExpModalOpen, setDiffExpResult, setMarkerGenesColumn, setMarkerGenesModalOpen, setScanpyModalOpen])
 
   // Run the selected function
   const handleRun = useCallback(async () => {

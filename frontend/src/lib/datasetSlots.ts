@@ -50,7 +50,9 @@ const DATA_EXTENSIONS = ['.h5ad', '.h5', '.rds']
  * Only a known extension is allowed to end the name — real filenames here carry
  * version dots ('E11.5') that are part of what the dataset is called.
  */
-export function datasetLabel(slot: string, filename?: string): string {
+export function datasetLabel(slot: string, filename?: string, displayName?: string | null): string {
+  const typed = (displayName ?? '').trim()
+  if (typed) return typed
   const base = (filename ?? '').split('/').pop() ?? ''
   if (base) {
     const lower = base.toLowerCase()
@@ -108,5 +110,35 @@ export function resizePanes(
   const out = [...weights]
   out[index] = newAPx / pxPerWeight
   out[index + 1] = (pairPx - newAPx) / pxPerWeight
+  return out
+}
+
+
+/** How to arrange n panes.
+ *
+ * Two or three stay in one row — that is what a wide screen is for, and it is
+ * what side-by-side comparison has always looked like. Past that a row makes
+ * every pane a sliver, so they square off instead, which is what spatial data
+ * wants. An awkward count leaves a gap rather than an uneven row.
+ */
+export function paneGrid(n: number): { rows: number; cols: number } {
+  if (n <= 0) return { rows: 0, cols: 0 }
+  if (n <= 3) return { rows: 1, cols: n }
+  const cols = Math.ceil(Math.sqrt(n))
+  return { rows: Math.ceil(n / cols), cols }
+}
+
+/** Move one item of an array to another index, without mutating it.
+ *
+ * Out-of-range indices are a drop that landed outside the strip: the order is
+ * returned unchanged rather than guessed at.
+ */
+export function moveItem<T>(items: T[], from: number, to: number): T[] {
+  if (from < 0 || from >= items.length) return items
+  if (to < 0 || to >= items.length) return items
+  if (from === to) return items
+  const out = [...items]
+  const [moved] = out.splice(from, 1)
+  out.splice(to, 0, moved)
   return out
 }

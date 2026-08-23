@@ -104,6 +104,46 @@ export function useSpatialScale(slot: DatasetSlot) {
   }, [slot, schema, historyLength, patchSlotState])
 }
 
+/** Keep one slot's coordinates loaded, for a slot that is not the active one.
+ *
+ * `useEmbedding()` only ever fetches the active dataset, which was invisible
+ * while tiling was something you switched on by hand — but a restored tiled
+ * workspace comes back with every pane on screen at once, and all but one of
+ * them would read "No embedding loaded" until you clicked its tab.
+ */
+export function useSlotEmbedding(slot: DatasetSlot) {
+  const activeSlot = useStore((s) => s.activeSlot)
+  const ds = useStore((s) => s.datasets[slot])
+  const viewMode = useStore((s) => s.viewMode)
+  const patchSlotState = useStore((s) => s.patchSlotState)
+
+  const name = ds?.selectedEmbedding ?? null
+  const dims = name ? ds?.embeddingDims[name] : undefined
+  const dimX = dims?.x ?? 0
+  const dimY = dims?.y ?? 1
+  const dimZ = viewMode === '3d' ? (dims?.z ?? null) : null
+  const loaded = ds?.embedding
+  const isActive = slot === activeSlot
+
+  useEffect(() => {
+    // The active slot belongs to useEmbedding; fetching it here too would
+    // double every request and race it.
+    if (isActive || !name) return
+    if (loaded?.name === name
+        && (loaded?.dim_x ?? 0) === dimX
+        && (loaded?.dim_y ?? 1) === dimY
+        && (loaded?.dim_z ?? null) === dimZ) return
+
+    let stale = false
+    const zq = dimZ != null ? `&dim_z=${dimZ}` : ''
+    fetchJson<EmbeddingData>(
+      appendDataset(`${API_BASE}/embedding/${name}?dim_x=${dimX}&dim_y=${dimY}${zq}`, slot))
+      .then((data) => { if (!stale) patchSlotState(slot, { embedding: data }) })
+      .catch(() => { /* a pane with no coordinates says so on its own */ })
+    return () => { stale = true }
+  }, [slot, isActive, name, dimX, dimY, dimZ, loaded, patchSlotState])
+}
+
 export function useSchema() {
   const { schema, setSchema, setLoading, setError, setSelectedEmbedding } = useStore()
 

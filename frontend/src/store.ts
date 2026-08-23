@@ -3,7 +3,8 @@ import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/sh
 import { sortGeneSetInCategory } from './lib/geneSetOps'
 import { sectionForCut } from './lib/territoryGeometry'
 import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
-import { loadedSlots, slotAfterUnload } from './lib/datasetSlots'
+import { loadedSlots, slotAfterUnload, moveItem, paneGrid } from './lib/datasetSlots'
+import type { Workspace } from './lib/workspaceLayout'
 
 export interface Schema {
   n_cells: number
@@ -545,6 +546,8 @@ export interface DatasetState {
   // ordinary case, so ticks carried across look deliberate rather than stale.
   comparisonCheckedColumn: string | null
   comparisonCheckedCategories: Set<string>
+  // What the user renamed this dataset to, or null to go on using its filename.
+  displayName: string | null
   // The .obs column the Marker Genes modal groups by.
   markerGenesColumn: string | null
   // A table about one line drawn on one dataset — the same kind of thing as
@@ -665,6 +668,7 @@ export function createDefaultDatasetState(
     diffExpResult: null,
     comparisonCheckedColumn: null,
     comparisonCheckedCategories: new Set<string>(),
+    displayName: null,
     markerGenesColumn: null,
     lineAssociationResult: null,
     embeddingDims: {},
@@ -876,10 +880,11 @@ interface AppState {
   // side by side.
   layoutMode: LayoutMode
 
-  // Relative pane widths in the tiled layout, keyed by slot; a slot with no
-  // entry is 1. Layout state, not dataset state — it describes the arrangement
-  // rather than the data — so it belongs at the top level.
-  paneWidths: Record<string, number>
+  // Flex weights for the tiled layout's grid tracks: one per column, one per
+  // row, empty meaning equal. Tracks rather than panes, because a divider runs
+  // the full height or width of the grid and so resizes a whole track. Layout
+  // state, not dataset state — it describes the arrangement, not the data.
+  paneLayout: { cols: number[]; rows: number[] }
 
   // Split view: a second pane showing another embedding of the ACTIVE
   // dataset (single layout only — dual layout already owns the split).
@@ -1166,7 +1171,13 @@ interface AppState {
    *  to show. Call DELETE /api/datasets/{slot} alongside it to free the
    *  backend's copy. */
   unloadDataset: (slot: DatasetSlot) => void
-  setPaneWidths: (widths: Record<string, number>) => void
+  setPaneLayout: (layout: { cols: number[]; rows: number[] }) => void
+  /** Rename a dataset for display. Empty clears it, and its filename is used. */
+  setDatasetDisplayName: (slot: DatasetSlot, name: string) => void
+  /** Move a dataset in the tab order — which is also the pane order. */
+  reorderSlots: (from: number, to: number) => void
+  /** Restore tab order, names and pane sizes from a previous visit. */
+  applyWorkspace: (w: Workspace) => void
 }
 
 export const useStore = create<AppState>((set, get) => {
@@ -1332,7 +1343,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Layout mode
     layoutMode: 'single' as LayoutMode,
-    paneWidths: {},
+    paneLayout: { cols: [], rows: [] },
     splitView: false,
     secondEmbedding: null as string | null,
     secondEmbeddingData: null as EmbeddingData | null,
@@ -2808,19 +2819,70 @@ export const useStore = create<AppState>((set, get) => {
 
       const datasets = { ...state.datasets }
       delete datasets[slot]
-      const paneWidths = { ...state.paneWidths }
-      delete paneWidths[slot]
 
       const repaired = repairSecondEmbedding(nextActive, datasets)
       set({
         datasets: repaired,
-        paneWidths,
+        // One fewer pane is a different grid; keeping the old tracks would lay
+        // the remaining panes out at widths nobody chose.
+        paneLayout: { cols: [], rows: [] },
         activeSlot: nextActive,
         ...syncFlatFields(nextActive, repaired),
       })
     },
 
-    setPaneWidths: (widths) => set({ paneWidths: widths }),
+    setPaneLayout: (layout) => set({ paneLayout: layout }),
+
+    setDatasetDisplayName: (slot, name) => {
+      const state = get()
+      const ds = state.datasets[slot]
+      if (!ds) return
+      const trimmed = name.trim()
+      set({
+        datasets: { ...state.datasets, [slot]: { ...ds, displayName: trimmed || null } },
+      })
+    },
+
+    reorderSlots: (from, to) => {
+      const state = get()
+      const order = moveItem(Object.keys(state.datasets), from, to)
+      // Rebuilt in the new order: `datasets` key order *is* the pane order.
+      const datasets: Record<string, DatasetState> = {}
+      for (const slot of order) datasets[slot] = state.datasets[slot]
+      set({ datasets, paneLayout: { cols: [], rows: [] } })
+    },
+
+    applyWorkspace: (w) => {
+      const state = get()
+      // A stored order can name datasets this session never loaded, and miss
+      // ones it did. Take the stored order where it applies, then append the
+      // rest in the order they arrived.
+      const present = Object.keys(state.datasets)
+      const ordered = w.order.filter((slot) => present.includes(slot))
+      const rest = present.filter((slot) => !ordered.includes(slot))
+      const order = [...ordered, ...rest]
+
+      const datasets: Record<string, DatasetState> = {}
+      for (const slot of order) {
+        const ds = state.datasets[slot]
+        const name = w.names[slot]
+        datasets[slot] = name ? { ...ds, displayName: name } : ds
+      }
+
+      // Track counts are only meaningful for the grid they were saved from.
+      const { rows, cols } = paneGrid(loadedSlots(datasets).length)
+      const layout = {
+        cols: w.cols.length === cols ? w.cols : [],
+        rows: w.rows.length === rows ? w.rows : [],
+      }
+      set({
+        datasets,
+        paneLayout: layout,
+        // Only worth restoring when there is more than one dataset to tile.
+        layoutMode: w.tiled && loadedSlots(datasets).length >= 2 ? 'tiled' : state.layoutMode,
+        ...syncFlatFields(state.activeSlot, datasets),
+      })
+    },
   }
 })
 

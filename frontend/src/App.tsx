@@ -1,14 +1,15 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, createDefaultCategories, DatasetSlot } from './store'
 import { mergeHydratedCategories } from './lib/geneSetHydration'
 import { meanOf, convexHull, type ShapeAffine } from './utils/shapeTransform'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, useSecondEmbedding, appendDataset, fetchGeneMask } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, useSlotEmbedding, useSecondEmbedding, appendDataset, fetchGeneMask } from './hooks/useData'
 import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
 import EmbeddingPlot from './components/EmbeddingPlot'
 import DatasetPane from './components/DatasetPane'
 import { FloatingPanel, CategoryLegend, ContinuousLegend, ExpressionLegend, BivariateLegend } from './components/PlotLegends'
 import { umPerUnitForSlot, expressionLegendTitle } from './lib/datasetPanes'
-import { loadedSlots, datasetLabel, nextSlotKey, resizePanes } from './lib/datasetSlots'
+import { loadedSlots, datasetLabel, nextSlotKey, resizePanes, paneGrid } from './lib/datasetSlots'
+import { loadWorkspace, saveWorkspace } from './lib/workspaceLayout'
 import DatasetTabs from './components/DatasetTabs'
 import PaneDivider from './components/PaneDivider'
 import GenePanel from './components/GenePanel'
@@ -342,12 +343,25 @@ function RotateToolbar({ onRotate }: { onRotate: (deg: number) => void }) {
 // another load may have taken the next free one in the meantime.
 const NEW_SLOT = '__new__'
 
-// Keeps one dataset's spatial identity current — which .obsm array is its
-// coordinates, and how many µm a coordinate unit spans — for the scale bar and
-// the Display panel. Hooks cannot be called in a loop, so the loop over slots
-// has to be a loop over components; this renders nothing.
-function SpatialScaleLoader({ slot }: { slot: DatasetSlot }) {
+// Width of a pane divider, in px. Shared by the grid template and the maths
+// that converts a drag into track weights.
+const DIVIDER_PX = 7
+
+// A CSS grid template that alternates content tracks with fixed divider tracks:
+// `1fr 7px 1.4fr 7px 0.6fr`. Panes land on the odd tracks, dividers on the even.
+function trackTemplate(weights: number[]): string {
+  return weights
+    .flatMap((w, i) => (i === 0 ? [`${w}fr`] : [`${DIVIDER_PX}px`, `${w}fr`]))
+    .join(' ')
+}
+
+// Keeps one dataset loaded and current: its spatial identity (which .obsm array
+// is coordinates, how many µm a unit spans) for the scale bar, and its
+// coordinates for its own pane. Hooks cannot be called in a loop, so the loop
+// over slots has to be a loop over components; this renders nothing.
+function SlotDataLoader({ slot }: { slot: DatasetSlot }) {
   useSpatialScale(slot)
+  useSlotEmbedding(slot)
   return null
 }
 
@@ -505,26 +519,96 @@ export default function App() {
 
   const umPerUnitFor = (slot: DatasetSlot): number | null => umPerUnitForSlot(datasets[slot])
 
-  // Which datasets are on screen when tiled, and how the width is shared out.
+  // Which datasets are on screen when tiled, and how the grid is shared out.
   const openSlots = loadedSlots(datasets)
-  const paneWidths = useStore((s) => s.paneWidths)
-  const setPaneWidths = useStore((s) => s.setPaneWidths)
+  const paneLayout = useStore((s) => s.paneLayout)
+  const setPaneLayout = useStore((s) => s.setPaneLayout)
+  const grid = paneGrid(openSlots.length)
+  // Stored weights are only used when they match the grid they were saved from;
+  // otherwise every track is equal.
+  const colWeights = paneLayout.cols.length === grid.cols
+    ? paneLayout.cols : Array(grid.cols).fill(1)
+  const rowWeights = paneLayout.rows.length === grid.rows
+    ? paneLayout.rows : Array(grid.rows).fill(1)
   const tileRowRef = useRef<HTMLDivElement>(null)
   // Captured when the drag starts: the divider reports its offset from there,
-  // so dragging past a pane's minimum and back is not a one-way trip.
-  const resizeStart = useRef<number[]>([])
+  // so dragging past a track's minimum and back is not a one-way trip.
+  const resizeStart = useRef<{ cols: number[]; rows: number[] }>({ cols: [], rows: [] })
 
   const beginPaneResize = useCallback(() => {
-    resizeStart.current = openSlots.map((s) => paneWidths[s] ?? 1)
-  }, [openSlots, paneWidths])
+    resizeStart.current = { cols: colWeights, rows: rowWeights }
+  }, [colWeights, rowWeights])
 
-  const resizePaneAt = useCallback((index: number, deltaPx: number) => {
-    const rowPx = tileRowRef.current?.clientWidth ?? 0
-    const next = resizePanes(resizeStart.current, index, deltaPx, rowPx)
-    setPaneWidths(Object.fromEntries(openSlots.map((s, i) => [s, next[i] ?? 1])))
-  }, [openSlots, setPaneWidths])
+  const resizeTrack = useCallback((axis: 'cols' | 'rows', index: number, deltaPx: number) => {
+    const el = tileRowRef.current
+    if (!el) return
+    const startTracks = resizeStart.current[axis]
+    // Dividers take room the tracks do not, so measure against the space the
+    // tracks actually share.
+    const spanPx = (axis === 'cols' ? el.clientWidth : el.clientHeight)
+      - DIVIDER_PX * Math.max(0, startTracks.length - 1)
+    const next = resizePanes(startTracks, index, deltaPx, spanPx)
+    setPaneLayout(axis === 'cols'
+      ? { cols: next, rows: rowWeights }
+      : { cols: colWeights, rows: next })
+  }, [colWeights, rowWeights, setPaneLayout])
 
-  const resetPaneWidths = useCallback(() => setPaneWidths({}), [setPaneWidths])
+  const resetPaneLayout = useCallback(() => setPaneLayout({ cols: [], rows: [] }), [setPaneLayout])
+
+  // Restore the workspace. The datasets themselves live in the backend and
+  // survive a refresh; the frontend only ever asked for the active slot, so
+  // everything else vanished from the UI while still occupying memory.
+  //
+  // Deliberately no cleanup that cancels this. StrictMode mounts, unmounts and
+  // remounts in dev: a cancel-on-unmount flag would abort the first run while
+  // the ref below turns the second into a no-op, so nothing would be restored
+  // at all. App lives for the life of the page; there is nothing to cancel.
+  const restoreStartedRef = useRef(false)
+  const [workspaceRestored, setWorkspaceRestored] = useState(false)
+  useEffect(() => {
+    if (restoreStartedRef.current) return
+    restoreStartedRef.current = true
+    ;(async () => {
+      try {
+        const held = await fetch('/api/datasets').then((r) => (r.ok ? r.json() : {}))
+        // 'primary' is left to useSchema, which is already fetching it; loading
+        // it again here would reset whatever that has set up.
+        for (const slot of Object.keys(held).filter((s) => s !== 'primary')) {
+          const schema = await fetch(`/api/schema?dataset=${encodeURIComponent(slot)}`)
+            .then((r) => (r.ok ? r.json() : null))
+          if (!schema) continue
+          useStore.getState().loadDatasetIntoSlot(slot, schema)
+        }
+        const stored = loadWorkspace()
+        if (stored) useStore.getState().applyWorkspace(stored)
+      } catch {
+        // Nothing restored is a worse start than a wrong error message.
+      } finally {
+        // Only now may the save effect run. Flipping this at the *start* let it
+        // fire against the half-loaded state and overwrite the stored
+        // arrangement with one dataset and no names, before the restore had
+        // read it.
+        setWorkspaceRestored(true)
+      }
+    })()
+  }, [])
+
+  // ...and remember it. Arrangement only: order, names, pane sizes.
+  const slotNamesSig = openSlots.map((s) => `${s}:${datasets[s]?.displayName ?? ''}`).join('|')
+  useEffect(() => {
+    if (!workspaceRestored || openSlots.length === 0) return
+    const names: Record<string, string> = {}
+    for (const slot of openSlots) {
+      const n = datasets[slot]?.displayName
+      if (n) names[slot] = n
+    }
+    saveWorkspace({
+      order: openSlots, names,
+      cols: paneLayout.cols, rows: paneLayout.rows,
+      tiled: layoutMode === 'tiled',
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceRestored, slotNamesSig, paneLayout, layoutMode])
 
   const openLoadDialogForNewSlot = useCallback(() => {
     setLoadSlot(NEW_SLOT)
@@ -1668,9 +1752,9 @@ export default function App() {
         )}
 
         <main style={styles.main}>
-          {/* One per loaded dataset; renders nothing, keeps each slot's spatial
-              identity current for its scale bar. */}
-          {openSlots.map((slot) => <SpatialScaleLoader key={slot} slot={slot} />)}
+          {/* One per loaded dataset; renders nothing, keeps each slot's
+              coordinates and spatial identity current. */}
+          {openSlots.map((slot) => <SlotDataLoader key={slot} slot={slot} />)}
           {/* Which dataset the panels act on. Hidden until a second is loaded. */}
           <DatasetTabs onAddDataset={openLoadDialogForNewSlot} />
           {/* Tab bar (rollback: remove this block and restore plain <main> content) */}
@@ -1710,23 +1794,54 @@ export default function App() {
                 )}
 
                 {layoutMode === 'tiled' && openSlots.length >= 2 ? (
-                  /* Tiled layout — one pane per loaded dataset, in the order
-                     the slots were created, with a draggable divider between
-                     each neighbouring pair. */
-                  <div ref={tileRowRef} style={{ display: 'flex', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' }}>
+                  /* Tiled layout — one pane per loaded dataset, laid out on a
+                     grid. Dividers sit in tracks of their own between the
+                     columns and rows, so each one resizes a whole track rather
+                     than a single pane. */
+                  <div
+                    ref={tileRowRef}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: trackTemplate(colWeights),
+                      gridTemplateRows: trackTemplate(rowWeights),
+                      position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {colWeights.map((_, c) => c === 0 ? null : (
+                      <div key={`c${c}`} style={{ gridColumn: 2 * c, gridRow: '1 / -1' }}>
+                        <PaneDivider
+                          axis="x"
+                          onResizeStart={beginPaneResize}
+                          onResize={(delta) => resizeTrack('cols', c - 1, delta)}
+                          onReset={resetPaneLayout}
+                        />
+                      </div>
+                    ))}
+                    {rowWeights.map((_, r) => r === 0 ? null : (
+                      <div key={`r${r}`} style={{ gridRow: 2 * r, gridColumn: '1 / -1' }}>
+                        <PaneDivider
+                          axis="y"
+                          onResizeStart={beginPaneResize}
+                          onResize={(delta) => resizeTrack('rows', r - 1, delta)}
+                          onReset={resetPaneLayout}
+                        />
+                      </div>
+                    ))}
                     {openSlots.map((slot, i) => (
-                      <Fragment key={slot}>
-                        {i > 0 && (
-                          <PaneDivider
-                            onResizeStart={() => beginPaneResize()}
-                            onResize={(deltaPx) => resizePaneAt(i - 1, deltaPx)}
-                            onReset={resetPaneWidths}
-                          />
-                        )}
+                      <div
+                        key={slot}
+                        style={{
+                          gridColumn: 2 * (i % grid.cols) + 1,
+                          gridRow: 2 * Math.floor(i / grid.cols) + 1,
+                          position: 'relative',
+                          minWidth: 0,
+                          minHeight: 0,
+                        }}
+                      >
                         <DatasetPane
                           slot={slot}
-                          label={datasetLabel(slot, datasets[slot]?.schema?.filename)}
-                          weight={paneWidths[slot] ?? 1}
+                          label={datasetLabel(slot, datasets[slot]?.schema?.filename, datasets[slot]?.displayName)}
                           onSelectionComplete={handleSelectionComplete}
                           onLineDrawn={handleLineDrawn}
                           onTransformEmbedding={handleRotateEmbedding}
@@ -1734,7 +1849,7 @@ export default function App() {
                           onSelectEmbedding={selectEmbedding}
                           onToggleBivariateSort={toggleBivariateSortOrder}
                         />
-                      </Fragment>
+                      </div>
                     ))}
                   </div>
                 ) : (

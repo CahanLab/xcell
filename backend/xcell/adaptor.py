@@ -2733,6 +2733,79 @@ class DataAdaptor:
             out.append(str(c))
         return out
 
+    def crosstab(self, column_a: str, column_b: str) -> dict[str, Any]:
+        """Count cells by two .obs columns at once, for the stacked barplot.
+
+        A stacked bar claims a composition — "38% of cluster 3 is proximal" —
+        so every cell in a bar has to land in exactly one box or the bar lies
+        about the cluster. Two consequences:
+
+        - Cells with no value for `column_b` are counted into an explicit
+          '(none)' bucket rather than dropped. Territories leave a cell blank
+          when it has no coordinate, which is common and not an error.
+        - Categories no cell uses are kept. A cluster emptied by a filter still
+          belongs on the axis; dropping it renumbers everything to its right.
+
+        Returns counts as rows of `a_categories` by columns of `b_categories`,
+        plus each column's scanpy colors when the dataset carries them.
+        """
+        if column_a == column_b:
+            raise ValueError(
+                "Splitting a column by the same column gives one block per bar. "
+                "Choose two different columns."
+            )
+        for name in (column_a, column_b):
+            if name not in self.adata.obs.columns:
+                raise KeyError(f"Column '{name}' not found in .obs")
+
+        def categories(name: str) -> tuple[pd.Series, list[str], list[str] | None]:
+            series = self.adata.obs[name]
+            if pd.api.types.is_numeric_dtype(series.dtype) and not pd.api.types.is_bool_dtype(series.dtype):
+                raise ValueError(
+                    f"'{name}' is continuous. Bin it into a categorical column first — "
+                    "grouping it here would invent categories nobody chose."
+                )
+            colors = self._get_category_colors(name)
+            if pd.api.types.is_categorical_dtype(series.dtype):
+                levels = [str(c) for c in series.cat.categories]
+            else:
+                # A plain string/bool column has no stored order, so use a
+                # stable one rather than whatever order the rows happen to be in.
+                levels = sorted({str(v) for v in series.dropna().unique()})
+            return series, levels, colors
+
+        series_a, cats_a, colors_a = categories(column_a)
+        series_b, cats_b, colors_b = categories(column_b)
+
+        MISSING = "(none)"
+        a_vals = series_a.astype("object").where(series_a.notna(), MISSING).astype(str)
+        b_vals = series_b.astype("object").where(series_b.notna(), MISSING).astype(str)
+        if a_vals.eq(MISSING).any():
+            cats_a = [*cats_a, MISSING]
+            colors_a = [*colors_a, None] if colors_a is not None else None
+        if b_vals.eq(MISSING).any():
+            cats_b = [*cats_b, MISSING]
+            colors_b = [*colors_b, None] if colors_b is not None else None
+
+        index_b = {name: j for j, name in enumerate(cats_b)}
+        counts = [[0] * len(cats_b) for _ in cats_a]
+        rows = {name: i for i, name in enumerate(cats_a)}
+        for a, b in zip(a_vals, b_vals):
+            i, j = rows.get(a), index_b.get(b)
+            if i is not None and j is not None:
+                counts[i][j] += 1
+
+        return {
+            "a": column_a,
+            "b": column_b,
+            "a_categories": cats_a,
+            "b_categories": cats_b,
+            "a_colors": colors_a,
+            "b_colors": colors_b,
+            "counts": counts,
+            "n_cells": int(self.adata.n_obs),
+        }
+
     def get_obs_column_summary(self, name: str) -> dict[str, Any]:
         """Get summary statistics for a cell metadata column.
 

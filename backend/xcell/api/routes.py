@@ -603,6 +603,29 @@ def get_obs_summary(column: str, dataset: str | None = Query(None)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.get("/obs/crosstab")
+def get_obs_crosstab(
+    a: str = Query(...), b: str = Query(...), dataset: str | None = Query(None),
+):
+    """Count cells by two .obs columns at once, for the stacked barplot.
+
+    Args:
+        a: column whose categories become the bars
+        b: column whose categories split each bar
+
+    Returns:
+        counts as rows of a_categories by columns of b_categories, the category
+        lists, and each column's scanpy colors where the dataset carries them
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.crosstab(a, b)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/obs/{column}")
 def get_obs_column(column: str, dataset: str | None = Query(None)):
     """Get cell metadata column values.

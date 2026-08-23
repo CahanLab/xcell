@@ -31,6 +31,7 @@ import TerritoryPanel from './components/TerritoryPanel'
 import AssignTerritoriesModal from './components/AssignTerritoriesModal'
 import ShapeManager from './components/ShapeManager'
 import HeatmapView from './components/HeatmapView'
+import BarplotView from './components/BarplotView'
 import FigureBuilder from './components/FigureBuilder'
 import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
@@ -1773,6 +1774,13 @@ export default function App() {
               Heatmap
             </button>
             <button
+              style={{ ...styles.tab, ...(centerPanelView === 'barplot' ? styles.tabActive : {}) }}
+              onClick={() => setCenterPanelView('barplot')}
+              title="Stacked composition barplot — what each group is made of"
+            >
+              Barplot
+            </button>
+            <button
               style={{ ...styles.tab, ...(centerPanelView === 'figure' ? styles.tabActive : {}) }}
               onClick={() => setCenterPanelView('figure')}
               title="Multi-panel publication figure builder"
@@ -2047,6 +2055,10 @@ export default function App() {
 
             {centerPanelView === 'heatmap' && (
               <HeatmapView />
+            )}
+
+            {centerPanelView === 'barplot' && (
+              <BarplotView />
             )}
 
             {centerPanelView === 'figure' && (

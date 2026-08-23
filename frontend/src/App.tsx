@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, createDefaultCategories, DatasetSlot } from './store'
 import { mergeHydratedCategories } from './lib/geneSetHydration'
 import { meanOf, convexHull, type ShapeAffine } from './utils/shapeTransform'
@@ -7,8 +7,10 @@ import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
 import EmbeddingPlot from './components/EmbeddingPlot'
 import DatasetPane from './components/DatasetPane'
 import { FloatingPanel, CategoryLegend, ContinuousLegend, ExpressionLegend, BivariateLegend } from './components/PlotLegends'
-import { umPerUnitForSlot, expressionLegendTitle, paneDescriptors } from './lib/datasetPanes'
-import { loadedSlots } from './lib/datasetSlots'
+import { umPerUnitForSlot, expressionLegendTitle } from './lib/datasetPanes'
+import { loadedSlots, datasetLabel, nextSlotKey, resizePanes } from './lib/datasetSlots'
+import DatasetTabs from './components/DatasetTabs'
+import PaneDivider from './components/PaneDivider'
 import GenePanel from './components/GenePanel'
 import CellPanel from './components/CellPanel'
 import DisplaySettings from './components/DisplaySettings'
@@ -335,6 +337,20 @@ function RotateToolbar({ onRotate }: { onRotate: (deg: number) => void }) {
   )
 }
 
+// The Load dialog's "Load into:" value meaning "somewhere new". Not a slot key:
+// which key that turns out to be is settled when the load is submitted, since
+// another load may have taken the next free one in the meantime.
+const NEW_SLOT = '__new__'
+
+// Keeps one dataset's spatial identity current — which .obsm array is its
+// coordinates, and how many µm a coordinate unit spans — for the scale bar and
+// the Display panel. Hooks cannot be called in a loop, so the loop over slots
+// has to be a loop over components; this renders nothing.
+function SpatialScaleLoader({ slot }: { slot: DatasetSlot }) {
+  useSpatialScale(slot)
+  return null
+}
+
 // Column picker for a multi-dimensional embedding (>2 .obsm columns, e.g. PCA or
 // a gene-set score matrix). Choosing X/Y sets which two columns are viewed; the
 // chosen columns are the real coordinates for coloring, drawing lines, and
@@ -445,7 +461,6 @@ export default function App() {
     loadDatasetIntoSlot,
     datasets,
     layoutMode,
-    setLayoutMode,
     quiltPhase,
     setQuiltPhase,
     quiltUndoDepth,
@@ -488,10 +503,34 @@ export default function App() {
   const colorBy = useColorBy()
   const { selectEmbedding } = useDataActions()
 
-  // Spatial identity per slot, for the scale bar and Display's scale setting.
-  useSpatialScale('primary')
-  useSpatialScale('secondary')
   const umPerUnitFor = (slot: DatasetSlot): number | null => umPerUnitForSlot(datasets[slot])
+
+  // Which datasets are on screen when tiled, and how the width is shared out.
+  const openSlots = loadedSlots(datasets)
+  const paneWidths = useStore((s) => s.paneWidths)
+  const setPaneWidths = useStore((s) => s.setPaneWidths)
+  const tileRowRef = useRef<HTMLDivElement>(null)
+  // Captured when the drag starts: the divider reports its offset from there,
+  // so dragging past a pane's minimum and back is not a one-way trip.
+  const resizeStart = useRef<number[]>([])
+
+  const beginPaneResize = useCallback(() => {
+    resizeStart.current = openSlots.map((s) => paneWidths[s] ?? 1)
+  }, [openSlots, paneWidths])
+
+  const resizePaneAt = useCallback((index: number, deltaPx: number) => {
+    const rowPx = tileRowRef.current?.clientWidth ?? 0
+    const next = resizePanes(resizeStart.current, index, deltaPx, rowPx)
+    setPaneWidths(Object.fromEntries(openSlots.map((s, i) => [s, next[i] ?? 1])))
+  }, [openSlots, setPaneWidths])
+
+  const resetPaneWidths = useCallback(() => setPaneWidths({}), [setPaneWidths])
+
+  const openLoadDialogForNewSlot = useCallback(() => {
+    setLoadSlot(NEW_SLOT)
+    setLoadMode('single')
+    setIsLoadModalOpen(true)
+  }, [])
 
   // Split view: a second embedding of the active dataset beside the first.
   const splitView = useStore((s) => s.splitView)
@@ -996,12 +1035,15 @@ export default function App() {
     setLoadLoading(true)
     setLoadError(null)
     try {
+      // 'New dataset' picks the first free slot key at submit time, not when
+      // the dialog opened — another load may have taken it since.
+      const targetSlot = loadSlot === NEW_SLOT ? nextSlotKey(Object.keys(datasets)) : loadSlot
       const response = await fetch('/api/combine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           files: combineFiles.map(f => ({ file_path: f.path, label: f.label || undefined })),
-          slot: loadSlot,
+          slot: targetSlot,
           gap_fraction: combineGapPct / 100,
           obs_policy: combineObsPolicy,
           var_policy: combineVarPolicy,
@@ -1011,14 +1053,14 @@ export default function App() {
         const err = await response.json().catch(() => ({ detail: response.statusText }))
         throw new Error(err.detail || `HTTP ${response.status}`)
       }
-      const schemaUrl = loadSlot === 'primary' ? '/api/schema' : `/api/schema?dataset=${loadSlot}`
+      const schemaUrl = targetSlot === 'primary' ? '/api/schema' : `/api/schema?dataset=${targetSlot}`
       const schemaData = await fetch(schemaUrl).then(async r => {
         await assertJsonResponse(r)
         return r.json()
       })
-      loadDatasetIntoSlot(loadSlot, schemaData)
-      await fetchGeneMask(loadSlot)
-      if (loadSlot !== activeSlot) setActiveSlot(loadSlot)
+      loadDatasetIntoSlot(targetSlot, schemaData)
+      await fetchGeneMask(targetSlot)
+      if (targetSlot !== activeSlot) setActiveSlot(targetSlot)
       setIsLoadModalOpen(false)
       setCombineFiles([])
       setLoadMode('single')
@@ -1027,39 +1069,42 @@ export default function App() {
     } finally {
       setLoadLoading(false)
     }
-  }, [combineFiles, loadSlot, combineGapPct, combineObsPolicy, combineVarPolicy, activeSlot, loadDatasetIntoSlot, setActiveSlot])
+  }, [combineFiles, loadSlot, datasets, combineGapPct, combineObsPolicy, combineVarPolicy, activeSlot, loadDatasetIntoSlot, setActiveSlot])
 
   const handleLoadDataset = useCallback(async () => {
     if (!loadFilePath.trim()) return
     setLoadLoading(true)
     setLoadError(null)
     try {
+      // 'New dataset' picks the first free slot key at submit time, not when
+      // the dialog opened — another load may have taken it since.
+      const targetSlot = loadSlot === NEW_SLOT ? nextSlotKey(Object.keys(datasets)) : loadSlot
       // Load into the selected slot (backend reads slot from request body)
       const response = await fetch('/api/load', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_path: loadFilePath.trim(), slot: loadSlot }),
+        body: JSON.stringify({ file_path: loadFilePath.trim(), slot: targetSlot }),
       })
       if (!response.ok) {
         const err = await response.json().catch(() => ({ detail: response.statusText }))
         throw new Error(err.detail || `HTTP ${response.status}`)
       }
       // Fetch schema for the loaded slot
-      const schemaUrl = loadSlot === 'primary'
+      const schemaUrl = targetSlot === 'primary'
         ? '/api/schema'
-        : `/api/schema?dataset=${loadSlot}`
+        : `/api/schema?dataset=${targetSlot}`
       const schemaData = await fetch(schemaUrl).then(async r => {
         if (!r.ok) throw new Error(`Failed to fetch schema: ${r.statusText}`)
         await assertJsonResponse(r)
         return r.json()
       })
       // Update store
-      loadDatasetIntoSlot(loadSlot, schemaData)
+      loadDatasetIntoSlot(targetSlot, schemaData)
       // Fetch the fresh gene mask state for the loaded slot
-      await fetchGeneMask(loadSlot)
+      await fetchGeneMask(targetSlot)
       // Switch to the loaded slot
-      if (loadSlot !== activeSlot) {
-        setActiveSlot(loadSlot)
+      if (targetSlot !== activeSlot) {
+        setActiveSlot(targetSlot)
       }
       // Track recently loaded files
       const filePath = loadFilePath.trim()
@@ -1074,7 +1119,7 @@ export default function App() {
     } finally {
       setLoadLoading(false)
     }
-  }, [loadFilePath, loadSlot, activeSlot, loadDatasetIntoSlot, setActiveSlot])
+  }, [loadFilePath, loadSlot, datasets, activeSlot, loadDatasetIntoSlot, setActiveSlot])
 
   return (
     <div style={styles.container}>
@@ -1183,33 +1228,6 @@ export default function App() {
             )}
           </div>
 
-          {datasets.secondary.schema && (
-            <>
-              <select
-                value={activeSlot}
-                onChange={(e) => setActiveSlot(e.target.value)}
-                style={{ ...styles.embeddingSelect, fontSize: '12px' }}
-                title="Switch active dataset"
-              >
-                <option value="primary">
-                  Primary ({datasets.primary.schema?.n_cells.toLocaleString() ?? '\u2014'} cells)
-                </option>
-                <option value="secondary">
-                  Secondary ({datasets.secondary.schema?.n_cells.toLocaleString() ?? '\u2014'} cells)
-                </option>
-              </select>
-              <button
-                style={{
-                  ...styles.toolButton,
-                  ...(layoutMode === 'dual' ? styles.toolButtonActive : {}),
-                }}
-                onClick={() => setLayoutMode(layoutMode === 'dual' ? 'single' : 'dual')}
-                title={layoutMode === 'dual' ? 'Switch to single view' : 'Show both datasets side by side'}
-              >
-                Split
-              </button>
-            </>
-          )}
           {schema && layoutMode === 'single' && schema.embeddings.length > 1 && (
             <button
               style={{
@@ -1650,6 +1668,11 @@ export default function App() {
         )}
 
         <main style={styles.main}>
+          {/* One per loaded dataset; renders nothing, keeps each slot's spatial
+              identity current for its scale bar. */}
+          {openSlots.map((slot) => <SpatialScaleLoader key={slot} slot={slot} />)}
+          {/* Which dataset the panels act on. Hidden until a second is loaded. */}
+          <DatasetTabs onAddDataset={openLoadDialogForNewSlot} />
           {/* Tab bar (rollback: remove this block and restore plain <main> content) */}
           <div style={styles.tabBar}>
             <button
@@ -1686,24 +1709,32 @@ export default function App() {
                   </div>
                 )}
 
-                {layoutMode === 'dual' && loadedSlots(datasets).length >= 2 ? (
-                  /* Dual scatter layout — one pane per loaded dataset, side by
-                     side. Slot order is the order the slots were created in
-                     `datasets`: primary, then secondary. */
-                  <div style={{ display: 'flex', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' }}>
-                    {paneDescriptors(loadedSlots(datasets)).map((pane) => (
-                      <DatasetPane
-                        key={pane.slot}
-                        slot={pane.slot}
-                        label={pane.label}
-                        showDivider={pane.showDivider}
-                        onSelectionComplete={handleSelectionComplete}
-                        onLineDrawn={handleLineDrawn}
-                        onTransformEmbedding={handleRotateEmbedding}
-                        onTransformEmbeddingSubset={handleTransformEmbeddingSubset}
-                        onSelectEmbedding={selectEmbedding}
-                        onToggleBivariateSort={toggleBivariateSortOrder}
-                      />
+                {layoutMode === 'tiled' && openSlots.length >= 2 ? (
+                  /* Tiled layout — one pane per loaded dataset, in the order
+                     the slots were created, with a draggable divider between
+                     each neighbouring pair. */
+                  <div ref={tileRowRef} style={{ display: 'flex', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' }}>
+                    {openSlots.map((slot, i) => (
+                      <Fragment key={slot}>
+                        {i > 0 && (
+                          <PaneDivider
+                            onResizeStart={() => beginPaneResize()}
+                            onResize={(deltaPx) => resizePaneAt(i - 1, deltaPx)}
+                            onReset={resetPaneWidths}
+                          />
+                        )}
+                        <DatasetPane
+                          slot={slot}
+                          label={datasetLabel(slot, datasets[slot]?.schema?.filename)}
+                          weight={paneWidths[slot] ?? 1}
+                          onSelectionComplete={handleSelectionComplete}
+                          onLineDrawn={handleLineDrawn}
+                          onTransformEmbedding={handleRotateEmbedding}
+                          onTransformEmbeddingSubset={handleTransformEmbeddingSubset}
+                          onSelectEmbedding={selectEmbedding}
+                          onToggleBivariateSort={toggleBivariateSortOrder}
+                        />
+                      </Fragment>
                     ))}
                   </div>
                 ) : (
@@ -2060,9 +2091,14 @@ export default function App() {
                   value={loadSlot}
                   onChange={(e) => setLoadSlot(e.target.value)}
                   style={styles.embeddingSelect}
+                  title="Replace one of the loaded datasets, or open this one alongside them"
                 >
-                  <option value="primary">Primary</option>
-                  <option value="secondary">Secondary</option>
+                  {openSlots.map((slot) => (
+                    <option key={slot} value={slot}>
+                      Replace {datasetLabel(slot, datasets[slot]?.schema?.filename)}
+                    </option>
+                  ))}
+                  <option value={NEW_SLOT}>New dataset</option>
                 </select>
               </div>
             </div>

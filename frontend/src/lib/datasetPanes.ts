@@ -27,25 +27,3 @@ export function expressionLegendTitle(
   if (selectedGeneSetName) return `${selectedGeneSetName} (${selectedGenes.length})`
   return `${selectedGenes.length} genes`
 }
-
-export interface PaneDescriptor<T extends string = string> {
-  slot: T
-  /** Heading shown in the pane's corner. */
-  label: string
-  /** Separator on this pane's trailing edge — between panes, not after the last. */
-  showDivider: boolean
-}
-
-/** Turn an ordered list of slots into the panes that render them.
- *
- * Slot names double as pane titles: they are already meaningful when a dataset
- * is loaded under a name of its own ('sample_E11.5'), so only the first letter
- * is touched.
- */
-export function paneDescriptors<T extends string>(slots: T[]): PaneDescriptor<T>[] {
-  return slots.map((slot, i) => ({
-    slot,
-    label: slot.charAt(0).toUpperCase() + slot.slice(1),
-    showDivider: i < slots.length - 1,
-  }))
-}

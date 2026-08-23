@@ -49,6 +49,12 @@ const styles = {
     position: 'absolute' as const,
     top: 6,
     left: 8,
+    // Filenames are long and the pane's own buttons sit at the top right;
+    // without a ceiling the two run into each other in a narrow pane.
+    maxWidth: '45%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
     fontSize: '11px',
     color: '#888',
     pointerEvents: 'none' as const,
@@ -58,7 +64,7 @@ const styles = {
 export default function DatasetPane({
   slot,
   label,
-  showDivider,
+  weight,
   onSelectionComplete,
   onLineDrawn,
   onTransformEmbedding,
@@ -68,7 +74,8 @@ export default function DatasetPane({
 }: {
   slot: DatasetSlot
   label: string
-  showDivider: boolean
+  /** Share of the row this pane takes, relative to its siblings. */
+  weight: number
   onSelectionComplete: PlotProps['onSelectionComplete']
   onLineDrawn: PlotProps['onLineDrawn']
   onTransformEmbedding: PlotProps['onTransformEmbedding']
@@ -92,10 +99,12 @@ export default function DatasetPane({
   return (
     <div
       style={{
-        flex: 1,
+        // basis 0 so the weight alone decides the split — with `auto`, a pane
+        // whose contents are wider would claim more than its share.
+        flex: `${weight} 1 0`,
+        minWidth: 0,
         position: 'relative',
         overflow: 'hidden',
-        borderRight: showDivider ? '1px solid #0f3460' : undefined,
         outline: isActive ? '2px solid #e94560' : '2px solid transparent',
         outlineOffset: '-2px',
       }}

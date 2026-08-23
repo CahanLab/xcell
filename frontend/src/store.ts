@@ -3,6 +3,7 @@ import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/sh
 import { sortGeneSetInCategory } from './lib/geneSetOps'
 import { sectionForCut } from './lib/territoryGeometry'
 import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
+import { loadedSlots, slotAfterUnload } from './lib/datasetSlots'
 
 export interface Schema {
   n_cells: number
@@ -412,7 +413,7 @@ export interface Figure {
 }
 
 // Layout mode for scatter view
-export type LayoutMode = 'single' | 'dual'
+export type LayoutMode = 'single' | 'tiled'
 
 // Heatmap configuration
 export interface HeatmapConfig {
@@ -871,8 +872,14 @@ interface AppState {
   // Figure builder state — null until the user creates a figure
   activeFigure: Figure | null
 
-  // Layout mode (single vs side-by-side dual scatter)
+  // Layout mode: the active dataset alone, or every loaded dataset tiled
+  // side by side.
   layoutMode: LayoutMode
+
+  // Relative pane widths in the tiled layout, keyed by slot; a slot with no
+  // entry is 1. Layout state, not dataset state — it describes the arrangement
+  // rather than the data — so it belongs at the top level.
+  paneWidths: Record<string, number>
 
   // Split view: a second pane showing another embedding of the ACTIVE
   // dataset (single layout only — dual layout already owns the split).
@@ -1155,6 +1162,11 @@ interface AppState {
   setEmbeddingLabelColumn: (column: string | null) => void
   loadDatasetIntoSlot: (slot: DatasetSlot, schema: Schema) => void
   patchSlotState: (slot: DatasetSlot, patch: Partial<DatasetState>) => void
+  /** Drop a dataset. A no-op for the last one loaded — the app needs something
+   *  to show. Call DELETE /api/datasets/{slot} alongside it to free the
+   *  backend's copy. */
+  unloadDataset: (slot: DatasetSlot) => void
+  setPaneWidths: (widths: Record<string, number>) => void
 }
 
 export const useStore = create<AppState>((set, get) => {
@@ -1320,6 +1332,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Layout mode
     layoutMode: 'single' as LayoutMode,
+    paneWidths: {},
     splitView: false,
     secondEmbedding: null as string | null,
     secondEmbeddingData: null as EmbeddingData | null,
@@ -2390,20 +2403,19 @@ export const useStore = create<AppState>((set, get) => {
       const state = get()
       const patch: Partial<AppState> = {}
 
-      // Display preferences (applied to both slots + top-level).
+      // Display preferences (applied to every slot + top-level). Written by
+      // slot name until 2026-08-22, which silently left a third dataset on the
+      // built-in defaults.
       const overrides = displayPreferencesFromConfig(state.userConfig)
       if (Object.keys(overrides).length > 0) {
-        patch.datasets = {
-          ...state.datasets,
-          primary: {
-            ...state.datasets.primary,
-            displayPreferences: { ...state.datasets.primary.displayPreferences, ...overrides },
-          },
-          secondary: {
-            ...state.datasets.secondary,
-            displayPreferences: { ...state.datasets.secondary.displayPreferences, ...overrides },
-          },
+        const next: Record<string, DatasetState> = {}
+        for (const [slot, ds] of Object.entries(state.datasets)) {
+          next[slot] = {
+            ...ds,
+            displayPreferences: { ...ds.displayPreferences, ...overrides },
+          }
         }
+        patch.datasets = next
         patch.displayPreferences = { ...state.displayPreferences, ...overrides }
       }
 
@@ -2782,6 +2794,33 @@ export const useStore = create<AppState>((set, get) => {
         set({ datasets: newDatasets })
       }
     },
+
+    unloadDataset: (slot) => {
+      const state = get()
+      if (!state.datasets[slot]) return
+      const order = Object.keys(state.datasets)
+      // Refusing here rather than in the UI: whatever route asks to close the
+      // only dataset, the answer is the same — there would be nothing to show.
+      if (loadedSlots(state.datasets).length <= 1 && state.datasets[slot]?.schema) return
+
+      const nextActive = slotAfterUnload(slot, order, state.activeSlot)
+      if (nextActive == null) return
+
+      const datasets = { ...state.datasets }
+      delete datasets[slot]
+      const paneWidths = { ...state.paneWidths }
+      delete paneWidths[slot]
+
+      const repaired = repairSecondEmbedding(nextActive, datasets)
+      set({
+        datasets: repaired,
+        paneWidths,
+        activeSlot: nextActive,
+        ...syncFlatFields(nextActive, repaired),
+      })
+    },
+
+    setPaneWidths: (widths) => set({ paneWidths: widths }),
   }
 })
 

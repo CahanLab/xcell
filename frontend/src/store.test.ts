@@ -270,3 +270,62 @@ describe('slots are named, not numbered', () => {
     expect(useStore.getState().schema).toBeNull()
   })
 })
+
+// Closing a dataset. The backend has had DELETE /api/datasets/{slot} all along
+// with nothing calling it; these pin down what the store does around that call.
+describe('unloading a dataset', () => {
+  it('takes the dataset out of the store', () => {
+    useStore.getState().unloadDataset('secondary')
+    expect(useStore.getState().datasets.secondary).toBeUndefined()
+  })
+
+  it('lands you on the neighbour when you close the one you were looking at', () => {
+    useStore.getState().setActiveSlot('secondary')
+
+    useStore.getState().unloadDataset('secondary')
+
+    const state = useStore.getState()
+    expect(state.activeSlot).toBe('primary')
+    // Not just the pointer: the flat fields every panel reads have to follow.
+    expect(state.schema).toBe(PRIMARY)
+  })
+
+  it('leaves the active dataset alone when you close another one', () => {
+    useStore.getState().unloadDataset('secondary')
+    expect(useStore.getState().activeSlot).toBe('primary')
+    expect(useStore.getState().schema).toBe(PRIMARY)
+  })
+
+  it('refuses to close the last dataset, leaving the app with nothing to show', () => {
+    useStore.getState().unloadDataset('secondary')
+
+    useStore.getState().unloadDataset('primary')
+
+    expect(useStore.getState().datasets.primary.schema).toBe(PRIMARY)
+    expect(useStore.getState().activeSlot).toBe('primary')
+  })
+
+  it('forgets how wide the closed pane was', () => {
+    useStore.getState().setPaneWidths({ primary: 1.4, secondary: 0.6 })
+
+    useStore.getState().unloadDataset('secondary')
+
+    expect(useStore.getState().paneWidths.secondary).toBeUndefined()
+    expect(useStore.getState().paneWidths.primary).toBe(1.4)
+  })
+})
+
+describe('a third dataset is not a second-class one', () => {
+  it('gives it the display preferences from the user config too', () => {
+    // applyUserConfig wrote into 'primary' and 'secondary' by name, so a third
+    // dataset silently kept the built-in defaults.
+    useStore.getState().loadDatasetIntoSlot('slot3', TERTIARY)
+    useStore.setState({ userConfig: { display: { point_size: 9 } } })
+
+    useStore.getState().applyConfigDefaults()
+
+    const { datasets } = useStore.getState()
+    expect(datasets.slot3.displayPreferences.pointSize).toBe(9)
+    expect(datasets.primary.displayPreferences.pointSize).toBe(9)
+  })
+})

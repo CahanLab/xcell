@@ -298,7 +298,7 @@ export function useExpressionTransformEffect() {
 
         // Mirror to other slot in dual mode. The other slot uses ITS OWN
         // displayLayer (read inside the helper), since layers are per-dataset.
-        if (layoutMode === 'dual') {
+        if (layoutMode === 'tiled') {
           mirrorSlots(activeSlot).forEach((target) => mirrorExpressionToSlot(
             target,
             selectedGenes,
@@ -377,7 +377,7 @@ export function useBivariateTransformEffect() {
         setBivariateData(data)
 
         // Mirror to other slot in dual mode
-        if (layoutMode === 'dual') {
+        if (layoutMode === 'tiled') {
           mirrorSlots(activeSlot).forEach((target) => mirrorBivariateToSlot(
             target,
             genes1,
@@ -600,7 +600,7 @@ export function useDataActions() {
         setSelectedColorColumn(null)
 
         // Mirror to other slot in dual mode (fire-and-forget)
-        if (layoutMode === 'dual') {
+        if (layoutMode === 'tiled') {
           mirrorSlots(activeSlot).forEach((target) => mirrorExpressionToSlot(target, [gene], effectiveTransform, undefined as AggregationParams | undefined, clipPct))
         }
       } catch (err) {
@@ -620,7 +620,7 @@ export function useDataActions() {
       if (genes.length === 0) {
         clearSelectedGenes()
         // Mirror clear to other slot in dual mode
-        if (layoutMode === 'dual') {
+        if (layoutMode === 'tiled') {
           mirrorSlots(activeSlot).forEach((target) => patchSlotState(target, {
             selectedGenes: [], selectedGeneSetName: null, expressionData: null, colorMode: 'none',
             cellSortOrder: null, cellSortVersion: 0,
@@ -686,7 +686,7 @@ export function useDataActions() {
         }
 
         // Mirror to other slot in dual mode (fire-and-forget)
-        if (layoutMode === 'dual') {
+        if (layoutMode === 'tiled') {
           mirrorSlots(activeSlot).forEach((target) => mirrorExpressionToSlot(
             target,
             genes,
@@ -713,7 +713,7 @@ export function useDataActions() {
   const clearExpressionColor = useCallback(() => {
     clearSelectedGenes()
     // Mirror clear to other slot in dual mode
-    if (layoutMode === 'dual') {
+    if (layoutMode === 'tiled') {
       mirrorSlots(activeSlot).forEach((target) => patchSlotState(target, {
         selectedGenes: [], expressionData: null, colorMode: 'none',
         cellSortOrder: null, cellSortVersion: 0,
@@ -783,7 +783,7 @@ export function useDataActions() {
         setSelectedGenes([])
 
         // Mirror to other slot in dual mode (fire-and-forget)
-        if (layoutMode === 'dual') {
+        if (layoutMode === 'tiled') {
           mirrorSlots(activeSlot).forEach((target) => mirrorBivariateToSlot(
             target,
             genes1,
@@ -809,7 +809,7 @@ export function useDataActions() {
   const clearBivariateColor = useCallback(() => {
     clearBivariateMode()
     // Mirror clear to other slot in dual mode
-    if (layoutMode === 'dual') {
+    if (layoutMode === 'tiled') {
       mirrorSlots(activeSlot).forEach((target) => patchSlotState(target, {
         bivariateData: null, colorMode: 'none',
         cellSortOrder: null, cellSortVersion: 0,

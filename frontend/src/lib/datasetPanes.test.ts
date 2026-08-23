@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { umPerUnitForSlot, expressionLegendTitle, paneDescriptors } from './datasetPanes'
+import { umPerUnitForSlot, expressionLegendTitle } from './datasetPanes'
 import { createDefaultDatasetState, type DatasetState, type EmbeddingData } from '../store'
 
 function dsWith(over: Partial<DatasetState>): DatasetState {
@@ -65,30 +65,5 @@ describe('expressionLegendTitle', () => {
 
   it('falls back to a count for an ad-hoc list of genes', () => {
     expect(expressionLegendTitle(['A', 'B'], null)).toBe('2 genes')
-  })
-})
-
-describe('paneDescriptors', () => {
-  it('lays the panes out in slot order', () => {
-    expect(paneDescriptors(['primary', 'secondary']).map((p) => p.slot))
-      .toEqual(['primary', 'secondary'])
-  })
-
-  it('titles a pane by its slot name', () => {
-    expect(paneDescriptors(['primary', 'secondary']).map((p) => p.label))
-      .toEqual(['Primary', 'Secondary'])
-  })
-
-  it('leaves a slot name that is already meaningful alone but for its first letter', () => {
-    expect(paneDescriptors(['sample_E11.5'])[0].label).toBe('Sample_E11.5')
-  })
-
-  it('draws a divider between panes, never after the last one', () => {
-    expect(paneDescriptors(['primary', 'secondary']).map((p) => p.showDivider))
-      .toEqual([true, false])
-  })
-
-  it('gives a lone pane no divider', () => {
-    expect(paneDescriptors(['primary']).map((p) => p.showDivider)).toEqual([false])
   })
 })

@@ -13,6 +13,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useStore, HeatmapConfig } from '../store'
 import { useDataActions, appendDataset } from '../hooks/useData'
 import HeatmapConfigModal from './HeatmapConfigModal'
+import { FloatingPanel } from './PlotLegends'
+import { fitRotatedLabel, rotatedLabelFits } from '../lib/stackedBars'
 
 // ---------------------------------------------------------------------------
 // Viridis colormap (5-stop approximation)
@@ -64,7 +66,10 @@ interface HeatmapData {
 
 const LABEL_WIDTH = 110
 const GROUP_BAR_WIDTH = 8
-const COL_LABEL_HEIGHT = 40
+// Room below the matrix for the rotated group labels. A 45° label runs along
+// this band's diagonal, so the height is what decides how much of a name fits.
+const COL_LABEL_HEIGHT = 72
+const LABEL_CHAR_PX = 5.6
 const ROW_HEIGHT = 16
 const MIN_CELL_WIDTH = 1
 const MAX_CELL_WIDTH = 8
@@ -181,6 +186,11 @@ function HeatmapCanvas({ data, onGeneClick }: { data: HeatmapData; onGeneClick: 
       ctx.font = '10px sans-serif'
       ctx.textBaseline = 'top'
 
+      // How much of a name fits along the band's diagonal. The old rule
+      // measured the *column* width, which left two characters per label once a
+      // heatmap had thirty clusters — and drew them running up over the matrix.
+      const labelRoomPx = COL_LABEL_HEIGHT * Math.SQRT2 - 10
+
       for (const grp of data.column_groups) {
         const x = groupBarOffset + grp.start * cellWidth
         const w = grp.size * cellWidth
@@ -195,15 +205,30 @@ function HeatmapCanvas({ data, onGeneClick }: { data: HeatmapData; onGeneClick: 
           ctx.stroke()
         }
 
-        // Group label
-        ctx.fillStyle = '#aaa'
-        const labelText = grp.name.length > Math.floor(w / 7) ? grp.name.slice(0, Math.max(1, Math.floor(w / 7) - 1)) + '\u2026' : grp.name
+        // A group too narrow to hold a line of text would have its neighbour's
+        // label written across it. The separator line still marks it.
+        if (!rotatedLabelFits(w, 11)) continue
+        const labelText = fitRotatedLabel(grp.name, labelRoomPx, LABEL_CHAR_PX)
+        if (!labelText) continue
+
+        // Right-aligned so the name *ends* at its own group's centre and runs
+        // down-left into the reserved band. Left-aligned it started there and
+        // ran up-right, over the matrix and across the next group's label.
         ctx.save()
         ctx.translate(x + w / 2, labelY)
         ctx.rotate(-Math.PI / 4)
+        ctx.textAlign = 'right'
+        ctx.textBaseline = 'middle'
+        // A thin dark halo keeps the name readable wherever it crosses.
+        ctx.lineWidth = 3
+        ctx.strokeStyle = 'rgba(26, 26, 46, 0.9)'
+        ctx.strokeText(labelText, 0, 0)
+        ctx.fillStyle = '#ccc'
         ctx.fillText(labelText, 0, 0)
         ctx.restore()
       }
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'alphabetic'
     }
   }, [data, hoveredRow, nRows, nCols, canvasLogicalWidth, canvasLogicalHeight, cellWidth, heatmapWidth, groupBarOffset, hasGroups, uniqueGroups])
 
@@ -287,26 +312,26 @@ function HeatmapCanvas({ data, onGeneClick }: { data: HeatmapData; onGeneClick: 
         </div>
       )}
 
-      {/* Color legend */}
-      <div style={hmStyles.legend}>
-        <div style={hmStyles.legendTitle}>Normalized Expression</div>
+      {/* Both legends are FloatingPanels — draggable, minimizable, and their
+          position remembered — like every other legend in the app. */}
+      <FloatingPanel id="heatmap-scale" title="Normalized expression">
         <div style={hmStyles.legendBar} />
         <div style={hmStyles.legendLabels}>
           <span>0</span>
           <span>1</span>
         </div>
-      </div>
+      </FloatingPanel>
 
-      {/* Gene set group legend */}
       {hasGroups && (
-        <div style={hmStyles.groupLegend}>
+        <FloatingPanel id="heatmap-groups" title="Gene sets"
+                       defaultCorner={{ bottom: 20, right: 180 }}>
           {uniqueGroups.map((g, i) => (
             <div key={g} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
               <div style={{ width: '10px', height: '10px', borderRadius: '2px', backgroundColor: GROUP_COLORS[i % GROUP_COLORS.length] }} />
               <span style={{ fontSize: '10px', color: '#aaa' }}>{g}</span>
             </div>
           ))}
-        </div>
+        </FloatingPanel>
       )}
     </div>
   )
@@ -523,19 +548,6 @@ const hmStyles: Record<string, React.CSSProperties> = {
     padding: '8px',
     position: 'relative',
   },
-  legend: {
-    position: 'absolute',
-    bottom: '12px',
-    right: '12px',
-    padding: '8px',
-    backgroundColor: 'rgba(22, 33, 62, 0.9)',
-    borderRadius: '6px',
-  },
-  legendTitle: {
-    fontSize: '10px',
-    color: '#888',
-    marginBottom: '4px',
-  },
   legendBar: {
     width: '100px',
     height: '10px',
@@ -548,13 +560,5 @@ const hmStyles: Record<string, React.CSSProperties> = {
     fontSize: '9px',
     color: '#888',
     marginTop: '2px',
-  },
-  groupLegend: {
-    position: 'absolute',
-    bottom: '12px',
-    right: '140px',
-    padding: '8px',
-    backgroundColor: 'rgba(22, 33, 62, 0.9)',
-    borderRadius: '6px',
   },
 }

@@ -355,7 +355,7 @@ export interface LineAssociationResult {
 }
 
 // Center panel view mode
-export type CenterPanelView = 'scatter' | 'heatmap' | 'figure'
+export type CenterPanelView = 'scatter' | 'heatmap' | 'figure' | 'barplot'
 
 // Figure builder — multi-panel publication-quality compositor. A figure
 // freezes a snapshot of cell indices at creation time; each panel renders
@@ -417,6 +417,20 @@ export interface Figure {
 export type LayoutMode = 'single' | 'tiled'
 
 // Heatmap configuration
+// Stacked barplot: one bar per category of `columnA`, split by `columnB`.
+export interface BarplotConfig {
+  columnA: string
+  columnB: string
+  order: 'category' | 'alphabetical' | 'total' | 'share'
+  /** Category of columnB whose share sorts the bars, when order is 'share'. */
+  shareOf: string | null
+  /** True: bars fill the height and show composition. False: height is cells. */
+  normalize: boolean
+  /** Bars with fewer cells than this are left out. */
+  minCells: number
+  showValues: boolean
+}
+
 export interface HeatmapConfig {
   selectedGeneSets: { name: string; genes: string[] }[]
   cellOrdering: 'none' | 'category' | 'line_position' | 'line_distance' | 'category_then_position'
@@ -548,6 +562,9 @@ export interface DatasetState {
   comparisonCheckedCategories: Set<string>
   // What the user renamed this dataset to, or null to go on using its filename.
   displayName: string | null
+  // Names two .obs columns and one of their categories, so it belongs to the
+  // dataset those columns are in.
+  barplotConfig: BarplotConfig | null
   // The .obs column the Marker Genes modal groups by.
   markerGenesColumn: string | null
   // A table about one line drawn on one dataset — the same kind of thing as
@@ -669,6 +686,7 @@ export function createDefaultDatasetState(
     comparisonCheckedColumn: null,
     comparisonCheckedCategories: new Set<string>(),
     displayName: null,
+    barplotConfig: null,
     markerGenesColumn: null,
     lineAssociationResult: null,
     embeddingDims: {},
@@ -872,6 +890,7 @@ interface AppState {
   // Heatmap tab state (rollback: remove this block)
   centerPanelView: CenterPanelView
   heatmapConfig: HeatmapConfig | null
+  barplotConfig: BarplotConfig | null
 
   // Figure builder state — null until the user creates a figure
   activeFigure: Figure | null
@@ -1129,6 +1148,7 @@ interface AppState {
   // Heatmap tab actions (rollback: remove this block)
   setCenterPanelView: (view: CenterPanelView) => void
   setHeatmapConfig: (config: HeatmapConfig | null) => void
+  setBarplotConfig: (config: BarplotConfig | null) => void
 
   // Figure builder actions
   createFigure: (cellIndices: number[], coordinates: [number, number][], embeddingName: string, rows?: number, cols?: number) => void
@@ -1247,6 +1267,7 @@ export const useStore = create<AppState>((set, get) => {
       pcaSubsets: ds.pcaSubsets,
       comparison: ds.comparison,
       diffExpResult: ds.diffExpResult,
+      barplotConfig: ds.barplotConfig,
       comparisonCheckedColumn: ds.comparisonCheckedColumn,
       comparisonCheckedCategories: ds.comparisonCheckedCategories,
       markerGenesColumn: ds.markerGenesColumn,
@@ -1339,6 +1360,7 @@ export const useStore = create<AppState>((set, get) => {
     comparisonCheckedCategories: new Set<string>(),
     centerPanelView: 'scatter',
     heatmapConfig: null,
+    barplotConfig: null,
     activeFigure: null,
 
     // Layout mode
@@ -2635,6 +2657,7 @@ export const useStore = create<AppState>((set, get) => {
     // Heatmap tab actions (global)
     setCenterPanelView: (view) => set({ centerPanelView: view }),
     setHeatmapConfig: (config) => set({ heatmapConfig: config }),
+    setBarplotConfig: (config) => set(dsUpdate({ barplotConfig: config })),
 
     createFigure: (cellIndices, coordinates, embeddingName, rows = 2, cols = 2) => {
       const total = rows * cols

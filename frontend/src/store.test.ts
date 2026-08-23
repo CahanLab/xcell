@@ -406,3 +406,37 @@ describe('arranging the workspace', () => {
     expect(state.paneLayout.cols).toEqual([])
   })
 })
+
+
+describe('the barplot is a statement about one dataset', () => {
+  it('does not carry a barplot onto a dataset whose columns are different', () => {
+    // 'leiden' exists in both datasets and means something different in each,
+    // which is exactly why the config cannot be global.
+    useStore.getState().setBarplotConfig({
+      columnA: 'leiden', columnB: 'territory_prox-dist',
+      order: 'share', shareOf: 'proximal',
+      normalize: true, minCells: 0, showValues: false,
+    })
+
+    useStore.getState().setActiveSlot('secondary')
+
+    expect(useStore.getState().barplotConfig).toBeNull()
+  })
+
+  it('gives each dataset back its own barplot', () => {
+    useStore.getState().setBarplotConfig({
+      columnA: 'leiden', columnB: 'territory_prox-dist',
+      order: 'category', shareOf: null,
+      normalize: true, minCells: 0, showValues: false,
+    })
+    useStore.getState().setActiveSlot('secondary')
+    useStore.getState().setBarplotConfig({
+      columnA: 'seurat_clusters', columnB: 'section',
+      order: 'total', shareOf: null,
+      normalize: false, minCells: 10, showValues: true,
+    })
+    useStore.getState().setActiveSlot('primary')
+
+    expect(useStore.getState().barplotConfig?.columnA).toBe('leiden')
+  })
+})

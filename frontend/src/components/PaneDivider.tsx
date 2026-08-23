@@ -5,10 +5,13 @@ import { useRef } from 'react'
 // The visible line stays 1px — the hit area around it is what widens.
 
 export default function PaneDivider({
+  axis = 'x',
   onResizeStart,
   onResize,
   onReset,
 }: {
+  /** 'x' sits between columns and moves left/right; 'y' between rows. */
+  axis?: 'x' | 'y'
   onResizeStart: () => void
   /** Pointer offset from where the drag began, in px. Cumulative, not
    *  incremental: dragging past a pane's minimum and back returns it to where
@@ -16,15 +19,18 @@ export default function PaneDivider({
   onResize: (deltaPx: number) => void
   onReset: () => void
 }) {
-  const startX = useRef(0)
+  const start = useRef(0)
+  const vertical = axis === 'y'
+  const cursor = vertical ? 'row-resize' : 'col-resize'
+  const along = (e: { clientX: number; clientY: number }) => (vertical ? e.clientY : e.clientX)
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()   // don't let the pane underneath claim the active slot
-    startX.current = e.clientX
+    start.current = along(e)
     onResizeStart()
-    const move = (ev: PointerEvent) => onResize(ev.clientX - startX.current)
+    const move = (ev: PointerEvent) => onResize(along(ev) - start.current)
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
@@ -33,7 +39,7 @@ export default function PaneDivider({
     }
     // Held on the body so the cursor survives crossing a WebGL canvas, which
     // sets its own.
-    document.body.style.cursor = 'col-resize'
+    document.body.style.cursor = cursor
     document.body.style.userSelect = 'none'
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -45,9 +51,10 @@ export default function PaneDivider({
       onDoubleClick={(e) => { e.stopPropagation(); onReset() }}
       title="Drag to resize · double-click for equal widths"
       style={{
-        flex: '0 0 7px',
+        width: '100%',
+        height: '100%',
         position: 'relative',
-        cursor: 'col-resize',
+        cursor,
         backgroundColor: 'transparent',
         zIndex: 13,
       }}
@@ -55,10 +62,9 @@ export default function PaneDivider({
       <div
         style={{
           position: 'absolute',
-          top: 0,
-          bottom: 0,
-          left: 3,
-          width: 1,
+          ...(vertical
+            ? { left: 0, right: 0, top: 3, height: 1 }
+            : { top: 0, bottom: 0, left: 3, width: 1 }),
           backgroundColor: '#0f3460',
           pointerEvents: 'none',
         }}

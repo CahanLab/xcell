@@ -165,10 +165,16 @@ slot, and `applyConfigDefaults` stopped writing display preferences to two
 slots by name — which had been leaving a third dataset on the built-in
 defaults.
 
-Deliberately still open: a grid layout for many panes (they tile in one row),
-drag-to-reorder tabs, renaming a dataset by hand, persisting pane widths across
-a reload, and choosing *which* subset of loaded datasets to tile — Split shows
-all of them.
+A follow-up closed the rest of that list: panes grid up past three, tabs drag to
+reorder and double-click to rename, and the arrangement survives a reload —
+which required restoring the loaded datasets on startup, since the frontend had
+only ever asked the backend for the active slot. Two bugs that only the browser
+showed: the restore cancelled itself under StrictMode (cleanup set a cancel flag
+while a ref turned the remount into a no-op), and the save raced the restore,
+overwriting the stored arrangement with the half-loaded state.
+
+Deliberately still open: choosing *which* subset of loaded datasets to tile —
+Split shows all of them.
 
 ### What step 4 had to touch
 

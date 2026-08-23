@@ -64,7 +64,6 @@ const styles = {
 export default function DatasetPane({
   slot,
   label,
-  weight,
   onSelectionComplete,
   onLineDrawn,
   onTransformEmbedding,
@@ -74,8 +73,6 @@ export default function DatasetPane({
 }: {
   slot: DatasetSlot
   label: string
-  /** Share of the row this pane takes, relative to its siblings. */
-  weight: number
   onSelectionComplete: PlotProps['onSelectionComplete']
   onLineDrawn: PlotProps['onLineDrawn']
   onTransformEmbedding: PlotProps['onTransformEmbedding']
@@ -99,10 +96,9 @@ export default function DatasetPane({
   return (
     <div
       style={{
-        // basis 0 so the weight alone decides the split — with `auto`, a pane
-        // whose contents are wider would claim more than its share.
-        flex: `${weight} 1 0`,
-        minWidth: 0,
+        // The grid cell decides the size; the pane fills whatever it is given.
+        width: '100%',
+        height: '100%',
         position: 'relative',
         overflow: 'hidden',
         outline: isActive ? '2px solid #e94560' : '2px solid transparent',

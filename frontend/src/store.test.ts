@@ -305,13 +305,12 @@ describe('unloading a dataset', () => {
     expect(useStore.getState().activeSlot).toBe('primary')
   })
 
-  it('forgets how wide the closed pane was', () => {
-    useStore.getState().setPaneWidths({ primary: 1.4, secondary: 0.6 })
+  it('drops the dragged pane sizes, since the grid is a different shape now', () => {
+    useStore.getState().setPaneLayout({ cols: [1.4, 0.6], rows: [1] })
 
     useStore.getState().unloadDataset('secondary')
 
-    expect(useStore.getState().paneWidths.secondary).toBeUndefined()
-    expect(useStore.getState().paneWidths.primary).toBe(1.4)
+    expect(useStore.getState().paneLayout).toEqual({ cols: [], rows: [] })
   })
 })
 
@@ -327,5 +326,83 @@ describe('a third dataset is not a second-class one', () => {
     const { datasets } = useStore.getState()
     expect(datasets.slot3.displayPreferences.pointSize).toBe(9)
     expect(datasets.primary.displayPreferences.pointSize).toBe(9)
+  })
+})
+
+
+describe('arranging the workspace', () => {
+  it('lets a dataset be called something other than its filename', () => {
+    useStore.getState().setDatasetDisplayName('secondary', 'E11.5 rep2')
+
+    expect(useStore.getState().datasets.secondary.displayName).toBe('E11.5 rep2')
+    // The name belongs to that dataset, not to the app.
+    expect(useStore.getState().datasets.primary.displayName).toBeNull()
+  })
+
+  it('keeps a name with its dataset across a slot switch', () => {
+    useStore.getState().setDatasetDisplayName('secondary', 'E11.5 rep2')
+    useStore.getState().setActiveSlot('secondary')
+    useStore.getState().setActiveSlot('primary')
+
+    expect(useStore.getState().datasets.secondary.displayName).toBe('E11.5 rep2')
+  })
+
+  it('reorders the tabs, and the panes with them', () => {
+    useStore.getState().loadDatasetIntoSlot('slot3', TERTIARY)
+
+    useStore.getState().reorderSlots(0, 2)
+
+    // Pane order is slot order is the key order of `datasets`.
+    expect(Object.keys(useStore.getState().datasets)).toEqual(['secondary', 'slot3', 'primary'])
+  })
+
+  it('moves the dataset itself, not just its name', () => {
+    useStore.getState().reorderSlots(0, 1)
+
+    const [first] = Object.keys(useStore.getState().datasets)
+    expect(useStore.getState().datasets[first].schema).toBe(SECONDARY)
+  })
+
+  it('leaves the active dataset active after a reorder', () => {
+    useStore.getState().setActiveSlot('secondary')
+    useStore.getState().reorderSlots(0, 1)
+
+    expect(useStore.getState().activeSlot).toBe('secondary')
+    expect(useStore.getState().schema).toBe(SECONDARY)
+  })
+
+  it('restores an arrangement from a previous visit', () => {
+    useStore.getState().loadDatasetIntoSlot('slot3', TERTIARY)
+
+    useStore.getState().applyWorkspace({
+      order: ['slot3', 'primary', 'secondary'],
+      names: { slot3: 'E11.5 rep2' },
+      cols: [1.5, 0.5, 1],
+      rows: [1],
+      tiled: true,
+    })
+
+    const state = useStore.getState()
+    expect(Object.keys(state.datasets)).toEqual(['slot3', 'primary', 'secondary'])
+    expect(state.datasets.slot3.displayName).toBe('E11.5 rep2')
+    expect(state.paneLayout.cols).toEqual([1.5, 0.5, 1])
+    // And it comes back to the view it was left in.
+    expect(state.layoutMode).toBe('tiled')
+  })
+
+  it('ignores a stored arrangement naming datasets that are not loaded', () => {
+    // Last visit had four; this one opened two of them.
+    useStore.getState().applyWorkspace({
+      order: ['slot9', 'secondary', 'primary', 'slot4'],
+      names: { slot9: 'gone' },
+      cols: [1, 1, 1, 1],
+      rows: [1],
+      tiled: true,
+    })
+
+    const state = useStore.getState()
+    expect(Object.keys(state.datasets)).toEqual(['secondary', 'primary'])
+    // Four columns for two panes would lay them out at the wrong widths.
+    expect(state.paneLayout.cols).toEqual([])
   })
 })

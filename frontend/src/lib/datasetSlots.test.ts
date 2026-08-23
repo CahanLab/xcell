@@ -6,6 +6,8 @@ import {
   datasetLabel,
   slotAfterUnload,
   resizePanes,
+  paneGrid,
+  moveItem,
 } from './datasetSlots'
 
 const loaded = { schema: { n_cells: 10 } }
@@ -108,6 +110,15 @@ describe('datasetLabel', () => {
     expect(datasetLabel('primary', undefined)).toBe('Primary')
     expect(datasetLabel('slot3', undefined)).toBe('Slot3')
   })
+
+  it('lets a name the user typed win over the filename', () => {
+    expect(datasetLabel('primary', 'GSM8155797_scMm_Shox2trac.h5', 'E11.5 rep2')).toBe('E11.5 rep2')
+  })
+
+  it('treats a name cleared back to nothing as no name at all', () => {
+    expect(datasetLabel('primary', 'sample.h5ad', '')).toBe('sample')
+    expect(datasetLabel('primary', 'sample.h5ad', '   ')).toBe('sample')
+  })
 })
 
 describe('slotAfterUnload', () => {
@@ -167,5 +178,67 @@ describe('resizePanes', () => {
 
   it('does nothing when nothing moved', () => {
     expect(resizePanes(two, 0, 0, 600)).toEqual(two)
+  })
+})
+
+
+describe('paneGrid', () => {
+  // Two and three datasets stay in one row — that is what a wide screen is for,
+  // and it is what the side-by-side comparison has always looked like.
+  it('keeps a few datasets in a single row', () => {
+    expect(paneGrid(1)).toEqual({ rows: 1, cols: 1 })
+    expect(paneGrid(2)).toEqual({ rows: 1, cols: 2 })
+    expect(paneGrid(3)).toEqual({ rows: 1, cols: 3 })
+  })
+
+  // Past that a row makes every pane a sliver; a grid keeps them roughly square,
+  // which is what spatial data wants.
+  it('squares off once a row would be too thin', () => {
+    expect(paneGrid(4)).toEqual({ rows: 2, cols: 2 })
+    expect(paneGrid(6)).toEqual({ rows: 2, cols: 3 })
+    expect(paneGrid(9)).toEqual({ rows: 3, cols: 3 })
+  })
+
+  it('leaves a gap rather than an uneven row when the count is awkward', () => {
+    expect(paneGrid(5)).toEqual({ rows: 2, cols: 3 })
+    expect(paneGrid(7)).toEqual({ rows: 3, cols: 3 })
+  })
+
+  it('always has room for every pane', () => {
+    for (let n = 1; n <= 16; n++) {
+      const { rows, cols } = paneGrid(n)
+      expect(rows * cols).toBeGreaterThanOrEqual(n)
+    }
+  })
+
+  it('has nothing to lay out for nothing', () => {
+    expect(paneGrid(0)).toEqual({ rows: 0, cols: 0 })
+  })
+})
+
+describe('moveItem', () => {
+  const abc = ['a', 'b', 'c', 'd']
+
+  it('drags a tab to the right', () => {
+    expect(moveItem(abc, 0, 2)).toEqual(['b', 'c', 'a', 'd'])
+  })
+
+  it('drags a tab to the left', () => {
+    expect(moveItem(abc, 3, 1)).toEqual(['a', 'd', 'b', 'c'])
+  })
+
+  it('leaves the order alone when a tab is dropped where it started', () => {
+    expect(moveItem(abc, 1, 1)).toEqual(abc)
+  })
+
+  it('ignores a drop outside the strip', () => {
+    expect(moveItem(abc, 0, 9)).toEqual(abc)
+    expect(moveItem(abc, -1, 2)).toEqual(abc)
+  })
+
+  it('does not mutate the array it was given', () => {
+    const original = [...abc]
+    moveItem(abc, 0, 2)
+    expect(abc).toEqual(original)
   })
 })

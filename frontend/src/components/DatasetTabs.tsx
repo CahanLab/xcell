@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useStore } from '../store'
 import { loadedSlots, datasetLabel } from '../lib/datasetSlots'
 
@@ -87,6 +87,17 @@ const dark = {
     cursor: 'pointer',
   },
   splitActive: { backgroundColor: '#4ecdc4', color: '#000' },
+  dropBefore: { boxShadow: 'inset 2px 0 0 0 #4ecdc4' },
+  dragging: { opacity: 0.4 },
+  rename: {
+    width: '13ch',
+    padding: '1px 3px',
+    fontSize: '11px',
+    color: '#eee',
+    backgroundColor: '#0f3460',
+    border: '1px solid #4ecdc4',
+    borderRadius: '3px',
+  },
 }
 
 export default function DatasetTabs({ onAddDataset }: { onAddDataset: () => void }) {
@@ -97,7 +108,18 @@ export default function DatasetTabs({ onAddDataset }: { onAddDataset: () => void
   const layoutMode = useStore((s) => s.layoutMode)
   const setLayoutMode = useStore((s) => s.setLayoutMode)
   const setError = useStore((s) => s.setError)
+  const setDatasetDisplayName = useStore((s) => s.setDatasetDisplayName)
+  const reorderSlots = useStore((s) => s.reorderSlots)
   const [closing, setClosing] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [dropAt, setDropAt] = useState<number | null>(null)
+  const dragFrom = useRef<number | null>(null)
+
+  const commitRename = (slot: string) => {
+    setDatasetDisplayName(slot, draft)
+    setRenaming(null)
+  }
 
   const slots = loadedSlots(datasets)
   if (slots.length < 2) return null
@@ -130,17 +152,49 @@ export default function DatasetTabs({ onAddDataset }: { onAddDataset: () => void
   return (
     <div style={dark.bar}>
       <div style={dark.tabScroller}>
-      {slots.map((slot) => {
-        const label = datasetLabel(slot, datasets[slot]?.schema?.filename)
+      {slots.map((slot, i) => {
+        const label = datasetLabel(slot, datasets[slot]?.schema?.filename, datasets[slot]?.displayName)
         const isActive = slot === activeSlot
         return (
           <div
             key={slot}
+            draggable={renaming !== slot}
+            onDragStart={() => { dragFrom.current = i }}
+            onDragOver={(e) => { e.preventDefault(); setDropAt(i) }}
+            onDragEnd={() => { dragFrom.current = null; setDropAt(null) }}
+            onDrop={(e) => {
+              e.preventDefault()
+              if (dragFrom.current != null) reorderSlots(dragFrom.current, i)
+              dragFrom.current = null
+              setDropAt(null)
+            }}
             onClick={() => setActiveSlot(slot)}
-            title={datasets[slot]?.schema?.filename ?? slot}
-            style={{ ...dark.tab, ...(isActive ? dark.tabActive : {}) }}
+            onDoubleClick={() => { setRenaming(slot); setDraft(label) }}
+            title={`${datasets[slot]?.schema?.filename ?? slot}\nDouble-click to rename · drag to reorder`}
+            style={{
+              ...dark.tab,
+              ...(isActive ? dark.tabActive : {}),
+              ...(dropAt === i && dragFrom.current !== i ? dark.dropBefore : {}),
+              ...(dragFrom.current === i ? dark.dragging : {}),
+            }}
           >
-            <span style={dark.name}>{label}</span>
+            {renaming === slot ? (
+              <input
+                autoFocus
+                value={draft}
+                style={dark.rename}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={() => commitRename(slot)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename(slot)
+                  // Escape abandons the edit; the stored name is untouched.
+                  if (e.key === 'Escape') setRenaming(null)
+                }}
+              />
+            ) : (
+              <span style={dark.name}>{label}</span>
+            )}
             <span style={dark.count}>
               {datasets[slot]?.schema?.n_cells.toLocaleString()}
             </span>

@@ -351,7 +351,18 @@ export interface LineAssociationResult {
   fdr_threshold: number
   n_lines?: number
   lines_used?: string[]
+  gene_subset?: LineAssociationGeneSubset
   diagnostics?: LineAssociationDiagnostics
+}
+
+/** Which genes the test actually ran on. `genes_missing` matters: a curated
+ *  set routinely names genes this dataset lacks, and how many were dropped
+ *  changes how the result reads. */
+export interface LineAssociationGeneSubset {
+  type: string                  // 'all' | 'gene_list' | 'column:x' | 'union:a+b'
+  n_genes: number
+  n_requested?: number | null   // gene lists only
+  genes_missing?: string[]      // gene lists only; capped at 100
 }
 
 // Center panel view mode

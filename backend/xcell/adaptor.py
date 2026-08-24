@@ -4028,6 +4028,11 @@ class DataAdaptor:
         if not line_found:
             raise ValueError(f"Line '{line_name}' not found")
 
+        # Resolve the subset now and discard the mask: an unknown column or a
+        # gene set that overlaps nothing should be a 400 the modal can show,
+        # not a background task that fails a second later.
+        self._resolve_gene_mask(gene_subset)
+
         # Snapshot parameters
         snap_line_name = line_name
         snap_cell_indices = cell_indices
@@ -4163,10 +4168,7 @@ class DataAdaptor:
             test_values = selected_positions
 
         # Resolve gene subset if provided
-        if gene_subset is not None:
-            gene_mask, _, _ = self._resolve_gene_mask(gene_subset)
-        else:
-            gene_mask = np.ones(self.n_genes, dtype=bool)
+        gene_mask, subset_type, subset_metadata = self._resolve_gene_mask(gene_subset)
 
         # Delegate to the shared spline regression engine
         result = self._run_spline_association(
@@ -4182,6 +4184,7 @@ class DataAdaptor:
         # Add line-specific metadata
         result['line_name'] = line_name
         result['test_variable'] = test_variable
+        result['gene_subset'] = self._gene_subset_summary(subset_type, subset_metadata)
 
         return result
 
@@ -4216,6 +4219,10 @@ class DataAdaptor:
         for entry in lines:
             if entry['name'] not in line_names_set:
                 raise ValueError(f"Line '{entry['name']}' not found")
+
+        # Same reason as the single-line case: a bad subset is a 400, not a
+        # task that fails after the modal has already closed.
+        self._resolve_gene_mask(gene_subset)
 
         # Snapshot parameters
         snap_lines = lines
@@ -4345,10 +4352,7 @@ class DataAdaptor:
             )
 
         # Resolve gene subset
-        if gene_subset is not None:
-            gene_mask, _, _ = self._resolve_gene_mask(gene_subset)
-        else:
-            gene_mask = np.ones(self.n_genes, dtype=bool)
+        gene_mask, subset_type, subset_metadata = self._resolve_gene_mask(gene_subset)
 
         # Run spline association on pooled data
         result = self._run_spline_association(
@@ -4366,6 +4370,7 @@ class DataAdaptor:
         result['test_variable'] = test_variable
         result['n_lines'] = len(lines_used)
         result['lines_used'] = lines_used
+        result['gene_subset'] = self._gene_subset_summary(subset_type, subset_metadata)
 
         return result
 
@@ -5120,6 +5125,31 @@ class DataAdaptor:
             )
         return self.adata.layers[layer]
 
+    # A pathological request (an entire var index of names from another
+    # species) shouldn't put tens of thousands of strings on the wire; the
+    # exact count is always n_requested - n_genes.
+    MAX_REPORTED_MISSING_GENES = 100
+
+    @classmethod
+    def _gene_subset_summary(
+        cls,
+        subset_type: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Describe a resolved gene subset for an API response.
+
+        Always the same four keys, whatever kind of subset it was, so the UI
+        renders one shape instead of branching. ``n_requested`` is None unless
+        the subset was an explicit gene list.
+        """
+        missing = metadata.get('genes_missing') or []
+        return {
+            'type': subset_type,
+            'n_genes': int(metadata.get('n_genes', 0)),
+            'n_requested': metadata.get('genes_requested'),
+            'genes_missing': list(missing[:cls.MAX_REPORTED_MISSING_GENES]),
+        }
+
     def _resolve_gene_mask(
         self,
         gene_subset: str | list[str] | dict[str, Any] | None,
@@ -5143,6 +5173,34 @@ class DataAdaptor:
                 {'n_genes': self.n_genes},
             )
 
+        def _from_gene_names(names: list[str]) -> tuple[np.ndarray, str, dict[str, Any]]:
+            """Mask from an explicit gene list, recording what was not found.
+
+            Curated sets routinely name genes this dataset lacks (different
+            species, symbol vintage, prior filtering). Dropping them quietly
+            changes how the result should be read, so the names come back with
+            the mask and callers can surface them.
+            """
+            mask = self.adata.var_names.isin(names)
+            if mask.sum() == 0:
+                raise ValueError("None of the specified genes found in dataset")
+            present = set(self.adata.var_names)
+            return (
+                mask,
+                'gene_list',
+                {
+                    'n_genes': int(mask.sum()),
+                    'genes_requested': len(names),
+                    'genes_missing': [g for g in names if g not in present],
+                },
+            )
+
+        # An empty list reaches here from a UI combination that resolved to
+        # nothing (an intersection of disjoint sets, say). Without this it
+        # falls through to the catch-all below and reports a type error.
+        if isinstance(gene_subset, list) and len(gene_subset) == 0:
+            raise ValueError("Empty gene list — no genes to test.")
+
         # Single column name
         if isinstance(gene_subset, str):
             if gene_subset not in self.adata.var.columns:
@@ -5164,35 +5222,17 @@ class DataAdaptor:
 
         # Explicit list of gene names
         if isinstance(gene_subset, list) and len(gene_subset) > 0 and isinstance(gene_subset[0], str):
-            # Check if it looks like gene names (not column names)
-            # If all items are in var_names, treat as gene list
-            # If all items are in var.columns, treat as column list with default intersection
-            all_genes = all(g in self.adata.var_names for g in gene_subset)
+            # A list of strings is ambiguous: gene names, or .var column names to
+            # combine? Only a list where *every* entry names a column is read as
+            # columns — anything else is gene names, however partial the overlap.
             all_columns = all(c in self.adata.var.columns for c in gene_subset)
 
-            if all_genes and not all_columns:
-                # Explicit gene list
-                mask = self.adata.var_names.isin(gene_subset)
-                if mask.sum() == 0:
-                    raise ValueError("None of the specified genes found in dataset")
-                return (
-                    mask,
-                    'gene_list',
-                    {'n_genes': int(mask.sum()), 'genes_requested': len(gene_subset)},
-                )
-            elif all_columns:
+            if all_columns:
                 # Treat as column list with intersection
                 gene_subset = {'columns': gene_subset, 'operation': 'intersection'}
             else:
-                # Mixed - try as gene list
-                mask = self.adata.var_names.isin(gene_subset)
-                if mask.sum() == 0:
-                    raise ValueError("None of the specified genes found in dataset")
-                return (
-                    mask,
-                    'gene_list',
-                    {'n_genes': int(mask.sum()), 'genes_requested': len(gene_subset)},
-                )
+                # Gene names — wholly or partly present, either way a gene list.
+                return _from_gene_names(gene_subset)
 
         # Dict with columns and operation
         if isinstance(gene_subset, dict):

@@ -1480,7 +1480,9 @@ class LineAssociationRequest(BaseModel):
     """Request model for line association testing."""
     line_name: str
     cell_indices: list[int] | None = None
-    gene_subset: str | list[str] | None = None
+    # A .var column name, an explicit gene list (what a gene set resolves to),
+    # or {'columns': [...], 'operation': 'intersection'|'union'}.
+    gene_subset: str | list[str] | dict[str, Any] | None = None
     test_variable: str = 'position'  # 'position' or 'distance'
     n_spline_knots: int = 5
     min_cells: int = 20
@@ -1525,6 +1527,14 @@ class LineAssociationModule(BaseModel):
     genes: list[LineAssociationGene]
 
 
+class LineAssociationGeneSubset(BaseModel):
+    """Which genes the test ran on, and which requested ones were absent."""
+    type: str                      # 'all' | 'gene_list' | 'column:x' | 'union:a+b'
+    n_genes: int                   # genes actually tested
+    n_requested: int | None = None   # gene lists only
+    genes_missing: list[str] = []    # gene lists only; capped, see adaptor
+
+
 class LineAssociationResponse(BaseModel):
     """Response model for line association testing."""
     positive: list[LineAssociationGene]
@@ -1541,6 +1551,7 @@ class LineAssociationResponse(BaseModel):
     fdr_threshold: float
     n_lines: int = 1
     lines_used: list[str] = []
+    gene_subset: LineAssociationGeneSubset | None = None
     diagnostics: LineAssociationDiagnostics | None = None
 
 
@@ -1576,7 +1587,7 @@ class MultiLineEntry(BaseModel):
 class MultiLineAssociationRequest(BaseModel):
     """Request model for multi-line association testing."""
     lines: list[MultiLineEntry]
-    gene_subset: str | list[str] | None = None
+    gene_subset: str | list[str] | dict[str, Any] | None = None
     test_variable: str = 'position'
     n_spline_knots: int = 5
     min_cells: int = 20

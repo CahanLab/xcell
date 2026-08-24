@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import { useStore, userConfigGet } from '../store'
 import { useLineAssociation, createLineEmbedding, appendDataset, cancelTask } from '../hooks/useData'
+import GeneSubsetPicker, { useGeneSubset } from './GeneSubsetPicker'
 
 // Pull line_association defaults from user config, with hardcoded fallbacks.
 // Evaluated lazily inside useState so that if the config loads after the
@@ -10,7 +11,6 @@ function laDefault<T>(path: string, fallback: T): T {
   return userConfigGet(cfg, ['line_association', path], fallback)
 }
 
-const API_BASE = '/api'
 
 const styles = {
   panel: {
@@ -248,9 +248,6 @@ function LineToolsModal({
   const [associationError, setAssociationError] = useState<string | null>(null)
   const [isCreatingEmbedding, setIsCreatingEmbedding] = useState(false)
   const [embeddingMessage, setEmbeddingMessage] = useState<string | null>(null)
-  const [geneSubsetColumns, setGeneSubsetColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])
-  const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
-  const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
   const [testVariable, setTestVariable] = useState<'position' | 'distance'>(() => laDefault('test_variable', 'position'))
   const [nSplineKnots, setNSplineKnots] = useState<number>(() => laDefault('n_spline_knots', 5))
   const [fdrThreshold, setFdrThreshold] = useState<number>(() => laDefault('fdr_threshold', 0.05))
@@ -259,14 +256,7 @@ function LineToolsModal({
 
   const { runAssociation, isLineAssociationLoading } = useLineAssociation()
   const activeTaskId = useStore((state) => state.activeTaskId)
-
-  const scanpyActionHistory = useStore((state) => state.scanpyActionHistory)
-  useEffect(() => {
-    fetch(appendDataset(`${API_BASE}/var/boolean_columns`))
-      .then((res) => res.json())
-      .then(setGeneSubsetColumns)
-      .catch(() => setGeneSubsetColumns([]))
-  }, [scanpyActionHistory])
+  const geneSubset = useGeneSubset()
 
   const getCellIndices = useCallback(() => {
     // If this line has projected cells, use those — but intersect with the
@@ -288,13 +278,7 @@ function LineToolsModal({
     setAssociationError(null)
     try {
       const cellIndices = getCellIndices()
-      let geneSubset: string | { columns: string[]; operation: string } | null = null
-      if (selectedGeneColumns.length === 1) {
-        geneSubset = selectedGeneColumns[0]
-      } else if (selectedGeneColumns.length > 1) {
-        geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
-      }
-      await runAssociation(line.name, { cellIndices, geneSubset, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes })
+      await runAssociation(line.name, { cellIndices, geneSubset: geneSubset.spec, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes })
       onClose()
     } catch (err) {
       const message = (err as Error).message
@@ -302,7 +286,7 @@ function LineToolsModal({
         setAssociationError(message)
       }
     }
-  }, [runAssociation, getCellIndices, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes, line.name, onClose])
+  }, [runAssociation, getCellIndices, geneSubset.spec, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes, line.name, onClose])
 
   const handleCancelAssociation = useCallback(async () => {
     if (activeTaskId) {
@@ -451,66 +435,7 @@ function LineToolsModal({
           <div style={styles.section}>
             <div style={styles.sectionTitle}>Gene Association</div>
 
-            {/* Gene subset selector */}
-            {geneSubsetColumns.length > 0 && (
-              <div style={{ marginBottom: '10px' }}>
-                <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>
-                  Genes {selectedGeneColumns.length === 0 ? '(all)' : ''}:
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                  {geneSubsetColumns.map((col) => {
-                    const isSelected = selectedGeneColumns.includes(col.name)
-                    return (
-                      <button
-                        key={col.name}
-                        onClick={() => {
-                          if (isSelected) {
-                            setSelectedGeneColumns(selectedGeneColumns.filter((c) => c !== col.name))
-                          } else {
-                            setSelectedGeneColumns([...selectedGeneColumns, col.name])
-                          }
-                        }}
-                        style={{
-                          ...styles.pillButton,
-                          backgroundColor: isSelected ? '#4ecdc4' : '#0f3460',
-                          color: isSelected ? '#000' : '#aaa',
-                          borderColor: isSelected ? '#4ecdc4' : '#1a1a2e',
-                          fontWeight: isSelected ? 600 : 400,
-                        }}
-                        title={`${col.n_true.toLocaleString()} of ${col.n_total.toLocaleString()} genes`}
-                      >
-                        {col.name} ({col.n_true.toLocaleString()})
-                      </button>
-                    )
-                  })}
-                </div>
-                {selectedGeneColumns.length >= 2 && (
-                  <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px' }}>
-                    <span style={{ color: '#888' }}>Combine:</span>
-                    <button
-                      onClick={() => setGeneSubsetOperation('intersection')}
-                      style={{
-                        ...styles.toggleButton,
-                        backgroundColor: geneSubsetOperation === 'intersection' ? '#4ecdc4' : '#0f3460',
-                        color: geneSubsetOperation === 'intersection' ? '#000' : '#aaa',
-                      }}
-                    >
-                      AND
-                    </button>
-                    <button
-                      onClick={() => setGeneSubsetOperation('union')}
-                      style={{
-                        ...styles.toggleButton,
-                        backgroundColor: geneSubsetOperation === 'union' ? '#4ecdc4' : '#0f3460',
-                        color: geneSubsetOperation === 'union' ? '#000' : '#aaa',
-                      }}
-                    >
-                      OR
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+            <GeneSubsetPicker control={geneSubset} />
 
             {/* Test variable */}
             <div style={{ marginBottom: '10px' }}>
@@ -665,30 +590,20 @@ function MultiLineToolsModal({
   lines: ReturnType<typeof useStore.getState>['drawnLines']
   onClose: () => void
 }) {
-  const { scanpyActionHistory, activeCellMask } = useStore()
+  const activeCellMask = useStore((state) => state.activeCellMask)
   const { runMultiAssociation, isLineAssociationLoading } = useLineAssociation()
   const activeTaskId = useStore((state) => state.activeTaskId)
 
   const [reversals, setReversals] = useState<Record<string, boolean>>({})
   const [associationError, setAssociationError] = useState<string | null>(null)
-  const [geneSubsetColumns, setGeneSubsetColumns] = useState<{ name: string; n_true: number; n_total: number }[]>([])
-  const [selectedGeneColumns, setSelectedGeneColumns] = useState<string[]>([])
-  const [geneSubsetOperation, setGeneSubsetOperation] = useState<'intersection' | 'union'>('intersection')
   const [testVariable, setTestVariable] = useState<'position' | 'distance'>(() => laDefault('test_variable', 'position'))
   const [nSplineKnots, setNSplineKnots] = useState<number>(() => laDefault('n_spline_knots', 5))
   const [fdrThreshold, setFdrThreshold] = useState<number>(() => laDefault('fdr_threshold', 0.05))
   const [topN, setTopN] = useState<number>(() => laDefault('top_n', 50))
   const [clusterGenes, setClusterGenes] = useState<boolean>(() => laDefault('cluster_genes', false))
 
-  const API_BASE = '/api'
+  const geneSubset = useGeneSubset()
   const totalCells = lines.reduce((sum, l) => sum + l.projections.length, 0)
-
-  useEffect(() => {
-    fetch(appendDataset(`${API_BASE}/var/boolean_columns`))
-      .then((res) => res.json())
-      .then(setGeneSubsetColumns)
-      .catch(() => setGeneSubsetColumns([]))
-  }, [scanpyActionHistory])
 
   const toggleReversal = useCallback((lineId: string) => {
     setReversals((prev) => ({ ...prev, [lineId]: !prev[lineId] }))
@@ -697,13 +612,6 @@ function MultiLineToolsModal({
   const handleRun = useCallback(async () => {
     setAssociationError(null)
     try {
-      let geneSubset: string | { columns: string[]; operation: string } | null = null
-      if (selectedGeneColumns.length === 1) {
-        geneSubset = selectedGeneColumns[0]
-      } else if (selectedGeneColumns.length > 1) {
-        geneSubset = { columns: selectedGeneColumns, operation: geneSubsetOperation }
-      }
-
       // Intersect projections with the active cell mask so masked cells
       // never end up in the pooled regression.
       const filterByMask = (indices: number[]): number[] =>
@@ -715,7 +623,7 @@ function MultiLineToolsModal({
           cellIndices: filterByMask(l.projections.map((p) => p.cellIndex)),
           reversed: !!reversals[l.id],
         })),
-        geneSubset,
+        geneSubset: geneSubset.spec,
         testVariable,
         nSplineKnots,
         fdrThreshold,
@@ -729,7 +637,7 @@ function MultiLineToolsModal({
         setAssociationError(message)
       }
     }
-  }, [runMultiAssociation, lines, reversals, selectedGeneColumns, geneSubsetOperation, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes, activeCellMask, onClose])
+  }, [runMultiAssociation, lines, reversals, geneSubset.spec, testVariable, nSplineKnots, fdrThreshold, topN, clusterGenes, activeCellMask, onClose])
 
   const handleCancelAssociation = useCallback(async () => {
     if (activeTaskId) {
@@ -787,66 +695,7 @@ function MultiLineToolsModal({
             ))}
           </div>
 
-          {/* Gene subset selector */}
-          {geneSubsetColumns.length > 0 && (
-            <div style={styles.section}>
-              <div style={styles.sectionTitle}>
-                Genes {selectedGeneColumns.length === 0 ? '(all)' : ''}
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                {geneSubsetColumns.map((col) => {
-                  const isSelected = selectedGeneColumns.includes(col.name)
-                  return (
-                    <button
-                      key={col.name}
-                      onClick={() => {
-                        if (isSelected) {
-                          setSelectedGeneColumns(selectedGeneColumns.filter((c) => c !== col.name))
-                        } else {
-                          setSelectedGeneColumns([...selectedGeneColumns, col.name])
-                        }
-                      }}
-                      style={{
-                        ...styles.pillButton,
-                        backgroundColor: isSelected ? '#4ecdc4' : '#0f3460',
-                        color: isSelected ? '#000' : '#aaa',
-                        borderColor: isSelected ? '#4ecdc4' : '#1a1a2e',
-                        fontWeight: isSelected ? 600 : 400,
-                      }}
-                      title={`${col.n_true.toLocaleString()} of ${col.n_total.toLocaleString()} genes`}
-                    >
-                      {col.name} ({col.n_true.toLocaleString()})
-                    </button>
-                  )
-                })}
-              </div>
-              {selectedGeneColumns.length >= 2 && (
-                <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px' }}>
-                  <span style={{ color: '#888' }}>Combine:</span>
-                  <button
-                    onClick={() => setGeneSubsetOperation('intersection')}
-                    style={{
-                      ...styles.toggleButton,
-                      backgroundColor: geneSubsetOperation === 'intersection' ? '#4ecdc4' : '#0f3460',
-                      color: geneSubsetOperation === 'intersection' ? '#000' : '#aaa',
-                    }}
-                  >
-                    AND
-                  </button>
-                  <button
-                    onClick={() => setGeneSubsetOperation('union')}
-                    style={{
-                      ...styles.toggleButton,
-                      backgroundColor: geneSubsetOperation === 'union' ? '#4ecdc4' : '#0f3460',
-                      color: geneSubsetOperation === 'union' ? '#000' : '#aaa',
-                    }}
-                  >
-                    OR
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+          <GeneSubsetPicker control={geneSubset} />
 
           {/* Test variable */}
           <div style={styles.section}>

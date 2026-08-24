@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useStore, LineAssociationGene, LineAssociationModule } from '../store'
 import { useDataActions } from '../hooks/useData'
+import { describeGeneSubsetType } from '../lib/geneSubset'
 
 const PATTERN_COLORS: Record<string, string> = {
   increasing: '#4ecdc4',
@@ -745,7 +746,9 @@ export default function LineAssociationModal() {
     return null
   }
 
-  const { n_cells, n_significant, line_name, test_variable, fdr_threshold, diagnostics, modules, n_lines, lines_used } = lineAssociationResult
+  const { n_cells, n_significant, line_name, test_variable, fdr_threshold, diagnostics, modules, n_lines, lines_used, gene_subset } = lineAssociationResult
+  const restricted = gene_subset != null && gene_subset.type !== 'all'
+  const missingGenes = gene_subset?.genes_missing ?? []
   const hasModules = modules && modules.length > 0
 
   // Apply client-side filters to modules
@@ -928,6 +931,15 @@ export default function LineAssociationModal() {
                 <div style={styles.summaryValue}>{n_lines}</div>
               </div>
             )}
+            {restricted && gene_subset && (
+              <div style={styles.summaryItem}>
+                <div style={styles.summaryLabel}>Genes Tested</div>
+                <div style={styles.summaryValue}>{gene_subset.n_genes.toLocaleString()}</div>
+                <div style={{ fontSize: '10px', color: '#888', marginTop: '2px' }}>
+                  {describeGeneSubsetType(gene_subset.type)}
+                </div>
+              </div>
+            )}
             <div style={styles.summaryItem}>
               <div style={styles.summaryLabel}>Significant Genes</div>
               <div style={styles.summaryValue}>{n_significant.toLocaleString()}</div>
@@ -943,6 +955,27 @@ export default function LineAssociationModal() {
               </div>
             )}
           </div>
+
+          {/* Genes the requested set named but this dataset doesn't have. Left
+              unsaid, a 40%-overlap run reads as though it tested the whole set. */}
+          {missingGenes.length > 0 && gene_subset?.n_requested != null && (
+            <div style={{
+              backgroundColor: '#1a1408',
+              border: '1px solid #e9a23b',
+              borderRadius: '6px',
+              padding: '8px 12px',
+              marginBottom: '16px',
+              fontSize: '11px',
+              color: '#e9a23b',
+            }}>
+              {(gene_subset.n_requested - gene_subset.n_genes).toLocaleString()} of{' '}
+              {gene_subset.n_requested.toLocaleString()} requested genes are not in this dataset:{' '}
+              <span style={{ color: '#c9922f' }}>
+                {missingGenes.slice(0, 12).join(', ')}
+                {missingGenes.length > 12 ? `, and ${missingGenes.length - 12} more` : ''}
+              </span>
+            </div>
+          )}
 
           {/* Diagnostics section */}
           {diagnostics && (

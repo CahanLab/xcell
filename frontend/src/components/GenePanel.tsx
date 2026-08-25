@@ -1746,14 +1746,19 @@ export default function GenePanel() {
   const setGeneMaskModalOpen = useStore((s) => s.setGeneMaskModalOpen)
   const setGeneSymbolModalOpen = useStore((s) => s.setGeneSymbolModalOpen)
   const setCombineModalOpen = useStore((s) => s.setCombineModalOpen)
+  const slotsResolved = useStore((s) => s.slotsResolved)
   const [isSwapping, setIsSwapping] = useState(false)
   const [showBrowse, setShowBrowse] = useState(false)
   const [geneTab, setGeneTab] = useState<'sets' | 'color'>('sets')
 
-  // Fetch var identifier columns on mount
+  // Fetch var identifier columns once the active slot is known. Firing on
+  // mount addressed whatever activeSlot still said — 'primary', possibly not
+  // loaded — and this runs once, so a 503 here left gene-symbol switching
+  // empty for the rest of the session.
   useEffect(() => {
+    if (!slotsResolved) return
     fetchVarIdentifierColumns()
-  }, [])
+  }, [slotsResolved])
 
   const handleSwapVarIndex = async (column: string) => {
     if (column === currentVarIndex) return
@@ -1767,8 +1772,10 @@ export default function GenePanel() {
     }
   }
 
-  // Check prerequisites for find_similar_genes on mount and periodically
+  // Check prerequisites for find_similar_genes once the slot is known, then
+  // periodically.
   useEffect(() => {
+    if (!slotsResolved) return
     const checkPrerequisites = async () => {
       try {
         const response = await fetch(appendDataset(`${API_BASE}/scanpy/prerequisites/find_similar_genes`))
@@ -1785,7 +1792,7 @@ export default function GenePanel() {
     // Re-check every 5 seconds in case user runs gene_neighbors from ScanpyModal
     const interval = setInterval(checkPrerequisites, 5000)
     return () => clearInterval(interval)
-  }, [])
+  }, [slotsResolved])
 
   const handleFindSimilarGenes = async () => {
     if (!similarGenesSeed.trim()) return

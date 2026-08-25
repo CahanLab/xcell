@@ -81,6 +81,32 @@ export function slotAfterUnload(
   return remaining[Math.max(0, i - 1)]
 }
 
+/** Which slot the app should be looking at, given what is actually loaded.
+ *
+ * `activeSlot` starts life as the literal string 'primary', and a page load
+ * where primary is not among the loaded datasets — which is what closing the
+ * dataset you loaded first leaves behind — used to keep it there forever.
+ * Nothing repaired it, and because `appendDataset()` omits `?dataset=` for
+ * primary, every request in the app then resolved to a slot that was not there
+ * and came back 503 "No data loaded for slot 'primary'".
+ *
+ * @param active the slot currently selected
+ * @param loaded the slots that actually hold a dataset, authoritative
+ * @param order  the slots in tab order, which may name ones not loaded
+ */
+export function activeSlotFrom(
+  active: string,
+  loaded: string[],
+  order: string[],
+): string {
+  if (loaded.includes(active)) return active
+  // Nothing to move to: startup, before any fetch has resolved. The empty
+  // state renders from the default dataset, so leaving it be is harmless and
+  // avoids inventing a slot the next render would have to undo.
+  if (loaded.length === 0) return active
+  return order.find((slot) => loaded.includes(slot)) ?? loaded[0]
+}
+
 /** Move the boundary between two panes, leaving every other pane where it is.
  *
  * Widths are flex weights, so the arithmetic goes through pixels and back: the

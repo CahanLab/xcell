@@ -146,9 +146,12 @@ export function useSlotEmbedding(slot: DatasetSlot) {
 
 export function useSchema() {
   const { schema, setSchema, setLoading, setError, setSelectedEmbedding } = useStore()
+  const slotsResolved = useStore((s) => s.slotsResolved)
 
   useEffect(() => {
     if (schema) return // Already loaded
+    // Which slot this asks about is only known once the backend's list is in.
+    if (!slotsResolved) return
 
     setLoading(true)
     fetchJson<Schema>(appendDataset(`${API_BASE}/schema`))
@@ -167,7 +170,7 @@ export function useSchema() {
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
-  }, [schema, setSchema, setLoading, setError, setSelectedEmbedding])
+  }, [schema, slotsResolved, setSchema, setLoading, setError, setSelectedEmbedding])
 
   return schema
 }

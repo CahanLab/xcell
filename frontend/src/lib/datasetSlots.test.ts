@@ -1,14 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  loadedSlots,
-  mirrorTargets,
-  nextSlotKey,
-  datasetLabel,
-  slotAfterUnload,
-  resizePanes,
-  paneGrid,
-  moveItem,
-} from './datasetSlots'
+import { loadedSlots, mirrorTargets, nextSlotKey, datasetLabel, slotAfterUnload, resizePanes, paneGrid, moveItem, activeSlotFrom } from './datasetSlots'
 
 const loaded = { schema: { n_cells: 10 } }
 const empty = { schema: null }
@@ -240,5 +231,43 @@ describe('moveItem', () => {
     const original = [...abc]
     moveItem(abc, 0, 2)
     expect(abc).toEqual(original)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Reported 2026-08-25: after closing the dataset loaded first and refreshing,
+// every request failed with "No data loaded for slot 'primary'" while two
+// datasets sat healthy in the backend. activeSlot initialises to the literal
+// 'primary', the restore never sets it, and appendDataset() omits ?dataset=
+// for primary — so the whole app addressed a slot that was not there.
+// ---------------------------------------------------------------------------
+
+describe('activeSlotFrom', () => {
+  it('keeps the active slot when it is actually loaded', () => {
+    expect(activeSlotFrom('slot3', ['slot3', 'slot4'], ['slot3', 'slot4'])).toBe('slot3')
+  })
+
+  it('moves off a slot that is not loaded', () => {
+    expect(activeSlotFrom('primary', ['slot3', 'slot4'], ['slot3', 'slot4'])).toBe('slot3')
+  })
+
+  it('respects the restored tab order when it has to choose', () => {
+    // The user dragged slot4 to the front; landing on slot3 would put them on a
+    // dataset that is not the one they left in the first position.
+    expect(activeSlotFrom('primary', ['slot3', 'slot4'], ['slot4', 'slot3'])).toBe('slot4')
+  })
+
+  it('ignores an order naming datasets that are not loaded', () => {
+    expect(activeSlotFrom('primary', ['slot4'], ['secondary', 'slot3', 'slot4'])).toBe('slot4')
+  })
+
+  it('leaves the active slot alone when nothing is loaded', () => {
+    // Startup before any fetch resolves. Repointing at nothing helps no one,
+    // and the empty state renders from the default dataset either way.
+    expect(activeSlotFrom('primary', [], [])).toBe('primary')
+  })
+
+  it('does not move just because the active slot is not first', () => {
+    expect(activeSlotFrom('slot4', ['slot3', 'slot4'], ['slot3', 'slot4'])).toBe('slot4')
   })
 })

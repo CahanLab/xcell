@@ -30,9 +30,21 @@ def set_adaptor(adaptor: DataAdaptor, slot: str = "primary") -> None:
 
 
 def get_adaptor(slot: str | None = None) -> DataAdaptor:
-    """Get the DataAdaptor for a slot. Defaults to 'primary'."""
+    """Get the DataAdaptor for a slot. Defaults to 'primary'.
+
+    Naming no slot means 'primary', which stops existing the moment the user
+    closes the dataset they loaded first. Saying only that primary is empty
+    then reads as "nothing is loaded" when other datasets are perfectly fine —
+    so the message names them, and the caller can see it asked for the wrong one.
+    """
     key = slot or "primary"
     if key not in _adaptors:
+        if _adaptors:
+            raise HTTPException(
+                status_code=503,
+                detail=f"No data loaded for slot '{key}'. Loaded: "
+                       f"{', '.join(sorted(_adaptors))}.",
+            )
         raise HTTPException(status_code=503, detail=f"No data loaded for slot '{key}'")
     return _adaptors[key]
 

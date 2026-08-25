@@ -3,7 +3,7 @@ import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/sh
 import { sortGeneSetInCategory } from './lib/geneSetOps'
 import { sectionForCut } from './lib/territoryGeometry'
 import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
-import { loadedSlots, slotAfterUnload, moveItem, paneGrid } from './lib/datasetSlots'
+import { loadedSlots, slotAfterUnload, moveItem, paneGrid, activeSlotFrom } from './lib/datasetSlots'
 import type { Workspace } from './lib/workspaceLayout'
 
 export interface Schema {
@@ -1202,6 +1202,19 @@ interface AppState {
    *  to show. Call DELETE /api/datasets/{slot} alongside it to free the
    *  backend's copy. */
   unloadDataset: (slot: DatasetSlot) => void
+  /** False until the backend's slot list has been read and `activeSlot` is
+   *  known to name something real. Startup fetches wait on it: `activeSlot`
+   *  begins as the literal 'primary', so anything firing on mount addresses a
+   *  slot that may not be loaded — and a mount-only fetch that 503s there
+   *  never retries. */
+  slotsResolved: boolean
+  /** Point the app at a slot that exists, given the backend's own list.
+   *
+   *  Takes the loaded slots rather than reading them off `datasets`: on
+   *  startup the primary slot's schema arrives on its own path, so the store
+   *  briefly shows it as unloaded when it is not. The backend's list is the
+   *  only account that is true at this moment. */
+  ensureActiveSlot: (loaded: string[]) => void
   setPaneLayout: (layout: { cols: number[]; rows: number[] }) => void
   /** Rename a dataset for display. Empty clears it, and its filename is used. */
   setDatasetDisplayName: (slot: DatasetSlot, name: string) => void
@@ -1394,6 +1407,7 @@ export const useStore = create<AppState>((set, get) => {
       secondary: createDefaultDatasetState(),
     },
     activeSlot: 'primary' as DatasetSlot,
+    slotsResolved: false,
     legendPanels: {},
     embeddingSnapshots: [],
     embeddingLabelColumn: null,
@@ -2863,6 +2877,15 @@ export const useStore = create<AppState>((set, get) => {
         activeSlot: nextActive,
         ...syncFlatFields(nextActive, repaired),
       })
+    },
+
+    ensureActiveSlot: (loaded) => {
+      const state = get()
+      const next = activeSlotFrom(state.activeSlot, loaded, Object.keys(state.datasets))
+      // The flag flips either way: callers are waiting to learn the slot, not
+      // waiting for it to change.
+      if (next === state.activeSlot) { set({ slotsResolved: true }); return }
+      set({ activeSlot: next, slotsResolved: true, ...syncFlatFields(next, state.datasets) })
     },
 
     setPaneLayout: (layout) => set({ paneLayout: layout }),

@@ -16,6 +16,11 @@ export default function VarColumnsSection() {
   const [busy, setBusy] = useState<string | null>(null)
 
   useEffect(() => {
+    // No schema means no dataset resolved yet, and this would ask about
+    // whatever activeSlot still said — 'primary', which need not be loaded.
+    // The section renders nothing without columns, so there is nothing to wait
+    // for either.
+    if (!schema) return
     fetchVarBooleanColumns()
       .then(setColumns)
       .catch(() => setColumns([]))

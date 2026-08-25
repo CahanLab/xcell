@@ -4160,7 +4160,11 @@ def localize_suggest(
     genes yields a map that looks smooth and means nothing, and the user should
     learn that before committing to a run rather than after.
     """
-    query = get_adaptor(dataset)
+    # The slot list is what this call is *for*, and it must survive a missing
+    # query. An unnamed dataset resolves to the literal slot 'primary', which is
+    # the key freed the moment you close the dataset you loaded first — and
+    # resolving the query here used to 503 the whole answer, leaving the modal
+    # reporting "no dataset is loaded" with two of them loaded.
     references = []
     for slot, adaptor in _adaptors.items():
         spatial_key = adaptor._get_spatial_key()
@@ -4174,13 +4178,31 @@ def localize_suggest(
             "is_query": slot == (dataset or "primary"),
         })
 
+    # A slot the caller *named* had better exist; one it merely assumed need not
+    # — unless nothing is loaded at all, which is the house 503 like everywhere
+    # else. "Which datasets are loaded" has a real answer once any of them are.
+    query: DataAdaptor | None = None
+    if dataset is not None or not _adaptors:
+        query = get_adaptor(dataset)
+    elif "primary" in _adaptors:
+        query = _adaptors["primary"]
+
     out: dict[str, Any] = {
         "references": references,
         # k ~ sqrt(n) is the usual rule of thumb, bounded to stay interpretable.
-        "suggested_k": int(max(5, min(50, round(query.n_cells ** 0.5)))),
+        # Null rather than a guess when there is no query to take the root of.
+        "suggested_k": (
+            int(max(5, min(50, round(query.n_cells ** 0.5)))) if query is not None else None
+        ),
     }
 
     if reference:
+        if query is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Name which dataset is being localized (?dataset=<slot>) — "
+                       "a reference only means something against a query.",
+            )
         try:
             ref = _resolve_reference(reference, dataset)
             bundle = ref.spatial_reference_bundle(gene_subset=gene_subset)

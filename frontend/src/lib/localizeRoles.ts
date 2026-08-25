@@ -1,16 +1,18 @@
 /**
  * Which loaded dataset is the spatial reference, and which is being localized.
  *
- * Localize is the one feature that spans two dataset slots, and the roles used
- * to be implicit: the query was whatever slot happened to be active, and the
- * reference defaulted to the literal string 'secondary'. Both assumptions fail
- * on the natural workflow — load the spatial data first, look at it, then try
- * to map onto it — and the resulting error blamed the coordinates rather than
- * the arrangement.
+ * Localize is the one feature that reads two datasets at once, and the roles
+ * used to be implicit: the query was whatever slot happened to be active, and
+ * the reference defaulted to the literal string 'secondary'. Both assumptions
+ * fail on the natural workflow — load the spatial data first, look at it, then
+ * try to map onto it — and the resulting error blamed the coordinates rather
+ * than the arrangement.
  *
- * Roles are derived from the data instead: the dataset holding coordinates is
- * the reference, the other is the query. The caller states the choice on screen
- * so it is a visible decision rather than a hidden one.
+ * Deriving the roles from the data fixed that for two datasets, and broke once
+ * there could be more than two: with two ST and two SC loaded, the reference
+ * was pinned to whichever ST came first and the second pair was unreachable.
+ * So the derivation is now only a *default*. The caller states both roles and
+ * can override either; this module says which datasets are eligible for each.
  */
 
 export interface RefSlot {
@@ -31,20 +33,31 @@ export interface Roles {
   /** Why no assignment was possible, phrased as the thing that is actually
    *  true. Null when roles were assigned. */
   problem: string | null
-  /** Both datasets carry coordinates, so which is which is a real choice. */
-  swappable: boolean
+  /** Datasets that could serve as the reference: the ones with coordinates. */
+  referenceOptions: RefSlot[]
+  /** Datasets that could serve as the query, given the chosen reference.
+   *  Everything else — mapping tissue onto tissue is a real thing to want; only
+   *  mapping a dataset onto itself is refused, and the backend refuses it too. */
+  queryOptions: RefSlot[]
 }
 
 const NONE = (problem: string): Roles => ({
-  referenceSlot: null, querySlot: null, problem, swappable: false,
+  referenceSlot: null, querySlot: null, problem,
+  referenceOptions: [], queryOptions: [],
 })
 
 /**
- * @param refs      every loaded dataset, from /localize/suggest
- * @param preferRef slot the user explicitly chose as the reference, if any.
- *                  Ignored when that slot has no coordinates.
+ * @param refs         every loaded dataset, from /localize/suggest
+ * @param preferRef    slot the user chose as the reference. Ignored when that
+ *                     slot has no coordinates.
+ * @param preferQuery  slot the user chose as the query. Ignored when it is not
+ *                     loaded, or is the reference.
  */
-export function assignRoles(refs: RefSlot[], preferRef?: string | null): Roles {
+export function assignRoles(
+  refs: RefSlot[],
+  preferRef?: string | null,
+  preferQuery?: string | null,
+): Roles {
   if (refs.length === 0) {
     return NONE('No dataset is loaded.')
   }
@@ -76,15 +89,28 @@ export function assignRoles(refs: RefSlot[], preferRef?: string | null): Roles {
     ? spatial.find((r) => r.slot === preferRef)!
     : spatial[0]
 
-  const query = refs.find((r) => r.slot !== chosen.slot)
-  if (!query) {
+  const queryOptions = refs.filter((r) => r.slot !== chosen.slot)
+  if (queryOptions.length === 0) {
     return NONE('Localize needs two different datasets.')
   }
+
+  // Default to dissociated cells: placing them on a tissue map is what this is
+  // for, and picking the other tissue instead — which loading ST, ST, SC, SC
+  // used to do — is never what was meant.
+  // `??` would not coalesce the empty string a cleared <select> yields, so the
+  // explicit choice is resolved before the fallbacks rather than beside them.
+  const explicit = preferQuery
+    ? queryOptions.find((r) => r.slot === preferQuery)
+    : undefined
+  const query = explicit
+    ?? queryOptions.find((r) => !r.has_spatial)
+    ?? queryOptions[0]
 
   return {
     referenceSlot: chosen.slot,
     querySlot: query.slot,
     problem: null,
-    swappable: spatial.length >= 2,
+    referenceOptions: spatial,
+    queryOptions,
   }
 }

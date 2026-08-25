@@ -27,9 +27,14 @@ describe('assignRoles', () => {
   it('does not depend on which slot is active', () => {
     // The old behaviour tied the query to the active slot, so the answer moved
     // when the user switched datasets. Roles come from the data now.
+    const roleOf = (r: ReturnType<typeof assignRoles>) =>
+      ({ reference: r.referenceSlot, query: r.querySlot, problem: r.problem })
     const asPrimaryActive = assignRoles(LIMB.map((s) => ({ ...s, is_query: s.slot === 'primary' })))
     const asSecondaryActive = assignRoles(LIMB.map((s) => ({ ...s, is_query: s.slot === 'secondary' })))
-    expect(asPrimaryActive).toEqual(asSecondaryActive)
+    // Compare the decision, not the option lists: those echo back each
+    // dataset's is_query flag, which is precisely the field this asserts is
+    // never consulted.
+    expect(roleOf(asPrimaryActive)).toEqual(roleOf(asSecondaryActive))
   })
 
   it('works with the roles reversed', () => {
@@ -41,19 +46,20 @@ describe('assignRoles', () => {
     expect(r.querySlot).toBe('primary')
   })
 
-  it('is not swappable when only one dataset has coordinates', () => {
-    expect(assignRoles(LIMB).swappable).toBe(false)
+  it('offers only the datasets that could actually be a reference', () => {
+    const r = assignRoles(LIMB)
+    expect(r.referenceOptions.map((o) => o.slot)).toEqual(['primary'])
   })
 
-  it('is swappable when both have coordinates, and honours an explicit choice', () => {
+  it('honours an explicit reference when both have coordinates', () => {
     const both = [
       slot('primary', 'a.h5ad', true, 'spatial'),
       slot('secondary', 'b.h5ad', true, 'X_spatial'),
     ]
     const auto = assignRoles(both)
-    expect(auto.swappable).toBe(true)
     expect(auto.referenceSlot).toBe('primary')
     expect(auto.querySlot).toBe('secondary')
+    expect(auto.referenceOptions.map((o) => o.slot)).toEqual(['primary', 'secondary'])
 
     const forced = assignRoles(both, 'secondary')
     expect(forced.referenceSlot).toBe('secondary')
@@ -90,5 +96,85 @@ describe('assignRoles', () => {
   it('ignores an override naming a slot with no coordinates', () => {
     const r = assignRoles(LIMB, 'secondary')
     expect(r.referenceSlot).toBe('primary')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Four datasets — two spatial, two dissociated. Reported 2026-08-25: the modal
+// pinned the reference to the first ST and offered no way to reach the second
+// pair. Roles were derived for a two-slot world and never revisited when
+// N datasets shipped.
+// ---------------------------------------------------------------------------
+
+const TWO_PAIRS = [
+  slot('primary', 'ST_A.h5ad', true, 'X_spatial'),
+  slot('secondary', 'SC_A.h5ad', false),
+  slot('slot3', 'ST_B.h5ad', true, 'X_spatial'),
+  slot('slot4', 'SC_B.h5ad', false),
+]
+
+describe('assignRoles with more than two datasets', () => {
+  it('can name the second spatial dataset as the reference', () => {
+    const r = assignRoles(TWO_PAIRS, 'slot3')
+    expect(r.referenceSlot).toBe('slot3')
+  })
+
+  it('can name the query, not just the reference', () => {
+    const r = assignRoles(TWO_PAIRS, 'slot3', 'slot4')
+    expect(r.referenceSlot).toBe('slot3')
+    expect(r.querySlot).toBe('slot4')
+    expect(r.problem).toBeNull()
+  })
+
+  it('offers every spatial dataset as a reference', () => {
+    expect(assignRoles(TWO_PAIRS).referenceOptions.map((o) => o.slot))
+      .toEqual(['primary', 'slot3'])
+  })
+
+  it('offers every other dataset as a query, and never the reference itself', () => {
+    const r = assignRoles(TWO_PAIRS, 'slot3')
+    expect(r.queryOptions.map((o) => o.slot)).toEqual(['primary', 'secondary', 'slot4'])
+    expect(r.queryOptions.some((o) => o.slot === 'slot3')).toBe(false)
+  })
+
+  it('defaults the query to dissociated cells rather than the other tissue', () => {
+    // Loading ST, ST, SC, SC used to make the *other* spatial dataset the
+    // query — the one arrangement where the default is never what was meant.
+    const stFirst = [
+      slot('primary', 'ST_A.h5ad', true, 'X_spatial'),
+      slot('secondary', 'ST_B.h5ad', true, 'X_spatial'),
+      slot('slot3', 'SC_A.h5ad', false),
+      slot('slot4', 'SC_B.h5ad', false),
+    ]
+    const r = assignRoles(stFirst)
+    expect(r.referenceSlot).toBe('primary')
+    expect(r.querySlot).toBe('slot3')
+  })
+
+  it('still allows tissue onto tissue when that is what was asked for', () => {
+    const r = assignRoles(TWO_PAIRS, 'primary', 'slot3')
+    expect(r.referenceSlot).toBe('primary')
+    expect(r.querySlot).toBe('slot3')
+  })
+
+  it('ignores a query override naming the chosen reference', () => {
+    const r = assignRoles(TWO_PAIRS, 'slot3', 'slot3')
+    expect(r.referenceSlot).toBe('slot3')
+    expect(r.querySlot).not.toBe('slot3')
+    expect(r.problem).toBeNull()
+  })
+
+  it('treats an empty override as no preference, not as a slot', () => {
+    // A cleared <select> yields '', which must not be mistaken for a choice.
+    const r = assignRoles(TWO_PAIRS, '', '')
+    expect(r.referenceSlot).toBe('primary')
+    expect(r.querySlot).toBe('secondary')
+  })
+
+  it('ignores a query override naming a dataset that is not loaded', () => {
+    // Falls back to the default — the first dissociated dataset that is not
+    // the reference. Nothing pairs ST_B with SC_B; they are just four slots.
+    const r = assignRoles(TWO_PAIRS, 'slot3', 'slot99')
+    expect(r.querySlot).toBe('secondary')
   })
 })

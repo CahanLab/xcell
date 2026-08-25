@@ -128,6 +128,10 @@ export default function LocalizeModal() {
   // reference, so a wrong guess 400'd and the picker that would correct it
   // never populated.
   const [preferRef, setPreferRef] = useState('')
+  // Same contract as preferRef: '' means "let assignRoles pick". Both are
+  // needed once more than two datasets can be loaded — with two ST and two SC
+  // the derived pair is only ever one of the four combinations.
+  const [preferQuery, setPreferQuery] = useState('')
   const [overlap, setOverlap] = useState<Overlap | null>(null)
   const [sectionOptions, setSectionOptions] = useState<string[]>([])
   const [geneColumns, setGeneColumns] = useState<GeneColumn[]>([])
@@ -209,7 +213,10 @@ export default function LocalizeModal() {
   }, [isOpen])
 
   // Roles come from the data, not from whichever slot happens to be active.
-  const roles = useMemo(() => assignRoles(refs, preferRef || null), [refs, preferRef])
+  const roles = useMemo(
+    () => assignRoles(refs, preferRef || null, preferQuery || null),
+    [refs, preferRef, preferQuery],
+  )
   const reference = roles.referenceSlot
   const querySlot = roles.querySlot
   const refInfo = refs.find((r) => r.slot === reference)
@@ -499,36 +506,43 @@ export default function LocalizeModal() {
               {roles.problem} Use <b>File → Load…</b>, then reopen this tool.
             </div>
           ) : (
-            <div style={{ ...noticeStyle, display: 'grid', gap: 4 }}>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <span style={{ color: dark.faint, width: 74 }}>Reference</span>
-                <span>
-                  {refInfo?.filename}
-                  <span style={{ color: dark.faint }}>
-                    {' '}({refInfo?.spatial_key}, {refInfo?.n_cells.toLocaleString()} cells)
-                  </span>
-                </span>
-              </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <span style={{ color: dark.faint, width: 74 }}>Query</span>
-                <span>
-                  {queryInfo?.filename}
-                  <span style={{ color: dark.faint }}>
-                    {' '}({queryInfo?.n_cells.toLocaleString()} cells)
-                  </span>
-                </span>
+            <div style={{ ...noticeStyle, display: 'grid', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ color: dark.faint, width: 74, flexShrink: 0 }}>Reference</span>
+                <select
+                  value={reference ?? ''}
+                  onChange={(e) => setPreferRef(e.target.value)}
+                  style={{ ...input, fontSize: 11.5 }}
+                  title="The tissue whose coordinates are borrowed. Only datasets that have coordinates can serve."
+                >
+                  {roles.referenceOptions.map((o) => (
+                    <option key={o.slot} value={o.slot}>
+                      {o.filename} ({o.spatial_key}, {o.n_cells.toLocaleString()} cells)
+                    </option>
+                  ))}
+                </select>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span style={{ color: dark.faint, width: 74 }}>Writes to</span>
+                <span style={{ color: dark.faint, width: 74, flexShrink: 0 }}>Query</span>
+                <select
+                  value={querySlot ?? ''}
+                  onChange={(e) => setPreferQuery(e.target.value)}
+                  style={{ ...input, fontSize: 11.5 }}
+                  title="The cells being placed on the reference. Its .obsm gains the predicted coordinates."
+                >
+                  {roles.queryOptions.map((o) => (
+                    <option key={o.slot} value={o.slot}>
+                      {o.filename} ({o.n_cells.toLocaleString()} cells)
+                      {o.has_spatial ? ' — already spatial' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <span style={{ color: dark.faint, width: 74, flexShrink: 0 }}>Writes to</span>
                 <span style={{ color: dark.faint }}>
                   {queryInfo?.filename} · <code>.obsm['{keyAdded}']</code>
                 </span>
-                {roles.swappable && (
-                  <button style={{ ...ghost, fontSize: 11, marginLeft: 'auto' }}
-                          onClick={() => setPreferRef(querySlot || '')}>
-                    swap
-                  </button>
-                )}
               </div>
             </div>
           )}

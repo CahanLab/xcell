@@ -440,3 +440,47 @@ describe('the barplot is a statement about one dataset', () => {
     expect(useStore.getState().barplotConfig?.columnA).toBe('leiden')
   })
 })
+
+// Reported 2026-08-25. Close the dataset you loaded first, refresh, and every
+// request came back 503 "No data loaded for slot 'primary'" while two datasets
+// sat healthy in the backend. activeSlot starts as the literal 'primary' and
+// nothing on the restore path moved it, so the whole app addressed a slot that
+// was not there — invisibly, because appendDataset() omits ?dataset= for
+// primary, making "no slot named" and "primary" the same request on the wire.
+describe('the active slot always names a dataset that exists', () => {
+  it('moves off primary when the session no longer has one', () => {
+    useStore.setState(pristine, true)
+    const s = useStore.getState()
+    s.loadDatasetIntoSlot('slot3', PRIMARY)
+    s.loadDatasetIntoSlot('slot4', SECONDARY)
+    expect(useStore.getState().activeSlot).toBe('primary')   // the broken state
+
+    useStore.getState().ensureActiveSlot(['slot3', 'slot4'])
+    expect(useStore.getState().activeSlot).toBe('slot3')
+  })
+
+  it('brings the mirrored fields along, so the panels read the new dataset', () => {
+    useStore.setState(pristine, true)
+    const s = useStore.getState()
+    s.loadDatasetIntoSlot('slot4', SECONDARY)
+    useStore.getState().ensureActiveSlot(['slot4'])
+    const after = useStore.getState()
+    expect(after.activeSlot).toBe('slot4')
+    expect(after.schema?.n_cells).toBe(SECONDARY.n_cells)
+  })
+
+  it('leaves a valid active slot alone', () => {
+    useStore.getState().setActiveSlot('secondary')
+    useStore.getState().ensureActiveSlot(['primary', 'secondary'])
+    expect(useStore.getState().activeSlot).toBe('secondary')
+  })
+
+  it('trusts the backend list over the store, mid-startup', () => {
+    // primary is held by the backend but its schema has not landed yet. Moving
+    // off it here would fight useSchema and land the user on the wrong tab.
+    useStore.setState(pristine, true)
+    useStore.getState().loadDatasetIntoSlot('slot3', SECONDARY)
+    useStore.getState().ensureActiveSlot(['primary', 'slot3'])
+    expect(useStore.getState().activeSlot).toBe('primary')
+  })
+})

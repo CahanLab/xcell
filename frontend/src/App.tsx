@@ -570,8 +570,9 @@ export default function App() {
     if (restoreStartedRef.current) return
     restoreStartedRef.current = true
     ;(async () => {
+      let held: Record<string, unknown> = {}
       try {
-        const held = await fetch('/api/datasets').then((r) => (r.ok ? r.json() : {}))
+        held = await fetch('/api/datasets').then((r) => (r.ok ? r.json() : {}))
         // 'primary' is left to useSchema, which is already fetching it; loading
         // it again here would reset whatever that has set up.
         for (const slot of Object.keys(held).filter((s) => s !== 'primary')) {
@@ -585,6 +586,15 @@ export default function App() {
       } catch {
         // Nothing restored is a worse start than a wrong error message.
       } finally {
+        // After the restore, so it sees the tab order; in `finally`, so a failed
+        // restore still releases the fetches waiting on it.
+        //
+        // activeSlot starts as the literal 'primary', and closing the dataset
+        // you loaded first leaves a session where that slot does not exist.
+        // Nothing else moved it, and appendDataset() omits ?dataset= for
+        // primary — so every request addressed the missing slot and came back
+        // 503, including mount-only fetches that never retry.
+        useStore.getState().ensureActiveSlot(Object.keys(held))
         // Only now may the save effect run. Flipping this at the *start* let it
         // fire against the half-loaded state and overwrite the stored
         // arrangement with one dataset and no names, before the restore had

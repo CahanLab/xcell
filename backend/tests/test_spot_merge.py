@@ -59,15 +59,10 @@ def _profiles(n: int, g: int = 8, kind: int = 0, rng=None) -> np.ndarray:
     return base + rng.poisson(0.5, (n, g))
 
 
-def _norm(counts: np.ndarray) -> np.ndarray:
-    """CPM + log1p, the matrix the veto sees."""
-    depth = counts.sum(axis=1, keepdims=True)
-    depth[depth == 0] = 1.0
-    return np.log1p(counts / depth * 1e4)
-
-
-def _run(coords, counts, **kw):
-    return merge_spots(coords, counts, _norm(counts), MergeParams(**kw))
+def _run(coords, counts, veto_counts=None, **kw):
+    """The veto reads the same genes as the merge unless told otherwise."""
+    veto = counts if veto_counts is None else veto_counts
+    return merge_spots(coords, counts, veto, MergeParams(**kw))
 
 
 def test_groups_respect_the_diameter_cap():
@@ -206,3 +201,12 @@ def test_ineligible_spots_pass_through_unmerged():
     r = _run(coords, counts, max_diameter_um=40.0,
              eligibility="min_counts", min_counts=1000.0)
     assert (r.labels == r.labels[5]).sum() == 1, "a deep spot was absorbed"
+
+
+def test_the_veto_may_read_fewer_genes_than_the_merge_sums():
+    # A gene set narrows the veto; the summed matrix stays full width.
+    coords, counts, left = _two_types()
+    r = _run(coords, counts, veto_counts=counts[:, :4],
+             max_diameter_um=40.0, min_correlation=0.5)
+    for gid in range(r.n_groups):
+        assert len(set(left[r.labels == gid].tolist())) == 1

@@ -94,6 +94,18 @@ def _neighbour_pairs(coords: np.ndarray) -> set[tuple[int, int]]:
     return {(i, j) for i in range(len(coords)) for j in range(i + 1, len(coords))}
 
 
+def _cpm_log1p(counts: np.ndarray) -> np.ndarray:
+    """Depth-normalize and log — what the veto compares.
+
+    The merge sums raw counts, but correlating raw counts makes the veto
+    toothless: any two spots agree because both are dominated by the same few
+    high expressors. A difference in cell type shows up here instead.
+    """
+    depth = counts.sum(axis=1, keepdims=True)
+    depth = np.where(depth == 0, 1.0, depth)
+    return np.log1p(counts / depth * 1e4)
+
+
 def _correlation(a: np.ndarray, b: np.ndarray) -> float:
     """Pearson r between two profiles; 0 when either is flat."""
     a_c, b_c = a - a.mean(), b - b.mean()
@@ -133,7 +145,7 @@ def eligible_mask(counts: np.ndarray, params: MergeParams) -> np.ndarray:
 def merge_spots(
     coords: np.ndarray,
     counts: np.ndarray,
-    normalized: np.ndarray,
+    veto_counts: np.ndarray,
     params: MergeParams,
 ) -> MergeResult:
     """Group neighbouring spots into cell-sized clusters.
@@ -147,7 +159,10 @@ def merge_spots(
     Args:
         coords: (n, 2) spot positions in microns.
         counts: (n, g) raw counts — summed, so integer-like.
-        normalized: (n, g) CPM+log1p profiles — correlated, never summed.
+        veto_counts: (n, k) raw counts over the veto's genes, k <= g. Raw
+            rather than pre-normalized because a merged group has to be
+            renormalized from its summed counts, which a normalized matrix
+            cannot give back.
         params: see MergeParams.
 
     Returns:
@@ -160,7 +175,10 @@ def merge_spots(
     parent = list(range(n))
     members: dict[int, list[int]] = {i: [i] for i in range(n)}
     group_counts = np.asarray(counts, dtype=float).copy()
-    group_norm = np.asarray(normalized, dtype=float).copy()
+    # Kept apart from group_counts: the veto reads its own gene subset, so the
+    # two matrices need not be the same width.
+    group_veto = np.asarray(veto_counts, dtype=float).copy()
+    group_norm = _cpm_log1p(group_veto)
 
     def find(i: int) -> int:
         while parent[i] != i:
@@ -211,8 +229,8 @@ def merge_spots(
         group_counts[keep] = group_counts[ga] + group_counts[gb]
         # The merged profile is the summed counts renormalized, not the mean of
         # two profiles: the veto must judge the group as it will actually exist.
-        depth = float(group_counts[keep].sum()) or 1.0
-        group_norm[keep] = np.log1p(group_counts[keep] / depth * 1e4)
+        group_veto[keep] = group_veto[ga] + group_veto[gb]
+        group_norm[keep] = _cpm_log1p(group_veto[keep][None, :])[0]
 
     roots = sorted({find(i) for i in range(n)})
     remap = {root: gid for gid, root in enumerate(roots)}

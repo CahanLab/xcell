@@ -4902,12 +4902,7 @@ class DataAdaptor:
         # counts: on raw counts any two spots correlate highly, because both are
         # dominated by the same few high expressors, and the veto never fires.
         gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
-        veto_counts = region_counts[:, gene_mask]
-        depth = veto_counts.sum(axis=1, keepdims=True)
-        depth[depth == 0] = 1.0
-        normalized = np.log1p(veto_counts / depth * 1e4)
-
-        result = _merge(coords, region_counts, normalized, params)
+        result = _merge(coords, region_counts, region_counts[:, gene_mask], params)
 
         stats: dict[str, Any] = {
             'n_region_spots': int(len(indices)),

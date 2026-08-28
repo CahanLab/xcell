@@ -4828,6 +4828,204 @@ class DataAdaptor:
 
     SPATIAL_SCALE_UNS = 'xcell_spatial_scale'
 
+    def merge_spots(
+        self,
+        region_indices: list[int],
+        params: Any,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        layer: str | None = 'counts',
+        purity_column: str | None = None,
+        dry_run: bool = True,
+    ) -> tuple[dict[str, Any], Any]:
+        """Merge neighbouring spots in a region into single large cells.
+
+        Read-only on self. The merged rows never existed, so every embedding and
+        derived column computed on the originals would be stale — the result is
+        a separate AnnData for the caller to register as its own dataset.
+
+        Args:
+            region_indices: The spots to merge, from the user's selection.
+            params: A spot_merge.MergeParams.
+            gene_subset: Genes the veto correlates over. Any form
+                ``_resolve_gene_mask`` accepts, so a Gene Panel gene set
+                arrives as an explicit gene list.
+            layer: Matrix to sum. Must be integer-like.
+            purity_column: Categorical column ``merge_purity`` votes on.
+            dry_run: When True, compute the statistics and build nothing.
+
+        Returns:
+            (stats, merged_adata). merged_adata is None when dry_run.
+
+        Raises:
+            ValueError: No coordinates, no scale, too small a region, or a
+                non-integer matrix.
+        """
+        from xcell.spot_merge import merge_spots as _merge
+
+        spatial_key = self._get_spatial_key()
+        if spatial_key is None:
+            raise ValueError(
+                "This dataset has no spatial coordinates, so there are no "
+                "neighbouring spots to merge."
+            )
+        indices = np.asarray(sorted({int(i) for i in region_indices}), dtype=int)
+        if len(indices) < 2:
+            raise ValueError("Merging needs a region of at least two spots.")
+
+        scale = self.spatial_scale()
+        if scale.get('um_per_unit') is None:
+            raise ValueError(
+                "Set the µm per coordinate unit before merging — a cell "
+                "diameter in microns means nothing without it."
+            )
+        um = float(scale['um_per_unit'])
+        coords = np.asarray(
+            self.adata.obsm[spatial_key], dtype=float
+        )[indices, :2] * um
+
+        source = (
+            self.adata.layers[layer]
+            if layer and layer in self.adata.layers
+            else self.adata.X
+        )
+        region_counts = source[indices]
+        if hasattr(region_counts, 'toarray'):
+            region_counts = region_counts.toarray()
+        region_counts = np.asarray(region_counts, dtype=float)
+        if not np.all(np.equal(np.mod(region_counts, 1), 0)):
+            raise ValueError(
+                "Merging sums raw counts, and this matrix is not integer-like. "
+                "Name a counts layer with the `layer` parameter."
+            )
+
+        # The veto reads normalized profiles even though the merge sums raw
+        # counts: on raw counts any two spots correlate highly, because both are
+        # dominated by the same few high expressors, and the veto never fires.
+        gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+        result = _merge(coords, region_counts, region_counts[:, gene_mask], params)
+
+        stats: dict[str, Any] = {
+            'n_region_spots': int(len(indices)),
+            'n_merged_spots': int(result.n_groups),
+            'n_spots_before': int(self.n_cells),
+            'n_spots_after': int(self.n_cells - len(indices) + result.n_groups),
+            'pitch_um': float(result.pitch_um),
+            'max_spots': int(result.max_spots),
+            'size_histogram': {str(k): v for k, v in result.size_histogram.items()},
+            'n_vetoed': int(result.n_vetoed),
+            'correlation_quantiles': result.correlation_quantiles or None,
+            'gene_subset': self._gene_subset_summary(
+                subset_type, {'n_genes': int(gene_mask.sum())}
+            ),
+            'median_counts_before': float(np.median(region_counts.sum(axis=1))),
+            '_labels': [int(v) for v in result.labels],
+        }
+        if dry_run:
+            return stats, None
+
+        merged = self._build_merged_adata(
+            indices, result.labels, spatial_key, purity_column, params, stats,
+        )
+        stats['median_counts_after'] = float(
+            np.median(np.asarray(merged.layers['counts'].sum(axis=1)).ravel())
+        )
+        return stats, merged
+
+    def _build_merged_adata(
+        self,
+        indices: np.ndarray,
+        labels: np.ndarray,
+        spatial_key: str,
+        purity_column: str | None,
+        params: Any,
+        stats: dict[str, Any],
+    ):
+        """Build the merged dataset: untouched rows first, then one per group.
+
+        Numeric and QC .obs are dropped rather than averaged: a mean of
+        per-spot scores is an approximation the summed counts cannot justify,
+        and keeping them only outside the region would leave a column that is
+        populated in half the tissue and blank in the other.
+        """
+        from scipy.sparse import csr_matrix, vstack
+
+        counts_src = (
+            self.adata.layers['counts']
+            if 'counts' in self.adata.layers
+            else self.adata.X
+        )
+        counts_src = csr_matrix(counts_src)
+        in_region = np.zeros(self.n_cells, dtype=bool)
+        in_region[indices] = True
+        outside = np.where(~in_region)[0]
+
+        cat_cols = [
+            c for c in self.adata.obs.columns
+            if isinstance(self.adata.obs[c].dtype, pd.CategoricalDtype)
+            or self.adata.obs[c].dtype == object
+        ]
+        if purity_column is None:
+            purity_column = cat_cols[0] if cat_cols else None
+
+        source_coords = np.asarray(self.adata.obsm[spatial_key], dtype=float)
+        rows, coords_out, obs_rows, names = [], [], [], []
+
+        for i in outside:
+            rows.append(counts_src[i])
+            coords_out.append(source_coords[i, :2])
+            row = {c: self.adata.obs[c].iloc[i] for c in cat_cols}
+            row.update(merged_n_spots=1, merge_group='', merge_purity=np.nan)
+            obs_rows.append(row)
+            names.append(str(self.adata.obs_names[i]))
+
+        for gid in range(int(labels.max()) + 1):
+            members = indices[labels == gid]
+            rows.append(csr_matrix(counts_src[members].sum(axis=0)))
+            coords_out.append(source_coords[members, :2].mean(axis=0))
+            row: dict[str, Any] = {
+                'merged_n_spots': int(len(members)),
+                'merge_group': f'g{gid}',
+            }
+            purity = np.nan
+            for c in cat_cols:
+                values = self.adata.obs[c].iloc[members]
+                tally = values.value_counts()
+                row[c] = tally.index[0] if len(tally) else None
+                if c == purity_column and len(values):
+                    purity = float(tally.iloc[0] / len(values))
+            row['merge_purity'] = purity
+            obs_rows.append(row)
+            names.append(f'merged_g{gid}')
+
+        X = vstack(rows, format='csr').astype(np.float32)
+        obs = pd.DataFrame(obs_rows, index=pd.Index(names))
+        if purity_column is None:
+            obs = obs.drop(columns=['merge_purity'])
+        for c in cat_cols:
+            obs[c] = pd.Categorical(obs[c])
+        obs['merge_group'] = pd.Categorical(obs['merge_group'])
+
+        merged = anndata.AnnData(X=X, obs=obs, var=self.adata.var.copy())
+        merged.layers['counts'] = merged.X.copy()
+        merged.obsm[spatial_key] = np.asarray(coords_out, dtype=float)
+        merged.uns['xcell_spot_merge'] = {
+            'params': {
+                'max_diameter_um': float(params.max_diameter_um),
+                'min_correlation': float(params.min_correlation),
+                'eligibility': params.eligibility,
+                'max_spots': int(stats['max_spots']),
+            },
+            'source_file': str(self.filepath.name),
+            'n_spots_before': int(self.n_cells),
+            'n_spots_after': int(merged.n_obs),
+            'gene_subset': stats['gene_subset'],
+        }
+        if self.SPATIAL_SCALE_UNS in self.adata.uns:
+            merged.uns[self.SPATIAL_SCALE_UNS] = dict(
+                self.adata.uns[self.SPATIAL_SCALE_UNS]
+            )
+        return merged
+
     def spatial_scale(self) -> dict[str, Any]:
         """Physical size of one spatial coordinate unit, in µm.
 

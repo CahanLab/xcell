@@ -21,6 +21,7 @@ import ScanpyModal from './components/ScanpyModal'
 import MultiContourModal from './components/MultiContourModal'
 import AnalysisRecordPanel from './components/AnalysisRecordPanel'
 import LocalizeModal from './components/LocalizeModal'
+import MergeSpotsModal from './components/MergeSpotsModal'
 import LigRecModal from './components/LigRecModal'
 import NeighborhoodModal from './components/NeighborhoodModal'
 import GeneNmfModal from './components/GeneNmfModal'
@@ -2140,6 +2141,7 @@ export default function App() {
       <MultiContourModal />
       <AnalysisRecordPanel />
       <LocalizeModal />
+      <MergeSpotsModal />
       <LigRecModal />
       <NeighborhoodModal />
       <GeneNmfModal />

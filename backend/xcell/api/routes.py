@@ -466,6 +466,73 @@ def combine_spatial(request: CombineSpatialRequest):
     return combine(request)
 
 
+class MergeSpotsRequest(BaseModel):
+    """Merge neighbouring spots in a region into single large cells."""
+    region_indices: list[int]
+    max_diameter_um: float = 40.0
+    max_spots: int | None = None
+    min_correlation: float = 0.15
+    eligibility: str = 'all'          # 'all' | 'min_counts' | 'quantile'
+    min_counts: float | None = None
+    quantile: float | None = None
+    # A .var column, a {columns, operation} combination, or an explicit gene
+    # list — what a Gene Panel gene set resolves to. The veto correlates the
+    # expression of those genes; it never computes a gene-set score.
+    gene_subset: str | list[str] | dict[str, Any] | None = None
+    layer: str | None = 'counts'
+    purity_column: str | None = None
+    dry_run: bool = True
+    slot: str | None = None
+
+
+@router.post("/spots/merge")
+def merge_spots(request: MergeSpotsRequest, dataset: str | None = Query(None)):
+    """Merge neighbouring ST spots into spots that approximate single cells.
+
+    Synchronous, following /combine: a lassoed region is hundreds to low
+    thousands of spots, which agglomerates in well under a second.
+    """
+    from xcell.spot_merge import MergeParams
+
+    adaptor = get_adaptor(dataset)
+    if not request.dry_run and not request.slot:
+        raise HTTPException(
+            status_code=400,
+            detail="Name the slot to load the merged dataset into.",
+        )
+    params = MergeParams(
+        max_diameter_um=request.max_diameter_um,
+        max_spots=request.max_spots,
+        min_correlation=request.min_correlation,
+        eligibility=request.eligibility,
+        min_counts=request.min_counts,
+        quantile=request.quantile,
+    )
+    try:
+        stats, merged = adaptor.merge_spots(
+            region_indices=request.region_indices,
+            params=params,
+            gene_subset=request.gene_subset,
+            layer=request.layer,
+            purity_column=request.purity_column,
+            dry_run=request.dry_run,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Group labels exist so the adaptor's tests can check centroids; they are
+    # per-spot and have no business on the wire.
+    stats.pop('_labels', None)
+    if merged is None:
+        return stats
+
+    virtual_path = Path(f"{adaptor.filepath.stem}_merged.h5ad")
+    new_adaptor = DataAdaptor(virtual_path, adata=merged)
+    new_adaptor.filepath = virtual_path
+    set_adaptor(new_adaptor, slot=request.slot)
+    return {"slot": request.slot, **stats, **new_adaptor.get_schema()}
+
+
 @router.get("/datasets")
 def get_datasets():
     """List all loaded dataset slots with basic info."""

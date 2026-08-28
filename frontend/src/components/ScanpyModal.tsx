@@ -528,6 +528,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         custom: true,
         params: [],
       },
+      merge_spots: {
+        label: 'Merge Spots',
+        description: "Merge neighbouring spots inside a lassoed region into single spots that approximate one large cell — for tissue where the cell is much bigger than the spot, such as hypertrophic chondrocytes. Counts are summed; the result is a new dataset in its own tab, leaving this one untouched. Opens the Merge Spots tool.",
+        prerequisites: ['has_spatial'],
+        custom: true,
+        params: [],
+      },
     },
   },
   multigenome: {
@@ -827,7 +834,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, setMergeSpotsModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2765,6 +2772,13 @@ export default function ScanpyModal() {
               onClick={() => { setLocalizeModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Localize tool…
+            </button>
+          ) : selectedFunction === 'merge_spots' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setMergeSpotsModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Merge Spots tool…
             </button>
           ) : (
             <button

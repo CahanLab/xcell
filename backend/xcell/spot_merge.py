@@ -103,6 +103,33 @@ def _correlation(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a_c, b_c) / denom)
 
 
+def eligible_mask(counts: np.ndarray, params: MergeParams) -> np.ndarray:
+    """Which spots in the region may be merged.
+
+    The region is already the user's statement of intent, so 'all' is the
+    default and gives one comparable population. The other modes exist for
+    leaving well-covered spots alone — at the price of an output whose count
+    distributions differ by construction.
+    """
+    depth = np.asarray(counts, dtype=float).sum(axis=1)
+    mode = params.eligibility
+    if mode == "all":
+        return np.ones(len(depth), dtype=bool)
+    if mode == "min_counts":
+        if params.min_counts is None:
+            raise ValueError("eligibility 'min_counts' needs a min_counts value.")
+        return depth < float(params.min_counts)
+    if mode == "quantile":
+        if params.quantile is None:
+            raise ValueError("eligibility 'quantile' needs a quantile value.")
+        if not 0.0 < params.quantile <= 1.0:
+            raise ValueError("quantile must be in (0, 1].")
+        return depth <= np.quantile(depth, params.quantile)
+    raise ValueError(
+        f"Unknown eligibility '{mode}'. Use 'all', 'min_counts' or 'quantile'."
+    )
+
+
 def merge_spots(
     coords: np.ndarray,
     counts: np.ndarray,
@@ -143,8 +170,11 @@ def merge_spots(
 
     # Tie-break on the pair's own indices so equal distances — the common case
     # on a regular lattice — resolve the same way on every run.
+    eligible = eligible_mask(counts, params)
     heap = []
     for a, b in _neighbour_pairs(coords):
+        if not (eligible[a] and eligible[b]):
+            continue
         d = float(np.linalg.norm(coords[a] - coords[b]))
         if d <= params.max_diameter_um:
             heap.append((d, a, b))

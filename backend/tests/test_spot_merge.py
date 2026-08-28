@@ -161,3 +161,48 @@ def test_collinear_spots_do_not_defeat_the_graph():
 def test_size_histogram_accounts_for_every_spot():
     r = _run(_grid(5, 5, pitch=15.0), _profiles(25), max_diameter_um=40.0)
     assert sum(size * n for size, n in r.size_histogram.items()) == 25
+
+
+# --- eligibility -------------------------------------------------------------
+
+from xcell.spot_merge import eligible_mask  # noqa: E402
+
+
+def test_all_is_the_default_and_takes_everything():
+    assert eligible_mask(_profiles(9), MergeParams()).all()
+
+
+def test_min_counts_takes_only_the_shallow_spots():
+    counts = np.ones((4, 3))
+    counts[0] *= 10.0   # depth 30
+    counts[1] *= 1.0    # depth 3
+    counts[2] *= 100.0  # depth 300
+    counts[3] *= 2.0    # depth 6
+    mask = eligible_mask(counts, MergeParams(eligibility="min_counts", min_counts=10))
+    assert mask.tolist() == [False, True, False, True]
+
+
+def test_quantile_takes_the_shallow_fraction():
+    counts = np.ones((10, 2)) * np.arange(1, 11)[:, None]
+    mask = eligible_mask(counts, MergeParams(eligibility="quantile", quantile=0.3))
+    assert mask.sum() == 3
+    assert mask[:3].all()
+
+
+def test_an_unknown_eligibility_mode_is_refused():
+    with pytest.raises(ValueError, match="eligibility"):
+        eligible_mask(_profiles(4), MergeParams(eligibility="vibes"))
+
+
+def test_min_counts_mode_needs_a_threshold():
+    with pytest.raises(ValueError, match="min_counts"):
+        eligible_mask(_profiles(4), MergeParams(eligibility="min_counts"))
+
+
+def test_ineligible_spots_pass_through_unmerged():
+    coords = _grid(4, 4, pitch=15.0)
+    counts = _profiles(16)
+    counts[5] *= 1000.0        # far too deep to be eligible
+    r = _run(coords, counts, max_diameter_um=40.0,
+             eligibility="min_counts", min_counts=1000.0)
+    assert (r.labels == r.labels[5]).sum() == 1, "a deep spot was absorbed"

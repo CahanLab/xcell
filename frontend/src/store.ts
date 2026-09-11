@@ -861,6 +861,7 @@ interface AppState {
   isAnalysisRecordOpen: boolean
   isLocalizeModalOpen: boolean
   isMergeSpotsModalOpen: boolean
+  isDownsampleModalOpen: boolean
   isMultiContourModalOpen: boolean
   isTerritoryPanelOpen: boolean
   isAssignTerritoriesOpen: boolean
@@ -1125,6 +1126,7 @@ interface AppState {
   setAnalysisRecordOpen: (open: boolean) => void
   setLocalizeModalOpen: (open: boolean) => void
   setMergeSpotsModalOpen: (open: boolean) => void
+  setDownsampleModalOpen: (open: boolean) => void
   setMultiContourModalOpen: (open: boolean) => void
   setDefineSectionsOpen: (open: boolean) => void
   setTerritoryPanelOpen: (open: boolean) => void
@@ -1371,6 +1373,7 @@ export const useStore = create<AppState>((set, get) => {
     isAnalysisRecordOpen: false,
     isLocalizeModalOpen: false,
     isMergeSpotsModalOpen: false,
+    isDownsampleModalOpen: false,
     isMultiContourModalOpen: false,
     isDefineSectionsOpen: false,
     isLigRecModalOpen: false,
@@ -2497,6 +2500,7 @@ export const useStore = create<AppState>((set, get) => {
     setAnalysisRecordOpen: (open) => set({ isAnalysisRecordOpen: open }),  // global
     setLocalizeModalOpen: (open) => set({ isLocalizeModalOpen: open }),  // global
     setMergeSpotsModalOpen: (open) => set({ isMergeSpotsModalOpen: open }),  // global
+    setDownsampleModalOpen: (open) => set({ isDownsampleModalOpen: open }),  // global
     setMultiContourModalOpen: (open) => set({ isMultiContourModalOpen: open }),  // global
     setDefineSectionsOpen: (open) => set({ isDefineSectionsOpen: open }),  // global
     isTerritoryPanelOpen: false,

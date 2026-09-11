@@ -277,6 +277,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
   cell_analysis: {
     label: 'Cells',
     functions: {
+      downsample: {
+        label: 'Downsample',
+        description: 'Pick a random subset of cells — a count or a percent — and select it. The sample is an ordinary selection, so Mask, Delete, Invert and Set Active all apply. Lasso a dominant cluster first to thin only that cluster and leave the rest untouched. Opens the Downsample tool.',
+        prerequisites: [],
+        custom: true,
+        params: [],
+      },
       embedding_from_obs: {
         label: 'Embedding from .obs',
         description: 'Build a 2-D embedding from two numeric .obs columns (e.g. a barnyard plot of two species count columns). Optionally log each axis.',
@@ -834,7 +841,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, setMergeSpotsModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2779,6 +2786,13 @@ export default function ScanpyModal() {
               onClick={() => { setMergeSpotsModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Merge Spots tool…
+            </button>
+          ) : selectedFunction === 'downsample' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setDownsampleModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Downsample tool…
             </button>
           ) : (
             <button

@@ -880,6 +880,7 @@ export default function CellPanel() {
     removeSelectionFromActive,
     resetActiveCells,
     setShowMaskedCells,
+    setDownsampleModalOpen,
     setSchema,
     setEmbedding,
     setColorBy,
@@ -1526,8 +1527,15 @@ export default function CellPanel() {
       {/* Selection Actions - shown when cells are selected */}
       {selectedCellIndices.length > 0 && (
         <div style={styles.selectionActions}>
-          <div style={styles.selectionHeader}>
-            {selectedCellIndices.length.toLocaleString()} cells selected
+          <div style={{ ...styles.selectionHeader, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span>{selectedCellIndices.length.toLocaleString()} cells selected</span>
+            <button
+              style={{ ...styles.maskActionButton, padding: '2px 6px' }}
+              onClick={() => setDownsampleModalOpen(true)}
+              title="Keep a random subset of the selected cells — then Invert and Mask or Delete to thin this group alone"
+            >
+              Downsample…
+            </button>
           </div>
 
           {/* Set as comparison group buttons */}

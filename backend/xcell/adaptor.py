@@ -60,30 +60,46 @@ def _combine_spatial_key(a: "anndata.AnnData") -> str | None:
     return None
 
 
-def _read_10x_mtx_trio(matrix: Path, barcodes: Path, features: Path) -> anndata.AnnData:
-    """Read a prefixed 10x file trio via a temp directory with symlinks."""
-    import os
-    import shutil
-    import tempfile
+def _read_10x_mex(matrix: Path, barcodes: Path, features: Path) -> anndata.AnnData:
+    """Read a 10x MEX trio from explicit paths to its three files.
 
-    # Build standard filenames preserving .gz extension
-    mtx_name = 'matrix.mtx.gz' if matrix.name.endswith('.gz') else 'matrix.mtx'
-    bar_name = 'barcodes.tsv.gz' if barcodes.name.endswith('.gz') else 'barcodes.tsv'
-    if '_genes.' in features.name:
-        feat_name = 'genes.tsv.gz' if features.name.endswith('.gz') else 'genes.tsv'
-    else:
-        feat_name = 'features.tsv.gz' if features.name.endswith('.gz') else 'features.tsv'
+    scanpy's ``read_10x_mtx`` infers the layout from file names and accepts
+    exactly two: uncompressed ``matrix.mtx`` + ``genes.tsv`` (Cell Ranger v2)
+    or gzipped ``matrix.mtx.gz`` + ``features.tsv.gz`` (v3+). GEO gzips v2
+    output as submitted, giving ``genes.tsv.gz``, which fits neither branch
+    and sends scanpy looking for a ``features.tsv.gz`` that does not exist.
+    Reading the files directly makes compression and the genes/features name
+    independent; the feature file's column count says which vintage it is.
 
-    tmpdir = tempfile.mkdtemp(prefix='xcell_10x_')
-    try:
-        os.symlink(matrix, os.path.join(tmpdir, mtx_name))
-        os.symlink(barcodes, os.path.join(tmpdir, bar_name))
-        os.symlink(features, os.path.join(tmpdir, feat_name))
-        a = sc.read_10x_mtx(tmpdir)
-        a.var_names_make_unique()
-        return a
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    Otherwise mirrors scanpy's defaults so var_names are stable across the
+    two readers: symbols as var_names (made unique before any filtering),
+    ids in ``var['gene_ids']``, and only 'Gene Expression' rows kept when a
+    feature-type column is present.
+    """
+    import pandas as pd
+
+    a = sc.read(matrix).T  # MEX is genes x cells; keep scanpy's transposed layout
+    # dtype=str + keep_default_na so a gene literally called "NA" survives.
+    feats = pd.read_csv(features, header=None, sep='\t', dtype=str, keep_default_na=False)
+    if feats.shape[1] < 2:
+        raise ValueError(
+            f"{features.name}: expected at least 2 tab-separated columns "
+            f"(gene id, symbol), found {feats.shape[1]}")
+    if len(feats) != a.n_vars:
+        raise ValueError(
+            f"{features.name} lists {len(feats)} genes but {matrix.name} has {a.n_vars} rows")
+    a.var_names = pd.Index(feats[1].values)
+    a.var['gene_ids'] = feats[0].values
+    a.var_names_make_unique()
+    if feats.shape[1] >= 3:
+        a.var['feature_types'] = feats[2].values
+        a = a[:, a.var['feature_types'] == 'Gene Expression'].copy()
+    bars = pd.read_csv(barcodes, header=None, sep='\t', dtype=str, keep_default_na=False)
+    if len(bars) != a.n_obs:
+        raise ValueError(
+            f"{barcodes.name} lists {len(bars)} barcodes but {matrix.name} has {a.n_obs} columns")
+    a.obs_names = pd.Index(bars[0].values)
+    return a
 
 
 def load_dataset_file(path: Path) -> tuple[anndata.AnnData, str]:
@@ -101,13 +117,16 @@ def load_dataset_file(path: Path) -> tuple[anndata.AnnData, str]:
         the file the same way.
     """
     path = Path(path)
-    trio = DataAdaptor._find_10x_trio_files(path)
     if path.is_dir():
-        a = sc.read_10x_mtx(path)
-        a.var_names_make_unique()
-        return a, '10x_mtx'
+        files = DataAdaptor._find_10x_dir_files(path)
+        if files is None:
+            raise ValueError(
+                f"{path.name} is not a 10x matrix folder: needs matrix.mtx, "
+                "barcodes.tsv and features.tsv or genes.tsv (each optionally .gz)")
+        return _read_10x_mex(*files), '10x_mtx'
+    trio = DataAdaptor._find_10x_trio_files(path)
     if trio is not None:
-        return _read_10x_mtx_trio(*trio), '10x_mtx'
+        return _read_10x_mex(*trio), '10x_mtx'
     if path.suffix == '.h5':
         from xcell.visium_hd import is_feature_slice, load_feature_slice_cached
         if is_feature_slice(path):
@@ -866,6 +885,49 @@ class DataAdaptor:
             print(f"[xcell] counts snapshot skipped: {e}")
 
     @staticmethod
+    def _locate_10x_companions(parent: Path, prefix: str) -> tuple[Path, Path] | None:
+        """Find ``<prefix>barcodes.tsv[.gz]`` and ``<prefix>features|genes.tsv[.gz]``.
+
+        Compression is decided per file, not per trio, because GEO uploads
+        gzip whatever the submitter had — a gzipped matrix next to plain
+        companions is common.
+        """
+        barcodes = None
+        for ext in ('.tsv.gz', '.tsv'):
+            candidate = parent / f'{prefix}barcodes{ext}'
+            if candidate.exists():
+                barcodes = candidate
+                break
+
+        features = None
+        for feat in ('features', 'genes'):
+            for ext in ('.tsv.gz', '.tsv'):
+                candidate = parent / f'{prefix}{feat}{ext}'
+                if candidate.exists():
+                    features = candidate
+                    break
+            if features:
+                break
+
+        if barcodes and features:
+            return (barcodes, features)
+        return None
+
+    @staticmethod
+    def _find_10x_dir_files(directory: Path) -> tuple[Path, Path, Path] | None:
+        """A CellRanger matrix folder's (matrix, barcodes, features), else None."""
+        for name in ('matrix.mtx.gz', 'matrix.mtx'):
+            matrix = directory / name
+            if matrix.exists():
+                break
+        else:
+            return None
+        companions = DataAdaptor._locate_10x_companions(directory, '')
+        if companions is None:
+            return None
+        return (matrix, *companions)
+
+    @staticmethod
     def _find_10x_trio_files(filepath: Path) -> tuple[Path, Path, Path] | None:
         """Check if filepath is a prefixed 10x matrix file with companion files.
 
@@ -879,29 +941,10 @@ class DataAdaptor:
         m = re.match(r'^(.+)_matrix\.mtx(\.gz)?$', filepath.name)
         if not m:
             return None
-        prefix = m.group(1)
-        parent = filepath.parent
-
-        barcodes = None
-        for ext in ('.tsv.gz', '.tsv'):
-            candidate = parent / f'{prefix}_barcodes{ext}'
-            if candidate.exists():
-                barcodes = candidate
-                break
-
-        features = None
-        for feat in ('features', 'genes'):
-            for ext in ('.tsv.gz', '.tsv'):
-                candidate = parent / f'{prefix}_{feat}{ext}'
-                if candidate.exists():
-                    features = candidate
-                    break
-            if features:
-                break
-
-        if barcodes and features:
-            return (filepath, barcodes, features)
-        return None
+        companions = DataAdaptor._locate_10x_companions(filepath.parent, f'{m.group(1)}_')
+        if companions is None:
+            return None
+        return (filepath, *companions)
 
     @property
     def n_cells(self) -> int:

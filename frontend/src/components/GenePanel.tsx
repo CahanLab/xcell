@@ -10,6 +10,7 @@ import ImportModal from './ImportModal'
 import { UcellScoreModal } from './UcellScoreModal'
 import { ScoreGeneSetsModal } from './ScoreGeneSetsModal'
 import { MESSAGES } from '../messages'
+import { copyText } from '../lib/clipboard'
 
 const API_BASE = '/api'
 
@@ -368,6 +369,41 @@ const styles = {
 }
 
 // ---------------------------------------------------------------------------
+// CopyGeneButton — copies one gene symbol to the clipboard and shows ✓ briefly.
+// Muted until the row is hovered so a long list doesn't become a wall of icons,
+// but always present, because hover-only affordances are hard to discover.
+// Click and mousedown are isolated from the row so copying never colours by
+// expression or starts a drag.
+function CopyGeneButton({ gene, bright }: { gene: string; bright: boolean }) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<number | null>(null)
+  useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current) }, [])
+  return (
+    <button
+      style={{
+        ...styles.iconButton,
+        fontSize: '11px',
+        padding: '2px 4px',
+        lineHeight: 1,
+        color: copied ? '#4ecdc4' : bright ? '#ccc' : '#666',
+      }}
+      title={copied ? 'Copied' : 'Copy gene symbol'}
+      aria-label={`Copy ${gene}`}
+      draggable={false}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={async (e) => {
+        e.stopPropagation()
+        if (!(await copyText(gene))) return
+        setCopied(true)
+        if (timer.current) window.clearTimeout(timer.current)
+        timer.current = window.setTimeout(() => setCopied(false), 1200)
+      }}
+    >
+      {copied ? '✓' : '⧉'}
+    </button>
+  )
+}
+
 // OverflowMenu — a "⋯" button that opens a dropdown with action items.
 // Supports optional nested children (rendered inline with extra indent).
 // Used by gene-set rows (Tasks 6 & 7) to consolidate pin / export actions.
@@ -678,6 +714,7 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
                 >
                   {gene}
                 </span>
+                <CopyGeneButton gene={gene} bright={isHovered} />
                 <OverflowMenu
                   items={[
                     {
@@ -1092,6 +1129,7 @@ function CategoryGeneSetComponent({
               <span style={styles.geneName} onClick={() => onColorByGene(gene)} title="Click to color by expression">
                 {gene}
               </span>
+              <CopyGeneButton gene={gene} bright={hoveredGene === gene} />
               <OverflowMenu
                 items={[
                   {
@@ -1127,6 +1165,7 @@ function CategoryGeneSetComponent({
                 >
                   ↓ {gene}
                 </span>
+                <CopyGeneButton gene={gene} bright={hoveredGene === gene} />
               </div>
             ))}
         </div>

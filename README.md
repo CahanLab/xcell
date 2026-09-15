@@ -129,7 +129,7 @@ while you use XCell; press **Ctrl+C** in each one to stop the servers when done.
 A bundled toy dataset (`toy_spatial.h5ad`) loads automatically if no data path is specified. A second bundled dataset, `toy_spatial_3sections.h5ad` (three separated sections of the same tissue, with an `obs['section']` label), is handy for testing spatial workflows — like (multi)contour — where distances between spots on different sections aren't meaningful; point `XCELL_DATA_PATH` at it to use it. To load your own data, set the `XCELL_DATA_PATH` environment variable when starting the backend:
 
 ```bash
-XCELL_DATA_PATH=/path/to/your/data.h5ad pixi run backend  # also supports .h5 and .rds
+XCELL_DATA_PATH=/path/to/your/data.h5ad pixi run backend  # also .h5, .rds, a 10x matrix folder, or a *_matrix.mtx(.gz) trio
 ```
 
 ### Updating to the latest version
@@ -153,6 +153,15 @@ Then restart the two `pixi run` commands.
 > First load takes ~1–2 minutes; the result is cached as a `.h5ad` next to the
 > source file (can be ~1 GB — delete it to reclaim space), so later loads are
 > instant.
+>
+> **Loading 10x matrix folders and GEO file trios.** A CellRanger folder
+> (`matrix.mtx`, `barcodes.tsv`, and `features.tsv` or `genes.tsv`) loads as a
+> folder; a prefixed GEO trio (`GSM1234_matrix.mtx.gz` with matching `_barcodes`
+> and `_features` or `_genes` companions) loads from its `*_matrix.mtx(.gz)`
+> file and is listed by its prefix in the file browser. Each file may be gzipped
+> or not, independently, and both Cell Ranger v2 (`genes.tsv`, two columns) and
+> v3 (`features.tsv`, three columns) gene lists are accepted — including GEO's
+> gzipped v2 output, `genes.tsv.gz`, which scanpy's own reader cannot open.
 >
 > **Not using pixi?** XCell still installs the classic way (`pip install -e backend`
 > in a Python 3.10+ venv, `npm install` in `frontend/` on Node 18+). pixi just
@@ -261,6 +270,7 @@ warn outright if you point them at a z-scored layer.
 - If the dataset has alternative gene identifier columns (e.g., gene symbols alongside Ensembl IDs), use the **Gene IDs** dropdown at the top of the panel to switch
 - Search or browse genes
 - Click a gene to color cells by its expression
+- Click the `⧉` beside any gene — in search results, inside a gene set, or among a directional set's `↓` genes — to copy its symbol to the clipboard; it flashes `✓` on success
 
 ### Gene Mask
 

@@ -673,6 +673,19 @@ REGISTRY: dict[str, ActionSpec] = {
             + (f", {_n(r.get('n_dropped'))} dropped." if r.get('n_dropped') else ".")
         ),
     ),
+    'cluster_cells_by_gene_set': ActionSpec(
+        label='Cluster cells on a gene set', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_cluster_cells_by_gene_set',
+                        ('genes', 'key', 'n_comps', 'n_neighbors', 'resolution',
+                         'run_umap', 'scale', 'layer', 'transform', 'seed')),
+        summary=lambda p, r: (
+            f"Cluster cells on {_n(len(p.get('genes') or []))} genes ('{p.get('key')}'): "
+            f"PCA {_n(p.get('n_comps'))} → kNN {_n(p.get('n_neighbors'))} → Leiden "
+            f"{p.get('resolution')} gives {_n(r.get('n_clusters'))} clusters → "
+            f"`.obs['{r.get('obs_column')}']`"
+            + (f", UMAP `.obsm['{r.get('embedding')}']`." if r.get('embedding') else '.')
+        ),
+    ),
     'gene_nmf_meta': ActionSpec(
         label='NMF meta-programs', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_meta_programs',

@@ -812,6 +812,7 @@ function CategoryGeneSetComponent({
     moveGeneSetToFolder,
     reorderGeneSet,
     setClusterModalSourceSet,
+    setClusterCellsSource,
   } = useStore()
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
   const setUcellScoreSource = useStore((s) => s.setUcellScoreSource)
@@ -1081,6 +1082,12 @@ function CategoryGeneSetComponent({
                 disabled: geneSet.genes.length < 4,
                 tooltip: geneSet.genes.length < 4 ? 'Need at least 4 genes to cluster' : undefined,
               },
+            {
+              label: 'Cluster cells on this set…',
+              onClick: () => setClusterCellsSource({ name: geneSet.name, genes: geneSet.genes }),
+              disabled: geneSet.genes.length < 2,
+              tooltip: 'PCA → neighbours → Leiden on these genes only; results under leiden_<key> / X_umap_<key>',
+            },
               {
                 label: 'Select cells…',
                 onClick: () =>

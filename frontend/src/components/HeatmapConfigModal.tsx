@@ -74,6 +74,7 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
   const [geneOrdering, setGeneOrdering] = useState<HeatmapConfig['geneOrdering']>(config?.geneOrdering ?? cfgDefault(['heatmap', 'gene_ordering'], 'as_provided' as HeatmapConfig['geneOrdering']))
   const [aggregateGeneSets, setAggregateGeneSets] = useState(config?.aggregateGeneSets ?? cfgDefault(['heatmap', 'aggregate_gene_sets'], false))
   const [nBins, setNBins] = useState(config?.nBins ?? cfgDefault(['heatmap', 'n_bins'], 300))
+  const [keepCellSubset, setKeepCellSubset] = useState(true)
 
   // Get categorical obs columns for ordering
   const categoricalColumns = schema
@@ -119,6 +120,8 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
       geneOrdering,
       aggregateGeneSets,
       nBins,
+      cellIndices: keepCellSubset ? config?.cellIndices ?? null : null,
+      cellLabel: keepCellSubset ? config?.cellLabel ?? null : null,
     })
   }
 
@@ -132,6 +135,14 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
 
         {/* Gene set selection */}
         <div style={styles.section}>
+          {config?.cellIndices && config.cellIndices.length > 0 && (
+            <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '8px', padding: '6px 8px', border: '1px solid #0f3460', borderRadius: '4px' }}>
+              <label style={{ cursor: 'pointer' }}>
+                <input type="checkbox" checked={keepCellSubset} onChange={(e) => setKeepCellSubset(e.target.checked)} style={{ marginRight: '6px' }} />
+                Restrict to {config.cellIndices.length.toLocaleString()} cells{config.cellLabel ? ` (${config.cellLabel})` : ''}
+              </label>
+            </div>
+          )}
           <div style={styles.sectionHeader}>
             <span style={styles.sectionTitle}>Gene Sets</span>
             <div style={{ display: 'flex', gap: '6px' }}>

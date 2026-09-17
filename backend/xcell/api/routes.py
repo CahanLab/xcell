@@ -956,6 +956,52 @@ def gene_sets_overlap(request: GeneSetOverlapRequest, dataset: str | None = Quer
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class ClusterCellsByGeneSetRequest(BaseModel):
+    """PCA → kNN → Leiden (→ UMAP) on one gene set's genes, under suffixed keys.
+
+    Cell scoping uses the same vocabulary as /cluster_gene_set.
+    """
+    genes: list[str]
+    key: str
+    n_comps: int = 20
+    n_neighbors: int = 15
+    resolution: float = 1.0
+    run_umap: bool = True
+    scale: bool = True
+    layer: str | None = None
+    transform: str | None = 'log1p'
+    seed: int = 0
+    overwrite: bool = False
+    cell_context: str = 'all'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
+
+
+@router.post("/gene_sets/cluster_cells", status_code=202)
+def cluster_cells_by_gene_set(request: ClusterCellsByGeneSetRequest, dataset: str | None = Query(None)):
+    """Cluster cells using only a gene set's genes (background task)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        cell_indices = _resolve_cell_context(
+            adaptor, request.cell_context, request.cell_indices,
+            request.annotation_column, request.annotation_values)
+        compute_fn, apply_fn = adaptor.prepare_cluster_cells_by_gene_set(
+            request.genes, key=request.key, n_comps=request.n_comps,
+            n_neighbors=request.n_neighbors, resolution=request.resolution,
+            run_umap=request.run_umap, scale=request.scale, layer=request.layer,
+            transform=request.transform, cell_indices=cell_indices,
+            seed=request.seed, overwrite=request.overwrite)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
 @router.get("/gene_sets/species_guess")
 def gene_sets_species_guess(dataset: str | None = Query(None)):
     """Species guess from the var index, for defaulting the library browser's species."""

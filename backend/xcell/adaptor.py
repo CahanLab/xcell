@@ -8257,6 +8257,181 @@ class DataAdaptor:
     # NMF gene programs
     # =========================================================================
 
+    def prepare_cluster_cells_by_gene_set(
+        self,
+        genes: list[str],
+        *,
+        key: str,
+        n_comps: int = 20,
+        n_neighbors: int = 15,
+        resolution: float = 1.0,
+        run_umap: bool = True,
+        scale: bool = True,
+        layer: str | None = None,
+        transform: str | None = 'log1p',
+        cell_indices: list[int] | None = None,
+        seed: int = 0,
+        overwrite: bool = False,
+    ) -> tuple[Callable[[Callable], dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
+        """Cluster cells on one gene set's genes: PCA → kNN → Leiden (→ UMAP).
+
+        Everything lands under suffixed keys so the dataset's own ``X_pca`` /
+        ``neighbors`` / ``leiden`` are never touched: ``obsm['X_pca_<key>']``,
+        ``obsp['<key>_connectivities']`` + ``uns['<key>']`` (scanpy's own
+        neighbours entry, so the existing UMAP and Leiden routes can re-run on
+        this graph through ``graph_key``), ``obs['leiden_<key>']`` and
+        ``obsm['X_umap_<key>']``. Cells outside ``cell_indices`` are labelled
+        ``unassigned`` and get NaN coordinates — ``run_leiden``'s convention.
+
+        Expression is normalize_total + log1p unless a layer is named, then
+        z-scored per gene, so a highly expressed member (a collagen) does not
+        own PC1 by magnitude alone. ``n_comps`` and ``n_neighbors`` are clamped
+        to what the set and cell count allow rather than failing: a 6-gene set
+        has at most 5 components, and that is still a useful clustering.
+        """
+        import re  # noqa: PLC0415
+
+        key = re.sub(r'[^A-Za-z0-9_]+', '_', str(key or '')).strip('_')
+        if not key:
+            raise ValueError("key must contain at least one letter or digit")
+        requested = [str(g) for g in genes]
+        found, gene_idx = self._resolve_gene_indices(requested)
+        found_set = set(found)
+        missing = [g for g in requested if g not in found_set]
+        if not found:
+            raise ValueError("None of the specified genes found in dataset")
+        if len(found) < 2:
+            raise ValueError(f"Need at least 2 genes present to cluster cells on; found {len(found)}")
+        idx = self._validate_cell_indices(cell_indices)
+        cell_idx = np.arange(self.n_cells) if idx is None else np.asarray(idx, dtype=int)
+        n_used = int(len(cell_idx))
+        if n_used < 3:
+            raise ValueError(f"Need at least 3 cells to cluster; got {n_used}")
+
+        obs_col, pca_key, umap_key = f'leiden_{key}', f'X_pca_{key}', f'X_umap_{key}'
+        conn_key, dist_key = f'{key}_connectivities', f'{key}_distances'
+        if not overwrite and (obs_col in self.adata.obs or pca_key in self.adata.obsm
+                              or conn_key in self.adata.obsp):
+            raise ValueError(
+                f"A clustering named '{key}' already exists (obs['{obs_col}']); "
+                "choose another key or set overwrite")
+
+        k = int(max(1, min(int(n_comps), len(found) - 1, n_used - 1)))
+        nn = int(max(2, min(int(n_neighbors), n_used - 1)))
+        res = float(resolution)
+
+        if layer:
+            source = self._resolve_source_matrix(layer)
+        elif transform == 'log1p':
+            source = self.normalized_adata.X
+        else:
+            source = self.adata.X
+        from scipy import sparse as _sp  # noqa: PLC0415
+
+        sub_X = source[cell_idx][:, gene_idx]
+        sub_X = sub_X.toarray() if _sp.issparse(sub_X) else np.asarray(sub_X)
+        sub_X = np.ascontiguousarray(sub_X, dtype=np.float32)
+
+        # Snapshot everything the closures read, so a later mutation of the
+        # live AnnData cannot leak into a running task.
+        snap_obs_names = [str(x) for x in self.adata.obs_names[cell_idx]]
+        snap_found, snap_missing = list(found), list(missing)
+        snap_scale, snap_umap, snap_seed = bool(scale), bool(run_umap), int(seed)
+        snap_layer, snap_transform = layer, transform
+
+        def compute_fn(report: Callable) -> dict[str, Any]:
+            import anndata as _ad  # noqa: PLC0415
+
+            sub = _ad.AnnData(X=sub_X.copy())
+            sub.obs_names = snap_obs_names
+            sub.var_names = snap_found
+            if snap_scale:
+                report(0.05, 'Scaling genes…')
+                sc.pp.scale(sub, max_value=10)
+            report(0.15, f'PCA ({k} components)…')
+            sc.tl.pca(sub, n_comps=k, svd_solver='arpack', random_state=snap_seed)
+            report(0.4, f'Neighbour graph (k={nn})…')
+            sc.pp.neighbors(sub, n_neighbors=nn, n_pcs=k, key_added=key, random_state=snap_seed)
+            report(0.6, f'Leiden (resolution {res:g})…')
+            sc.tl.leiden(sub, resolution=res, key_added='leiden', neighbors_key=key,
+                         flavor='igraph', n_iterations=2, directed=False, random_state=snap_seed)
+            umap = None
+            if snap_umap:
+                report(0.75, 'UMAP…')
+                sc.tl.umap(sub, neighbors_key=key, random_state=snap_seed)
+                umap = np.asarray(sub.obsm['X_umap'], dtype=np.float32)
+            report(1.0, 'Done')
+            params = {}
+            for pk, pv in dict(sub.uns[key].get('params', {})).items():
+                params[pk] = pv.item() if hasattr(pv, 'item') else pv
+            return {
+                'pca': np.asarray(sub.obsm['X_pca'], dtype=np.float32),
+                'variance_ratio': [float(v) for v in sub.uns['pca']['variance_ratio']],
+                'labels': [str(x) for x in sub.obs['leiden']],
+                'umap': umap,
+                'conn': sub.obsp[f'{key}_connectivities'].tocsr(),
+                'dist': sub.obsp[f'{key}_distances'].tocsr(),
+                'neighbors': {'connectivities_key': conn_key, 'distances_key': dist_key, 'params': params},
+            }
+
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            n = self.n_cells
+            pca_full = np.full((n, k), np.nan, dtype=np.float32)
+            pca_full[cell_idx] = result['pca']
+            self.adata.obsm[pca_key] = pca_full
+            if result['umap'] is not None:
+                um = np.full((n, 2), np.nan, dtype=np.float32)
+                um[cell_idx] = result['umap']
+                self.adata.obsm[umap_key] = um
+            elif umap_key in self.adata.obsm:
+                del self.adata.obsm[umap_key]
+
+            labels = ['unassigned'] * n
+            for i, ci in enumerate(cell_idx):
+                labels[ci] = result['labels'][i]
+            cats = sorted(set(result['labels']), key=lambda t: (len(t), t))
+            if n_used < n:
+                cats.append('unassigned')
+            self.adata.obs[obs_col] = pd.Categorical(labels, categories=cats)
+
+            for mat_key, mat in ((conn_key, result['conn']), (dist_key, result['dist'])):
+                coo = mat.tocoo()
+                self.adata.obsp[mat_key] = _sp.csr_matrix(
+                    (coo.data, (cell_idx[coo.row], cell_idx[coo.col])), shape=(n, n))
+            self.adata.uns[key] = result['neighbors']
+
+            sizes = {str(c): int(v) for c, v in pd.Series(result['labels']).value_counts().items()}
+            params = {
+                'genes': snap_found, 'key': key, 'n_comps': k, 'n_neighbors': nn,
+                'resolution': res, 'run_umap': snap_umap, 'scale': snap_scale,
+                'layer': snap_layer, 'transform': snap_transform, 'seed': snap_seed,
+            }
+            reg = self.adata.uns.get('xcell_gene_set_clusterings')
+            reg = dict(reg) if isinstance(reg, dict) else {}
+            reg[key] = {
+                'genes_used': snap_found, 'genes_missing': snap_missing[:100],
+                'n_cells': n_used, 'n_clusters': len(sizes), 'cluster_sizes': sizes,
+                'variance_ratio': result['variance_ratio'],
+                'params': {pk: pv for pk, pv in params.items() if pk != 'genes'},
+            }
+            self.adata.uns['xcell_gene_set_clusterings'] = reg
+
+            out = {
+                'key': key, 'obs_column': obs_col,
+                'embedding': umap_key if result['umap'] is not None else None,
+                'pca_key': pca_key, 'graph_key': conn_key,
+                'n_genes_used': len(snap_found), 'genes_missing': snap_missing[:100],
+                'n_missing': len(snap_missing), 'n_cells': n_used,
+                'n_comps': k, 'n_neighbors': nn, 'resolution': res,
+                'n_clusters': len(sizes), 'cluster_sizes': sizes,
+                'variance_ratio': result['variance_ratio'],
+            }
+            self._log_action('cluster_cells_by_gene_set', params, out,
+                             subset=(None if idx is None else cell_idx))
+            return out
+
+        return compute_fn, apply_fn
+
     def prepare_gene_nmf(
         self,
         *,

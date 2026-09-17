@@ -461,6 +461,10 @@ export interface HeatmapConfig {
   geneOrdering: 'as_provided' | 'peak_position'
   aggregateGeneSets: boolean
   nBins: number
+  // Restrict the heatmap to these cells (e.g. the subset a gene clustering
+  // ran on). null/absent = every cell. cellLabel is shown in the toolbar.
+  cellIndices?: number[] | null
+  cellLabel?: string | null
 }
 
 // Gene mask — mirrors backend /api/gene_mask response
@@ -813,6 +817,7 @@ interface AppState {
   diffExpResult: DiffExpResult | null
   isDiffExpLoading: boolean
   isDiffExpModalOpen: boolean
+  clusterCellsSource: { name: string; genes: string[] } | null
   clusterModalSourceSet: {
     name: string
     genes: string[]
@@ -1058,6 +1063,7 @@ interface AppState {
   setDiffExpResult: (result: DiffExpResult | null) => void
   setDiffExpLoading: (loading: boolean) => void
   setDiffExpModalOpen: (open: boolean) => void
+  setClusterCellsSource: (src: { name: string; genes: string[] } | null) => void
   setClusterModalSourceSet: (src: {
     name: string
     genes: string[]
@@ -1350,6 +1356,7 @@ export const useStore = create<AppState>((set, get) => {
     isDiffExpLoading: false,
     isDiffExpModalOpen: false,
     clusterModalSourceSet: null,
+    clusterCellsSource: null,
     selectByExpressionSource: null,
     ucellScoreSource: null,
     scoreGeneSetsSource: null,
@@ -2099,6 +2106,7 @@ export const useStore = create<AppState>((set, get) => {
     setDiffExpLoading: (loading) => set({ isDiffExpLoading: loading }),
     setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
+    setClusterCellsSource: (src) => set({ clusterCellsSource: src }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
     setUcellScoreSource: (src) => set({ ucellScoreSource: src }),
     setScoreGeneSetsSource: (src) => set({ scoreGeneSetsSource: src }),

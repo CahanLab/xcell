@@ -265,3 +265,12 @@ gene_set_sources:
   catalogue_ttl_days: 7             # re-list a source's libraries after this many days
   string_required_score: 400        # STRING combined score floor, 0–1000
   string_partner_limit: 50          # partners per seed gene
+
+# ---------------------------------------------------------------------------
+# Cluster cells on a gene set (gene-set row → ⋯ → Cluster cells on this set…).
+# ---------------------------------------------------------------------------
+cluster_cells_by_gene_set:
+  n_comps: 20                       # clamped to genes-1
+  n_neighbors: 15
+  resolution: 0.3                   # a gene-set PCA fragments easily; start low, raise for more clusters
+  run_umap: true

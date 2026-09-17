@@ -363,6 +363,23 @@ When a gene mask is active, a **Restrict to active gene mask** checkbox appears
 (showing how many of the set's genes pass the mask). Enable it to cluster only
 the genes visible under the current `.var` mask.
 
+When the run finishes, **Show heatmap** opens the Heatmap tab with one row
+band per cluster, restricted to the cells the clustering ran on (the toolbar
+says so; Heatmap Settings can drop the restriction).
+
+### Clustering cells on a gene set
+
+The reverse question — which states do the *cells* take with respect to one
+gene set? — is `⋯` → `Cluster cells on this set…` on any gene-set row. It runs
+PCA → neighbours → Leiden (→ UMAP) on the cells × set-genes submatrix, with
+genes z-scored so a highly expressed member does not dominate. Everything is
+written under suffixed keys (`leiden_<key>`, `X_umap_<key>`,
+`<key>_connectivities`), so the dataset's own PCA, graph and clusters are
+untouched, and the graph appears in the UMAP/Leiden graph picker for
+re-clustering at another resolution. Start with a low resolution (default
+0.3): a gene-set PCA fragments easily. The results panel colours the plot by
+the new clusters or switches to the new UMAP.
+
 ### Selecting cells by expression threshold
 
 You can select cells based on a gene's expression or a gene set score without needing to eyeball the scatter plot:

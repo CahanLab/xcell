@@ -17,6 +17,7 @@ from xcell.task_manager import task_manager
 from xcell import config as user_config
 from xcell import gene_set_store
 from xcell import gene_set_library
+from xcell import gene_set_sources
 
 router = APIRouter(prefix="/api")
 
@@ -841,6 +842,124 @@ def get_gene_sets_library():
     demand — this endpoint never mutates the user's gene-set state.
     """
     return {"bundles": gene_set_library.list_bundles()}
+
+
+# --- External gene-set sources (MSigDB, Enrichr, STRING) ----------------------
+# Slot-less like /gene_sets: a cached library belongs to the machine, not to a
+# dataset. Only the overlap check and the species guess read the dataset.
+
+@router.get("/gene_set_sources")
+def get_gene_set_sources():
+    """Sources, species, cache directory and the libraries already cached. No network."""
+    return gene_set_sources.availability()
+
+
+@router.get("/gene_set_sources/{source}/libraries")
+def get_gene_set_source_catalogue(source: str, species: str = Query('human'), refresh: bool = Query(False)):
+    """A source's libraries for a species — from the cached catalogue unless stale or ``refresh``."""
+    try:
+        libs = gene_set_sources.catalogue(source, species, refresh=refresh)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"source": source, "species": species, "libraries": libs}
+
+
+class FetchGeneSetLibraryRequest(BaseModel):
+    species: str = 'human'
+
+
+@router.post("/gene_set_sources/{source}/libraries/{library_id}/fetch", status_code=202)
+def fetch_gene_set_library(source: str, library_id: str, request: FetchGeneSetLibraryRequest):
+    """Download and cache one library (background task). Result: the library summary."""
+    try:
+        src = gene_set_sources.get_source(source)
+        src.validate_library(library_id, request.species)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    species = request.species
+
+    def compute_fn(report):
+        return gene_set_sources.fetch_library(source, library_id, species, report=report)
+
+    def apply_fn(lib):
+        return gene_set_sources.library_summary(lib)
+
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.get("/gene_set_sources/{source}/libraries/{library_id}/sets")
+def search_gene_set_library(source: str, library_id: str, species: str = Query('human'),
+                            q: str = Query(''), gene: str = Query(''),
+                            offset: int = Query(0), limit: int = Query(50)):
+    """Search a cached library by set name/description and/or member gene."""
+    try:
+        gene_set_sources.get_source(source)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    lib = gene_set_sources.find_library(source, library_id, species)
+    if lib is None:
+        raise HTTPException(status_code=404,
+                            detail=f"Library '{library_id}' ({source}) has not been fetched yet")
+    out = gene_set_sources.search_sets(lib, q=q, gene=gene, offset=offset, limit=limit)
+    out["library"] = gene_set_sources.library_summary(lib)
+    return out
+
+
+class StringPartnersRequest(BaseModel):
+    genes: list[str]
+    species: str = 'human'
+    limit: int = 50
+    required_score: int = 400
+
+
+@router.post("/gene_set_sources/string/partners")
+def string_partners_route(request: StringPartnersRequest):
+    """STRING interaction partners of seed genes: one set per seed plus the union and edges."""
+    try:
+        return gene_set_sources.string_partners(
+            request.genes, request.species, limit=request.limit, required_score=request.required_score)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class StringNetworkRequest(BaseModel):
+    genes: list[str]
+    species: str = 'human'
+    required_score: int = 400
+
+
+@router.post("/gene_set_sources/string/network")
+def string_network_route(request: StringNetworkRequest):
+    """STRING edges among a gene list (combined score ≥ required_score / 1000)."""
+    try:
+        return gene_set_sources.string_network(
+            request.genes, request.species, required_score=request.required_score)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class GeneSetOverlapRequest(BaseModel):
+    sets: list[dict[str, Any]]
+    columns: list[str] = []
+
+
+@router.post("/gene_sets/overlap")
+def gene_sets_overlap(request: GeneSetOverlapRequest, dataset: str | None = Query(None)):
+    """How much of each gene set is in the dataset, resolved to its spelling,
+    with per-boolean-column counts. Pure read."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.gene_set_overlap(request.sets, columns=request.columns)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/gene_sets/species_guess")
+def gene_sets_species_guess(dataset: str | None = Query(None)):
+    """Species guess from the var index, for defaulting the library browser's species."""
+    return get_adaptor(dataset).guess_species()
 
 
 @router.get("/config/defaults")

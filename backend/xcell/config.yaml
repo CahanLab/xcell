@@ -255,3 +255,13 @@ select_by_expression:
 # ---------------------------------------------------------------------------
 define_sections:
   column_name: section
+
+# ---------------------------------------------------------------------------
+# External gene-set sources (Genes panel → ⋯ → Gene set library…). A library is
+# downloaded once into the cache and searched locally from then on.
+# ---------------------------------------------------------------------------
+gene_set_sources:
+  cache_dir: null                   # default $XDG_CACHE_HOME/xcell/gene_set_sources (~/.cache/xcell/…)
+  catalogue_ttl_days: 7             # re-list a source's libraries after this many days
+  string_required_score: 400        # STRING combined score floor, 0–1000
+  string_partner_limit: 50          # partners per seed gene

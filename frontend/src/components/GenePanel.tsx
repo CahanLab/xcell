@@ -7,6 +7,8 @@ import VarColumnsSection from './VarColumnsSection'
 import CombineGeneSetsModal from './CombineGeneSetsModal'
 import BivariateAxisPicker, { AxisKind, resolveBivariateAxis } from './BivariateAxisPicker'
 import ImportModal from './ImportModal'
+import GeneSetLibraryModal from './GeneSetLibraryModal'
+import { SOURCE_LABELS } from '../lib/geneSetLibrary'
 import { UcellScoreModal } from './UcellScoreModal'
 import { ScoreGeneSetsModal } from './ScoreGeneSetsModal'
 import { MESSAGES } from '../messages'
@@ -1009,7 +1011,7 @@ function CategoryGeneSetComponent({
                   setEditName(geneSet.name)
                   setIsEditing(true)
                 }}
-                title="Double-click to rename"
+                title={geneSet.source ? `${geneSet.source.name} (${SOURCE_LABELS[geneSet.source.source] ?? geneSet.source.source}) · Double-click to rename` : 'Double-click to rename'}
               >
                 {geneSet.name}
               </span>
@@ -1744,7 +1746,7 @@ export function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetC
 }
 
 export default function GenePanel() {
-  const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen } = useStore()
+  const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen, setGeneSetLibraryModalOpen } = useStore()
   const selectedCellIndices = useStore((s) => s.selectedCellIndices)
   const { colorByGene, colorByGenes, colorByScore, clearExpressionColor, colorByBivariate, clearBivariateColor, addGeneSetHighlight, addCellSetHighlight, removeHighlightLayer, updateHighlightLayer, clearHighlightOverlay } = useDataActions()
   const scoreMatrices = useStore((s) => s.schema?.score_matrices)
@@ -1903,8 +1905,28 @@ export default function GenePanel() {
                 label: 'Add gene symbols…',
                 onClick: () => setGeneSymbolModalOpen(true),
               },
+              {
+                label: 'Gene set library…',
+                onClick: () => setGeneSetLibraryModalOpen(true),
+                tooltip: 'Browse MSigDB, Enrichr and STRING; import sets',
+              },
             ]}
           />
+          <button
+            onClick={() => setGeneSetLibraryModalOpen(true)}
+            style={{
+              padding: '2px 8px',
+              fontSize: '10px',
+              backgroundColor: '#0f3460',
+              color: '#aaa',
+              border: '1px solid #1a1a2e',
+              borderRadius: '3px',
+              cursor: 'pointer',
+            }}
+            title="Browse external gene-set libraries (MSigDB, Enrichr, STRING)"
+          >
+            Library
+          </button>
           <button
             onClick={() => setImportModalOpen(true)}
             style={{
@@ -1992,6 +2014,7 @@ export default function GenePanel() {
         />
       </div>
       <ImportModal />
+      <GeneSetLibraryModal />
       <CombineGeneSetsModal />
       <UcellScoreModal
         target={ucellScoreSource}

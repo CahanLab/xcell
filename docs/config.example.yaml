@@ -82,3 +82,18 @@ display:
   gene_set_per_gene_clip: 1.0
   # Aggregation across genes within a gene set: mean | median | sum | max.
   gene_set_aggregation: mean
+
+# ---------------------------------------------------------------------------
+# External gene-set sources (Genes panel → ⋯ → Gene set library…).
+# A library (MSigDB collection, Enrichr library) is downloaded once into the
+# cache and searched locally after that. STRING is queried live.
+# ---------------------------------------------------------------------------
+gene_set_sources:
+  # Where fetched libraries live. Default: $XDG_CACHE_HOME/xcell/gene_set_sources,
+  # i.e. ~/.cache/xcell/gene_set_sources. Delete the directory to start over.
+  cache_dir: null
+  # Re-list a source's available libraries after this many days.
+  catalogue_ttl_days: 7
+  # STRING combined-score floor (0–1000) and partners per seed gene.
+  string_required_score: 400
+  string_partner_limit: 50

@@ -288,6 +288,36 @@ The mask applies to the gene browse list, gene search, expanded gene set rows, a
 
 - Create gene sets manually in Gene Manager
 - Import gene lists from files
+- Browse and import from MSigDB, Enrichr and STRING with the **Library** button (below)
+
+### Importing from MSigDB, Enrichr and STRING
+
+Click **Library** in the Genes panel header (or `⋯` → `Gene set library…`).
+Pick a species (guessed from your gene names; override if needed) and a
+source:
+
+- **MSigDB** — every collection for human or mouse (Hallmark, curated
+  perturbations including the NABA matrisome sets, Reactome, WikiPathways,
+  GO, cell-type signatures, …), from the newest release.
+- **Enrichr** — 228 libraries (GO, Reactome, KEGG, WikiPathways, PanglaoDB,
+  CellMarker, Tabula Muris, …). Most are human-symbol libraries; they work on
+  mouse data through case-insensitive matching.
+- **STRING** — not a library but a query: type seed genes or pick one of your
+  gene sets, and each seed becomes a set of its interaction partners
+  (combined score above the threshold you set).
+
+A library is downloaded once (click **Fetch**) into
+`~/.cache/xcell/gene_set_sources` and searched locally after that, by set
+name or by a gene it must contain. For every set the table shows how many
+members are present in your dataset and how many of those fall in each
+boolean `.var` column you tick (`highly_variable`, `spatially_variable`, …);
+the threshold boxes hide sets below a minimum, so "ECM sets with at least ten
+HVGs in this tissue" is one search. Tick the sets you want and **Import**:
+they land in a Manual folder named after the library, in your dataset's own
+gene spelling and holding only the genes that exist in it. Each imported set
+remembers its source, library and version (hover the set name). Cache
+location and STRING defaults are configurable under `gene_set_sources:` in
+`docs/config.example.yaml`.
 
 ### Curating gene sets into folders
 

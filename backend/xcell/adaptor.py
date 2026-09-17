@@ -5349,6 +5349,89 @@ class DataAdaptor:
         mask = self._column_to_bool_array(column)
         return self.adata.var_names[mask].tolist()
 
+    #: Missing-gene lists reported by gene_set_overlap are truncated here so a
+    #: 2,000-gene library set does not ship 2,000 names per row of a table.
+    MAX_REPORTED_OVERLAP_MISSING = 100
+
+    def gene_set_overlap(self, sets: list[dict[str, Any]],
+                         columns: list[str] | None = None) -> dict[str, Any]:
+        """How much of each given gene set is in this dataset, and where.
+
+        Names match exactly first, then case-insensitively (a human-symbol
+        library against mouse data: ``COL1A1`` -> ``Col1a1``), and the resolved
+        lists carry the dataset's own spelling so an import never has to guess
+        again. ``columns`` are boolean ``.var`` columns (``highly_variable``,
+        ``spatially_variable``…); each set reports how many of its *present*
+        members fall in each. Directional sets keep ``genesDown`` separate.
+        Pure read — nothing is written.
+        """
+        var_names = [str(g) for g in self.adata.var_names]
+        exact = set(var_names)
+        upper_to_var: dict[str, str] = {}
+        for g in var_names:
+            upper_to_var.setdefault(g.upper(), g)
+
+        columns = [str(c) for c in (columns or [])]
+        valid = {c['name'] for c in self.get_var_boolean_columns()}
+        column_members: dict[str, set[str]] = {}
+        for col in columns:
+            if col not in valid:
+                raise ValueError(f"'{col}' is not a boolean .var column")
+            column_members[col] = set(self.column_to_gene_names(col))
+
+        def resolve(genes: Any) -> tuple[list[str], list[str], int, int]:
+            resolved: list[str] = []
+            missing: list[str] = []
+            seen: set[str] = set()
+            n_exact = n_ci = 0
+            for raw in genes if isinstance(genes, list) else []:
+                g = str(raw).strip()
+                if not g:
+                    continue
+                if g in exact:
+                    hit, n_exact = g, n_exact + 1
+                else:
+                    hit = upper_to_var.get(g.upper())
+                    if hit is None:
+                        missing.append(g)
+                        continue
+                    n_ci += 1
+                if hit not in seen:
+                    seen.add(hit)
+                    resolved.append(hit)
+            return resolved, missing, n_exact, n_ci
+
+        out_sets: list[dict[str, Any]] = []
+        for s in sets:
+            up_raw = s.get('genes') if isinstance(s, dict) else None
+            down_raw = s.get('genesDown') if isinstance(s, dict) else None
+            up, miss_up, e1, c1 = resolve(up_raw)
+            down, miss_dn, e2, c2 = resolve(down_raw)
+            present = up + down
+            missing = miss_up + miss_dn
+            n_genes = len(up_raw or []) + len(down_raw or [])
+            out_sets.append({
+                'name': str(s.get('name', '')) if isinstance(s, dict) else '',
+                'n_genes': n_genes,
+                'n_present': len(present),
+                'n_exact': e1 + e2,
+                'n_case_insensitive': c1 + c2,
+                'n_missing': len(missing),
+                'genes_resolved': up,
+                'genes_down_resolved': down,
+                'genes_missing': missing[:self.MAX_REPORTED_OVERLAP_MISSING],
+                'columns': {col: sum(1 for g in present if g in column_members[col]) for col in columns},
+            })
+        return {'sets': out_sets, 'n_genes_dataset': len(var_names), 'columns': columns}
+
+    def guess_species(self) -> dict[str, Any]:
+        """Species guess from the current var index (Ensembl prefix, else symbol case)."""
+        from xcell import gene_symbols as gs  # noqa: PLC0415
+
+        out = gs.guess_species([str(g) for g in self.adata.var_names])
+        out['n_genes'] = int(self.n_genes)
+        return out
+
     def _resolve_source_matrix(self, layer: str | None):
         """Return the (n_cells, n_genes) expression matrix to read from.
 

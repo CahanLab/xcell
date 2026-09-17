@@ -86,12 +86,23 @@ export interface HighlightLayer {
   source: HighlightSource
 }
 
+// Where an imported set came from (Gene set library). Frontend-owned: the
+// backend round-trips it opaquely; the row tooltip shows it and the library
+// browser uses it to mark sets that are already imported.
+export interface GeneSetSource {
+  source: string        // 'msigdb' | 'enrichr' | 'string'
+  library: string       // library id within the source
+  name: string          // library display name
+  version?: string | null
+}
+
 export interface GeneSet {
   id: string
   name: string
   genes: string[]          // UP / positive list
   genesDown?: string[]     // DOWN / negative list (UCell only; optional)
   pinned?: boolean
+  source?: GeneSetSource
 }
 
 // Category types for organizing gene sets
@@ -843,6 +854,7 @@ interface AppState {
 
   // Import modal state
   isImportModalOpen: boolean
+  isGeneSetLibraryModalOpen: boolean
   // Combine-gene-sets modal state
   isCombineModalOpen: boolean
   setCombineModalOpen: (open: boolean) => void
@@ -999,8 +1011,8 @@ interface AppState {
   // Gene set category actions (hierarchical)
   toggleCategoryExpanded: (categoryType: GeneSetCategoryType) => void
   toggleFolderExpanded: (categoryType: GeneSetCategoryType, folderId: string) => void
-  addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[], genesDown?: string[]) => void
-  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[]; genesDown?: string[] }[]) => void
+  addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[], genesDown?: string[], source?: GeneSetSource) => void
+  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[]; genesDown?: string[]; source?: GeneSetSource }[]) => void
   addGeneSetToFolder: (categoryType: GeneSetCategoryType, folderId: string, name: string, genes: string[]) => void
   removeGeneSetFromCategory: (categoryType: GeneSetCategoryType, geneSetId: string) => void
   removeGeneSetFromFolder: (categoryType: GeneSetCategoryType, folderId: string, geneSetId: string) => void
@@ -1103,6 +1115,7 @@ interface AppState {
 
   // Import modal actions
   setImportModalOpen: (open: boolean) => void
+  setGeneSetLibraryModalOpen: (open: boolean) => void
 
   // Gene mask actions
   setGeneMaskModalOpen: (open: boolean) => void
@@ -1361,6 +1374,7 @@ export const useStore = create<AppState>((set, get) => {
     drawTool: 'pencil' as DrawTool,
     selectionTool: 'lasso' as SelectionTool,
     isImportModalOpen: false,
+    isGeneSetLibraryModalOpen: false,
     isCombineModalOpen: false,
     geneMaskModalOpen: false,
     geneSymbolModalOpen: false,
@@ -1579,7 +1593,7 @@ export const useStore = create<AppState>((set, get) => {
         },
       })),
 
-    addGeneSetToCategory: (categoryType, name, genes, genesDown) =>
+    addGeneSetToCategory: (categoryType, name, genes, genesDown, source) =>
       set((state) => ({
         geneSetCategories: {
           ...state.geneSetCategories,
@@ -1587,7 +1601,7 @@ export const useStore = create<AppState>((set, get) => {
             ...state.geneSetCategories[categoryType],
             geneSets: [
               ...state.geneSetCategories[categoryType].geneSets,
-              { id: generateGeneSetId(), name, genes, genesDown },
+              { id: generateGeneSetId(), name, genes, genesDown, source },
             ],
           },
         },
@@ -1611,6 +1625,7 @@ export const useStore = create<AppState>((set, get) => {
                   name: gs.name,
                   genes: gs.genes,
                   genesDown: gs.genesDown,
+                  source: gs.source,
                 })),
               },
             ],
@@ -2451,6 +2466,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Import modal actions (global)
     setImportModalOpen: (open) => set({ isImportModalOpen: open }),
+    setGeneSetLibraryModalOpen: (open) => set({ isGeneSetLibraryModalOpen: open }),
     setCombineModalOpen: (open) => set({ isCombineModalOpen: open }),
 
     // Gene mask actions

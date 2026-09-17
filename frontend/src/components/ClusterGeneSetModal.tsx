@@ -42,6 +42,12 @@ export default function ClusterGeneSetModal() {
   const [isRunning, setIsRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [report, setReport] = useState<AutoClusterDiagnostics | null>(null)
+  // What the last run produced, for the heatmap hand-off: the new sets and the
+  // cell subset they were clustered on (null = all cells; an annotation
+  // context is resolved server-side, so only its label is known here).
+  const [outcome, setOutcome] = useState<{ sets: { name: string; genes: string[] }[]; cellIndices: number[] | null; cellLabel: string | null } | null>(null)
+  const setHeatmapConfig = useStore((s) => s.setHeatmapConfig)
+  const setCenterPanelView = useStore((s) => s.setCenterPanelView)
 
   // Categorical obs columns usable for the annotation picker.
   const categoricalColumns = useMemo(() => {
@@ -64,6 +70,7 @@ export default function ClusterGeneSetModal() {
     setPurityThreshold(0.5)
     setMinModuleCorr(0.2)
     setReport(null)
+    setOutcome(null)
     setCellContext('all')
     setUseGeneMask(false)
     setLayer('X')
@@ -189,13 +196,12 @@ export default function ClusterGeneSetModal() {
         resultSets.push({ name: `${source.name} unassigned`, genes: unassigned })
       }
       addFolderToCategory('gene_clusters', folderName, resultSets)
-      // Auto: keep the modal open to show the diagnostics readout. Other
-      // methods close immediately as before.
-      if (method === 'auto' && diagnostics) {
-        setReport(diagnostics)
-      } else {
-        setSource(null)
-      }
+      const cellLabel =
+        effectiveContext === 'selection' ? `${effectiveIndices.length.toLocaleString()} selected cells`
+        : effectiveContext === 'annotation' ? `${annotationColumn} ∈ {${Array.from(annotationValues).join(', ')}}`
+        : null
+      setOutcome({ sets: resultSets, cellIndices: effectiveContext === 'selection' ? effectiveIndices : null, cellLabel })
+      if (method === 'auto' && diagnostics) setReport(diagnostics)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -238,9 +244,10 @@ export default function ClusterGeneSetModal() {
           Clustering: <span style={{ color: '#eee' }}>{source.name}</span> ({source.genes.length} genes)
         </div>
 
-        {report ? (
+        {outcome ? (
           <>
             <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>Results</div>
+            {report ? (<>
             <div style={{ fontSize: '12px', color: '#ccc', marginBottom: '10px' }}>
               {report.n_modules} module{report.n_modules === 1 ? '' : 's'}
               {report.n_unassigned > 0 ? ` + ${report.n_unassigned} unassigned` : ''} — saved under “Gene Clusters”.
@@ -282,9 +289,34 @@ export default function ClusterGeneSetModal() {
                 Lower “Min co-expression to join a module” to cluster more of them.
               </div>
             )}
+            </>) : (
+              <div style={{ fontSize: '12px', color: '#ccc', marginBottom: '10px' }}>
+                {outcome.sets.length} gene set{outcome.sets.length === 1 ? '' : 's'} saved under “Gene Clusters”
+                {outcome.cellLabel ? <> (cells: {outcome.cellLabel})</> : null}.
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '14px' }}>
               <button
-                onClick={() => setReport(null)}
+                onClick={() => {
+                  // One row band per cluster, cells restricted to what the clustering saw.
+                  setHeatmapConfig({
+                    selectedGeneSets: outcome.sets,
+                    cellOrdering: 'none', obsColumn: null, lineName: null,
+                    geneOrdering: 'as_provided', aggregateGeneSets: false,
+                    nBins: cfgDefault(['heatmap', 'n_bins'], 300),
+                    cellIndices: outcome.cellIndices,
+                    cellLabel: outcome.cellLabel,
+                  })
+                  setCenterPanelView('heatmap')
+                  setSource(null)
+                }}
+                title="Open the Heatmap tab with one band per cluster, on the same cells"
+                style={{ padding: '6px 12px', fontSize: '12px', backgroundColor: 'transparent', color: '#4ecdc4', border: '1px solid #4ecdc4', borderRadius: '4px', cursor: 'pointer' }}
+              >
+                Show heatmap
+              </button>
+              <button
+                onClick={() => { setReport(null); setOutcome(null) }}
                 style={{ padding: '6px 12px', fontSize: '12px', backgroundColor: 'transparent', color: '#888', border: '1px solid #888', borderRadius: '4px', cursor: 'pointer' }}
               >
                 Adjust &amp; re-run

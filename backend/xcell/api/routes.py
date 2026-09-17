@@ -17,6 +17,7 @@ from xcell.task_manager import task_manager
 from xcell import config as user_config
 from xcell import gene_set_store
 from xcell import gene_set_library
+from xcell import gene_set_sources
 
 router = APIRouter(prefix="/api")
 
@@ -841,6 +842,253 @@ def get_gene_sets_library():
     demand — this endpoint never mutates the user's gene-set state.
     """
     return {"bundles": gene_set_library.list_bundles()}
+
+
+# --- External gene-set sources (MSigDB, Enrichr, STRING) ----------------------
+# Slot-less like /gene_sets: a cached library belongs to the machine, not to a
+# dataset. Only the overlap check and the species guess read the dataset.
+
+@router.get("/gene_set_sources")
+def get_gene_set_sources():
+    """Sources, species, cache directory and the libraries already cached. No network."""
+    return gene_set_sources.availability()
+
+
+@router.get("/gene_set_sources/{source}/libraries")
+def get_gene_set_source_catalogue(source: str, species: str = Query('human'), refresh: bool = Query(False)):
+    """A source's libraries for a species — from the cached catalogue unless stale or ``refresh``."""
+    try:
+        libs = gene_set_sources.catalogue(source, species, refresh=refresh)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"source": source, "species": species, "libraries": libs}
+
+
+class FetchGeneSetLibraryRequest(BaseModel):
+    species: str = 'human'
+
+
+@router.post("/gene_set_sources/{source}/libraries/{library_id}/fetch", status_code=202)
+def fetch_gene_set_library(source: str, library_id: str, request: FetchGeneSetLibraryRequest):
+    """Download and cache one library (background task). Result: the library summary."""
+    try:
+        src = gene_set_sources.get_source(source)
+        src.validate_library(library_id, request.species)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    species = request.species
+
+    def compute_fn(report):
+        return gene_set_sources.fetch_library(source, library_id, species, report=report)
+
+    def apply_fn(lib):
+        return gene_set_sources.library_summary(lib)
+
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.get("/gene_set_sources/{source}/libraries/{library_id}/sets")
+def search_gene_set_library(source: str, library_id: str, species: str = Query('human'),
+                            q: str = Query(''), gene: str = Query(''),
+                            offset: int = Query(0), limit: int = Query(50)):
+    """Search a cached library by set name/description and/or member gene."""
+    try:
+        gene_set_sources.get_source(source)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    lib = gene_set_sources.find_library(source, library_id, species)
+    if lib is None:
+        raise HTTPException(status_code=404,
+                            detail=f"Library '{library_id}' ({source}) has not been fetched yet")
+    out = gene_set_sources.search_sets(lib, q=q, gene=gene, offset=offset, limit=limit)
+    out["library"] = gene_set_sources.library_summary(lib)
+    return out
+
+
+class StringPartnersRequest(BaseModel):
+    genes: list[str]
+    species: str = 'human'
+    limit: int = 50
+    required_score: int = 400
+
+
+@router.post("/gene_set_sources/string/partners")
+def string_partners_route(request: StringPartnersRequest):
+    """STRING interaction partners of seed genes: one set per seed plus the union and edges."""
+    try:
+        return gene_set_sources.string_partners(
+            request.genes, request.species, limit=request.limit, required_score=request.required_score)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class StringNetworkRequest(BaseModel):
+    genes: list[str]
+    species: str = 'human'
+    required_score: int = 400
+
+
+@router.post("/gene_set_sources/string/network")
+def string_network_route(request: StringNetworkRequest):
+    """STRING edges among a gene list (combined score ≥ required_score / 1000)."""
+    try:
+        return gene_set_sources.string_network(
+            request.genes, request.species, required_score=request.required_score)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class GeneSetOverlapRequest(BaseModel):
+    sets: list[dict[str, Any]]
+    columns: list[str] = []
+
+
+@router.post("/gene_sets/overlap")
+def gene_sets_overlap(request: GeneSetOverlapRequest, dataset: str | None = Query(None)):
+    """How much of each gene set is in the dataset, resolved to its spelling,
+    with per-boolean-column counts. Pure read."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.gene_set_overlap(request.sets, columns=request.columns)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class ClusterCellsByGeneSetRequest(BaseModel):
+    """PCA → kNN → Leiden (→ UMAP) on one gene set's genes, under suffixed keys.
+
+    Cell scoping uses the same vocabulary as /cluster_gene_set.
+    """
+    genes: list[str]
+    key: str
+    n_comps: int = 20
+    n_neighbors: int = 15
+    resolution: float = 1.0
+    run_umap: bool = True
+    scale: bool = True
+    layer: str | None = None
+    transform: str | None = 'log1p'
+    seed: int = 0
+    overwrite: bool = False
+    cell_context: str = 'all'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
+
+
+@router.post("/gene_sets/cluster_cells", status_code=202)
+def cluster_cells_by_gene_set(request: ClusterCellsByGeneSetRequest, dataset: str | None = Query(None)):
+    """Cluster cells using only a gene set's genes (background task)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        cell_indices = _resolve_cell_context(
+            adaptor, request.cell_context, request.cell_indices,
+            request.annotation_column, request.annotation_values)
+        compute_fn, apply_fn = adaptor.prepare_cluster_cells_by_gene_set(
+            request.genes, key=request.key, n_comps=request.n_comps,
+            n_neighbors=request.n_neighbors, resolution=request.resolution,
+            run_umap=request.run_umap, scale=request.scale, layer=request.layer,
+            transform=request.transform, cell_indices=cell_indices,
+            seed=request.seed, overwrite=request.overwrite)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+class GeneSetCoherenceRequest(BaseModel):
+    genes: list[str]
+    metric: str = 'pearson'
+    layer: str | None = None
+    cell_context: str = 'all'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
+
+
+@router.post("/gene_sets/coherence")
+def gene_set_coherence(request: GeneSetCoherenceRequest, dataset: str | None = Query(None)):
+    """How much of a gene set one pattern explains (eigen-spectrum of its correlation matrix)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        cell_indices = _resolve_cell_context(
+            adaptor, request.cell_context, request.cell_indices,
+            request.annotation_column, request.annotation_values)
+        return adaptor.gene_set_coherence(
+            request.genes, cell_indices=cell_indices, layer=request.layer, metric=request.metric)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class DecomposeGeneSetRequest(BaseModel):
+    """PCA or NMF of one gene set into expression programs (background task)."""
+    genes: list[str]
+    key: str
+    method: str = 'pca'
+    k: int = 3
+    loading_threshold: float = 0.2
+    layer: str | None = None
+    transform: str | None = 'log1p'
+    seed: int = 0
+    specificity_weight: float = 1.0
+    weight_explained: float = 0.5
+    overwrite: bool = False
+    cell_context: str = 'all'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
+
+
+@router.post("/gene_sets/decompose", status_code=202)
+def decompose_gene_set(request: DecomposeGeneSetRequest, dataset: str | None = Query(None)):
+    adaptor = get_adaptor(dataset)
+    try:
+        cell_indices = _resolve_cell_context(
+            adaptor, request.cell_context, request.cell_indices,
+            request.annotation_column, request.annotation_values)
+        compute_fn, apply_fn = adaptor.prepare_gene_set_decomposition(
+            request.genes, key=request.key, method=request.method, k=request.k,
+            loading_threshold=request.loading_threshold, layer=request.layer,
+            transform=request.transform, cell_indices=cell_indices, seed=request.seed,
+            specificity_weight=request.specificity_weight,
+            weight_explained=request.weight_explained, overwrite=request.overwrite)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.get("/gene_sets/decompositions")
+def list_gene_set_decompositions(dataset: str | None = Query(None)):
+    return {"runs": get_adaptor(dataset).list_gene_set_decompositions()}
+
+
+@router.get("/gene_sets/decompositions/{key}")
+def get_gene_set_decomposition(key: str, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).get_gene_set_decomposition(key)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/gene_sets/species_guess")
+def gene_sets_species_guess(dataset: str | None = Query(None)):
+    """Species guess from the var index, for defaulting the library browser's species."""
+    return get_adaptor(dataset).guess_species()
 
 
 @router.get("/config/defaults")
@@ -2866,6 +3114,72 @@ def run_gene_neighbors(request: GeneNeighborsRequest, dataset: str | None = Quer
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class GeneMapRequest(BaseModel):
+    """Gene map: similarity from expression / annotation / STRING → modules + 2-D layout (task)."""
+    genes: list[str] | None = None
+    # Full union, not narrowed: the UI's GeneSubsetPicker sends a {columns, operation} dict.
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    key: str
+    expression_weight: float = 1.0
+    expression_metric: str = 'bicor'
+    annotation_weight: float = 1.0
+    annotation_libraries: list[dict[str, Any]] = []
+    string_weight: float = 0.0
+    string_species: str | None = None
+    string_required_score: int = 400
+    n_neighbors: int = 15
+    resolution: float = 1.0
+    embedding: str = 'umap'
+    layer: str | None = None
+    seed: int = 0
+    overwrite: bool = False
+    cell_context: str = 'all'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
+
+
+@router.post("/gene_map/run", status_code=202)
+def run_gene_map(request: GeneMapRequest, dataset: str | None = Query(None)):
+    adaptor = get_adaptor(dataset)
+    try:
+        gene_subset = request.gene_subset
+        if isinstance(gene_subset, GeneSubsetSpec):
+            gene_subset = {'columns': gene_subset.columns, 'operation': gene_subset.operation}
+        cell_indices = _resolve_cell_context(
+            adaptor, request.cell_context, request.cell_indices,
+            request.annotation_column, request.annotation_values)
+        compute_fn, apply_fn = adaptor.prepare_gene_map(
+            key=request.key, genes=request.genes, gene_subset=gene_subset,
+            expression_weight=request.expression_weight, expression_metric=request.expression_metric,
+            annotation_weight=request.annotation_weight, annotation_libraries=request.annotation_libraries,
+            string_weight=request.string_weight, string_species=request.string_species,
+            string_required_score=request.string_required_score,
+            n_neighbors=request.n_neighbors, resolution=request.resolution, embedding=request.embedding,
+            layer=request.layer, cell_indices=cell_indices, seed=request.seed, overwrite=request.overwrite)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.get("/gene_map")
+def list_gene_maps(dataset: str | None = Query(None)):
+    return {"runs": get_adaptor(dataset).list_gene_maps()}
+
+
+@router.get("/gene_map/{key}")
+def get_gene_map(key: str, similarity: bool = Query(False), dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).get_gene_map(key, include_similarity=similarity)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/scanpy/find_similar_genes")

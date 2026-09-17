@@ -86,12 +86,23 @@ export interface HighlightLayer {
   source: HighlightSource
 }
 
+// Where an imported set came from (Gene set library). Frontend-owned: the
+// backend round-trips it opaquely; the row tooltip shows it and the library
+// browser uses it to mark sets that are already imported.
+export interface GeneSetSource {
+  source: string        // 'msigdb' | 'enrichr' | 'string'
+  library: string       // library id within the source
+  name: string          // library display name
+  version?: string | null
+}
+
 export interface GeneSet {
   id: string
   name: string
   genes: string[]          // UP / positive list
   genesDown?: string[]     // DOWN / negative list (UCell only; optional)
   pinned?: boolean
+  source?: GeneSetSource
 }
 
 // Category types for organizing gene sets
@@ -450,6 +461,10 @@ export interface HeatmapConfig {
   geneOrdering: 'as_provided' | 'peak_position'
   aggregateGeneSets: boolean
   nBins: number
+  // Restrict the heatmap to these cells (e.g. the subset a gene clustering
+  // ran on). null/absent = every cell. cellLabel is shown in the toolbar.
+  cellIndices?: number[] | null
+  cellLabel?: string | null
 }
 
 // Gene mask — mirrors backend /api/gene_mask response
@@ -802,6 +817,10 @@ interface AppState {
   diffExpResult: DiffExpResult | null
   isDiffExpLoading: boolean
   isDiffExpModalOpen: boolean
+  clusterCellsSource: { name: string; genes: string[] } | null
+  decomposeSource: { name: string; genes: string[] } | null
+  // genes === null: the modal offers a gene-subset picker instead of a fixed list
+  geneMapSource: { name: string; genes: string[] | null } | null
   clusterModalSourceSet: {
     name: string
     genes: string[]
@@ -843,6 +862,7 @@ interface AppState {
 
   // Import modal state
   isImportModalOpen: boolean
+  isGeneSetLibraryModalOpen: boolean
   // Combine-gene-sets modal state
   isCombineModalOpen: boolean
   setCombineModalOpen: (open: boolean) => void
@@ -999,8 +1019,8 @@ interface AppState {
   // Gene set category actions (hierarchical)
   toggleCategoryExpanded: (categoryType: GeneSetCategoryType) => void
   toggleFolderExpanded: (categoryType: GeneSetCategoryType, folderId: string) => void
-  addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[], genesDown?: string[]) => void
-  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[]; genesDown?: string[] }[]) => void
+  addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[], genesDown?: string[], source?: GeneSetSource) => void
+  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[]; genesDown?: string[]; source?: GeneSetSource }[]) => void
   addGeneSetToFolder: (categoryType: GeneSetCategoryType, folderId: string, name: string, genes: string[]) => void
   removeGeneSetFromCategory: (categoryType: GeneSetCategoryType, geneSetId: string) => void
   removeGeneSetFromFolder: (categoryType: GeneSetCategoryType, folderId: string, geneSetId: string) => void
@@ -1046,6 +1066,9 @@ interface AppState {
   setDiffExpResult: (result: DiffExpResult | null) => void
   setDiffExpLoading: (loading: boolean) => void
   setDiffExpModalOpen: (open: boolean) => void
+  setClusterCellsSource: (src: { name: string; genes: string[] } | null) => void
+  setDecomposeSource: (src: { name: string; genes: string[] } | null) => void
+  setGeneMapSource: (src: { name: string; genes: string[] | null } | null) => void
   setClusterModalSourceSet: (src: {
     name: string
     genes: string[]
@@ -1103,6 +1126,7 @@ interface AppState {
 
   // Import modal actions
   setImportModalOpen: (open: boolean) => void
+  setGeneSetLibraryModalOpen: (open: boolean) => void
 
   // Gene mask actions
   setGeneMaskModalOpen: (open: boolean) => void
@@ -1337,6 +1361,9 @@ export const useStore = create<AppState>((set, get) => {
     isDiffExpLoading: false,
     isDiffExpModalOpen: false,
     clusterModalSourceSet: null,
+    clusterCellsSource: null,
+    decomposeSource: null,
+    geneMapSource: null,
     selectByExpressionSource: null,
     ucellScoreSource: null,
     scoreGeneSetsSource: null,
@@ -1361,6 +1388,7 @@ export const useStore = create<AppState>((set, get) => {
     drawTool: 'pencil' as DrawTool,
     selectionTool: 'lasso' as SelectionTool,
     isImportModalOpen: false,
+    isGeneSetLibraryModalOpen: false,
     isCombineModalOpen: false,
     geneMaskModalOpen: false,
     geneSymbolModalOpen: false,
@@ -1579,7 +1607,7 @@ export const useStore = create<AppState>((set, get) => {
         },
       })),
 
-    addGeneSetToCategory: (categoryType, name, genes, genesDown) =>
+    addGeneSetToCategory: (categoryType, name, genes, genesDown, source) =>
       set((state) => ({
         geneSetCategories: {
           ...state.geneSetCategories,
@@ -1587,7 +1615,7 @@ export const useStore = create<AppState>((set, get) => {
             ...state.geneSetCategories[categoryType],
             geneSets: [
               ...state.geneSetCategories[categoryType].geneSets,
-              { id: generateGeneSetId(), name, genes, genesDown },
+              { id: generateGeneSetId(), name, genes, genesDown, source },
             ],
           },
         },
@@ -1611,6 +1639,7 @@ export const useStore = create<AppState>((set, get) => {
                   name: gs.name,
                   genes: gs.genes,
                   genesDown: gs.genesDown,
+                  source: gs.source,
                 })),
               },
             ],
@@ -2084,6 +2113,9 @@ export const useStore = create<AppState>((set, get) => {
     setDiffExpLoading: (loading) => set({ isDiffExpLoading: loading }),
     setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
+    setClusterCellsSource: (src) => set({ clusterCellsSource: src }),
+    setDecomposeSource: (src) => set({ decomposeSource: src }),
+    setGeneMapSource: (src) => set({ geneMapSource: src }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
     setUcellScoreSource: (src) => set({ ucellScoreSource: src }),
     setScoreGeneSetsSource: (src) => set({ scoreGeneSetsSource: src }),
@@ -2451,6 +2483,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Import modal actions (global)
     setImportModalOpen: (open) => set({ isImportModalOpen: open }),
+    setGeneSetLibraryModalOpen: (open) => set({ isGeneSetLibraryModalOpen: open }),
     setCombineModalOpen: (open) => set({ isCombineModalOpen: open }),
 
     // Gene mask actions

@@ -6,6 +6,8 @@ row-indices; gene names are mapped back only at the top-level boundary.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from scipy.stats import rankdata
 from scipy.cluster.hierarchy import linkage, fcluster
@@ -75,6 +77,54 @@ def distance_matrix(X: np.ndarray, metric: str = "bicor") -> np.ndarray:
     np.clip(D, 0.0, 2.0, out=D)
     np.fill_diagonal(D, 0.0)
     return D
+
+
+def set_coherence(X_genes, metric: str = "pearson", n_eigen: int = 10) -> dict[str, Any]:
+    """Is this gene set one expression pattern or several?
+
+    The eigen-spectrum of the set's correlation matrix, as fractions of the
+    gene count: ``eigengene_pve`` is the share of the set's variance one
+    pattern explains. How many patterns are *real* is judged against the
+    Marchenko–Pastur noise edge ``(1 + sqrt(g / n_cells))**2`` — the largest
+    eigenvalue a correlation matrix of ``g`` independent genes over
+    ``n_cells`` cells produces by chance. At single-cell sparsity pairwise
+    correlations are tiny and dozens of noise eigenvalues sit just above 1,
+    so the Kaiser rule (λ > 1) saturates; the MP edge does not. With fewer
+    cells than genes the bulk edge is uninformative and λ > 1 is used.
+    ``one_pattern`` is true when at most one eigenvalue clears the edge, or
+    the first carries more than 70 % of what clears it. Zero-variance genes
+    contribute nothing and count as unexplained.
+    """
+    X = np.asarray(X_genes, dtype=float)
+    if X.ndim != 2 or X.shape[0] == 0:
+        raise ValueError("need a (n_genes, n_cells) matrix with at least one gene")
+    g, n_cells = X.shape
+    if g == 1:
+        return {"n_genes": 1, "n_cells": int(n_cells), "eigen_pve": [1.0], "eigengene_pve": 1.0,
+                "mean_corr": None, "mean_abs_corr": None, "noise_edge_pve": 1.0,
+                "n_significant": 1, "signal_share_top": 1.0, "one_pattern": True, "suggested_k": 1}
+    Z = _standardize_profiles(X, metric)
+    C = Z @ Z.T
+    w = np.clip(np.linalg.eigvalsh(C)[::-1], 0.0, None)
+    pve = w / g
+    edge = (1.0 + np.sqrt(g / n_cells)) ** 2 if n_cells > g else 1.0
+    sig = w[w > edge]
+    n_sig = int(len(sig))
+    top_share = float(w[0] / sig.sum()) if n_sig > 0 and sig.sum() > 0 else 1.0
+    off = C[~np.eye(g, dtype=bool)]
+    return {
+        "n_genes": int(g),
+        "n_cells": int(n_cells),
+        "eigen_pve": [float(x) for x in pve[:n_eigen]],
+        "eigengene_pve": float(pve[0]),
+        "mean_corr": float(off.mean()),
+        "mean_abs_corr": float(np.abs(off).mean()),
+        "noise_edge_pve": float(edge / g),
+        "n_significant": n_sig,
+        "signal_share_top": top_share,
+        "one_pattern": bool(n_sig <= 1 or top_share > 0.7),
+        "suggested_k": max(1, min(n_sig, g - 1, 10)),
+    }
 
 
 def _module_coherence(profiles: np.ndarray) -> float:

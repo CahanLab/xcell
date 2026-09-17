@@ -128,3 +128,43 @@ def map_ids(ids: list[str], table: dict[str, str]) -> dict[str, Any]:
         'n_duplicate_symbols': len(dupes),
         'examples': examples,
     }
+
+
+def guess_species(names: list[str]) -> dict[str, Any]:
+    """Best-effort species from gene identifiers, for defaulting a species picker.
+
+    Ensembl prefixes are decisive when the index carries them. Otherwise the
+    symbol *case* is the tell: mouse symbols are Title-case (``Col1a1``),
+    human ones upper-case (``COL1A1``). Symbols with a lower-case first letter
+    (``mt-Nd1``) or mixed case (``H2-Ab1``) vote for neither, so the answer is
+    the majority of the symbols that do vote, or ``None`` when too few do.
+    """
+    names = [str(n) for n in names]
+    n = len(names)
+    if n == 0:
+        return {'species': None, 'method': None, 'confidence': 0.0, 'n_genes': 0}
+    ens = detect_species(names)
+    if ens.get('species') and ens.get('fraction', 0.0) >= 0.5:
+        return {'species': ens['species'], 'method': 'ensembl_prefix',
+                'confidence': round(float(ens['fraction']), 3), 'n_genes': n}
+    n_upper = n_title = n_voting = 0
+    for name in names:
+        letters = [c for c in name if c.isalpha()]
+        if len(letters) < 2:
+            continue
+        n_voting += 1
+        if all(c.isupper() for c in letters):
+            n_upper += 1
+        elif letters[0].isupper() and all(c.islower() for c in letters[1:]):
+            n_title += 1
+    if n_voting == 0:
+        return {'species': None, 'method': 'symbol_case', 'confidence': 0.0, 'n_genes': n}
+    frac_upper, frac_title = n_upper / n_voting, n_title / n_voting
+    species: str | None = None
+    confidence = 0.0
+    if frac_title >= 0.5 and frac_title > frac_upper:
+        species, confidence = 'mouse', frac_title
+    elif frac_upper >= 0.5 and frac_upper > frac_title:
+        species, confidence = 'human', frac_upper
+    return {'species': species, 'method': 'symbol_case', 'confidence': round(confidence, 3),
+            'n_genes': n, 'n_upper': n_upper, 'n_title': n_title}

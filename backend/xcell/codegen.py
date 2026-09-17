@@ -673,6 +673,41 @@ REGISTRY: dict[str, ActionSpec] = {
             + (f", {_n(r.get('n_dropped'))} dropped." if r.get('n_dropped') else ".")
         ),
     ),
+    'cluster_cells_by_gene_set': ActionSpec(
+        label='Cluster cells on a gene set', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_cluster_cells_by_gene_set',
+                        ('genes', 'key', 'n_comps', 'n_neighbors', 'resolution',
+                         'run_umap', 'scale', 'layer', 'transform', 'seed')),
+        summary=lambda p, r: (
+            f"Cluster cells on {_n(len(p.get('genes') or []))} genes ('{p.get('key')}'): "
+            f"PCA {_n(p.get('n_comps'))} → kNN {_n(p.get('n_neighbors'))} → Leiden "
+            f"{p.get('resolution')} gives {_n(r.get('n_clusters'))} clusters → "
+            f"`.obs['{r.get('obs_column')}']`"
+            + (f", UMAP `.obsm['{r.get('embedding')}']`." if r.get('embedding') else '.')
+        ),
+    ),
+    'gene_set_decomposition': ActionSpec(
+        label='Decompose a gene set into programs', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_gene_set_decomposition',
+                        ('genes', 'key', 'method', 'k', 'loading_threshold', 'layer',
+                         'transform', 'seed', 'specificity_weight', 'weight_explained')),
+        summary=lambda p, r: (
+            f"{str(p.get('method', 'pca')).upper()} decomposition of {_n(len(p.get('genes') or []))} genes "
+            f"('{p.get('key')}', k={_n(p.get('k'))}): {_n(len(r.get('program_names') or []))} programs "
+            f"→ `.obsm['{r.get('obsm_key')}']`."
+        ),
+    ),
+    'gene_map': ActionSpec(
+        label='Gene map', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_gene_map',
+                        ('genes', 'gene_subset', 'key', 'expression_weight', 'expression_metric',
+                         'annotation_weight', 'annotation_libraries', 'string_weight', 'string_species',
+                         'string_required_score', 'n_neighbors', 'resolution', 'embedding', 'layer', 'seed')),
+        summary=lambda p, r: (
+            f"Gene map of {_n(r.get('n_genes'))} genes ('{r.get('key')}'): "
+            f"{_n(r.get('n_modules'))} modules, {p.get('embedding', 'umap')} layout."
+        ),
+    ),
     'gene_nmf_meta': ActionSpec(
         label='NMF meta-programs', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_meta_programs',

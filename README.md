@@ -288,6 +288,36 @@ The mask applies to the gene browse list, gene search, expanded gene set rows, a
 
 - Create gene sets manually in Gene Manager
 - Import gene lists from files
+- Browse and import from MSigDB, Enrichr and STRING with the **Library** button (below)
+
+### Importing from MSigDB, Enrichr and STRING
+
+Click **Library** in the Genes panel header (or `⋯` → `Gene set library…`).
+Pick a species (guessed from your gene names; override if needed) and a
+source:
+
+- **MSigDB** — every collection for human or mouse (Hallmark, curated
+  perturbations including the NABA matrisome sets, Reactome, WikiPathways,
+  GO, cell-type signatures, …), from the newest release.
+- **Enrichr** — 228 libraries (GO, Reactome, KEGG, WikiPathways, PanglaoDB,
+  CellMarker, Tabula Muris, …). Most are human-symbol libraries; they work on
+  mouse data through case-insensitive matching.
+- **STRING** — not a library but a query: type seed genes or pick one of your
+  gene sets, and each seed becomes a set of its interaction partners
+  (combined score above the threshold you set).
+
+A library is downloaded once (click **Fetch**) into
+`~/.cache/xcell/gene_set_sources` and searched locally after that, by set
+name or by a gene it must contain. For every set the table shows how many
+members are present in your dataset and how many of those fall in each
+boolean `.var` column you tick (`highly_variable`, `spatially_variable`, …);
+the threshold boxes hide sets below a minimum, so "ECM sets with at least ten
+HVGs in this tissue" is one search. Tick the sets you want and **Import**:
+they land in a Manual folder named after the library, in your dataset's own
+gene spelling and holding only the genes that exist in it. Each imported set
+remembers its source, library and version (hover the set name). Cache
+location and STRING defaults are configurable under `gene_set_sources:` in
+`docs/config.example.yaml`.
 
 ### Curating gene sets into folders
 
@@ -332,6 +362,54 @@ another folder so you can compare runs side by side.
 When a gene mask is active, a **Restrict to active gene mask** checkbox appears
 (showing how many of the set's genes pass the mask). Enable it to cluster only
 the genes visible under the current `.var` mask.
+
+When the run finishes, **Show heatmap** opens the Heatmap tab with one row
+band per cluster, restricted to the cells the clustering ran on (the toolbar
+says so; Heatmap Settings can drop the restriction).
+
+### Gene map: genes as points
+
+`⋯` → `Map genes…` on a gene-set row (or `⋯` → `Gene map…` in the Genes
+panel header, which lets you pick any gene subset) builds a gene–gene
+similarity from up to three channels, each with a weight: **expression**
+(correlation across cells, on `.X` or a smoothed layer, optionally within the
+current selection), **annotation** (how many of the same cached library sets
+two genes belong to — fetch GO, Reactome, the matrisome categories or
+cell-type markers in the Library first), and **STRING** (interaction scores,
+queried live). Leiden on that similarity gives modules; UMAP lays the genes
+out. In the **map** view, hover for a gene and drag a lasso to save the
+genes inside it as a set; the **similarity** view is the clustered heatmap
+with module boxes; the **modules** view saves modules as gene sets. A map
+holds up to 3,000 genes.
+
+### Decomposing a gene set into programs
+
+Some sets are several expression patterns under one name — the collagens
+split into fibrillar, basement-membrane and cartilage programs — and a single
+score hides that. `⋯` → `Decompose into programs…` on a gene-set row first
+tells you whether the set is one pattern or several: the eigen-spectrum of
+its correlation matrix against the noise floor a set of independent genes
+would produce (teal bars stand above it, the dashed line is the floor). Then
+PCA or NMF on the cells × set-genes submatrix produces `k` programs. Each
+program's per-cell score becomes a pill in the Genes panel (colour the plot
+by it), the score matrix can be viewed as an embedding (**View PC1 × PC2**),
+and **Save programs as gene sets** files one set per program under Gene
+Clusters — PCA programs keep their up and down lists, so UCell can score
+them directionally. Sparse spot data makes every correlation small; pick a
+smoothed layer as the source matrix when you have one.
+
+### Clustering cells on a gene set
+
+The reverse question — which states do the *cells* take with respect to one
+gene set? — is `⋯` → `Cluster cells on this set…` on any gene-set row. It runs
+PCA → neighbours → Leiden (→ UMAP) on the cells × set-genes submatrix, with
+genes z-scored so a highly expressed member does not dominate. Everything is
+written under suffixed keys (`leiden_<key>`, `X_umap_<key>`,
+`<key>_connectivities`), so the dataset's own PCA, graph and clusters are
+untouched, and the graph appears in the UMAP/Leiden graph picker for
+re-clustering at another resolution. Start with a low resolution (default
+0.3): a gene-set PCA fragments easily. The results panel colours the plot by
+the new clusters or switches to the new UMAP.
 
 ### Selecting cells by expression threshold
 

@@ -37,6 +37,9 @@ import BarplotView from './components/BarplotView'
 import FigureBuilder from './components/FigureBuilder'
 import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
+import ClusterCellsByGeneSetModal from './components/ClusterCellsByGeneSetModal'
+import DecomposeGeneSetModal from './components/DecomposeGeneSetModal'
+import GeneMapModal from './components/GeneMapModal'
 import SelectByExpressionModal from './components/SelectByExpressionModal'
 import GeneMaskModal from './components/GeneMaskModal'
 import GeneSymbolModal from './components/GeneSymbolModal'
@@ -2153,6 +2156,9 @@ export default function App() {
       <AssignTerritoriesModal />
       <MarkerGenesModal />
       <ClusterGeneSetModal />
+      <ClusterCellsByGeneSetModal />
+      <DecomposeGeneSetModal />
+      <GeneMapModal />
       <SelectByExpressionModal />
       <GeneMaskModal />
       <GeneSymbolModal />

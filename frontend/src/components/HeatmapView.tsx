@@ -409,6 +409,7 @@ export default function HeatmapView() {
           gene_ordering: config.geneOrdering,
           n_bins: config.nBins,
           transform,
+          cell_indices: config.cellIndices ?? null,
         }),
       })
 
@@ -487,6 +488,7 @@ export default function HeatmapView() {
         <span style={hmStyles.info}>
           {data.row_labels.length} genes &times; {data.n_bins} {data.n_bins < data.n_cells ? 'bins' : 'cells'}
           {data.n_bins < data.n_cells && ` (${data.n_cells.toLocaleString()} cells)`}
+          {heatmapConfig?.cellLabel && ` · ${heatmapConfig.cellLabel}`}
         </span>
         <span style={hmStyles.hint}>Click a gene row to color scatter plot</span>
       </div>

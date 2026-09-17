@@ -367,6 +367,22 @@ When the run finishes, **Show heatmap** opens the Heatmap tab with one row
 band per cluster, restricted to the cells the clustering ran on (the toolbar
 says so; Heatmap Settings can drop the restriction).
 
+### Decomposing a gene set into programs
+
+Some sets are several expression patterns under one name — the collagens
+split into fibrillar, basement-membrane and cartilage programs — and a single
+score hides that. `⋯` → `Decompose into programs…` on a gene-set row first
+tells you whether the set is one pattern or several: the eigen-spectrum of
+its correlation matrix against the noise floor a set of independent genes
+would produce (teal bars stand above it, the dashed line is the floor). Then
+PCA or NMF on the cells × set-genes submatrix produces `k` programs. Each
+program's per-cell score becomes a pill in the Genes panel (colour the plot
+by it), the score matrix can be viewed as an embedding (**View PC1 × PC2**),
+and **Save programs as gene sets** files one set per program under Gene
+Clusters — PCA programs keep their up and down lists, so UCell can score
+them directionally. Sparse spot data makes every correlation small; pick a
+smoothed layer as the source matrix when you have one.
+
 ### Clustering cells on a gene set
 
 The reverse question — which states do the *cells* take with respect to one

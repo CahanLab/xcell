@@ -1002,6 +1002,89 @@ def cluster_cells_by_gene_set(request: ClusterCellsByGeneSetRequest, dataset: st
     return {"task_id": task_id, "status": "running"}
 
 
+class GeneSetCoherenceRequest(BaseModel):
+    genes: list[str]
+    metric: str = 'pearson'
+    layer: str | None = None
+    cell_context: str = 'all'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
+
+
+@router.post("/gene_sets/coherence")
+def gene_set_coherence(request: GeneSetCoherenceRequest, dataset: str | None = Query(None)):
+    """How much of a gene set one pattern explains (eigen-spectrum of its correlation matrix)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        cell_indices = _resolve_cell_context(
+            adaptor, request.cell_context, request.cell_indices,
+            request.annotation_column, request.annotation_values)
+        return adaptor.gene_set_coherence(
+            request.genes, cell_indices=cell_indices, layer=request.layer, metric=request.metric)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class DecomposeGeneSetRequest(BaseModel):
+    """PCA or NMF of one gene set into expression programs (background task)."""
+    genes: list[str]
+    key: str
+    method: str = 'pca'
+    k: int = 3
+    loading_threshold: float = 0.2
+    layer: str | None = None
+    transform: str | None = 'log1p'
+    seed: int = 0
+    specificity_weight: float = 1.0
+    weight_explained: float = 0.5
+    overwrite: bool = False
+    cell_context: str = 'all'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
+
+
+@router.post("/gene_sets/decompose", status_code=202)
+def decompose_gene_set(request: DecomposeGeneSetRequest, dataset: str | None = Query(None)):
+    adaptor = get_adaptor(dataset)
+    try:
+        cell_indices = _resolve_cell_context(
+            adaptor, request.cell_context, request.cell_indices,
+            request.annotation_column, request.annotation_values)
+        compute_fn, apply_fn = adaptor.prepare_gene_set_decomposition(
+            request.genes, key=request.key, method=request.method, k=request.k,
+            loading_threshold=request.loading_threshold, layer=request.layer,
+            transform=request.transform, cell_indices=cell_indices, seed=request.seed,
+            specificity_weight=request.specificity_weight,
+            weight_explained=request.weight_explained, overwrite=request.overwrite)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.get("/gene_sets/decompositions")
+def list_gene_set_decompositions(dataset: str | None = Query(None)):
+    return {"runs": get_adaptor(dataset).list_gene_set_decompositions()}
+
+
+@router.get("/gene_sets/decompositions/{key}")
+def get_gene_set_decomposition(key: str, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).get_gene_set_decomposition(key)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.get("/gene_sets/species_guess")
 def gene_sets_species_guess(dataset: str | None = Query(None)):
     """Species guess from the var index, for defaulting the library browser's species."""

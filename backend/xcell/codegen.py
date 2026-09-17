@@ -686,6 +686,17 @@ REGISTRY: dict[str, ActionSpec] = {
             + (f", UMAP `.obsm['{r.get('embedding')}']`." if r.get('embedding') else '.')
         ),
     ),
+    'gene_set_decomposition': ActionSpec(
+        label='Decompose a gene set into programs', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_gene_set_decomposition',
+                        ('genes', 'key', 'method', 'k', 'loading_threshold', 'layer',
+                         'transform', 'seed', 'specificity_weight', 'weight_explained')),
+        summary=lambda p, r: (
+            f"{str(p.get('method', 'pca')).upper()} decomposition of {_n(len(p.get('genes') or []))} genes "
+            f"('{p.get('key')}', k={_n(p.get('k'))}): {_n(len(r.get('program_names') or []))} programs "
+            f"→ `.obsm['{r.get('obsm_key')}']`."
+        ),
+    ),
     'gene_nmf_meta': ActionSpec(
         label='NMF meta-programs', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_meta_programs',

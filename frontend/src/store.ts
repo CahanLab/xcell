@@ -818,6 +818,7 @@ interface AppState {
   isDiffExpLoading: boolean
   isDiffExpModalOpen: boolean
   clusterCellsSource: { name: string; genes: string[] } | null
+  decomposeSource: { name: string; genes: string[] } | null
   clusterModalSourceSet: {
     name: string
     genes: string[]
@@ -1064,6 +1065,7 @@ interface AppState {
   setDiffExpLoading: (loading: boolean) => void
   setDiffExpModalOpen: (open: boolean) => void
   setClusterCellsSource: (src: { name: string; genes: string[] } | null) => void
+  setDecomposeSource: (src: { name: string; genes: string[] } | null) => void
   setClusterModalSourceSet: (src: {
     name: string
     genes: string[]
@@ -1357,6 +1359,7 @@ export const useStore = create<AppState>((set, get) => {
     isDiffExpModalOpen: false,
     clusterModalSourceSet: null,
     clusterCellsSource: null,
+    decomposeSource: null,
     selectByExpressionSource: null,
     ucellScoreSource: null,
     scoreGeneSetsSource: null,
@@ -2107,6 +2110,7 @@ export const useStore = create<AppState>((set, get) => {
     setDiffExpModalOpen: (open) => set({ isDiffExpModalOpen: open }),
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
     setClusterCellsSource: (src) => set({ clusterCellsSource: src }),
+    setDecomposeSource: (src) => set({ decomposeSource: src }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
     setUcellScoreSource: (src) => set({ ucellScoreSource: src }),
     setScoreGeneSetsSource: (src) => set({ scoreGeneSetsSource: src }),

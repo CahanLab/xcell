@@ -813,6 +813,7 @@ function CategoryGeneSetComponent({
     reorderGeneSet,
     setClusterModalSourceSet,
     setClusterCellsSource,
+    setDecomposeSource,
   } = useStore()
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
   const setUcellScoreSource = useStore((s) => s.setUcellScoreSource)
@@ -1087,6 +1088,12 @@ function CategoryGeneSetComponent({
               onClick: () => setClusterCellsSource({ name: geneSet.name, genes: geneSet.genes }),
               disabled: geneSet.genes.length < 2,
               tooltip: 'PCA → neighbours → Leiden on these genes only; results under leiden_<key> / X_umap_<key>',
+            },
+            {
+              label: 'Decompose into programs…',
+              onClick: () => setDecomposeSource({ name: geneSet.name, genes: geneSet.genes }),
+              disabled: geneSet.genes.length < 3,
+              tooltip: 'PCA or NMF on this set: per-cell program scores and one gene set per program',
             },
               {
                 label: 'Select cells…',

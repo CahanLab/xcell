@@ -106,3 +106,11 @@ cluster_cells_by_gene_set:
   n_neighbors: 15
   resolution: 0.3                   # a gene-set PCA fragments easily; start low, raise for more clusters
   run_umap: true
+
+# ---------------------------------------------------------------------------
+# Decompose a gene set into expression programs (gene-set row → ⋯ → Decompose…).
+# ---------------------------------------------------------------------------
+gene_set_decomposition:
+  method: pca                       # pca|nmf
+  k: 3                              # programs; the modal suggests one from the set's eigen-spectrum
+  loading_threshold: 0.2            # PCA: a gene joins a program at this fraction of the top |loading|

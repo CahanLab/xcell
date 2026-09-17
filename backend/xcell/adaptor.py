@@ -8257,6 +8257,225 @@ class DataAdaptor:
     # NMF gene programs
     # =========================================================================
 
+    #: Correlation matrices are genes × genes; past this many genes the
+    #: coherence check stops being instant, and no curated set is that large.
+    MAX_COHERENCE_GENES = 3000
+
+    def gene_set_coherence(self, genes: list[str], *, cell_indices: list[int] | None = None,
+                           layer: str | None = None, metric: str = 'pearson') -> dict[str, Any]:
+        """One number before decomposing: how much of the set one pattern explains.
+
+        Pure read over the log-normalised matrix (or a named layer) on the
+        chosen cells. See :func:`gene_coexpression.set_coherence`.
+        """
+        from xcell import gene_coexpression as gc  # noqa: PLC0415
+
+        requested = [str(g) for g in genes]
+        found, gene_idx = self._resolve_gene_indices(requested)
+        if not found:
+            raise ValueError("None of the specified genes found in dataset")
+        if len(found) > self.MAX_COHERENCE_GENES:
+            raise ValueError(f"Coherence is computed over at most {self.MAX_COHERENCE_GENES} genes; got {len(found)}")
+        idx = self._validate_cell_indices(cell_indices)
+        cells = None if idx is None else [int(i) for i in idx]
+        X = self._read_gene_matrix(gene_idx, cell_indices=cells, layer=layer)
+        out = gc.set_coherence(X, metric=metric)
+        found_set = set(found)
+        out.update({
+            'n_genes_used': len(found),
+            'genes_missing': [g for g in requested if g not in found_set][:100],
+            'n_cells': int(X.shape[1]),
+            'metric': metric,
+        })
+        return out
+
+    def prepare_gene_set_decomposition(
+        self,
+        genes: list[str],
+        *,
+        key: str,
+        method: str = 'pca',
+        k: int = 3,
+        loading_threshold: float = 0.2,
+        layer: str | None = None,
+        transform: str | None = 'log1p',
+        cell_indices: list[int] | None = None,
+        seed: int = 0,
+        specificity_weight: float = 1.0,
+        weight_explained: float = 0.5,
+        overwrite: bool = False,
+    ) -> tuple[Callable[[Callable], dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
+        """Decompose one gene set into expression programs (PCA or NMF).
+
+        Writes what ``prepare_gene_nmf`` writes, so the whole score-matrix UI
+        applies: ``obsm[key]`` (cells × programs, NaN outside the cell scope)
+        with a ``uns['xcell_score_matrices']`` entry, ``varm[f'{key}_loadings']``
+        (all genes × programs, zero outside the set), and
+        ``uns['xcell_gene_set_decomposition'][key]`` with the program gene
+        lists, the variance / factor weights and the set's coherence.
+        ``k`` is clamped to what the set allows rather than failing.
+        """
+        import re  # noqa: PLC0415
+
+        from scipy import sparse as _sp  # noqa: PLC0415
+
+        from xcell import gene_coexpression as gc  # noqa: PLC0415
+        from xcell import gene_set_decomposition as gsd  # noqa: PLC0415
+
+        key = re.sub(r'[^A-Za-z0-9_]+', '_', str(key or '')).strip('_')
+        if not key:
+            raise ValueError("key must contain at least one letter or digit")
+        method = str(method or 'pca').lower()
+        if method not in ('pca', 'nmf'):
+            raise ValueError(f"method must be 'pca' or 'nmf', got '{method}'")
+        requested = [str(g) for g in genes]
+        found, gene_idx = self._resolve_gene_indices(requested)
+        found_set = set(found)
+        missing = [g for g in requested if g not in found_set]
+        if not found:
+            raise ValueError("None of the specified genes found in dataset")
+        if len(found) < 2:
+            raise ValueError(f"Need at least 2 genes present to decompose; found {len(found)}")
+        idx = self._validate_cell_indices(cell_indices)
+        cell_idx = np.arange(self.n_cells) if idx is None else np.asarray(idx, dtype=int)
+        n_used = int(len(cell_idx))
+        if n_used < 3:
+            raise ValueError(f"Need at least 3 cells; got {n_used}")
+        if key in self.adata.obsm and not overwrite:
+            raise ValueError(f"A score matrix named '{key}' already exists in .obsm; choose another key or set overwrite")
+        k_max = min(len(found) - 1, n_used - 1) if method == 'pca' else min(len(found), n_used)
+        k_eff = int(max(1, min(int(k), k_max)))
+
+        if layer:
+            source = self._resolve_source_matrix(layer)
+        elif transform == 'log1p':
+            source = self.normalized_adata.X
+        else:
+            source = self.adata.X
+        sub_X = source[cell_idx][:, gene_idx]
+        sub_X = sub_X.toarray() if _sp.issparse(sub_X) else np.asarray(sub_X)
+        sub_X = np.ascontiguousarray(sub_X, dtype=np.float32)
+
+        snap_found, snap_missing = list(found), list(missing)
+        snap_seed, snap_thr = int(seed), float(loading_threshold)
+        snap_spec, snap_wexp = float(specificity_weight), float(weight_explained)
+        snap_layer, snap_transform = layer, transform
+        loadings_key = f'{key}_loadings'
+
+        def compute_fn(report: Callable) -> dict[str, Any]:
+            report(0.05, 'Measuring coherence…')
+            coherence = gc.set_coherence(sub_X.T, metric='pearson')
+            if method == 'pca':
+                report(0.3, f'PCA ({k_eff} components)…')
+                res = gsd.pca_programs(sub_X, snap_found, k=k_eff, loading_threshold=snap_thr, seed=snap_seed)
+            else:
+                def inner(frac: float, msg: str) -> None:
+                    report(0.3 + 0.65 * float(frac), msg)
+                res = gsd.nmf_programs(sub_X, snap_found, k=k_eff, seed=snap_seed, max_genes=len(snap_found),
+                                       specificity_weight=snap_spec, weight_explained=snap_wexp,
+                                       progress_callback=inner)
+            res['coherence'] = coherence
+            report(1.0, 'Done')
+            return res
+
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            n = self.n_cells
+            scores = np.asarray(result['scores'], dtype=np.float32)
+            n_prog = int(scores.shape[1])
+            names = [p['name'] for p in result['programs']]
+            full = np.full((n, n_prog), np.nan, dtype=np.float32)
+            full[cell_idx] = scores
+            self.adata.obsm[key] = full
+            reg = self.adata.uns.get('xcell_score_matrices')
+            reg = dict(reg) if isinstance(reg, dict) else {}
+            reg[key] = {'columns': names, 'source': 'gene_set_decomposition', 'method': method}
+            self.adata.uns['xcell_score_matrices'] = reg
+
+            L = np.zeros((self.adata.n_vars, n_prog), dtype=np.float32)
+            L[gene_idx] = np.asarray(result['loadings'], dtype=np.float32)
+            self.adata.varm[loadings_key] = L
+
+            params = {
+                'genes': snap_found, 'key': key, 'method': method, 'k': k_eff,
+                'loading_threshold': snap_thr, 'layer': snap_layer, 'transform': snap_transform,
+                'seed': snap_seed, 'specificity_weight': snap_spec, 'weight_explained': snap_wexp,
+            }
+            programs_map = {}
+            for p in result['programs']:
+                entry = {kk: vv for kk, vv in p.items() if kk != 'name'}
+                programs_map[p['name']] = entry
+            store = self.adata.uns.get('xcell_gene_set_decomposition')
+            store = dict(store) if isinstance(store, dict) else {}
+            store[key] = {
+                'key': key, 'method': method, 'k': k_eff,
+                'genes_used': snap_found, 'genes_missing': snap_missing[:100],
+                'n_cells': n_used, 'program_names': names, 'programs': programs_map,
+                'variance_ratio': list(result.get('variance_ratio') or []),
+                'factor_weights': list(result.get('factor_weights') or []),
+                'coherence': {kk: vv for kk, vv in result['coherence'].items() if vv is not None},
+                'params': {kk: vv for kk, vv in params.items() if kk != 'genes' and vv is not None},
+            }
+            self.adata.uns['xcell_gene_set_decomposition'] = store
+
+            out = {
+                'key': key, 'obsm_key': key, 'loadings_key': loadings_key, 'method': method, 'k': k_eff,
+                'program_names': names, 'programs': result['programs'],
+                'variance_ratio': result.get('variance_ratio'),
+                'factor_weights': result.get('factor_weights'),
+                'n_dropped': result.get('n_dropped', 0),
+                'n_genes_used': len(snap_found), 'genes_missing': snap_missing[:100],
+                'n_missing': len(snap_missing), 'n_cells': n_used,
+                'coherence': result['coherence'],
+            }
+            self._log_action('gene_set_decomposition', params, out,
+                             subset=(None if idx is None else cell_idx))
+            return out
+
+        return compute_fn, apply_fn
+
+    def list_gene_set_decompositions(self) -> list[dict[str, Any]]:
+        store = self.adata.uns.get('xcell_gene_set_decomposition')
+        if not isinstance(store, dict):
+            return []
+        out = []
+        for key, rec in store.items():
+            if not isinstance(rec, dict):
+                continue
+            out.append({
+                'key': str(key), 'method': rec.get('method'),
+                'n_programs': len(rec.get('program_names', [])),
+                'n_genes_used': len(rec.get('genes_used', [])),
+                'n_cells': int(rec.get('n_cells', 0)),
+            })
+        return out
+
+    def get_gene_set_decomposition(self, key: str) -> dict[str, Any]:
+        store = self.adata.uns.get('xcell_gene_set_decomposition')
+        if not isinstance(store, dict) or key not in store:
+            raise KeyError(f"No gene-set decomposition named '{key}'")
+        rec = store[key]
+        programs = []
+        names = list(rec.get('program_names', []))
+        pm = rec.get('programs', {})
+        for name in names:
+            entry = dict(pm.get(name, {}))
+            entry['name'] = name
+            for fld in ('genes', 'genes_down', 'weights', 'weights_down'):
+                entry[fld] = [x.item() if hasattr(x, 'item') else x for x in list(entry.get(fld, []))]
+            programs.append(entry)
+        return {
+            'key': str(key), 'obsm_key': str(key), 'method': rec.get('method'), 'k': int(rec.get('k', len(names))),
+            'program_names': names, 'programs': programs,
+            'variance_ratio': [float(v) for v in rec.get('variance_ratio', [])],
+            'factor_weights': [float(v) for v in rec.get('factor_weights', [])],
+            'genes_used': [str(g) for g in rec.get('genes_used', [])],
+            'genes_missing': [str(g) for g in rec.get('genes_missing', [])],
+            'n_cells': int(rec.get('n_cells', 0)),
+            'coherence': {kk: (vv.item() if hasattr(vv, 'item') else (list(vv) if isinstance(vv, (list, tuple, np.ndarray)) else vv))
+                          for kk, vv in dict(rec.get('coherence', {})).items()},
+            'params': {kk: (vv.item() if hasattr(vv, 'item') else vv) for kk, vv in dict(rec.get('params', {})).items()},
+        }
+
     def prepare_cluster_cells_by_gene_set(
         self,
         genes: list[str],

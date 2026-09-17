@@ -819,6 +819,8 @@ interface AppState {
   isDiffExpModalOpen: boolean
   clusterCellsSource: { name: string; genes: string[] } | null
   decomposeSource: { name: string; genes: string[] } | null
+  // genes === null: the modal offers a gene-subset picker instead of a fixed list
+  geneMapSource: { name: string; genes: string[] | null } | null
   clusterModalSourceSet: {
     name: string
     genes: string[]
@@ -1066,6 +1068,7 @@ interface AppState {
   setDiffExpModalOpen: (open: boolean) => void
   setClusterCellsSource: (src: { name: string; genes: string[] } | null) => void
   setDecomposeSource: (src: { name: string; genes: string[] } | null) => void
+  setGeneMapSource: (src: { name: string; genes: string[] | null } | null) => void
   setClusterModalSourceSet: (src: {
     name: string
     genes: string[]
@@ -1360,6 +1363,7 @@ export const useStore = create<AppState>((set, get) => {
     clusterModalSourceSet: null,
     clusterCellsSource: null,
     decomposeSource: null,
+    geneMapSource: null,
     selectByExpressionSource: null,
     ucellScoreSource: null,
     scoreGeneSetsSource: null,
@@ -2111,6 +2115,7 @@ export const useStore = create<AppState>((set, get) => {
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
     setClusterCellsSource: (src) => set({ clusterCellsSource: src }),
     setDecomposeSource: (src) => set({ decomposeSource: src }),
+    setGeneMapSource: (src) => set({ geneMapSource: src }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
     setUcellScoreSource: (src) => set({ ucellScoreSource: src }),
     setScoreGeneSetsSource: (src) => set({ scoreGeneSetsSource: src }),

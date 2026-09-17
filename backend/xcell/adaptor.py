@@ -8476,6 +8476,225 @@ class DataAdaptor:
             'params': {kk: (vv.item() if hasattr(vv, 'item') else vv) for kk, vv in dict(rec.get('params', {})).items()},
         }
 
+    #: A gene map stores a genes × genes float32 similarity; past this the
+    #: matrix alone is 36 MB and the browser has nothing useful to draw.
+    MAX_GENE_MAP_GENES = 3000
+
+    def prepare_gene_map(
+        self,
+        *,
+        key: str,
+        genes: list[str] | None = None,
+        gene_subset: str | list[str] | dict[str, Any] | None = None,
+        expression_weight: float = 1.0,
+        expression_metric: str = 'bicor',
+        annotation_weight: float = 1.0,
+        annotation_libraries: list[dict[str, Any]] | None = None,
+        string_weight: float = 0.0,
+        string_species: str | None = None,
+        string_required_score: int = 400,
+        n_neighbors: int = 15,
+        resolution: float = 1.0,
+        embedding: str = 'umap',
+        layer: str | None = None,
+        cell_indices: list[int] | None = None,
+        seed: int = 0,
+        overwrite: bool = False,
+    ) -> tuple[Callable[[Callable], dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
+        """Build a gene map: similarity from expression, annotation and STRING → modules + 2-D layout.
+
+        Genes come from an explicit list or a ``gene_subset`` (a boolean
+        ``.var`` column, a gene list, or a ``{columns, operation}`` spec).
+        Annotation libraries must already be in the Gene set library cache;
+        naming one that is not is a 400 here, not a failed task. STRING edges
+        are fetched inside the task. The result lives in
+        ``uns['xcell_gene_maps'][key]`` with the similarity matrix itself.
+        """
+        import re  # noqa: PLC0415
+
+        from xcell import gene_set_sources as gss  # noqa: PLC0415
+
+        key = re.sub(r'[^A-Za-z0-9_]+', '_', str(key or '')).strip('_')
+        if not key:
+            raise ValueError("key must contain at least one letter or digit")
+        if genes:
+            requested = [str(g) for g in genes]
+            found, gene_idx = self._resolve_gene_indices(requested)
+            found_set = set(found)
+            missing = [g for g in requested if g not in found_set]
+            subset_type = 'gene_list'
+        elif gene_subset is not None:
+            mask, subset_type, _meta = self._resolve_gene_mask(gene_subset)
+            gene_idx = [int(i) for i in np.flatnonzero(mask)]
+            found = [str(self.adata.var_names[i]) for i in gene_idx]
+            missing = []
+        else:
+            raise ValueError("Give either genes or gene_subset")
+        if len(found) < 3:
+            raise ValueError(f"A gene map needs at least 3 genes present; found {len(found)}")
+        if len(found) > self.MAX_GENE_MAP_GENES:
+            raise ValueError(f"A gene map holds at most {self.MAX_GENE_MAP_GENES} genes; got {len(found)} — narrow the subset")
+        store = self.adata.uns.get('xcell_gene_maps')
+        if isinstance(store, dict) and key in store and not overwrite:
+            raise ValueError(f"A gene map named '{key}' already exists; choose another key or set overwrite")
+        embedding = str(embedding or 'umap').lower()
+        if embedding not in ('umap', 'mds'):
+            raise ValueError("embedding must be 'umap' or 'mds'")
+
+        idx = self._validate_cell_indices(cell_indices)
+        cells = None if idx is None else [int(i) for i in idx]
+        n_cells = len(cells) if cells is not None else int(self.n_cells)
+
+        X_genes = None
+        if float(expression_weight) > 0:
+            X_genes = np.ascontiguousarray(self._read_gene_matrix(gene_idx, cell_indices=cells, layer=layer), dtype=np.float32)
+
+        memberships: dict[str, list[str]] = {}
+        libs_used: list[dict[str, Any]] = []
+        if float(annotation_weight) > 0 and annotation_libraries:
+            lower = {g.upper() for g in found}
+            for spec in annotation_libraries:
+                if not isinstance(spec, dict) or not spec.get('id'):
+                    raise ValueError("Each annotation library needs {source, id}")
+                lib = gss.find_library(str(spec.get('source', 'msigdb')), str(spec['id']), spec.get('species'))
+                if lib is None:
+                    raise ValueError(f"Library '{spec['id']}' ({spec.get('source', 'msigdb')}) has not been fetched yet — fetch it in the Gene set library first")
+                n_sets = 0
+                for st in lib.get('sets', []):
+                    members = [str(m) for m in st.get('genes', []) if str(m).upper() in lower]
+                    if members:
+                        memberships[f"{lib['id']}:{st['name']}"] = members
+                        n_sets += 1
+                libs_used.append({'source': lib.get('source'), 'id': lib.get('id'), 'name': lib.get('name'),
+                                  'species': lib.get('species'), 'n_sets_overlapping': n_sets})
+
+        species = None
+        if float(string_weight) > 0:
+            species = string_species or self.guess_species().get('species')
+            if species not in gss.SPECIES_TAXON:
+                raise ValueError("STRING needs a species ('human' or 'mouse'); the dataset's could not be guessed")
+            if len(found) > gss.MAX_STRING_IDENTIFIERS:
+                raise ValueError(f"STRING accepts at most {gss.MAX_STRING_IDENTIFIERS} genes per query; got {len(found)}")
+
+        if X_genes is None and not memberships and species is None:
+            raise ValueError('No similarity channel is available — enable expression, annotation (with a cached library) or STRING')
+
+        snap_found, snap_missing = list(found), list(missing)
+        snap_w = (float(expression_weight), float(annotation_weight), float(string_weight))
+        snap_metric, snap_score = str(expression_metric), int(string_required_score)
+        snap_nn, snap_res, snap_seed = int(n_neighbors), float(resolution), int(seed)
+        snap_layer, snap_subset_type = layer, subset_type
+
+        def compute_fn(report: Callable) -> dict[str, Any]:
+            from xcell import gene_similarity as gsim  # noqa: PLC0415
+
+            channels: dict[str, tuple[np.ndarray | None, float]] = {}
+            info: dict[str, Any] = {}
+            if X_genes is not None:
+                report(0.1, f'Expression similarity ({snap_metric})…')
+                channels['expression'] = (gsim.expression_similarity(X_genes, metric=snap_metric), snap_w[0])
+                info['expression'] = {'weight': snap_w[0], 'metric': snap_metric, 'n_cells': n_cells, 'layer': snap_layer}
+            if memberships:
+                report(0.3, f'Annotation similarity over {len(memberships)} sets…')
+                S_ann, n_terms = gsim.annotation_similarity(snap_found, memberships)
+                channels['annotation'] = (S_ann, snap_w[1])
+                info['annotation'] = {'weight': snap_w[1], 'libraries': libs_used, 'n_terms': len(memberships),
+                                      'n_genes_annotated': int(sum(1 for t in n_terms if t > 0)), 'terms_per_gene': n_terms}
+            if species is not None:
+                report(0.45, 'Querying STRING…')
+                net = gss.string_network(snap_found, species, required_score=snap_score)
+                S_str, n_edges = gsim.string_similarity(snap_found, net.get('edges', []))
+                channels['string'] = (S_str, snap_w[2])
+                info['string'] = {'weight': snap_w[2], 'species': species, 'required_score': snap_score, 'n_edges': n_edges}
+            report(0.6, 'Modules and layout…')
+            out = gsim.build_gene_map(snap_found, channels=channels, n_neighbors=snap_nn,
+                                      resolution=snap_res, embedding=embedding, seed=snap_seed)
+            out['channels'] = info
+            report(1.0, 'Done')
+            return out
+
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            params = {
+                'genes': snap_found, 'gene_subset': snap_subset_type, 'key': key,
+                'expression_weight': snap_w[0], 'expression_metric': snap_metric,
+                'annotation_weight': snap_w[1], 'annotation_libraries': libs_used,
+                'string_weight': snap_w[2], 'string_species': species, 'string_required_score': snap_score,
+                'n_neighbors': snap_nn, 'resolution': snap_res, 'embedding': embedding,
+                'layer': snap_layer, 'seed': snap_seed,
+            }
+            rec = {
+                'key': key, 'genes': snap_found, 'genes_missing': snap_missing[:100],
+                'coords': np.asarray(result['coords'], dtype=np.float32),
+                'modules': [int(m) for m in result['modules']],
+                'order': [int(i) for i in result['order']],
+                'similarity': np.asarray(result['similarity'], dtype=np.float32),
+                'module_sizes': [int(x) for x in result['module_sizes']],
+                'n_modules': int(result['n_modules']),
+                'channels': result['channels'],
+                'channel_weights': {k: float(v) for k, v in result['channel_weights'].items()},
+                'params': {k: v for k, v in params.items() if k != 'genes' and v is not None},
+                'n_cells': n_cells,
+            }
+            store = self.adata.uns.get('xcell_gene_maps')
+            store = dict(store) if isinstance(store, dict) else {}
+            store[key] = rec
+            self.adata.uns['xcell_gene_maps'] = store
+            out = {
+                'key': key, 'n_genes': len(snap_found), 'genes_missing': snap_missing[:100],
+                'n_missing': len(snap_missing), 'n_modules': rec['n_modules'],
+                'module_sizes': rec['module_sizes'], 'channel_weights': rec['channel_weights'],
+                'channels': {k: {kk: vv for kk, vv in v.items() if kk != 'terms_per_gene'} for k, v in result['channels'].items()},
+                'embedding': embedding, 'n_cells': n_cells,
+            }
+            self._log_action('gene_map', params, out, subset=(None if idx is None else np.asarray(cells)))
+            return out
+
+        return compute_fn, apply_fn
+
+    def list_gene_maps(self) -> list[dict[str, Any]]:
+        store = self.adata.uns.get('xcell_gene_maps')
+        if not isinstance(store, dict):
+            return []
+        return [{
+            'key': str(k), 'n_genes': len(r.get('genes', [])), 'n_modules': int(r.get('n_modules', 0)),
+            'channel_weights': {kk: float(vv) for kk, vv in dict(r.get('channel_weights', {})).items()},
+        } for k, r in store.items() if isinstance(r, dict)]
+
+    def get_gene_map(self, key: str, *, include_similarity: bool = False) -> dict[str, Any]:
+        store = self.adata.uns.get('xcell_gene_maps')
+        if not isinstance(store, dict) or key not in store:
+            raise KeyError(f"No gene map named '{key}'")
+        r = store[key]
+
+        def _plain(v: Any) -> Any:
+            if isinstance(v, np.ndarray):
+                return v.tolist()
+            if isinstance(v, dict):
+                return {kk: _plain(vv) for kk, vv in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [_plain(x) for x in v]
+            if hasattr(v, 'item'):
+                return v.item()
+            return v
+
+        out = {
+            'key': str(key),
+            'genes': [str(g) for g in r.get('genes', [])],
+            'coords': [[round(float(x), 4), round(float(y), 4)] for x, y in np.asarray(r.get('coords'), dtype=float)],
+            'modules': [int(m) for m in r.get('modules', [])],
+            'order': [int(i) for i in r.get('order', [])],
+            'module_sizes': [int(x) for x in r.get('module_sizes', [])],
+            'n_modules': int(r.get('n_modules', 0)),
+            'channels': _plain(r.get('channels', {})),
+            'channel_weights': _plain(r.get('channel_weights', {})),
+            'params': _plain(r.get('params', {})),
+            'n_cells': int(r.get('n_cells', 0)),
+        }
+        if include_similarity:
+            S = np.asarray(r.get('similarity'), dtype=float)
+            out['similarity'] = np.round(S, 3).tolist()
+        return out
+
     def prepare_cluster_cells_by_gene_set(
         self,
         genes: list[str],

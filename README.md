@@ -367,6 +367,21 @@ When the run finishes, **Show heatmap** opens the Heatmap tab with one row
 band per cluster, restricted to the cells the clustering ran on (the toolbar
 says so; Heatmap Settings can drop the restriction).
 
+### Gene map: genes as points
+
+`⋯` → `Map genes…` on a gene-set row (or `⋯` → `Gene map…` in the Genes
+panel header, which lets you pick any gene subset) builds a gene–gene
+similarity from up to three channels, each with a weight: **expression**
+(correlation across cells, on `.X` or a smoothed layer, optionally within the
+current selection), **annotation** (how many of the same cached library sets
+two genes belong to — fetch GO, Reactome, the matrisome categories or
+cell-type markers in the Library first), and **STRING** (interaction scores,
+queried live). Leiden on that similarity gives modules; UMAP lays the genes
+out. In the **map** view, hover for a gene and drag a lasso to save the
+genes inside it as a set; the **similarity** view is the clustered heatmap
+with module boxes; the **modules** view saves modules as gene sets. A map
+holds up to 3,000 genes.
+
 ### Decomposing a gene set into programs
 
 Some sets are several expression patterns under one name — the collagens

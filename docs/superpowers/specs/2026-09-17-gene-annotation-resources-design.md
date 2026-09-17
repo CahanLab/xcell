@@ -157,6 +157,19 @@ pattern and a score is the right tool; a set at 0.3 is what decomposition is
 for. The number is computed synchronously by a small route so the user sees
 it before choosing k.
 
+**[decision, revised during implementation]** The variance fraction alone
+does not decide "one pattern or several" on real single-cell data: for the
+33 collagens on the 24k-cell hindlimb the first eigengene explains 4.6 % and
+the mean pairwise |r| is 0.009, and the Kaiser rule (eigenvalues > 1) named
+ten patterns because dozens of noise eigenvalues sit just above 1 when cells
+vastly outnumber genes. How many patterns are real is therefore judged
+against the Marchenko–Pastur noise edge `(1 + √(g/n))²`, the largest
+eigenvalue independent genes produce by chance; `suggested_k` is the count
+above it and `one_pattern` is true when at most one clears it or the first
+carries over 70 % of what does. On the hindlimb that gives two collagen
+patterns, which the decomposition confirmed (fibrillar vs basement-membrane
+collagens). The modal draws the edge on the scree.
+
 ### A gene map is a similarity, then an embedding, then a picture
 
 `backend/xcell/gene_similarity.py` (pure) builds a genes × genes similarity

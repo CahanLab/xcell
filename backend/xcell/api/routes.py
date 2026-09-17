@@ -3116,6 +3116,72 @@ def run_gene_neighbors(request: GeneNeighborsRequest, dataset: str | None = Quer
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class GeneMapRequest(BaseModel):
+    """Gene map: similarity from expression / annotation / STRING → modules + 2-D layout (task)."""
+    genes: list[str] | None = None
+    # Full union, not narrowed: the UI's GeneSubsetPicker sends a {columns, operation} dict.
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    key: str
+    expression_weight: float = 1.0
+    expression_metric: str = 'bicor'
+    annotation_weight: float = 1.0
+    annotation_libraries: list[dict[str, Any]] = []
+    string_weight: float = 0.0
+    string_species: str | None = None
+    string_required_score: int = 400
+    n_neighbors: int = 15
+    resolution: float = 1.0
+    embedding: str = 'umap'
+    layer: str | None = None
+    seed: int = 0
+    overwrite: bool = False
+    cell_context: str = 'all'
+    cell_indices: list[int] | None = None
+    annotation_column: str | None = None
+    annotation_values: list[str] | None = None
+
+
+@router.post("/gene_map/run", status_code=202)
+def run_gene_map(request: GeneMapRequest, dataset: str | None = Query(None)):
+    adaptor = get_adaptor(dataset)
+    try:
+        gene_subset = request.gene_subset
+        if isinstance(gene_subset, GeneSubsetSpec):
+            gene_subset = {'columns': gene_subset.columns, 'operation': gene_subset.operation}
+        cell_indices = _resolve_cell_context(
+            adaptor, request.cell_context, request.cell_indices,
+            request.annotation_column, request.annotation_values)
+        compute_fn, apply_fn = adaptor.prepare_gene_map(
+            key=request.key, genes=request.genes, gene_subset=gene_subset,
+            expression_weight=request.expression_weight, expression_metric=request.expression_metric,
+            annotation_weight=request.annotation_weight, annotation_libraries=request.annotation_libraries,
+            string_weight=request.string_weight, string_species=request.string_species,
+            string_required_score=request.string_required_score,
+            n_neighbors=request.n_neighbors, resolution=request.resolution, embedding=request.embedding,
+            layer=request.layer, cell_indices=cell_indices, seed=request.seed, overwrite=request.overwrite)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.get("/gene_map")
+def list_gene_maps(dataset: str | None = Query(None)):
+    return {"runs": get_adaptor(dataset).list_gene_maps()}
+
+
+@router.get("/gene_map/{key}")
+def get_gene_map(key: str, similarity: bool = Query(False), dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).get_gene_map(key, include_similarity=similarity)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.post("/scanpy/find_similar_genes")
 def run_find_similar_genes(request: FindSimilarGenesRequest, dataset: str | None = Query(None)):
     """Find genes with similar expression patterns.

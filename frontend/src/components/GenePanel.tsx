@@ -814,6 +814,7 @@ function CategoryGeneSetComponent({
     setClusterModalSourceSet,
     setClusterCellsSource,
     setDecomposeSource,
+    setGeneMapSource,
   } = useStore()
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
   const setUcellScoreSource = useStore((s) => s.setUcellScoreSource)
@@ -1094,6 +1095,12 @@ function CategoryGeneSetComponent({
               onClick: () => setDecomposeSource({ name: geneSet.name, genes: geneSet.genes }),
               disabled: geneSet.genes.length < 3,
               tooltip: 'PCA or NMF on this set: per-cell program scores and one gene set per program',
+            },
+            {
+              label: 'Map genes…',
+              onClick: () => setGeneMapSource({ name: geneSet.name, genes: geneSet.genes }),
+              disabled: geneSet.genes.length < 3,
+              tooltip: 'Genes as points: similarity from expression, annotation and STRING; lasso to make sets',
             },
               {
                 label: 'Select cells…',
@@ -1760,7 +1767,7 @@ export function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetC
 }
 
 export default function GenePanel() {
-  const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen, setGeneSetLibraryModalOpen } = useStore()
+  const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen, setGeneSetLibraryModalOpen, setGeneMapSource } = useStore()
   const selectedCellIndices = useStore((s) => s.selectedCellIndices)
   const { colorByGene, colorByGenes, colorByScore, clearExpressionColor, colorByBivariate, clearBivariateColor, addGeneSetHighlight, addCellSetHighlight, removeHighlightLayer, updateHighlightLayer, clearHighlightOverlay } = useDataActions()
   const scoreMatrices = useStore((s) => s.schema?.score_matrices)
@@ -1923,6 +1930,11 @@ export default function GenePanel() {
                 label: 'Gene set library…',
                 onClick: () => setGeneSetLibraryModalOpen(true),
                 tooltip: 'Browse MSigDB, Enrichr and STRING; import sets',
+              },
+              {
+                label: 'Gene map…',
+                onClick: () => setGeneMapSource({ name: 'Gene map', genes: null }),
+                tooltip: 'Genes as points for any gene subset: similarity from expression, annotation and STRING',
               },
             ]}
           />

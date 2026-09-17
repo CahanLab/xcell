@@ -114,3 +114,15 @@ gene_set_decomposition:
   method: pca                       # pca|nmf
   k: 3                              # programs; the modal suggests one from the set's eigen-spectrum
   loading_threshold: 0.2            # PCA: a gene joins a program at this fraction of the top |loading|
+
+# ---------------------------------------------------------------------------
+# Gene map (gene-set row → ⋯ → Map genes…, or Genes panel ⋯ → Gene map…).
+# ---------------------------------------------------------------------------
+gene_map:
+  expression_metric: bicor          # bicor|pearson|spearman
+  expression_weight: 1.0
+  annotation_weight: 1.0
+  string_weight: 0.5                # applied when STRING is switched on
+  n_neighbors: 15
+  resolution: 1.0
+  embedding: umap                   # umap|mds

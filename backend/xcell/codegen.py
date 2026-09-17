@@ -697,6 +697,17 @@ REGISTRY: dict[str, ActionSpec] = {
             f"→ `.obsm['{r.get('obsm_key')}']`."
         ),
     ),
+    'gene_map': ActionSpec(
+        label='Gene map', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_gene_map',
+                        ('genes', 'gene_subset', 'key', 'expression_weight', 'expression_metric',
+                         'annotation_weight', 'annotation_libraries', 'string_weight', 'string_species',
+                         'string_required_score', 'n_neighbors', 'resolution', 'embedding', 'layer', 'seed')),
+        summary=lambda p, r: (
+            f"Gene map of {_n(r.get('n_genes'))} genes ('{r.get('key')}'): "
+            f"{_n(r.get('n_modules'))} modules, {p.get('embedding', 'umap')} layout."
+        ),
+    ),
     'gene_nmf_meta': ActionSpec(
         label='NMF meta-programs', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_meta_programs',

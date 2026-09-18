@@ -1,4 +1,5 @@
 import { useMemo, useState, useRef, useCallback, useEffect } from 'react'
+import { layoutLabels } from '../lib/labelLayout'
 import DeckGL from '@deck.gl/react'
 import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
@@ -1098,7 +1099,7 @@ export default function ScatterPlot({
     colorBy.name === embeddingLabelColumn
 
   const categoryLabelData = useMemo(() => {
-    if (!showCategoryLabels || !colorBy?.categories) return [] as { label: string; data: [number, number] }[]
+    if (!showCategoryLabels || !colorBy?.categories) return [] as { label: string; data: [number, number]; n: number }[]
     const coords = embedding.coordinates
     const values = colorBy.values
     const cats = colorBy.categories
@@ -1121,7 +1122,7 @@ export default function ScatterPlot({
     }
     return Object.keys(xs)
       .filter((k) => xs[k].length > 0)
-      .map((k) => ({ label: k, data: [median(xs[k]), median(ys[k])] as [number, number] }))
+      .map((k) => ({ label: k, data: [median(xs[k]), median(ys[k])] as [number, number], n: xs[k].length }))
   }, [showCategoryLabels, colorBy, embedding])
 
   // Freeze the currently displayed plot: capture each visible cell's
@@ -1162,7 +1163,7 @@ export default function ScatterPlot({
       title = embedding.name
     }
 
-    const labels = categoryLabelData.map((c) => ({ text: c.label, x: c.data[0], y: c.data[1] }))
+    const labels = categoryLabelData.map((c) => ({ text: c.label, x: c.data[0], y: c.data[1], n: c.n }))
 
     return {
       title,
@@ -1172,6 +1173,7 @@ export default function ScatterPlot({
       bounds: { minX: bounds.minX, minY: bounds.minY, maxX: bounds.maxX, maxY: bounds.maxY },
       bg: displayPreferences.backgroundColor,
       pointSize: displayPreferences.pointSize,
+      labelFontSize: displayPreferences.labelFontSize,
     }
   }, [data, getColor, categoryLabelData, bounds, displayPreferences, colorMode, expressionData, colorBy, embedding.name])
 
@@ -1235,14 +1237,23 @@ export default function ScatterPlot({
     }
   }, [buildSnapshot, slotKey, embedding.name, setError])
 
+  // Centroids in screen space, then pushed apart so no two labels overlap:
+  // bigger clusters keep their centroid, smaller ones shift (a leader line
+  // points back), and what still cannot fit is hidden rather than piled up.
+  const labelFontPx = displayPreferences.labelFontSize
   const categoryLabelScreen = useMemo(() => {
-    if (categoryLabelData.length === 0) return [] as { label: string; x: number; y: number }[]
+    if (categoryLabelData.length === 0) return [] as { label: string; x: number; y: number; ax: number; ay: number }[]
     const screen = dataToScreen(categoryLabelData.map((c) => c.data))
-    return categoryLabelData.map((c, i) => {
+    const rect = containerRef.current?.getBoundingClientRect()
+    const bounds = { w: rect?.width || 1, h: rect?.height || 1 }
+    const anchors = categoryLabelData.map((c, i) => {
       const [sx, sy] = (screen[i] ?? '0,0').split(',').map(Number)
-      return { label: c.label, x: sx, y: sy }
+      return { id: c.label, text: c.label, x: sx, y: sy, weight: c.n }
     })
-  }, [categoryLabelData, dataToScreen])
+    return layoutLabels(anchors, { fontPx: labelFontPx, bounds })
+      .filter((p) => !p.hidden)
+      .map((p) => ({ label: p.id, x: p.x, y: p.y, ax: p.ax, ay: p.ay }))
+  }, [categoryLabelData, dataToScreen, labelFontPx])
 
   const baseRadius = displayPreferences.pointSize
   const selectedRadius = baseRadius + 2
@@ -1493,6 +1504,13 @@ export default function ScatterPlot({
 
         {/* Categorical labels at cluster centroids (toggled per column from the
             Cells panel "..." menu). White text with a dark halo for legibility. */}
+        {categoryLabelScreen.map((c) => Math.hypot(c.x - c.ax, c.y - c.ay) > labelFontPx * 0.6 && (
+          <line
+            key={`${c.label}-leader`}
+            x1={c.ax} y1={c.ay} x2={c.x} y2={c.y}
+            stroke="rgba(255,255,255,0.55)" strokeWidth={1} pointerEvents="none"
+          />
+        ))}
         {categoryLabelScreen.map((c) => (
           <text
             key={c.label}
@@ -1501,7 +1519,7 @@ export default function ScatterPlot({
             textAnchor="middle"
             dominantBaseline="middle"
             style={{
-              fontSize: 13,
+              fontSize: labelFontPx,
               fontWeight: 700,
               fill: '#fff',
               stroke: '#000',

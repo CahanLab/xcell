@@ -32,6 +32,7 @@ display:
   gene_set_aggregation: mean        # mean|median|sum|max
   gene_set_scoring_method: mean     # mean|ucell
   show_grid: false
+  label_font_size: 13               # category labels on the plot; never overlap
 
 # ---------------------------------------------------------------------------
 # Line/shape smoothing (Shapes panel → smooth).

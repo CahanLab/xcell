@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useCallback } from 'react'
 import { useStore, EmbeddingSnapshot } from '../store'
+import { fitFontSize, layoutLabels } from '../lib/labelLayout'
 
 const HEADER_H = 26
 const MIN_W = 120
@@ -89,22 +90,36 @@ export function renderSnapshotToCanvas(
   }
   ctx.putImageData(img, 0, 0)
 
-  // Cluster labels on top (skipped when the panel is tiny, to avoid clutter).
-  if (snap.labels.length > 0 && Math.min(cssW, cssH) > 90) {
-    const fontPx = Math.max(9, Math.min(13, Math.round(Math.min(cssW, cssH) / 16))) * dpr
+  // Cluster labels on top. The font shrinks with the pane until every label
+  // fits without overlap (floor 7 px); labels pushed off their centroid get a
+  // leader line; anything that still cannot fit is dropped, smallest cluster
+  // first. Tiny panes get no labels at all.
+  if (snap.labels.length > 0 && Math.min(cssW, cssH) > 60) {
+    const cap = Math.min(snap.labelFontSize ?? 13, Math.max(9, Math.round(Math.min(cssW, cssH) / 16)))
+    const anchors = snap.labels.map((lab, i) => ({
+      id: `${lab.text}#${i}`, text: lab.text, x: toX(lab.x) / dpr, y: toY(lab.y) / dpr, weight: lab.n ?? 1,
+    }))
+    const bounds = { w: cssW, h: cssH }
+    const fontCss = fitFontSize(anchors, { bounds, max: cap, min: 7 })
+    const placed = layoutLabels(anchors, { fontPx: fontCss, bounds }).filter((p) => !p.hidden)
+    const fontPx = fontCss * dpr
     ctx.font = `700 ${fontPx}px system-ui, -apple-system, sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.lineJoin = 'round'
+    for (const p of placed) {
+      if (Math.hypot(p.x - p.ax, p.y - p.ay) > fontCss * 0.6) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)'
+        ctx.lineWidth = 1 * dpr
+        ctx.beginPath(); ctx.moveTo(p.ax * dpr, p.ay * dpr); ctx.lineTo(p.x * dpr, p.y * dpr); ctx.stroke()
+      }
+    }
     ctx.lineWidth = Math.max(2, fontPx / 4)
     ctx.strokeStyle = 'rgba(0,0,0,0.85)'
     ctx.fillStyle = '#fff'
-    for (const lab of snap.labels) {
-      const lx = toX(lab.x)
-      const ly = toY(lab.y)
-      if (lx < 0 || lx > W || ly < 0 || ly > H) continue
-      ctx.strokeText(lab.text, lx, ly)
-      ctx.fillText(lab.text, lx, ly)
+    for (const p of placed) {
+      ctx.strokeText(p.text, p.x * dpr, p.y * dpr)
+      ctx.fillText(p.text, p.x * dpr, p.y * dpr)
     }
   }
 }

@@ -272,6 +272,18 @@ warn outright if you point them at a z-scored layer.
 - Click a gene to color cells by its expression
 - Click the `⧉` beside any gene — in search results, inside a gene set, or among a directional set's `↓` genes — to copy its symbol to the clipboard; it flashes `✓` on success
 
+### What is this gene?
+
+Every gene row has an ⓘ beside the copy button. It opens a card from
+MyGene.info: full name and aliases, the RefSeq summary, GO terms (strongest
+evidence first, codes shown), InterPro domains, pathways, the human or mouse
+ortholog, and links to NCBI, Ensembl, MGI/HGNC and UniProt. A mouse gene
+without a summary of its own shows its human ortholog's, labelled as such.
+Annotations are cached on your machine per species
+(`~/.cache/xcell/gene_annotations.sqlite`), so each gene is fetched once;
+`⋯` → `Fetch gene annotations for all genes…` in the Genes panel header warms
+the cache for the whole dataset in the background.
+
 ### Gene Mask
 
 To scope the Gene Panel to a relevant gene universe, click the `⋯` button in the Genes panel header and choose `Gene mask…`. The modal lists all boolean columns in your dataset's `.var` (for example, `highly_variable` after running Highly Variable Genes, or `spatially_variable` after spatial autocorrelation). For each column, choose:

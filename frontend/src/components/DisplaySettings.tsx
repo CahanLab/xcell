@@ -314,6 +314,10 @@ export default function DisplaySettings() {
     setDisplayPreferences({ pointSize: parseFloat(e.target.value) })
   }
 
+  const handleLabelFontSizeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setDisplayPreferences({ labelFontSize: parseInt(e.target.value, 10) })
+  }
+
   const handleOpacityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setDisplayPreferences({ pointOpacity: parseFloat(e.target.value) })
   }
@@ -399,6 +403,23 @@ export default function DisplaySettings() {
                     style={styles.slider}
                   />
                   <span style={styles.sliderValue}>{Math.round(displayPreferences.pointOpacity * 100)}%</span>
+                </div>
+              </div>
+
+              {/* Category label font size (labels never overlap: smaller clusters shift or hide) */}
+              <div style={styles.settingGroup}>
+                <label style={styles.label} title="Size of category labels on the plot. Labels are laid out so none overlap; a snapshot pane shrinks them further to fit.">Label Font Size</label>
+                <div style={styles.sliderContainer}>
+                  <input
+                    type="range"
+                    min="8"
+                    max="24"
+                    step="1"
+                    value={displayPreferences.labelFontSize}
+                    onChange={handleLabelFontSizeChange}
+                    style={styles.slider}
+                  />
+                  <span style={styles.sliderValue}>{displayPreferences.labelFontSize}px</span>
                 </div>
               </div>
 

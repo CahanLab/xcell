@@ -75,6 +75,9 @@ display:
   expression_transform: none
   # Symmetric percentile clip for color-ramp anchors (0-5%, 0 = off). Default 1.0.
   clip_percentile: 1.0
+  # Category labels on the plot, px (8-24). Labels never overlap: smaller
+  # clusters shift (with a leader line) or hide; snapshot panes shrink to fit.
+  label_font_size: 13
   # Gene-set per-gene normalization before aggregation.
   # One of: none | zscore_mad | zscore_sd | minmax | rank.
   gene_set_per_gene_norm: zscore_mad

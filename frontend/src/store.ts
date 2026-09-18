@@ -526,6 +526,7 @@ export interface DisplayPreferences {
   clipPercentile: number  // Symmetric percentile clip for color-ramp anchors (0 = off)
   showGrid: boolean  // When true, ScatterPlot draws a screen-aligned grid with data-coord tick labels
   showScaleBar: boolean  // When true and the spatial scale is known, ScatterPlot draws a µm scale bar
+  labelFontSize: number  // Category labels on the plot, px; snapshots shrink below this to fit
 }
 
 // Scanpy action history entry
@@ -632,6 +633,7 @@ export function defaultDisplayPreferences(): DisplayPreferences {
     clipPercentile: 1.0,
     showGrid: false,
     showScaleBar: true,
+    labelFontSize: 13,
   }
 }
 
@@ -673,6 +675,8 @@ export function displayPreferencesFromConfig(
   if (gsm === 'mean' || gsm === 'ucell') out.geneSetScoringMethod = gsm
   if (typeof d.show_grid === 'boolean') out.showGrid = d.show_grid
   if (typeof d.show_scale_bar === 'boolean') out.showScaleBar = d.show_scale_bar
+  const lfs = num(d.label_font_size)
+  if (lfs !== undefined && lfs >= 6 && lfs <= 40) out.labelFontSize = lfs
   return out
 }
 
@@ -767,7 +771,8 @@ export interface EmbeddingSnapshot {
   points: Float32Array   // data-space positions, draw order (top-of-stack last)
   colors: Uint8Array     // per-point RGB, parallel to points
   bounds: { minX: number; minY: number; maxX: number; maxY: number }
-  labels: { text: string; x: number; y: number }[] // data-space centroids
+  labels: { text: string; x: number; y: number; n?: number }[] // data-space centroids; n = cluster size (label priority)
+  labelFontSize?: number // cap for the pane's auto-fitted label size (display preference at capture)
   bg: string             // background hex at capture time
   pointSize: number      // base point size at capture time
   x: number              // panel left within the plot container (px)

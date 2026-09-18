@@ -182,6 +182,12 @@ The included `test_data/toy_spatial.h5ad` dataset is a small spatial transcripto
 
 - Open **Cell Manager** (left panel)
 - Select a metadata column to color cells by that annotation
+- `⋯` → **Show labels on plot** on a categorical column overlays each
+  category's name at its cluster centroid. Labels never overlap: the largest
+  clusters keep their centroid, smaller ones are nudged aside with a leader
+  line, and any that still cannot fit are hidden until you zoom in. Pinned
+  snapshots shrink the labels to fit their pane. **Label Font Size** in
+  Display settings sets the base size.
 
 ### 3. Select Cells
 

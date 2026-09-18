@@ -821,6 +821,8 @@ interface AppState {
   decomposeSource: { name: string; genes: string[] } | null
   // genes === null: the modal offers a gene-subset picker instead of a fixed list
   geneMapSource: { name: string; genes: string[] | null } | null
+  // ⓘ card anchor: the gene and the screen point beside the row's button
+  geneInfoTarget: { gene: string; x: number; y: number } | null
   clusterModalSourceSet: {
     name: string
     genes: string[]
@@ -1069,6 +1071,7 @@ interface AppState {
   setClusterCellsSource: (src: { name: string; genes: string[] } | null) => void
   setDecomposeSource: (src: { name: string; genes: string[] } | null) => void
   setGeneMapSource: (src: { name: string; genes: string[] | null } | null) => void
+  setGeneInfoTarget: (t: { gene: string; x: number; y: number } | null) => void
   setClusterModalSourceSet: (src: {
     name: string
     genes: string[]
@@ -1364,6 +1367,7 @@ export const useStore = create<AppState>((set, get) => {
     clusterCellsSource: null,
     decomposeSource: null,
     geneMapSource: null,
+    geneInfoTarget: null,
     selectByExpressionSource: null,
     ucellScoreSource: null,
     scoreGeneSetsSource: null,
@@ -2116,6 +2120,7 @@ export const useStore = create<AppState>((set, get) => {
     setClusterCellsSource: (src) => set({ clusterCellsSource: src }),
     setDecomposeSource: (src) => set({ decomposeSource: src }),
     setGeneMapSource: (src) => set({ geneMapSource: src }),
+    setGeneInfoTarget: (t) => set({ geneInfoTarget: t }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),
     setUcellScoreSource: (src) => set({ ucellScoreSource: src }),
     setScoreGeneSetsSource: (src) => set({ scoreGeneSetsSource: src }),

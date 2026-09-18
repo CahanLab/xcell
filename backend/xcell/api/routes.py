@@ -1091,6 +1091,60 @@ def gene_sets_species_guess(dataset: str | None = Query(None)):
     return get_adaptor(dataset).guess_species()
 
 
+# --- Per-gene annotations (MyGene.info, cached) --------------------------------
+
+#: The ⓘ card asks for one gene and a hover strip for a handful; a whole
+#: dataset goes through the prefetch task instead.
+MAX_ANNOTATION_GENES = 200
+
+
+class GeneAnnotationsRequest(BaseModel):
+    genes: list[str]
+    species: str | None = None
+    refresh: bool = False
+
+
+@router.post("/gene_annotations")
+def gene_annotations(request: GeneAnnotationsRequest, dataset: str | None = Query(None)):
+    if len(request.genes) > MAX_ANNOTATION_GENES:
+        raise HTTPException(status_code=400,
+                            detail=f"At most {MAX_ANNOTATION_GENES} genes per request; use the prefetch task for a whole dataset")
+    try:
+        return get_adaptor(dataset).gene_annotations(request.genes, species=request.species, refresh=request.refresh)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/gene_annotations/status")
+def gene_annotation_status(species: str | None = Query(None), dataset: str | None = Query(None)):
+    return get_adaptor(dataset).gene_annotation_status(species)
+
+
+class GeneAnnotationPrefetchRequest(BaseModel):
+    species: str | None = None
+
+
+@router.post("/gene_annotations/prefetch", status_code=202)
+def gene_annotation_prefetch(request: GeneAnnotationPrefetchRequest, dataset: str | None = Query(None)):
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_gene_annotation_prefetch(request.species)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.get("/gene_annotations/{symbol}")
+def gene_annotation(symbol: str, species: str | None = Query(None), refresh: bool = Query(False),
+                    dataset: str | None = Query(None)):
+    try:
+        out = get_adaptor(dataset).gene_annotations([symbol], species=species, refresh=refresh)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"species": out["species"], "annotation": out["annotations"].get(symbol, {"symbol": symbol, "notfound": True})}
+
+
 @router.get("/config/defaults")
 def get_config_defaults():
     """Return the raw user-config dict (loaded from ~/.xcell/config.* at startup).

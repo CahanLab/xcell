@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType } from '../store'
-import { useGeneSearch, useGeneBrowse, useDataActions, useObsSummaries, appendDataset, fetchVarIdentifierColumns, swapVarIndex, refreshSchema } from '../hooks/useData'
+import { useGeneSearch, useGeneBrowse, useDataActions, useObsSummaries, appendDataset, fetchVarIdentifierColumns, swapVarIndex, refreshSchema, pollTask } from '../hooks/useData'
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
 import HighlightOverlayPanel from './HighlightOverlayPanel'
 import VarColumnsSection from './VarColumnsSection'
@@ -8,6 +8,7 @@ import CombineGeneSetsModal from './CombineGeneSetsModal'
 import BivariateAxisPicker, { AxisKind, resolveBivariateAxis } from './BivariateAxisPicker'
 import ImportModal from './ImportModal'
 import GeneSetLibraryModal from './GeneSetLibraryModal'
+import GeneInfoPopover from './GeneInfoPopover'
 import { SOURCE_LABELS } from '../lib/geneSetLibrary'
 import { UcellScoreModal } from './UcellScoreModal'
 import { ScoreGeneSetsModal } from './ScoreGeneSetsModal'
@@ -406,6 +407,28 @@ function CopyGeneButton({ gene, bright }: { gene: string; bright: boolean }) {
   )
 }
 
+// GeneInfoButton — opens the ⓘ card (MyGene.info annotation) for one gene,
+// anchored beside the row. Same muted-until-hover treatment as the copy button.
+function GeneInfoButton({ gene, bright }: { gene: string; bright: boolean }) {
+  const setGeneInfoTarget = useStore((s) => s.setGeneInfoTarget)
+  return (
+    <button
+      style={{ ...styles.iconButton, fontSize: '11px', padding: '2px 4px', lineHeight: 1, color: bright ? '#ccc' : '#666' }}
+      title="What is this gene? (MyGene.info)"
+      aria-label={`Info ${gene}`}
+      draggable={false}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation()
+        const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+        setGeneInfoTarget({ gene, x: r.left, y: r.top })
+      }}
+    >
+      ⓘ
+    </button>
+  )
+}
+
 // OverflowMenu — a "⋯" button that opens a dropdown with action items.
 // Supports optional nested children (rendered inline with extra indent).
 // Used by gene-set rows (Tasks 6 & 7) to consolidate pin / export actions.
@@ -717,6 +740,7 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
                   {gene}
                 </span>
                 <CopyGeneButton gene={gene} bright={isHovered} />
+                <GeneInfoButton gene={gene} bright={isHovered} />
                 <OverflowMenu
                   items={[
                     {
@@ -1153,6 +1177,7 @@ function CategoryGeneSetComponent({
                 {gene}
               </span>
               <CopyGeneButton gene={gene} bright={hoveredGene === gene} />
+              <GeneInfoButton gene={gene} bright={hoveredGene === gene} />
               <OverflowMenu
                 items={[
                   {
@@ -1189,6 +1214,7 @@ function CategoryGeneSetComponent({
                   ↓ {gene}
                 </span>
                 <CopyGeneButton gene={gene} bright={hoveredGene === gene} />
+                <GeneInfoButton gene={gene} bright={hoveredGene === gene} />
               </div>
             ))}
         </div>
@@ -1778,6 +1804,25 @@ export default function GenePanel() {
   const setScoreGeneSetsSource = useStore((s) => s.setScoreGeneSetsSource)
   const refreshObsSummaries = useStore((s) => s.refreshObsSummaries)
   const [ucellNotice, setUcellNotice] = useState<string | null>(null)
+  const prefetchAnnotations = async () => {
+    try {
+      const resp = await fetch(appendDataset(`${API_BASE}/gene_annotations/prefetch`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+      })
+      if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`)
+      const { task_id } = await resp.json()
+      setUcellNotice('Fetching gene annotations from MyGene.info…')
+      const task = await pollTask(task_id, undefined, (st) => {
+        if (st.message) setUcellNotice(`Gene annotations: ${st.message}`)
+      })
+      if (task.status !== 'completed') throw new Error(task.error || `Fetch ${task.status}`)
+      const r = task.result as { n_cached: number; n_genes: number; species: string }
+      setUcellNotice(`Annotations cached for ${r.n_cached.toLocaleString()} of ${r.n_genes.toLocaleString()} genes (${r.species})`)
+    } catch (e) {
+      setUcellNotice(`Gene annotations: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    window.setTimeout(() => setUcellNotice(null), 8000)
+  }
 
   const handleColorBySet = useCallback((genes: string[], geneSetName?: string, genesDown?: string[]) => {
     colorByGenes(genes, undefined, geneSetName, genesDown)
@@ -1932,6 +1977,11 @@ export default function GenePanel() {
                 tooltip: 'Browse MSigDB, Enrichr and STRING; import sets',
               },
               {
+                label: 'Fetch gene annotations for all genes…',
+                onClick: () => prefetchAnnotations(),
+                tooltip: 'Warm the MyGene.info cache so every ⓘ card opens instantly',
+              },
+              {
                 label: 'Gene map…',
                 onClick: () => setGeneMapSource({ name: 'Gene map', genes: null }),
                 tooltip: 'Genes as points for any gene subset: similarity from expression, annotation and STRING',
@@ -2041,6 +2091,7 @@ export default function GenePanel() {
       </div>
       <ImportModal />
       <GeneSetLibraryModal />
+      <GeneInfoPopover />
       <CombineGeneSetsModal />
       <UcellScoreModal
         target={ucellScoreSource}

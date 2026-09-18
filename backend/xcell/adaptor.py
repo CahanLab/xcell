@@ -8695,6 +8695,58 @@ class DataAdaptor:
             out['similarity'] = np.round(S, 3).tolist()
         return out
 
+    def _annotation_species(self, species: str | None = None) -> str:
+        from xcell import gene_annotations as ga  # noqa: PLC0415
+
+        sp = species or self.guess_species().get('species')
+        if sp not in ga.TAXON:
+            hint = f"got '{species}'" if species else "the dataset's could not be guessed; pass species explicitly"
+            raise ValueError(f"Gene annotations need a species of 'mouse' or 'human' — {hint}")
+        return str(sp)
+
+    def gene_annotations(self, genes: list[str], species: str | None = None,
+                         refresh: bool = False) -> dict[str, Any]:
+        """MyGene.info annotations for a few genes (cache first). Pure read."""
+        from xcell import gene_annotations as ga  # noqa: PLC0415
+
+        sp = self._annotation_species(species)
+        recs = ga.get_annotations([str(g) for g in genes], sp, refresh=refresh)
+        return {'species': sp, 'annotations': recs}
+
+    def gene_annotation_status(self, species: str | None = None) -> dict[str, Any]:
+        """How many of this dataset's genes are already annotated in the cache."""
+        from xcell import gene_annotations as ga  # noqa: PLC0415
+
+        genes = [str(g) for g in self.adata.var_names]
+        try:
+            sp = self._annotation_species(species)
+        except ValueError as e:
+            return {'species': None, 'n_genes': len(genes), 'n_cached': 0, 'error': str(e)}
+        return {'species': sp, 'n_genes': len(genes), 'n_cached': ga.count_cached(sp, genes),
+                'cache_path': ga.stats(sp)['path']}
+
+    def prepare_gene_annotation_prefetch(self, species: str | None = None):
+        """Warm the annotation cache for every gene in the dataset (background task).
+
+        Nothing is written to the AnnData, so this is not logged as an analysis
+        step; it only makes the ⓘ cards open instantly afterwards.
+        """
+        from xcell import gene_annotations as ga  # noqa: PLC0415
+
+        sp = self._annotation_species(species)
+        genes = [str(g) for g in self.adata.var_names]
+
+        def compute_fn(report: Callable) -> dict[str, Any]:
+            ga.get_annotations(genes, sp, report=report)
+            return {'n_genes': len(genes)}
+
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            st = ga.stats(sp)
+            return {'species': sp, 'n_genes': result['n_genes'],
+                    'n_cached': ga.count_cached(sp, genes), 'cache_path': st['path']}
+
+        return compute_fn, apply_fn
+
     def prepare_cluster_cells_by_gene_set(
         self,
         genes: list[str],

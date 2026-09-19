@@ -13,7 +13,9 @@ export interface Crosstab {
   b_colors: (string | null)[] | null
   /** Rows follow a_categories, columns follow b_categories. */
   counts: number[][]
+  /** Cells counted — fewer than n_total when the active cell mask restricted them. */
   n_cells: number
+  n_total?: number
 }
 
 export type BarOrder = 'category' | 'alphabetical' | 'total' | 'share'

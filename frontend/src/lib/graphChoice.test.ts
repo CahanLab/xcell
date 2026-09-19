@@ -24,6 +24,13 @@ describe('defaultGraphKey', () => {
     expect(defaultGraphKey([spatial], '')).toBeNull()
   })
 
+  it("prefers a subset's own graph when it exists, else the expression graph", () => {
+    const sub = { key: 'chondro_connectivities' }
+    expect(defaultGraphKey([expression, sub], '', 'chondro_connectivities')).toBe('chondro_connectivities')
+    expect(defaultGraphKey([expression], '', 'chondro_connectivities')).toBe('connectivities')
+    expect(defaultGraphKey([expression, sub], 'connectivities', 'chondro_connectivities')).toBeNull()
+  })
+
   it('suggests nothing when no graphs exist', () => {
     expect(defaultGraphKey([], '')).toBeNull()
   })

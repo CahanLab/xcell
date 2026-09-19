@@ -17,12 +17,16 @@ export interface NeighborGraphInfo {
  * Returns the key to preselect, or null to leave the choice as it is.
  * Never overrides a non-empty choice, and never promotes a non-expression
  * graph: silently clustering the spatial graph would answer a different
- * question.
+ * question. The one exception is `preferred` — a named cell subset's own
+ * graph, which is the expression kNN of exactly the cells about to be
+ * clustered, so it is the right default whenever it exists.
  */
 export function defaultGraphKey(
   graphs: NeighborGraphInfo[],
   current: string,
+  preferred: string | null = null,
 ): string | null {
   if (current !== '') return null
+  if (preferred && graphs.some((g) => g.key === preferred)) return preferred
   return graphs.some((g) => g.key === 'connectivities') ? 'connectivities' : null
 }

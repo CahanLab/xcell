@@ -14,6 +14,7 @@ import { appendDataset } from '../hooks/useData'
 import { resolveCategoryPalette } from '../lib/cellColors'
 import { standaloneSvg, downloadText } from '../lib/svgExport'
 import { orderBars, stackBar, fitRotatedLabel, type Crosstab } from '../lib/stackedBars'
+import { indicesFromMask } from '../lib/cellSubsets'
 import { FloatingPanel } from './PlotLegends'
 import BarplotConfigModal from './BarplotConfigModal'
 
@@ -27,6 +28,9 @@ export default function BarplotView() {
   const setConfig = useStore((s) => s.setBarplotConfig)
   const activeSlot = useStore((s) => s.activeSlot)
   const schema = useStore((s) => s.schema)
+  // A composition drawn under a mask describes the cells on screen, so the
+  // count is restricted to them.
+  const activeCellMask = useStore((s) => s.activeCellMask)
 
   const [data, setData] = useState<Crosstab | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -46,7 +50,16 @@ export default function BarplotView() {
     let stale = false
     setLoading(true)
     setError(null)
-    fetch(appendDataset(`/api/obs/crosstab?a=${encodeURIComponent(colA)}&b=${encodeURIComponent(colB)}`))
+    // The mask is a long index list on a real dataset, so it travels in a
+    // POST body; without one the GET is unchanged.
+    const request = activeCellMask
+      ? fetch(appendDataset('/api/obs/crosstab'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ a: colA, b: colB, active_cell_indices: indicesFromMask(activeCellMask) }),
+        })
+      : fetch(appendDataset(`/api/obs/crosstab?a=${encodeURIComponent(colA)}&b=${encodeURIComponent(colB)}`))
+    request
       .then(async (r) => {
         const body = await r.json()
         if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`)
@@ -56,7 +69,7 @@ export default function BarplotView() {
       .catch((e) => { if (!stale) { setError((e as Error).message); setData(null) } })
       .finally(() => { if (!stale) setLoading(false) })
     return () => { stale = true }
-  }, [colA, colB, activeSlot])
+  }, [colA, colB, activeSlot, activeCellMask])
 
   // Depends on `config` because the plot box does not exist until there is one
   // — before that the empty state renders instead, so a mount-only effect found
@@ -138,6 +151,8 @@ export default function BarplotView() {
           {data && bars.length < data.a_categories.length
             && ` · ${data.a_categories.length - bars.length} below ${config.minCells} cells`}
           {config.normalize ? ' · proportion' : ' · cell count'}
+          {data && data.n_total != null && data.n_cells < data.n_total
+            && ` · ${data.n_cells.toLocaleString()} of ${data.n_total.toLocaleString()} cells (mask)`}
         </span>
         <div style={{ flex: 1 }} />
         <button style={styles.btn} onClick={() => setConfigOpen(true)}>Columns…</button>

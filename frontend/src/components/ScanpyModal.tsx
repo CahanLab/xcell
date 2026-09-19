@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { isParamVisible } from '../lib/paramVisibility'
 import { useStore, ScanpyActionRecord, PCASubsetSummary, userConfigGet } from '../store'
-import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset } from '../hooks/useData'
+import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset, createCellSubset, refreshCellSubsets } from '../hooks/useData'
+import { SUBSET_SCOPED_OPS, scopedOutput, suggestSubsetName, isUsableSubsetName, sanitizeSubsetName, indicesFromMask, subsetGraphKey, subsetPcaKey } from '../lib/cellSubsets'
 import { defaultGraphKey } from '../lib/graphChoice'
 import { FilterCellsQcPanel, FilterCellsDistributions } from './FilterCellsQcPanel'
 import { MESSAGES } from '../messages'
@@ -841,7 +842,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, activeSubsetName, setActiveSubsetName, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -905,6 +906,22 @@ export default function ScanpyModal() {
   // The last output name this component filled in, so a name the user typed is
   // never clobbered when they change the graph.
   const autoNameRef = useRef<string | null>(null)
+  // Named cell subsets. A chain operation (HVG, PCA, Neighbors, UMAP, Leiden)
+  // on an unsaved mask first saves it under this draft name, so its results
+  // land in keys suffixed with the name instead of over the dataset's own.
+  const cellSubsets = useStore((s) => s.cellSubsets)
+  const [subsetDraft, setSubsetDraft] = useState('')
+  useEffect(() => {
+    if (!isScanpyModalOpen) return
+    setSubsetDraft((d) => {
+      const taken = cellSubsets.map((s) => s.name)
+      if (d && isUsableSubsetName(d) && !taken.includes(sanitizeSubsetName(d))) return d
+      return suggestSubsetName(taken)
+    })
+  }, [isScanpyModalOpen, cellSubsets])
+  // Whether the user picked the PC source by hand; an untouched default is
+  // ours to point at the subset's own PCA.
+  const userChoseRepRef = useRef(false)
   const [availableObsColumns, setAvailableObsColumns] = useState<string[]>([])
   const [availableNumericObsColumns, setAvailableNumericObsColumns] = useState<string[]>([])
   const activeSlot = useStore((s) => s.activeSlot)
@@ -1029,11 +1046,20 @@ export default function ScanpyModal() {
     const base = selectedFunction === 'umap' ? 'X_umap' : 'leiden'
     const graphKey = (paramValues.graph_key as string) || ''
     const suffix = availableGraphs.find((g) => g.key === graphKey)?.suffix ?? ''
-    // UMAP's default-graph name is left blank on purpose — blank already means
-    // "derive it", and showing X_umap would imply the user chose it.
-    const derived = suffix
-      ? `${base}_${suffix}`
-      : (selectedFunction === 'umap' ? '' : base)
+    // On a cell mask the result carries the subset's name (saved, or the
+    // draft it will be saved under), the way the backend names it: the
+    // subset's own graph adds nothing more, any other named graph is
+    // appended. Without a mask, UMAP's default-graph name is left blank on
+    // purpose — blank already means "derive it", and showing X_umap would
+    // imply the user chose it.
+    const subsetName = activeCellMask
+      ? (activeSubsetName ?? (isUsableSubsetName(subsetDraft) ? sanitizeSubsetName(subsetDraft) : null))
+      : null
+    const derived = subsetName
+      ? (suffix && suffix !== subsetName ? `${base}_${subsetName}_${suffix}` : `${base}_${subsetName}`)
+      : suffix
+        ? `${base}_${suffix}`
+        : (selectedFunction === 'umap' ? '' : base)
 
     // Replaceable when blank, when it is still what we last wrote, or when it
     // is the untouched default — Leiden's field starts at 'leiden' rather than
@@ -1043,7 +1069,7 @@ export default function ScanpyModal() {
       autoNameRef.current = derived
       if (current !== derived) handleParamChange('key_added', derived)
     }
-  }, [selectedFunction, paramValues.graph_key, paramValues.key_added, availableGraphs])
+  }, [selectedFunction, paramValues.graph_key, paramValues.key_added, availableGraphs, activeCellMask, activeSubsetName, subsetDraft])
 
   // Preselect the expression kNN graph once the list arrives, so the dropdown
   // names the graph that will actually run instead of the implicit empty
@@ -1051,15 +1077,27 @@ export default function ScanpyModal() {
   // empty option — is never overridden; the flag resets when they move to a
   // different function.
   const userChoseGraphRef = useRef(false)
-  useEffect(() => { userChoseGraphRef.current = false }, [selectedFunction])
+  useEffect(() => { userChoseGraphRef.current = false; userChoseRepRef.current = false }, [selectedFunction])
   useEffect(() => {
     if (selectedFunction !== 'umap' && selectedFunction !== 'leiden') return
     if (userChoseGraphRef.current) return
-    const pick = defaultGraphKey(availableGraphs, (paramValues.graph_key as string) || '')
+    // On a saved subset its own graph is the expression kNN of exactly the
+    // cells about to be embedded or clustered, so it is the default.
+    const preferred = activeCellMask && activeSubsetName ? subsetGraphKey(activeSubsetName) : null
+    const pick = defaultGraphKey(availableGraphs, (paramValues.graph_key as string) || '', preferred)
     // Not handleParamChange: that path is how *user* edits arrive, and the
     // graph select's onChange marks the choice as theirs.
     if (pick) setParamValues((prev) => ({ ...prev, graph_key: pick }))
-  }, [selectedFunction, availableGraphs, paramValues.graph_key])
+  }, [selectedFunction, availableGraphs, paramValues.graph_key, activeCellMask, activeSubsetName])
+
+  // Neighbors on a saved subset: point the PC source at the subset's own PCA
+  // when it exists and the user has not chosen otherwise.
+  const subsetPca = activeCellMask && activeSubsetName && schema?.embeddings.includes(subsetPcaKey(activeSubsetName))
+    ? subsetPcaKey(activeSubsetName) : null
+  useEffect(() => {
+    if (selectedFunction !== 'neighbors' || userChoseRepRef.current || !subsetPca) return
+    setParamValues((prev) => (prev.use_rep === 'X_pca' || prev.use_rep == null ? { ...prev, use_rep: subsetPca } : prev))
+  }, [selectedFunction, subsetPca])
 
   // Load available neighbor graphs when combine_neighbors is selected.
   useEffect(() => {
@@ -1101,11 +1139,13 @@ export default function ScanpyModal() {
       return
     }
 
-    fetch(appendDataset(`${API_BASE}/scanpy/prerequisites/${selectedFunction}`))
+    const scopedTo = activeCellMask && activeSubsetName && SUBSET_SCOPED_OPS.has(selectedFunction)
+      ? `?cell_subset=${encodeURIComponent(activeSubsetName)}` : ''
+    fetch(appendDataset(`${API_BASE}/scanpy/prerequisites/${selectedFunction}${scopedTo}`))
       .then((res) => res.json())
       .then(setPrereqStatus)
       .catch(() => setPrereqStatus({ satisfied: false, missing: ['unknown'] }))
-  }, [selectedFunction, functionDef, scanpyActionHistory, paramValues.graph_key])
+  }, [selectedFunction, functionDef, scanpyActionHistory, paramValues.graph_key, activeCellMask, activeSubsetName])
 
   // What could serve as coordinates, when that is what is missing. A dataset
   // that has been localized *has* coordinates — they are in X_spatial_pred,
@@ -1454,22 +1494,44 @@ export default function ScanpyModal() {
         }
       }
 
-      // Add active cell indices if a cell mask is active
+      // A cell mask scopes the run. The clustering chain goes through a named
+      // subset so its results land in suffixed keys and the dataset's own
+      // X_pca / graph / X_umap / leiden survive; everything else acts on the
+      // cells in place and takes the indices as before.
       if (activeCellMask) {
-        const activeIndices: number[] = []
-        activeCellMask.forEach((active, idx) => { if (active) activeIndices.push(idx) })
+        const activeIndices = indicesFromMask(activeCellMask)
         if (activeIndices.length === 0) {
           setResult({ success: false, message: 'No active cells. Reset the cell mask first.' })
           setIsRunning(false)
           return
         }
-        requestParams['active_cell_indices'] = activeIndices
+        if (SUBSET_SCOPED_OPS.has(selectedFunction)) {
+          let name = activeSubsetName
+          if (!name) {
+            if (!isUsableSubsetName(subsetDraft)) {
+              setResult({ success: false, message: MESSAGES.cellSubsets.nameNeeded })
+              setIsRunning(false)
+              return
+            }
+            const created = await createCellSubset(sanitizeSubsetName(subsetDraft), activeIndices)
+            name = created.name
+            setActiveSubsetName(name)
+            await refreshCellSubsets()
+            refreshObsSummaries()
+          }
+          requestParams['cell_subset'] = name
+        } else {
+          requestParams['active_cell_indices'] = activeIndices
+        }
       }
 
       // Neighbors: the PC source dropdown uses 'X_pca' as a sentinel for the
       // default path. Strip it from the body so the backend preserves its
-      // existing behavior (n_pcs unchanged, use_rep defaults to None).
-      if (selectedFunction === 'neighbors' && requestParams['use_rep'] === 'X_pca') {
+      // existing behavior (n_pcs unchanged, use_rep defaults to None) — unless
+      // the user chose it by hand on a subset run, where 'X_pca' means the
+      // dataset's PCA rather than the subset's own.
+      if (selectedFunction === 'neighbors' && requestParams['use_rep'] === 'X_pca' &&
+          !(requestParams['cell_subset'] && userChoseRepRef.current)) {
         delete requestParams['use_rep']
       }
 
@@ -1634,6 +1696,7 @@ export default function ScanpyModal() {
       } else if (data.n_highly_variable !== undefined) {
         // highly_variable_genes result
         message = `Identified ${data.n_highly_variable.toLocaleString()} highly variable genes (${data.flavor} method)`
+          + (data.column ? ` → .var["${data.column}"]` : '')
       } else if (data.output_layer !== undefined && data.graph_key !== undefined) {
         // smooth result
         const dens = data.output_density != null ? `${(Number(data.output_density) * 100).toFixed(1)}% dense` : ''
@@ -1721,7 +1784,7 @@ export default function ScanpyModal() {
       setIsRunning(false)
       setActiveTaskId(null)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, resetActiveCells, clearSelection, setExpressionData, setBivariateData, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setActiveTaskId])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, activeSubsetName, subsetDraft, setActiveSubsetName, resetActiveCells, clearSelection, setExpressionData, setBivariateData, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setActiveTaskId])
 
   const handleCancel = useCallback(async () => {
     if (activeTaskId) {
@@ -1860,12 +1923,51 @@ export default function ScanpyModal() {
         )}
 
         {/* Cell mask indicator */}
-        {activeCellMask && (
-          <div style={{ fontSize: '12px', color: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.1)',
-            padding: '8px', borderRadius: '4px', marginBottom: '16px', borderLeft: '3px solid #4ecdc4' }}>
-            Cell mask active: operating on {activeCellMask.filter(Boolean).length.toLocaleString()} of {schema?.n_cells.toLocaleString()} cells
-          </div>
-        )}
+        {activeCellMask && (() => {
+          const nActive = activeCellMask.filter(Boolean).length.toLocaleString()
+          const nTotal = schema?.n_cells.toLocaleString()
+          const scoped = SUBSET_SCOPED_OPS.has(selectedFunction)
+          const bannerStyle = { fontSize: '12px', color: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.1)',
+            padding: '8px', borderRadius: '4px', marginBottom: '16px', borderLeft: '3px solid #4ecdc4' }
+          if (!scoped) {
+            return <div style={bannerStyle}>Cell mask active: operating on {nActive} of {nTotal} cells</div>
+          }
+          if (activeSubsetName) {
+            const out = scopedOutput(selectedFunction, activeSubsetName)
+            return (
+              <div style={bannerStyle}>
+                Subset <strong>{activeSubsetName}</strong> — {nActive} of {nTotal} cells.
+                {out && (
+                  <div style={{ color: '#aaa', marginTop: '4px', fontSize: '11px' }}>
+                    Writes <code>{out.writes}</code>; <code>{out.spares}</code> is left as it is.
+                  </div>
+                )}
+              </div>
+            )
+          }
+          const draftOut = isUsableSubsetName(subsetDraft)
+            ? scopedOutput(selectedFunction, sanitizeSubsetName(subsetDraft)) : null
+          return (
+            <div style={bannerStyle}>
+              Cell mask active: {nActive} of {nTotal} cells.
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+                <span style={{ color: '#ddd' }}>Save as subset</span>
+                <input
+                  type="text"
+                  value={subsetDraft}
+                  onChange={(e) => setSubsetDraft(e.target.value)}
+                  placeholder="name"
+                  style={{ ...styles.paramInput, width: '160px', fontSize: '12px' }}
+                />
+              </div>
+              <div style={{ color: '#aaa', marginTop: '4px', fontSize: '11px' }}>
+                {draftOut
+                  ? <>Runs on those cells and writes <code>{draftOut.writes}</code>; <code>{draftOut.spares}</code> is left as it is. The subset is saved first, so it survives a reload.</>
+                  : MESSAGES.cellSubsets.nameUnusable}
+              </div>
+            </div>
+          )
+        })()}
 
         {/* Gene input indicator for contourize */}
         {selectedFunction === 'contourize' && (
@@ -2507,8 +2609,14 @@ export default function ScanpyModal() {
                         <select
                           style={styles.paramInput}
                           value={paramValues[param.name] ?? 'X_pca'}
-                          onChange={(e) => handleParamChange(param.name, e.target.value)}
+                          onChange={(e) => {
+                            userChoseRepRef.current = true
+                            handleParamChange(param.name, e.target.value)
+                          }}
                         >
+                          {subsetPca && (
+                            <option value={subsetPca}>{subsetPca} (this subset's PCA)</option>
+                          )}
                           <option value="X_pca">{MESSAGES.pcaLoadings.neighborsSourceBaseLabel}</option>
                           {pcaSubsetsFromStore.map((s) => (
                             <option key={s.obsmKey} value={s.obsmKey}>

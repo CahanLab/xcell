@@ -177,6 +177,22 @@ def _code_load(step: Step) -> list[str] | None:
     return lines
 
 
+def _scoped(method: str, only: tuple[str, ...] | None, inner):
+    """Route a step that ran on a named cell subset through xcell's API.
+
+    The subset-scoped variants write to suffixed keys with NaN / 'unassigned'
+    outside the subset. That write-back is xcell's, not scanpy's, so the honest
+    line is the adaptor call naming the subset; every other step keeps its
+    usual builder.
+    """
+    def build(step: Step):
+        if step.params.get('cell_subset'):
+            keys = (only + ('cell_subset',)) if only is not None else None
+            return Emission([_xcall(method, step.params, keys)], XCELL)
+        return inner(step)
+    return build
+
+
 def _code_pca(step: Step) -> list[str] | Emission:
     p = step.params
     args = _splat({'n_comps': p.get('n_comps'), 'svd_solver': p.get('svd_solver')})
@@ -186,10 +202,12 @@ def _code_pca(step: Step) -> list[str] | Emission:
     if isinstance(subset, str):
         # xcell copies out the gene subset, runs PCA there, and copies the
         # embedding back — varm['PCs'] is padded with NaN for excluded genes.
+        # mask_var=None because scanpy would otherwise re-apply the pooled
+        # 'highly_variable' column inside the subset.
         return [
             f"_mask = {ADATA}.var[{_lit(subset)}].astype(bool).values",
             f'_sub = {ADATA}[:, _mask].copy()',
-            f'sc.tl.pca(_sub, {args})',
+            f'sc.tl.pca(_sub, {args}, mask_var=None)',
             f"{ADATA}.obsm['X_pca'] = _sub.obsm['X_pca']",
             f"{ADATA}.uns['pca'] = _sub.uns['pca']",
         ]
@@ -377,9 +395,30 @@ REGISTRY: dict[str, ActionSpec] = {
         code=_scanpy('sc.pp.log1p'),
         summary=lambda p, r: 'Applied log1p to the expression matrix.',
     ),
+    'create_cell_subset': ActionSpec(
+        label='Cell subset', fidelity=XCELL, imports=XCELL_API,
+        code=lambda step: (
+            [f"{ADAPTOR}.create_cell_subset({_lit(step.params.get('name'))}, "
+             f"SELECTIONS[{_lit(f'step_{step.index}')}])"]
+            if step.selection else None
+        ),
+        summary=lambda p, r: (
+            f"Saved {_n(r.get('n_cells'))} cells as the subset `{p.get('name')}` "
+            f"(`.obs['{r.get('obs_key', 'subset_' + str(p.get('name')))}']`)."
+        ),
+    ),
+    'delete_cell_subset': ActionSpec(
+        label='Delete cell subset', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('delete_cell_subset', ('name', 'drop_derived')),
+        summary=lambda p, r: (
+            f"Deleted the subset `{p.get('name')}`"
+            + (' and everything computed on it.' if p.get('drop_derived') else '.')
+        ),
+    ),
     'highly_variable_genes': ActionSpec(
         label='Highly variable genes', fidelity=EXACT, imports=SCANPY,
-        code=_scanpy('sc.pp.highly_variable_genes'),
+        code=_scoped('run_highly_variable_genes', None,
+                     _scanpy('sc.pp.highly_variable_genes')),
         summary=lambda p, r: (
             f"Selected {_n(r.get('n_highly_variable'))} highly variable genes "
             f"of {_n(r.get('n_total_genes'))} (flavor {p.get('flavor', 'seurat')})."
@@ -387,7 +426,7 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'pca': ActionSpec(
         label='PCA', fidelity=EXACT, imports=SCANPY,
-        code=_code_pca,
+        code=_scoped('run_pca', ('n_comps', 'svd_solver', 'gene_subset'), _code_pca),
         summary=lambda p, r: (
             f"PCA to {_n(r.get('n_comps', p.get('n_comps')))} components "
             f"over {_n(r.get('n_genes_used'))} genes "
@@ -396,7 +435,8 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'neighbors': ActionSpec(
         label='Neighbor graph', fidelity=EXACT, imports=SCANPY,
-        code=_scanpy('sc.pp.neighbors'),
+        code=_scoped('run_neighbors', ('n_neighbors', 'n_pcs', 'metric', 'use_rep'),
+                     _scanpy('sc.pp.neighbors')),
         summary=lambda p, r: (
             f"Built a k-nearest-neighbor graph with k={_n(p.get('n_neighbors'))} "
             f"({p.get('metric', 'euclidean')} distance)."
@@ -404,7 +444,8 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'umap': ActionSpec(
         label='UMAP', fidelity=EXACT, imports=SCANPY,
-        code=_code_umap,
+        code=_scoped('run_umap', ('min_dist', 'spread', 'n_components', 'graph_key', 'key_added'),
+                     _code_umap),
         summary=lambda p, r: (
             f"UMAP embedding in {_n(p.get('n_components', 2))} dimensions "
             f"(min_dist {p.get('min_dist')}, spread {p.get('spread')})"
@@ -414,7 +455,7 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'leiden': ActionSpec(
         label='Leiden clustering', fidelity=EXACT, imports=SCANPY,
-        code=_code_leiden,
+        code=_scoped('run_leiden', ('resolution', 'key_added', 'graph_key'), _code_leiden),
         summary=lambda p, r: (
             f"Leiden clustering at resolution {p.get('resolution')}"
             + (f" over `{p['graph_key']}`" if p.get('graph_key') else '')
@@ -924,7 +965,10 @@ def _unknown_summary(action: str, params: dict) -> str:
 
 def _warnings_for(step: Step, spec: ActionSpec | None) -> list[str]:
     out: list[str] = []
-    if step.n_active is not None:
+    # A step scoped to a named subset is emitted as the adaptor call that
+    # names it, so the code does run on the selection; only an ad-hoc
+    # selection needs the caveat.
+    if step.n_active is not None and not step.params.get('cell_subset'):
         out.append(
             f'xcell ran this on an active selection of {step.n_active:,} '
             f'of {step.n_total:,} cells. The code below runs on the whole dataset.'

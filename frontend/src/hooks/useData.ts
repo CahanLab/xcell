@@ -5,6 +5,7 @@ import { assertJsonResponse } from '../lib/foreignServer'
 import { pollTaskLoop, TaskStatus } from '../lib/taskPolling'
 import { mirrorTargets } from '../lib/datasetSlots'
 import { MESSAGES } from '../messages'
+import type { CellSubsetInfo } from '../lib/cellSubsets'
 
 let _highlightIdSeq = 0
 function nextHighlightId(): string {
@@ -1545,6 +1546,72 @@ export async function createAnnotation(name: string, defaultValue: string = 'una
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, default_value: defaultValue }),
   })
+}
+
+// --- Named cell subsets ------------------------------------------------------
+
+export async function fetchCellSubsets(slot?: DatasetSlot): Promise<CellSubsetInfo[]> {
+  const data = await fetchJson<{ subsets: CellSubsetInfo[] }>(
+    appendDataset(`${API_BASE}/cell_subsets`, slot))
+  return data.subsets
+}
+
+/** Re-fetch the active dataset's subsets into the store. Written only if the
+ * active slot is still the one the request went to. */
+export async function refreshCellSubsets(): Promise<void> {
+  const slot = useStore.getState().activeSlot
+  try {
+    const subsets = await fetchCellSubsets(slot)
+    if (useStore.getState().activeSlot === slot) useStore.getState().setCellSubsets(subsets)
+  } catch (err) {
+    console.error('Failed to fetch cell subsets:', err)
+  }
+}
+
+export async function createCellSubset(
+  name: string, cellIndices: number[],
+  opts: { overwrite?: boolean; description?: string; slot?: DatasetSlot } = {},
+): Promise<CellSubsetInfo> {
+  return fetchJson<CellSubsetInfo>(appendDataset(`${API_BASE}/cell_subsets`, opts.slot), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name, cell_indices: cellIndices,
+      overwrite: !!opts.overwrite, description: opts.description ?? null,
+    }),
+  })
+}
+
+export async function fetchCellSubsetIndices(name: string, slot?: DatasetSlot): Promise<number[]> {
+  const data = await fetchJson<{ name: string; indices: number[] }>(
+    appendDataset(`${API_BASE}/cell_subsets/${encodeURIComponent(name)}/indices`, slot))
+  return data.indices
+}
+
+export async function deleteCellSubset(
+  name: string, dropDerived: boolean, slot?: DatasetSlot,
+): Promise<{ name: string; dropped: string[] }> {
+  return fetchJson(appendDataset(
+    `${API_BASE}/cell_subsets/${encodeURIComponent(name)}?drop_derived=${dropDerived ? 'true' : 'false'}`, slot),
+    { method: 'DELETE' })
+}
+
+/** The active dataset's saved subsets, kept fresh across dataset switches,
+ * cell-count changes and scanpy runs (which add derived keys). Waits on
+ * `slotsResolved` like every other mount-time fetch. */
+export function useCellSubsets(): CellSubsetInfo[] {
+  const slotsResolved = useStore((s) => s.slotsResolved)
+  const activeSlot = useStore((s) => s.activeSlot)
+  const nCells = useStore((s) => s.schema?.n_cells ?? null)
+  const historyLength = useStore((s) => s.scanpyActionHistory.length)
+  const subsets = useStore((s) => s.cellSubsets)
+
+  useEffect(() => {
+    if (!slotsResolved || nCells === null) return
+    void refreshCellSubsets()
+  }, [slotsResolved, activeSlot, nCells, historyLength])
+
+  return subsets
 }
 
 // Re-fetch /api/schema and write it to the store. Call after operations that

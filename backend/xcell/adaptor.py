@@ -5265,7 +5265,10 @@ class DataAdaptor:
                 if 'gene_connectivities' not in self.adata.varp:
                     missing.append('gene_neighbors')
             elif prereq == 'pca_with_loadings':
-                if 'pca' not in self.adata.uns or 'PCs' not in self.adata.varm:
+                own = 'pca' in self.adata.uns and 'PCs' in self.adata.varm
+                subsets_own = bool(cell_subset) and (
+                    f'pca_{cell_subset}' in self.adata.uns and f'PCs_{cell_subset}' in self.adata.varm)
+                if not own and not subsets_own:
                     missing.append('pca_with_loadings')
             elif prereq == 'has_spatial':
                 if not self._has_spatial_coordinates():
@@ -6902,7 +6905,9 @@ class DataAdaptor:
             for key in list(self.adata.obsm.keys()):
                 if key.startswith('X_pca_') and key != 'X_pca':
                     suffix = key[len('X_pca_'):]
-                    if suffix in subset_names:
+                    # A subset's PCA, and the PC subsets under it, are its own.
+                    if suffix in subset_names or any(
+                            suffix.startswith(n + '_') for n in subset_names):
                         continue
                     self.adata.obsm.pop(key, None)
                     self.adata.varm.pop(f"PCs_{suffix}", None)
@@ -6911,6 +6916,16 @@ class DataAdaptor:
                         subsets_meta = self.adata.uns['pca'].get('subsets', {})
                         if isinstance(subsets_meta, dict):
                             subsets_meta.pop(suffix, None)
+                    cleared_subsets.append(key)
+        else:
+            # The subset's own PC subsets reference columns of its previous
+            # PCA. (uns['pca_<name>'] was replaced wholesale above, so their
+            # variance ratios and metadata are already gone.)
+            for key in list(self.adata.obsm.keys()):
+                if key.startswith(f'{pca_key}_'):
+                    self.adata.obsm.pop(key, None)
+                    self.adata.varm.pop(f"{pcs_key}_{key[len(pca_key) + 1:]}", None)
+                    self._subset_forget_key(subset_name, key)
                     cleared_subsets.append(key)
         if cleared_subsets:
             result['cleared_subsets'] = cleared_subsets
@@ -6929,10 +6944,42 @@ class DataAdaptor:
         self._log_action('pca', params, result, subset=cell_indices)
         return result
 
-    def get_pca_loadings(self, top_n: int = 10) -> dict[str, Any]:
+    def _pca_slots(self, cell_subset: str | None) -> tuple[str, str, str, str | None]:
+        """Where a PCA lives: ``(obsm key, varm key, uns key, subset name)``.
+
+        The dataset's own is ``X_pca`` / ``PCs`` / ``uns['pca']``; a named
+        subset's is each of those suffixed with its name. KeyError for an
+        unknown subset, so a route maps it to 404.
+        """
+        if not cell_subset:
+            return 'X_pca', 'PCs', 'pca', None
+        clean = self._sanitize_subset_name(cell_subset)
+        self._subset_mask(clean)
+        return f'X_pca_{clean}', f'PCs_{clean}', f'pca_{clean}', clean
+
+    def _pca_subset_owner(self, obsm_key: str) -> tuple[str | None, str]:
+        """Which subset a PC-subset key belongs to, and its suffix.
+
+        ``X_pca_chondro_noPC1`` is the subset chondro's; ``X_pca_noPC1`` is
+        the dataset's. The longest registered name wins, so a subset named
+        ``a`` does not claim ``X_pca_ab_noPC1``. A subset's *own* PCA is not a
+        PC subset at all.
+        """
+        names = sorted(self._subset_registry(), key=len, reverse=True)
+        for name in names:
+            if obsm_key == f'X_pca_{name}':
+                raise ValueError(
+                    f"'{obsm_key}' is the PCA of the subset '{name}' itself, not a "
+                    f"PC subset; delete the subset (with its results) instead.")
+            if obsm_key.startswith(f'X_pca_{name}_'):
+                return name, obsm_key[len(f'X_pca_{name}_'):]
+        return None, obsm_key[len('X_pca_'):]
+
+    def get_pca_loadings(self, top_n: int = 10, cell_subset: str | None = None) -> dict[str, Any]:
         """Return top +/- loading genes per computed PC.
 
-        Reads self.adata.varm['PCs'] and self.adata.uns['pca']['variance_ratio'].
+        Reads varm['PCs'] and uns['pca']['variance_ratio'] — or, for a named
+        subset, ``PCs_<name>`` and ``uns['pca_<name>']``, the subset's own.
         Gene rows containing NaN loadings (from subset-PCA runs) are excluded
         from per-PC rankings; up to top_n valid genes are returned per side.
 
@@ -6953,17 +7000,20 @@ class DataAdaptor:
               ]
             }
         """
-        if 'pca' not in self.adata.uns:
-            raise ValueError("PCA has not been run. Run pca first.")
-        if 'PCs' not in self.adata.varm:
-            raise ValueError("PC loadings are unavailable (varm['PCs'] missing). Re-run PCA.")
+        pca_key, pcs_key, uns_key, subset_name = self._pca_slots(cell_subset)
+        where = f" on subset '{subset_name}'" if subset_name else ''
+        if uns_key not in self.adata.uns:
+            raise ValueError(f"PCA has not been run{where}. Run pca first.")
+        if pcs_key not in self.adata.varm:
+            raise ValueError(
+                f"PC loadings are unavailable (varm['{pcs_key}'] missing). Re-run PCA{where}.")
 
-        pcs_matrix = np.asarray(self.adata.varm['PCs'])
+        pcs_matrix = np.asarray(self.adata.varm[pcs_key])
         if pcs_matrix.ndim != 2:
-            raise ValueError(f"Unexpected varm['PCs'] shape: {pcs_matrix.shape}")
+            raise ValueError(f"Unexpected varm['{pcs_key}'] shape: {pcs_matrix.shape}")
 
         n_genes, n_comps = pcs_matrix.shape
-        var_ratio = np.asarray(self.adata.uns['pca'].get('variance_ratio', []))
+        var_ratio = np.asarray(self.adata.uns[uns_key].get('variance_ratio', []))
         gene_names = list(self.adata.var_names)
         top_n = max(1, int(top_n))
         # Count genes with finite loadings on PC1 — mirrors the row-count a
@@ -7007,12 +7057,15 @@ class DataAdaptor:
             'n_genes_loaded': n_genes_loaded,
             'n_genes_total': n_genes,
             'pcs': pcs_out,
+            'cell_subset': subset_name,
+            'embedding': pca_key,
         }
 
     def create_pca_subset(
         self,
         drop_pc_indices: list[int],
         suffix: str | None = None,
+        cell_subset: str | None = None,
     ) -> dict[str, Any]:
         """Create derived PCA slots that exclude specific 1-indexed PCs.
 
@@ -7023,16 +7076,23 @@ class DataAdaptor:
           - uns['pca']['subsets'][suffix] = {'dropped_pcs': [i, j, ...]}
             (round-trips exact indices regardless of suffix).
 
+        On a named subset the base is its own PCA and every key carries its
+        name first — ``X_pca_<name>_<suffix>``, ``PCs_<name>_<suffix>``,
+        ``uns['pca_<name>']`` — and the registry records it, so the subset
+        owns the result and a dataset PCA re-run leaves it alone.
+
         Raises:
             ValueError: missing PCA, empty indices, out-of-range, all-dropped.
             ValueError: suffix collision with existing obsm key.
         """
-        if 'X_pca' not in self.adata.obsm:
-            raise ValueError("PCA has not been run. Run pca first.")
+        pca_key, pcs_key, uns_key, subset_name = self._pca_slots(cell_subset)
+        if pca_key not in self.adata.obsm:
+            where = f" on subset '{subset_name}'" if subset_name else ''
+            raise ValueError(f"PCA has not been run{where}. Run pca first.")
         if not drop_pc_indices:
             raise ValueError("drop_pc_indices must contain at least one PC.")
 
-        base_embed = np.asarray(self.adata.obsm['X_pca'])
+        base_embed = np.asarray(self.adata.obsm[pca_key])
         n_cells, n_pcs = base_embed.shape
 
         # Convert from 1-indexed user-facing to 0-indexed column positions.
@@ -7053,7 +7113,7 @@ class DataAdaptor:
         if suffix is None or suffix == '':
             suffix = f"noPC{'_'.join(str(i) for i in dropped_1indexed)}"
 
-        new_obsm_key = f"X_pca_{suffix}"
+        new_obsm_key = f"{pca_key}_{suffix}"
         if new_obsm_key in self.adata.obsm:
             raise ValueError(f"A PC subset named '{suffix}' already exists.")
 
@@ -7061,19 +7121,19 @@ class DataAdaptor:
         self.adata.obsm[new_obsm_key] = base_embed[:, keep]
 
         varm_key = None
-        if 'PCs' in self.adata.varm:
-            varm_key = f"PCs_{suffix}"
-            self.adata.varm[varm_key] = np.asarray(self.adata.varm['PCs'])[:, keep]
+        if pcs_key in self.adata.varm:
+            varm_key = f"{pcs_key}_{suffix}"
+            self.adata.varm[varm_key] = np.asarray(self.adata.varm[pcs_key])[:, keep]
 
         var_ratio_key = None
-        if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
-            if 'variance_ratio' in self.adata.uns['pca']:
+        if uns_key in self.adata.uns and isinstance(self.adata.uns[uns_key], dict):
+            if 'variance_ratio' in self.adata.uns[uns_key]:
                 var_ratio_key = f"variance_ratio_{suffix}"
-                self.adata.uns['pca'][var_ratio_key] = np.asarray(
-                    self.adata.uns['pca']['variance_ratio']
+                self.adata.uns[uns_key][var_ratio_key] = np.asarray(
+                    self.adata.uns[uns_key]['variance_ratio']
                 )[keep]
             # Record the dropped indices for round-tripping in list_pca_subsets.
-            subsets_meta = self.adata.uns['pca'].setdefault('subsets', {})
+            subsets_meta = self.adata.uns[uns_key].setdefault('subsets', {})
             subsets_meta[suffix] = {'dropped_pcs': dropped_1indexed}
 
         result = {
@@ -7083,30 +7143,40 @@ class DataAdaptor:
             'suffix': suffix,
             'n_pcs_kept': int(keep.size),
             'dropped_pcs': dropped_1indexed,
+            'cell_subset': subset_name,
         }
-        self._log_action('create_pca_subset', {
-            'drop_pc_indices': dropped_1indexed,
-            'suffix': suffix,
-        }, result)
+        params: dict[str, Any] = {'drop_pc_indices': dropped_1indexed, 'suffix': suffix}
+        if subset_name is not None:
+            params['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'pca_subsets', new_obsm_key,
+                                     extra={'dropped_pcs': dropped_1indexed})
+        self._log_action('create_pca_subset', params, result)
         return result
 
-    def list_pca_subsets(self) -> list[dict[str, Any]]:
-        """List every derived PC subset in adata.obsm.
+    def list_pca_subsets(self, cell_subset: str | None = None) -> list[dict[str, Any]]:
+        """List the derived PC subsets of the dataset's PCA, or of a subset's.
 
-        Iterates obsm keys with prefix 'X_pca_' (excluding the exact key
-        'X_pca'). For each, reports obsm_key, suffix, n_pcs_kept, and
-        dropped_pcs (from uns['pca']['subsets'][suffix] when present,
-        otherwise []).
+        For each, reports obsm_key, suffix, n_pcs_kept, and dropped_pcs (from
+        the owning uns entry's ``subsets`` when present, otherwise []). The
+        dataset's list leaves out every key under a registered subset's
+        prefix — a subset's own ``X_pca_<name>`` shares the shape of a PC
+        subset but is not one.
         """
+        pca_key, _, uns_key, subset_name = self._pca_slots(cell_subset)
         out: list[dict[str, Any]] = []
         subsets_meta = {}
-        if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
-            subsets_meta = self.adata.uns['pca'].get('subsets', {}) or {}
+        if uns_key in self.adata.uns and isinstance(self.adata.uns[uns_key], Mapping):
+            subsets_meta = self.adata.uns[uns_key].get('subsets', {}) or {}
+        prefix = f'{pca_key}_'
+        names = set(self._subset_registry())
 
         for key in sorted(self.adata.obsm.keys()):
-            if not key.startswith('X_pca_') or key == 'X_pca':
+            if not key.startswith(prefix):
                 continue
-            suffix = key[len('X_pca_'):]
+            suffix = key[len(prefix):]
+            if subset_name is None and (
+                    suffix in names or any(suffix.startswith(n + '_') for n in names)):
+                continue
             arr = np.asarray(self.adata.obsm[key])
             n_pcs_kept = int(arr.shape[1]) if arr.ndim == 2 else 0
             meta = subsets_meta.get(suffix, {})
@@ -7131,17 +7201,20 @@ class DataAdaptor:
             raise ValueError("Cannot delete the base X_pca embedding.")
         if not obsm_key.startswith('X_pca_'):
             raise ValueError(f"'{obsm_key}' is not a derived PC subset.")
+        owner, suffix = self._pca_subset_owner(obsm_key)
         if obsm_key not in self.adata.obsm:
             raise ValueError(f"'{obsm_key}' not found in obsm.")
 
-        suffix = obsm_key[len('X_pca_'):]
+        _, pcs_key, uns_key, _ = self._pca_slots(owner)
         self.adata.obsm.pop(obsm_key, None)
-        self.adata.varm.pop(f"PCs_{suffix}", None)
-        if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
-            self.adata.uns['pca'].pop(f"variance_ratio_{suffix}", None)
-            subsets_meta = self.adata.uns['pca'].get('subsets', {})
+        self.adata.varm.pop(f"{pcs_key}_{suffix}", None)
+        if uns_key in self.adata.uns and isinstance(self.adata.uns[uns_key], dict):
+            self.adata.uns[uns_key].pop(f"variance_ratio_{suffix}", None)
+            subsets_meta = self.adata.uns[uns_key].get('subsets', {})
             if isinstance(subsets_meta, dict):
                 subsets_meta.pop(suffix, None)
+        if owner is not None:
+            self._subset_forget_key(owner, obsm_key)
         self._log_action('delete_pca_subset', {'obsm_key': obsm_key}, None)
 
     def run_neighbors(

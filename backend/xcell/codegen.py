@@ -492,7 +492,7 @@ REGISTRY: dict[str, ActionSpec] = {
     # --- xcell's own analyses ---
     'create_pca_subset': ActionSpec(
         label='PC subset', fidelity=XCELL, imports=XCELL_API,
-        code=_direct('create_pca_subset', ('drop_pc_indices', 'suffix')),
+        code=_direct('create_pca_subset', ('drop_pc_indices', 'suffix', 'cell_subset')),
         summary=lambda p, r: (
             f"Derived a PC subset dropping PCs {p.get('drop_pc_indices')} → "
             f"`.obsm['{r.get('obsm_key', '?')}']`."

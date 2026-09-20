@@ -368,3 +368,114 @@ def test_the_delete_route_reports_the_cascade(monkeypatch):
     client = TestClient(app)
     r = client.delete('/api/cell_subsets/chondro?drop_derived=true')
     assert r.status_code == 200 and r.json()['dropped_lines'] == ['ridge']
+
+
+# --- PCA Loadings and PC subsets on a subset ----------------------------------
+
+def _subset_pca(a):
+    a.create_cell_subset('chondro', ACTIVE)
+    a.run_pca(n_comps=4, cell_subset='chondro')
+    return a
+
+
+def test_loadings_read_the_subsets_own_pca():
+    a = _subset_pca(_adaptor())
+    out = a.get_pca_loadings(top_n=3, cell_subset='chondro')
+    assert out['n_pcs'] == 4 and out['cell_subset'] == 'chondro'
+    assert len(out['pcs'][0]['positive']) == 3
+    with pytest.raises(ValueError):
+        a.get_pca_loadings()                       # the dataset has no PCA of its own
+    with pytest.raises(KeyError):
+        a.get_pca_loadings(cell_subset='nope')
+
+
+def test_a_pc_subset_on_a_subset_writes_under_its_prefix_and_is_recorded():
+    a = _subset_pca(_adaptor())
+    out = a.create_pca_subset([1, 3], cell_subset='chondro')
+    assert out['obsm_key'] == 'X_pca_chondro_noPC1_3' and out['cell_subset'] == 'chondro'
+    emb = a.adata.obsm['X_pca_chondro_noPC1_3']
+    assert emb.shape == (60, 2)
+    assert np.isnan(emb[1]).all() and not np.isnan(emb[0]).any()   # outside / inside the subset
+    assert a.adata.varm['PCs_chondro_noPC1_3'].shape == (80, 2)
+    assert a.adata.uns['pca_chondro']['subsets']['noPC1_3'] == {'dropped_pcs': [1, 3]}
+    assert 'variance_ratio_noPC1_3' in a.adata.uns['pca_chondro']
+    assert 'pca' not in a.adata.uns
+    s = _subset(a, 'chondro')
+    assert s['derived']['pca_subsets'] == ['X_pca_chondro_noPC1_3']
+    assert s['embeddings'] == ['X_pca_chondro', 'X_pca_chondro_noPC1_3']
+    assert s['steps']['pca_subsets']['X_pca_chondro_noPC1_3'] == {'dropped_pcs': [1, 3]}
+
+
+def test_the_datasets_pc_subset_list_does_not_show_subset_pcas():
+    a = _adaptor(); _global_pipeline(a); _subset_pca(a)
+    a.create_pca_subset([1], cell_subset='chondro')
+    a.create_pca_subset([2])
+    assert [s['obsm_key'] for s in a.list_pca_subsets()] == ['X_pca_noPC2']
+    subset_list = a.list_pca_subsets(cell_subset='chondro')
+    assert [s['obsm_key'] for s in subset_list] == ['X_pca_chondro_noPC1']
+    assert subset_list[0]['suffix'] == 'noPC1' and subset_list[0]['dropped_pcs'] == [1]
+
+
+def test_deleting_a_subsets_pc_subset_resolves_the_owner():
+    a = _subset_pca(_adaptor())
+    a.create_pca_subset([1], cell_subset='chondro')
+    a.delete_pca_subset('X_pca_chondro_noPC1')
+    assert 'X_pca_chondro_noPC1' not in a.adata.obsm and 'PCs_chondro_noPC1' not in a.adata.varm
+    assert 'noPC1' not in a.adata.uns['pca_chondro'].get('subsets', {})
+    assert _subset(a, 'chondro')['derived']['pca_subsets'] == []
+    with pytest.raises(ValueError):
+        a.delete_pca_subset('X_pca_chondro')     # that is the subset's PCA itself
+
+
+def test_a_dataset_pca_rerun_spares_subset_pc_subsets_and_a_subset_rerun_clears_its_own():
+    a = _adaptor(); _global_pipeline(a); _subset_pca(a)
+    a.create_pca_subset([1], cell_subset='chondro')
+    a.create_pca_subset([2])
+    a.run_pca(n_comps=5)
+    assert 'X_pca_chondro_noPC1' in a.adata.obsm and 'X_pca_noPC2' not in a.adata.obsm
+    a.run_pca(n_comps=3, cell_subset='chondro')
+    assert 'X_pca_chondro_noPC1' not in a.adata.obsm and 'PCs_chondro_noPC1' not in a.adata.varm
+    assert _subset(a, 'chondro')['derived']['pca_subsets'] == []
+    assert 'X_pca' in a.adata.obsm
+
+
+def test_neighbors_on_a_subset_accepts_its_pc_subset():
+    a = _subset_pca(_adaptor())
+    a.create_pca_subset([1], cell_subset='chondro')
+    out = a.run_neighbors(n_neighbors=5, use_rep='X_pca_chondro_noPC1', cell_subset='chondro')
+    assert out['use_rep'] == 'X_pca_chondro_noPC1' and 'chondro_connectivities' in a.adata.obsp
+
+
+def test_prerequisites_for_loadings_accept_the_subsets_keys():
+    a = _subset_pca(_adaptor())
+    assert a.check_prerequisites('pca_loadings')['satisfied'] is False
+    assert a.check_prerequisites('pca_loadings', cell_subset='chondro')['satisfied'] is True
+
+
+def test_dropping_a_subsets_results_drops_its_pc_subsets_too():
+    a = _subset_pca(_adaptor())
+    a.create_pca_subset([1], cell_subset='chondro')
+    out = a.delete_cell_subset('chondro', drop_derived=True)
+    assert 'X_pca_chondro_noPC1' in out['dropped']
+    assert 'X_pca_chondro_noPC1' not in a.adata.obsm and 'PCs_chondro_noPC1' not in a.adata.varm
+
+
+def test_the_pca_routes_take_the_subset(monkeypatch):
+    a = _subset_pca(_adaptor())
+    monkeypatch.setattr(routes, 'get_adaptor', lambda dataset=None: a)
+    c = TestClient(app)
+    assert c.get('/api/scanpy/pca_loadings?top_n=2&cell_subset=chondro').json()['n_pcs'] == 4
+    assert c.get('/api/scanpy/pca_loadings?cell_subset=nope').status_code == 404
+    r = c.post('/api/scanpy/pca_subsets', json={'drop_pc_indices': [1], 'cell_subset': 'chondro'})
+    assert r.status_code == 200 and r.json()['obsm_key'] == 'X_pca_chondro_noPC1'
+    got = c.get('/api/scanpy/pca_subsets?cell_subset=chondro').json()['subsets']
+    assert [s['obsm_key'] for s in got] == ['X_pca_chondro_noPC1']
+    assert c.get('/api/scanpy/pca_subsets').json()['subsets'] == []
+    assert c.delete('/api/scanpy/pca_subsets/X_pca_chondro_noPC1').status_code == 200
+
+
+def test_the_notebook_emits_the_subset_for_a_pc_subset():
+    a = _subset_pca(_adaptor())
+    a.create_pca_subset([1], cell_subset='chondro')
+    t = translate(a.analysis_record.steps[-1])
+    assert t.code == ["xa.create_pca_subset(drop_pc_indices=[1], suffix='noPC1', cell_subset='chondro')"]

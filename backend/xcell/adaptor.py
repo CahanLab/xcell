@@ -715,6 +715,18 @@ _GRAPH_META_KEY = '_xcell_graph'
 CELL_SUBSETS_UNS = 'xcell_cell_subsets'
 SUBSET_OBS_PREFIX = 'subset_'
 
+# Drawn shapes and lines. They belong to an embedding (``embeddingName``) and
+# used to live only in the browser, reaching this key at export time; now the
+# browser's every sync writes it and a load reads it back, the way territories
+# already work. A JSON string, since ragged point lists do not survive h5ad as
+# nested uns.
+LINES_UNS = 'xcell_lines_json'
+_LINE_DEFAULTS: dict[str, Any] = {
+    'dimX': 0, 'dimY': 1, 'smoothedPoints': None, 'drawType': 'pencil',
+    'closed': False, 'visible': True, 'strokeColor': '#4ecdc4',
+    'strokeWidth': 2, 'fillColor': None,
+}
+
 
 def _umap_neighbors_meta(adata, graph_key: str) -> dict[str, Any]:
     """A ``uns['neighbors']``-shaped entry that ``sc.tl.umap`` will accept.
@@ -813,7 +825,7 @@ class DataAdaptor:
         else:
             self.adata, source_kind = load_dataset_file(self.filepath)
         self._normalized_adata: anndata.AnnData | None = None
-        self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
+        self._drawn_lines: list[dict[str, Any]] = self._restore_lines()
         self._action_history: list[dict[str, Any]] = []  # Track scanpy operations
         self._embedding_undo_stacks: dict[str, list[np.ndarray]] = {}  # Undo stacks for quilt transforms
         # Gene mask state — None means no mask is active.
@@ -3576,21 +3588,53 @@ class DataAdaptor:
     # Drawn lines / trajectory methods
     # =========================================================================
 
-    def set_lines(self, lines: list[dict[str, Any]]) -> None:
-        """Store drawn lines from the frontend.
+    def _restore_lines(self) -> list[dict[str, Any]]:
+        """Read drawn shapes out of .uns, or start with none.
 
-        Args:
-            lines: List of line objects with keys:
-                - name: Line name
-                - embeddingName: Which embedding this was drawn on
-                - points: Raw line points [[x, y], ...]
-                - smoothedPoints: Smoothed line points (optional)
+        Tolerates the pre-2026-09 export shape (``embedding`` rather than
+        ``embeddingName``, no styling) by filling defaults, and drops anything
+        without an embedding or points rather than let one bad entry hide the
+        rest. A corrupt blob must not block the load.
         """
-        self._drawn_lines = lines
+        raw = self.adata.uns.get(LINES_UNS)
+        if not raw:
+            return []
+        try:
+            stored = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        out: list[dict[str, Any]] = []
+        for i, line in enumerate(stored if isinstance(stored, list) else []):
+            if not isinstance(line, dict) or not line.get('points'):
+                continue
+            emb = line.get('embeddingName') or line.get('embedding')
+            if not emb:
+                continue
+            fixed = {**_LINE_DEFAULTS,
+                     **{k: v for k, v in line.items() if k not in ('embedding', 'smoothed_points')},
+                     'embeddingName': emb}
+            if line.get('smoothed_points') and not fixed.get('smoothedPoints'):
+                fixed['smoothedPoints'] = line['smoothed_points']
+            fixed.setdefault('id', f'line_restored_{i}')
+            fixed.setdefault('name', f'Line {i + 1}')
+            out.append(fixed)
+        return out
+
+    def set_lines(self, lines: list[dict[str, Any]]) -> None:
+        """Store the browser's drawn shapes, in memory and in .uns."""
+        self._drawn_lines = [dict(line) for line in lines]
+        self.adata.uns[LINES_UNS] = json.dumps(self._drawn_lines)
 
     def get_lines(self) -> list[dict[str, Any]]:
-        """Get stored drawn lines."""
+        """The stored drawn shapes."""
         return self._drawn_lines
+
+    def _lines_on(self, embeddings: set[str]) -> list[dict[str, Any]]:
+        return [line for line in self._drawn_lines if line.get('embeddingName') in embeddings]
+
+    def _territories_on(self, embeddings: set[str]) -> list[str]:
+        return [name for name, spec in self.get_territories().items()
+                if isinstance(spec, Mapping) and spec.get('embedding') in embeddings]
 
     def _project_cells_onto_line(
         self,
@@ -3725,20 +3769,10 @@ class DataAdaptor:
         if not self._drawn_lines:
             return adata_export
 
-        # Store line metadata as JSON string (h5ad-safe)
-        line_metadata = []
-        for line in self._drawn_lines:
-            line_info = {
-                'name': line.get('name', 'unnamed'),
-                'embedding': line.get('embeddingName', ''),
-                'points': line.get('points', []),
-            }
-            smoothed = line.get('smoothedPoints')
-            if smoothed:
-                line_info['smoothed_points'] = smoothed
-            line_metadata.append(line_info)
-
-        adata_export.uns['xcell_lines_json'] = json.dumps(line_metadata)
+        # The full shapes, as the browser holds them, so a re-opened export
+        # shows them again (the copy carries the key already; this keeps the
+        # projections below in step with what is stored).
+        adata_export.uns[LINES_UNS] = json.dumps(self._drawn_lines)
 
         # Compute and store projections
         projections = self.compute_line_projections()
@@ -4940,6 +4974,10 @@ class DataAdaptor:
             'derived': derived,
             'steps': entry.get('derived') or {},
             'embeddings': embeddings,
+            'decorations': {
+                'lines': [line.get('name', '') for line in self._lines_on(set(embeddings))],
+                'territories': self._territories_on(set(embeddings)),
+            },
         }
 
     def create_cell_subset(

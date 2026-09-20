@@ -1763,7 +1763,12 @@ def run_marker_genes(request: MarkerGenesRequest, dataset: str | None = Query(No
 
 
 class LineData(BaseModel):
-    """Data for a single drawn line."""
+    """One drawn shape or line, as the browser's store holds it.
+
+    Everything but the projections (recomputed on demand) travels, so a
+    reload or a re-opened export shows the shape exactly as it was drawn.
+    Older callers that send only name/embedding/points still work.
+    """
     name: str
     embeddingName: str
     points: list[list[float]]
@@ -1772,6 +1777,13 @@ class LineData(BaseModel):
     # projection/association use the same axes the user saw (default first two).
     dimX: int = 0
     dimY: int = 1
+    id: str | None = None
+    drawType: str = 'pencil'
+    closed: bool = False
+    visible: bool = True
+    strokeColor: str = '#4ecdc4'
+    strokeWidth: float = 2
+    fillColor: str | None = None
 
 
 class SetLinesRequest(BaseModel):
@@ -1794,8 +1806,12 @@ def set_lines(request: SetLinesRequest, dataset: str | None = Query(None)):
         Confirmation with line count
     """
     adaptor = get_adaptor(dataset)
-    # Convert Pydantic models to dicts
-    lines_data = [line.model_dump() for line in request.lines]
+    lines_data = []
+    for i, line in enumerate(request.lines):
+        d = line.model_dump()
+        # A line needs an id for the browser to address it after a reload.
+        d['id'] = d.get('id') or f'line_{i}_{abs(hash(d["name"])) % 10**8}'
+        lines_data.append(d)
     adaptor.set_lines(lines_data)
     return {"status": "ok", "line_count": len(lines_data)}
 

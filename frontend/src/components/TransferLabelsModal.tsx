@@ -9,6 +9,8 @@ import type {
 interface TransferLabelsModalProps {
   // The column whose "..." menu was used; defaults to the parent being refined.
   targetColumnDefault: string
+  // Pre-pick the subcluster column (a subset's Leiden chip opens the modal with itself).
+  sourceColumnDefault?: string
   summaries: ObsSummary[]
   onClose: () => void
   onApply: (params: TransferObsLabelsParams) => Promise<TransferObsLabelsResult>
@@ -53,6 +55,7 @@ function hasUnassigned(s: ObsSummary): boolean {
 
 export default function TransferLabelsModal({
   targetColumnDefault,
+  sourceColumnDefault,
   summaries,
   onClose,
   onApply,
@@ -73,7 +76,7 @@ export default function TransferLabelsModal({
     const sub = columns.find((c) => c.name !== targetColumnDefault && hasUnassigned(c))
     return sub?.name ?? others[0] ?? ''
   }, [columns, columnNames, targetColumnDefault])
-  const [sourceColumn, setSourceColumn] = useState(guessSource)
+  const [sourceColumn, setSourceColumn] = useState(sourceColumnDefault ?? guessSource)
 
   const [renameMode, setRenameMode] = useState<TransferRenameMode>('parent_prefix')
   const [customPrefix, setCustomPrefix] = useState('')

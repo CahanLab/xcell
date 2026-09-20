@@ -575,6 +575,9 @@ export interface DatasetState {
   bivariateSortReversed: boolean
   displayPreferences: DisplayPreferences
   drawnLines: DrawnLine[]
+  // Set once the slot's shapes have been read from the backend. The on-change
+  // sync waits for it, or an empty store would overwrite the file's shapes.
+  linesHydrated: boolean
   hiddenColumns: Set<string>
   columnDisplayNames: Record<string, string>
   obsSummariesVersion: number
@@ -712,6 +715,7 @@ export function createDefaultDatasetState(
     bivariateSortReversed: false,
     displayPreferences: { ...defaultDisplayPreferences(), ...displayOverrides },
     drawnLines: [],
+    linesHydrated: false,
     hiddenColumns: new Set<string>(),
     columnDisplayNames: {},
     obsSummariesVersion: 0,
@@ -734,6 +738,18 @@ export function createDefaultDatasetState(
     displayLayer: 'X',
     spatialScale: null,
   }
+}
+
+/** The embedding to show when none is chosen or the chosen one is gone:
+ * spatial first, then UMAP, then PCA, then whatever comes first. */
+export function pickPreferredEmbedding(names: readonly string[]): string | null {
+  if (names.length === 0) return null
+  const lower = names.map((e) => e.toLowerCase())
+  for (const pref of ['spatial', 'umap', 'pca']) {
+    const idx = lower.findIndex((l) => l.includes(pref))
+    if (idx >= 0) return names[idx]
+  }
+  return names[0]
 }
 
 /** Ensure a slot's split-view pane names an embedding that slot actually has.
@@ -1107,6 +1123,9 @@ interface AppState {
   // Column management actions
   hideColumn: (name: string) => void
   showColumn: (name: string) => void
+  // A column deleted on the backend: clear colour-by, the label overlay,
+  // hidden state and display name so nothing keeps pointing at it.
+  forgetObsColumn: (name: string) => void
   setColumnDisplayName: (originalName: string, displayName: string) => void
   clearColumnDisplayName: (originalName: string) => void
 
@@ -1134,6 +1153,8 @@ interface AppState {
   updateLineAppearance: (id: string, updates: { strokeColor?: string; strokeWidth?: number; fillColor?: string | null; closed?: boolean }) => void
   addLine: (name: string, points: [number, number][], embeddingName: string, drawType?: DrawTool, closed?: boolean) => void
   removeLine: (id: string) => void
+  // Replace a slot's shapes wholesale (hydration from the backend) and mark it hydrated.
+  setDrawnLines: (slot: DatasetSlot, lines: DrawnLine[]) => void
   setActiveLine: (id: string | null) => void
   setEmbeddingDims: (embeddingName: string, x: number, y: number, z?: number) => void
   renameLine: (id: string, name: string) => void
@@ -1477,7 +1498,16 @@ export const useStore = create<AppState>((set, get) => {
 
     // === Per-dataset actions (dual-write) ===
 
-    setSchema: (schema) => set(dsUpdate({ schema })),
+    setSchema: (schema) =>
+      set(dsUpdateFn((state) => {
+        // A refreshed schema can have lost the embedding on screen (a subset
+        // deleted with its results); re-pick rather than leave the picker
+        // naming a key that no longer exists.
+        if (!state.selectedEmbedding || schema.embeddings.includes(state.selectedEmbedding)) {
+          return { schema }
+        }
+        return { schema, selectedEmbedding: pickPreferredEmbedding(schema.embeddings), embedding: null }
+      })),
     setEmbedding: (embedding) => set(dsUpdate({ embedding })),
     setColorBy: (colorBy) => set(dsUpdate({ colorBy })),
 
@@ -2167,6 +2197,23 @@ export const useStore = create<AppState>((set, get) => {
         next.delete(name)
         return { hiddenColumns: next }
       })),
+    forgetObsColumn: (name) => {
+      const patch = dsUpdateFn((state) => {
+        const hidden = new Set(state.hiddenColumns)
+        hidden.delete(name)
+        const { [name]: _dropped, ...names } = state.columnDisplayNames
+        return {
+          hiddenColumns: hidden,
+          columnDisplayNames: names,
+          colorBy: state.colorBy?.name === name ? null : state.colorBy,
+          // The name the colour-by hook fetches; left set it re-requests a column that is gone.
+          selectedColorColumn: state.selectedColorColumn === name ? null : state.selectedColorColumn,
+        }
+      })
+      // The label overlay is global (it is drawn only when colorBy matches).
+      const labels = get().embeddingLabelColumn === name ? { embeddingLabelColumn: null } : {}
+      set({ ...patch, ...labels })
+    },
     setColumnDisplayName: (originalName, displayName) =>
       set(dsUpdateFn((state) => ({
         columnDisplayNames: { ...state.columnDisplayNames, [originalName]: displayName },
@@ -2342,6 +2389,14 @@ export const useStore = create<AppState>((set, get) => {
         },
       })
     },
+
+    setDrawnLines: (slot, lines) =>
+      set((state) => {
+        const ds = state.datasets[slot]
+        if (!ds) return {}
+        const datasets = { ...state.datasets, [slot]: { ...ds, drawnLines: lines, linesHydrated: true } }
+        return slot === state.activeSlot ? { datasets, drawnLines: lines } : { datasets }
+      }),
 
     removeLine: (id) => {
       const state = get()
@@ -2900,14 +2955,7 @@ export const useStore = create<AppState>((set, get) => {
       const overrides = displayPreferencesFromConfig(state.userConfig)
       const freshDs = createDefaultDatasetState(overrides)
       freshDs.schema = schema
-      // Auto-select embedding by preference: spatial > umap > pca > first
-      if (schema.embeddings.length > 0) {
-        const preferred = ['spatial', 'umap', 'pca']
-        const lower = schema.embeddings.map(e => e.toLowerCase())
-        const pick = preferred.find(p => lower.some(l => l.includes(p)))
-        const idx = pick != null ? lower.findIndex(l => l.includes(pick)) : 0
-        freshDs.selectedEmbedding = schema.embeddings[idx]
-      }
+      freshDs.selectedEmbedding = pickPreferredEmbedding(schema.embeddings)
       const newDatasets = repairSecondEmbedding(slot, {
         ...state.datasets,
         [slot]: freshDs,

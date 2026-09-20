@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
-import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
+import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, DrawnLine, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
 import { assertJsonResponse } from '../lib/foreignServer'
 import { pollTaskLoop, TaskStatus } from '../lib/taskPolling'
@@ -1362,8 +1362,10 @@ export interface PCALoadingsResponse {
 export async function fetchPcaLoadings(
   topN: number,
   slot?: DatasetSlot,
+  cellSubset?: string | null,
 ): Promise<PCALoadingsResponse> {
-  const url = appendDataset(`/api/scanpy/pca_loadings?top_n=${topN}`, slot)
+  const subsetQuery = cellSubset ? `&cell_subset=${encodeURIComponent(cellSubset)}` : ''
+  const url = appendDataset(`/api/scanpy/pca_loadings?top_n=${topN}${subsetQuery}`, slot)
   const res = await fetch(url)
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))
@@ -1372,7 +1374,8 @@ export async function fetchPcaLoadings(
   return res.json()
 }
 
-export function usePcaLoadings(topN: number, enabled: boolean): {
+/** Loadings of the dataset's PCA — or, with `cellSubset`, of that subset's own. */
+export function usePcaLoadings(topN: number, enabled: boolean, cellSubset: string | null = null): {
   loadings: PCALoadingsResponse | null
   loading: boolean
   error: string | null
@@ -1389,19 +1392,22 @@ export function usePcaLoadings(topN: number, enabled: boolean): {
     let cancelled = false
     setLoading(true)
     setError(null)
-    fetchPcaLoadings(topN, activeSlot)
+    fetchPcaLoadings(topN, activeSlot, cellSubset)
       .then((data) => { if (!cancelled) setLoadings(data) })
       .catch((e) => { if (!cancelled) setError(e.message || 'Failed to fetch loadings') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [topN, enabled, activeSlot, reloadToken])
+  }, [topN, enabled, activeSlot, cellSubset, reloadToken])
 
   const reload = useCallback(() => setReloadToken((n) => n + 1), [])
   return { loadings, loading, error, reload }
 }
 
-export async function fetchPcaSubsets(slot?: DatasetSlot): Promise<PCASubsetSummary[]> {
-  const url = appendDataset('/api/scanpy/pca_subsets', slot)
+/** PC subsets of the dataset's PCA — or, with `cellSubset`, of that subset's
+ * own. Whichever was fetched last is what the store's `pcaSubsets` holds. */
+export async function fetchPcaSubsets(slot?: DatasetSlot, cellSubset?: string | null): Promise<PCASubsetSummary[]> {
+  const subsetQuery = cellSubset ? `?cell_subset=${encodeURIComponent(cellSubset)}` : ''
+  const url = appendDataset(`/api/scanpy/pca_subsets${subsetQuery}`, slot)
   const res = await fetch(url)
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))
@@ -1425,12 +1431,14 @@ export async function createPcaSubset(
   dropPcIndices: number[],
   suffix: string | null,
   slot?: DatasetSlot,
+  cellSubset?: string | null,
 ): Promise<PCASubsetSummary> {
   const url = appendDataset('/api/scanpy/pca_subsets', slot)
-  const body: { drop_pc_indices: number[]; suffix?: string } = {
+  const body: { drop_pc_indices: number[]; suffix?: string; cell_subset?: string } = {
     drop_pc_indices: dropPcIndices,
   }
   if (suffix && suffix.trim() !== '') body.suffix = suffix.trim()
+  if (cellSubset) body.cell_subset = cellSubset
 
   const res = await fetch(url, {
     method: 'POST',
@@ -1570,7 +1578,14 @@ export async function refreshCellSubsets(): Promise<void> {
 
 export async function createCellSubset(
   name: string, cellIndices: number[],
-  opts: { overwrite?: boolean; description?: string; slot?: DatasetSlot } = {},
+  opts: {
+    overwrite?: boolean
+    description?: string
+    slot?: DatasetSlot
+    // The embedding on screen when the subset was saved. The parent is not
+    // sent: the backend infers it by containment.
+    origin?: { kind: string; embedding?: string }
+  } = {},
 ): Promise<CellSubsetInfo> {
   return fetchJson<CellSubsetInfo>(appendDataset(`${API_BASE}/cell_subsets`, opts.slot), {
     method: 'POST',
@@ -1578,6 +1593,7 @@ export async function createCellSubset(
     body: JSON.stringify({
       name, cell_indices: cellIndices,
       overwrite: !!opts.overwrite, description: opts.description ?? null,
+      origin: opts.origin ?? null,
     }),
   })
 }
@@ -1646,6 +1662,15 @@ export async function labelCells(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ label, cell_indices: cellIndices }),
   })
+}
+
+/** Drop an .obs column. The backend also drops its colour list and, if the
+ * column was a saved subset's, that subset's entry — `subset_removed` says so,
+ * so the caller can refresh the Subsets section. */
+export async function deleteObsColumn(
+  name: string, slot?: DatasetSlot,
+): Promise<{ column: string; dropped_colors: boolean; subset_removed: string | null }> {
+  return fetchJson(appendDataset(`${API_BASE}/obs/${encodeURIComponent(name)}`, slot), { method: 'DELETE' })
 }
 
 export async function deleteAnnotation(name: string, slot?: DatasetSlot): Promise<void> {
@@ -1857,21 +1882,27 @@ export interface LineAssociationParams {
   clusterGenes?: boolean
 }
 
-// Sync lines to backend
-async function syncLinesToBackend(lines: { name: string; embeddingName: string; dimX?: number; dimY?: number; points: [number, number][]; smoothedPoints: [number, number][] | null }[], slot?: DatasetSlot) {
-  const payload = lines.map((line) => ({
-    name: line.name,
-    embeddingName: line.embeddingName,
+/** Send the slot's shapes to the backend, which keeps them in the h5ad.
+ * Everything but the projections travels (they are recomputed on demand), so
+ * a partial payload here would silently strip ids and styling from the file. */
+export async function syncLinesToBackend(lines: DrawnLine[], slot?: DatasetSlot) {
+  const payload = lines.map(({ projections: _p, ...line }) => ({
+    ...line,
     dimX: line.dimX ?? 0,
     dimY: line.dimY ?? 1,
-    points: line.points,
-    smoothedPoints: line.smoothedPoints,
   }))
   await fetchJson(appendDataset(`${API_BASE}/lines`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ lines: payload }),
   })
+}
+
+/** The shapes stored with the dataset, as store lines with empty projections. */
+export async function fetchLines(slot?: DatasetSlot): Promise<DrawnLine[]> {
+  const data = await fetchJson<{ lines: Array<Omit<DrawnLine, 'projections'>> }>(
+    appendDataset(`${API_BASE}/lines`, slot))
+  return (data.lines || []).map((l) => ({ ...l, projections: [] }))
 }
 
 export async function runLineAssociation(params: LineAssociationParams, slot?: DatasetSlot): Promise<LineAssociationResult> {

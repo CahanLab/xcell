@@ -13,8 +13,16 @@ export interface CellSubsetDerived {
   hvg: string | null
   pca: string | null
   graph: string | null
-  umap: string | null
+  umap: string[]          // every UMAP the subset owns (one per graph it was run over)
   leiden: string[]
+  pca_subsets: string[]   // X_pca_<name>_<suffix> — PCs dropped from its own PCA
+}
+
+/** How a subset came to be; the embedding is the one on screen when it was
+ * saved, which is what the tree can act on ("view where it was drawn"). */
+export interface CellSubsetOrigin {
+  kind: string
+  embedding?: string
 }
 
 export interface CellSubsetInfo {
@@ -24,7 +32,19 @@ export interface CellSubsetInfo {
   n_total: number
   created_at: string | null
   description: string | null
+  // The tree: parent by containment, children in creation order, depth from a root.
+  parent: string | null
+  children: string[]
+  depth: number
+  origin: CellSubsetOrigin | null
   derived: CellSubsetDerived
+  // The parameters each scoped step ran with, keyed as the backend records them.
+  steps: Record<string, unknown>
+  // Every .obsm key the subset owns that still exists: its PCA, PC subsets, UMAPs.
+  embeddings: string[]
+  // What is drawn on those embeddings — resolved by embedding name at listing
+  // time, never copied into the registry.
+  decorations: { lines: string[]; territories: string[] }
 }
 
 /** Operations whose results a subset scopes to suffixed keys. Everything else
@@ -110,7 +130,8 @@ export function derivedBadges(d: CellSubsetDerived): string[] {
   if (d.hvg) out.push('HVG')
   if (d.pca) out.push('PCA')
   if (d.graph) out.push('kNN')
-  if (d.umap) out.push('UMAP')
+  for (const key of d.pca_subsets) out.push(key)
+  for (const key of d.umap) out.push(key)
   for (const col of d.leiden) out.push(col)
   return out
 }

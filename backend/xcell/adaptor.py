@@ -715,6 +715,18 @@ _GRAPH_META_KEY = '_xcell_graph'
 CELL_SUBSETS_UNS = 'xcell_cell_subsets'
 SUBSET_OBS_PREFIX = 'subset_'
 
+# Drawn shapes and lines. They belong to an embedding (``embeddingName``) and
+# used to live only in the browser, reaching this key at export time; now the
+# browser's every sync writes it and a load reads it back, the way territories
+# already work. A JSON string, since ragged point lists do not survive h5ad as
+# nested uns.
+LINES_UNS = 'xcell_lines_json'
+_LINE_DEFAULTS: dict[str, Any] = {
+    'dimX': 0, 'dimY': 1, 'smoothedPoints': None, 'drawType': 'pencil',
+    'closed': False, 'visible': True, 'strokeColor': '#4ecdc4',
+    'strokeWidth': 2, 'fillColor': None,
+}
+
 
 def _umap_neighbors_meta(adata, graph_key: str) -> dict[str, Any]:
     """A ``uns['neighbors']``-shaped entry that ``sc.tl.umap`` will accept.
@@ -813,7 +825,7 @@ class DataAdaptor:
         else:
             self.adata, source_kind = load_dataset_file(self.filepath)
         self._normalized_adata: anndata.AnnData | None = None
-        self._drawn_lines: list[dict[str, Any]] = []  # Stored lines from frontend
+        self._drawn_lines: list[dict[str, Any]] = self._restore_lines()
         self._action_history: list[dict[str, Any]] = []  # Track scanpy operations
         self._embedding_undo_stacks: dict[str, list[np.ndarray]] = {}  # Undo stacks for quilt transforms
         # Gene mask state — None means no mask is active.
@@ -3058,19 +3070,36 @@ class DataAdaptor:
                          subset=cell_indices)
         return self.get_obs_column_summary(annotation)
 
-    def delete_annotation(self, name: str) -> None:
-        """Delete an annotation column.
-
-        Args:
-            name: Name of the annotation column to delete
+    def delete_obs_column(self, column: str) -> dict[str, Any]:
+        """Drop an .obs column, its scanpy colour list, and — if it was a
+        named subset's membership column — the subset's registry entry, since
+        a subset with no column can never be activated again.
 
         Raises:
-            KeyError: If annotation doesn't exist
+            KeyError: If the column doesn't exist
         """
-        if name not in self.adata.obs.columns:
-            raise KeyError(f"Annotation '{name}' not found")
+        if column not in self.adata.obs.columns:
+            raise KeyError(f"Column '{column}' not found in .obs")
 
-        self.adata.obs.drop(columns=[name], inplace=True)
+        self.adata.obs.drop(columns=[column], inplace=True)
+        dropped_colors = self.adata.uns.pop(f'{column}_colors', None) is not None
+        subset_removed = None
+        registry = self._subset_registry()
+        for name, entry in registry.items():
+            if entry.get('obs_key', SUBSET_OBS_PREFIX + name) == column:
+                subset_removed = name
+                break
+        if subset_removed is not None:
+            registry.pop(subset_removed)
+            self.adata.uns[CELL_SUBSETS_UNS] = registry
+        result = {'column': column, 'dropped_colors': dropped_colors,
+                  'subset_removed': subset_removed}
+        self._log_action('delete_obs_column', {'column': column}, result)
+        return result
+
+    def delete_annotation(self, name: str) -> None:
+        """Older name for delete_obs_column; the /annotations route still calls it."""
+        self.delete_obs_column(name)
 
     def rename_obs_label(self, column: str, old_label: str, new_label: str) -> dict[str, Any]:
         """Rename a single category value in a categorical or string .obs column.
@@ -3559,21 +3588,53 @@ class DataAdaptor:
     # Drawn lines / trajectory methods
     # =========================================================================
 
-    def set_lines(self, lines: list[dict[str, Any]]) -> None:
-        """Store drawn lines from the frontend.
+    def _restore_lines(self) -> list[dict[str, Any]]:
+        """Read drawn shapes out of .uns, or start with none.
 
-        Args:
-            lines: List of line objects with keys:
-                - name: Line name
-                - embeddingName: Which embedding this was drawn on
-                - points: Raw line points [[x, y], ...]
-                - smoothedPoints: Smoothed line points (optional)
+        Tolerates the pre-2026-09 export shape (``embedding`` rather than
+        ``embeddingName``, no styling) by filling defaults, and drops anything
+        without an embedding or points rather than let one bad entry hide the
+        rest. A corrupt blob must not block the load.
         """
-        self._drawn_lines = lines
+        raw = self.adata.uns.get(LINES_UNS)
+        if not raw:
+            return []
+        try:
+            stored = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        out: list[dict[str, Any]] = []
+        for i, line in enumerate(stored if isinstance(stored, list) else []):
+            if not isinstance(line, dict) or not line.get('points'):
+                continue
+            emb = line.get('embeddingName') or line.get('embedding')
+            if not emb:
+                continue
+            fixed = {**_LINE_DEFAULTS,
+                     **{k: v for k, v in line.items() if k not in ('embedding', 'smoothed_points')},
+                     'embeddingName': emb}
+            if line.get('smoothed_points') and not fixed.get('smoothedPoints'):
+                fixed['smoothedPoints'] = line['smoothed_points']
+            fixed.setdefault('id', f'line_restored_{i}')
+            fixed.setdefault('name', f'Line {i + 1}')
+            out.append(fixed)
+        return out
+
+    def set_lines(self, lines: list[dict[str, Any]]) -> None:
+        """Store the browser's drawn shapes, in memory and in .uns."""
+        self._drawn_lines = [dict(line) for line in lines]
+        self.adata.uns[LINES_UNS] = json.dumps(self._drawn_lines)
 
     def get_lines(self) -> list[dict[str, Any]]:
-        """Get stored drawn lines."""
+        """The stored drawn shapes."""
         return self._drawn_lines
+
+    def _lines_on(self, embeddings: set[str]) -> list[dict[str, Any]]:
+        return [line for line in self._drawn_lines if line.get('embeddingName') in embeddings]
+
+    def _territories_on(self, embeddings: set[str]) -> list[str]:
+        return [name for name, spec in self.get_territories().items()
+                if isinstance(spec, Mapping) and spec.get('embedding') in embeddings]
 
     def _project_cells_onto_line(
         self,
@@ -3708,20 +3769,10 @@ class DataAdaptor:
         if not self._drawn_lines:
             return adata_export
 
-        # Store line metadata as JSON string (h5ad-safe)
-        line_metadata = []
-        for line in self._drawn_lines:
-            line_info = {
-                'name': line.get('name', 'unnamed'),
-                'embedding': line.get('embeddingName', ''),
-                'points': line.get('points', []),
-            }
-            smoothed = line.get('smoothedPoints')
-            if smoothed:
-                line_info['smoothed_points'] = smoothed
-            line_metadata.append(line_info)
-
-        adata_export.uns['xcell_lines_json'] = json.dumps(line_metadata)
+        # The full shapes, as the browser holds them, so a re-opened export
+        # shows them again (the copy carries the key already; this keeps the
+        # projections below in step with what is stored).
+        adata_export.uns[LINES_UNS] = json.dumps(self._drawn_lines)
 
         # Compute and store projections
         projections = self.compute_line_projections()
@@ -4713,9 +4764,95 @@ class DataAdaptor:
             raise ValueError(f"'{clean}' is reserved; choose another subset name.")
         return clean
 
+    @staticmethod
+    def _plain(value: Any) -> Any:
+        """Give a uns value back its JSON shape.
+
+        h5ad turns an empty list into ``array([], dtype=float64)``, a list of
+        strings into a string array and a nested dict into an h5 group, so a
+        registry read back from disk compares unequal to the one written and
+        will not json.dumps. Normalising on read is what lets the registry
+        stay a plain dict — readable in scanpy — rather than a JSON blob.
+        """
+        if isinstance(value, np.ndarray):
+            return [DataAdaptor._plain(v) for v in value.tolist()]
+        if isinstance(value, Mapping):
+            return {str(k): DataAdaptor._plain(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [DataAdaptor._plain(v) for v in value]
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
+
     def _subset_registry(self) -> dict[str, dict[str, Any]]:
         reg = self.adata.uns.get(CELL_SUBSETS_UNS)
-        return {str(k): dict(v) for k, v in reg.items()} if isinstance(reg, Mapping) else {}
+        if not isinstance(reg, Mapping):
+            return {}
+        return {str(k): dict(v) for k, v in self._plain(reg).items() if isinstance(v, Mapping)}
+
+    def _subset_tree(
+        self, registry: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[dict[str, list[str]], dict[str, int], list[str]]:
+        """Children, depth and a depth-first order over the registry.
+
+        A ``parent`` naming a subset that is no longer registered counts as
+        none, so a column dropped in scanpy orphans its children rather than
+        hiding them. Roots and siblings sort by creation time, then name.
+        """
+        def sort_key(n: str) -> tuple[str, str]:
+            return (registry[n].get('created_at') or '', n)
+
+        children: dict[str, list[str]] = {n: [] for n in registry}
+        roots: list[str] = []
+        for n, e in registry.items():
+            parent = e.get('parent')
+            if parent and parent in registry and parent != n:
+                children[parent].append(n)
+            else:
+                roots.append(n)
+        for kids in children.values():
+            kids.sort(key=sort_key)
+        roots.sort(key=sort_key)
+
+        depth: dict[str, int] = {}
+        order: list[str] = []
+        stack = [(n, 0) for n in reversed(roots)]
+        while stack:
+            n, d = stack.pop()
+            if n in depth:   # a cycle in a hand-edited file
+                continue
+            depth[n] = d
+            order.append(n)
+            stack.extend((k, d + 1) for k in reversed(children[n]))
+        for n in registry:      # anything only reachable through a cycle
+            if n not in depth:
+                depth[n] = 0
+                order.append(n)
+        return children, depth, order
+
+    def _infer_parent(self, idx: np.ndarray, exclude: str | None = None) -> str | None:
+        """The smallest registered subset containing every cell of ``idx``.
+
+        A subset with exactly these cells is a twin, not a parent. Ties go to
+        the most recently created, which in the recursive workflow is the one
+        the user was just working in.
+        """
+        registry = self._subset_registry()
+        best: tuple[int, str, str] | None = None
+        for name, entry in registry.items():
+            if name == exclude:
+                continue
+            key = entry.get('obs_key', SUBSET_OBS_PREFIX + name)
+            if key not in self.adata.obs.columns:
+                continue
+            mask = self.adata.obs[key].values.astype(bool)
+            n = int(mask.sum())
+            if n <= len(idx) or not mask[idx].all():
+                continue
+            cand = (n, entry.get('created_at') or '', name)
+            if best is None or cand[0] < best[0] or (cand[0] == best[0] and cand[1] > best[1]):
+                best = cand
+        return best[2] if best else None
 
     def _subset_mask(self, name: str) -> np.ndarray:
         """Boolean membership of a registered subset; KeyError if unknown."""
@@ -4728,23 +4865,101 @@ class DataAdaptor:
                 f"Known subsets: {known if known else 'none'}")
         return self.adata.obs[key].values.astype(bool)
 
-    def _subset_derived_keys(self, name: str) -> dict[str, Any]:
-        """What has been computed on this subset, by the naming convention."""
-        obs_cols = list(self.adata.obs.columns)
-        leiden_cols = [c for c in obs_cols
-                       if c == f'leiden_{name}' or c.startswith(f'leiden_{name}_')]
+    def _subset_record_step(
+        self, name: str, step: str, key: str,
+        params: Mapping[str, Any] | None = None, extra: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Write what a scoped operation just produced into the registry.
+
+        ``hvg`` / ``pca`` / ``graph`` have one output per subset; ``umap`` and
+        ``leiden`` are keyed by output name so a re-run overwrites and a run
+        over another graph sits beside the first; ``pca_subsets`` keeps the
+        dropped PCs. Only flat scalars are kept — the notebook already gets
+        the full params from the analysis record.
+        """
+        registry = self._subset_registry()
+        entry = registry.get(name)
+        if entry is None:
+            return
+        derived = entry.setdefault('derived', {})
+        clean = {k: (v.item() if isinstance(v, np.generic) else v)
+                 for k, v in (params or {}).items()
+                 if v is None or isinstance(v, (str, int, float, bool, np.generic))}
+        if step in ('hvg', 'pca', 'graph'):
+            derived[step] = {'key': key, 'params': clean}
+        elif step in ('umap', 'leiden'):
+            derived.setdefault(step, {})[key] = clean
+        elif step == 'pca_subsets':
+            derived.setdefault('pca_subsets', {})[key] = dict(extra or {})
+        registry[name] = entry
+        self.adata.uns[CELL_SUBSETS_UNS] = registry
+
+    def _subset_forget_key(self, name: str, key: str) -> None:
+        """Drop any record of ``key`` from a subset's derived entry."""
+        registry = self._subset_registry()
+        entry = registry.get(name)
+        if entry is None:
+            return
+        derived = entry.get('derived') or {}
+        for step in ('hvg', 'pca', 'graph'):
+            if (derived.get(step) or {}).get('key') == key:
+                derived.pop(step)
+        for step in ('umap', 'leiden', 'pca_subsets'):
+            if isinstance(derived.get(step), dict):
+                derived[step].pop(key, None)
+        entry['derived'] = derived
+        registry[name] = entry
+        self.adata.uns[CELL_SUBSETS_UNS] = registry
+
+    def _subset_derived_keys(self, name: str, entry: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """What exists of this subset's results: the recorded keys, plus
+        anything the naming convention finds (files from before the record),
+        filtered to keys that are actually there."""
+        derived = (entry or {}).get('derived') or {}
+
+        def recorded(step: str) -> str | None:
+            rec = derived.get(step)
+            return rec.get('key') if isinstance(rec, Mapping) else None
+
+        def recorded_keys(step: str) -> list[str]:
+            rec = derived.get(step)
+            return list(rec.keys()) if isinstance(rec, Mapping) else []
+
+        hvg = recorded('hvg') or f'highly_variable__{name}'
+        pca = recorded('pca') or f'X_pca_{name}'
+        graph = recorded('graph') or f'{name}_connectivities'
+        umaps = recorded_keys('umap')
+        for k in self.adata.obsm.keys():
+            if (k == f'X_umap_{name}' or k.startswith(f'X_umap_{name}_')) and k not in umaps:
+                umaps.append(k)
+        leidens = recorded_keys('leiden')
+        for c in self.adata.obs.columns:
+            if (c == f'leiden_{name}' or c.startswith(f'leiden_{name}_')) and c not in leidens:
+                leidens.append(c)
+        pc_subsets = recorded_keys('pca_subsets')
+        for k in self.adata.obsm.keys():
+            if k.startswith(f'X_pca_{name}_') and k not in pc_subsets:
+                pc_subsets.append(k)
         return {
-            'hvg': (f'highly_variable__{name}'
-                    if f'highly_variable__{name}' in self.adata.var.columns else None),
-            'pca': f'X_pca_{name}' if f'X_pca_{name}' in self.adata.obsm else None,
-            'graph': (f'{name}_connectivities'
-                      if f'{name}_connectivities' in self.adata.obsp else None),
-            'umap': f'X_umap_{name}' if f'X_umap_{name}' in self.adata.obsm else None,
-            'leiden': leiden_cols,
+            'hvg': hvg if hvg in self.adata.var.columns else None,
+            'pca': pca if pca in self.adata.obsm else None,
+            'graph': graph if graph in self.adata.obsp else None,
+            'umap': [k for k in umaps if k in self.adata.obsm],
+            'leiden': [c for c in leidens if c in self.adata.obs.columns],
+            'pca_subsets': [k for k in pc_subsets if k in self.adata.obsm],
         }
 
-    def _subset_summary(self, name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
+    def _subset_summary(
+        self, name: str, registry: Mapping[str, Mapping[str, Any]],
+        tree: tuple[dict[str, list[str]], dict[str, int], list[str]] | None = None,
+    ) -> dict[str, Any]:
+        entry = registry[name]
+        children, depth, _ = tree if tree is not None else self._subset_tree(registry)
         mask = self.adata.obs[SUBSET_OBS_PREFIX + name].values.astype(bool)
+        parent = entry.get('parent')
+        origin = entry.get('origin')
+        derived = self._subset_derived_keys(name, entry)
+        embeddings = ([derived['pca']] if derived['pca'] else []) + derived['pca_subsets'] + derived['umap']
         return {
             'name': name,
             'obs_key': SUBSET_OBS_PREFIX + name,
@@ -4752,7 +4967,17 @@ class DataAdaptor:
             'n_total': self.n_cells,
             'created_at': entry.get('created_at'),
             'description': entry.get('description') or None,
-            'derived': self._subset_derived_keys(name),
+            'parent': parent if parent and parent in registry else None,
+            'children': list(children.get(name, [])),
+            'depth': int(depth.get(name, 0)),
+            'origin': dict(origin) if isinstance(origin, Mapping) and origin else None,
+            'derived': derived,
+            'steps': entry.get('derived') or {},
+            'embeddings': embeddings,
+            'decorations': {
+                'lines': [line.get('name', '') for line in self._lines_on(set(embeddings))],
+                'territories': self._territories_on(set(embeddings)),
+            },
         }
 
     def create_cell_subset(
@@ -4762,6 +4987,8 @@ class DataAdaptor:
         *,
         description: str | None = None,
         overwrite: bool = False,
+        parent: str | None = None,
+        origin: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Persist a cell selection as a named subset.
 
@@ -4769,6 +4996,15 @@ class DataAdaptor:
         ``uns['xcell_cell_subsets']``. The subset is what the clustering-chain
         operations take as ``cell_subset=`` to run on those cells alone while
         writing to suffixed keys.
+
+        Args:
+            parent: The subset this one nests under. Left unset it is inferred
+                as the smallest registered subset containing every cell —
+                which, in the recursive sub-clustering workflow, is the one
+                the selection was made inside. Given, it must contain them.
+            origin: How the selection was made, e.g. ``{'kind': 'selection',
+                'embedding': 'X_umap'}``; stored as given, ``None`` values
+                dropped.
         """
         import datetime
         clean = self._sanitize_subset_name(name)
@@ -4787,18 +5023,39 @@ class DataAdaptor:
             raise ValueError(
                 f"A subset named '{clean}' already exists. Choose another name or overwrite it.")
 
+        if parent is not None:
+            parent = self._sanitize_subset_name(parent)
+            if parent not in registry:
+                raise ValueError(f"No cell subset named '{parent}' to be the parent.")
+            pkey = registry[parent].get('obs_key', SUBSET_OBS_PREFIX + parent)
+            if pkey not in self.adata.obs.columns or not self.adata.obs[pkey].values.astype(bool)[idx].all():
+                raise ValueError(
+                    f"Subset '{parent}' does not contain every cell of '{clean}', "
+                    f"so it cannot be its parent.")
+        else:
+            parent = self._infer_parent(idx, exclude=clean)
+
         mask = np.zeros(self.n_cells, dtype=bool)
         mask[idx] = True
         self.adata.obs[key] = mask
-        registry[clean] = {
+        entry: dict[str, Any] = {
             'obs_key': key,
             'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'description': str(description) if description else '',
         }
+        if parent:
+            entry['parent'] = parent
+        clean_origin = {str(k): v for k, v in (origin or {}).items() if v is not None}
+        if clean_origin:
+            entry['origin'] = clean_origin
+        registry[clean] = entry
         self.adata.uns[CELL_SUBSETS_UNS] = registry
 
-        out = self._subset_summary(clean, registry[clean])
-        self._log_action('create_cell_subset', {'name': clean},
+        out = self._subset_summary(clean, registry)
+        params: dict[str, Any] = {'name': clean}
+        if parent:
+            params['parent'] = parent
+        self._log_action('create_cell_subset', params,
                          {'n_cells': out['n_cells'], 'obs_key': key}, subset=idx)
         return out
 
@@ -4814,28 +5071,38 @@ class DataAdaptor:
                 if e.get('obs_key', SUBSET_OBS_PREFIX + n) in self.adata.obs.columns}
         if len(live) != len(registry):
             self.adata.uns[CELL_SUBSETS_UNS] = live
-        out = [self._subset_summary(n, e) for n, e in live.items()]
-        out.sort(key=lambda s: (s['created_at'] or '', s['name']))
-        return out
+        tree = self._subset_tree(live)
+        return [self._subset_summary(n, live, tree) for n in tree[2]]
 
     def get_cell_subset_indices(self, name: str) -> list[int]:
         return [int(i) for i in np.where(self._subset_mask(name))[0]]
 
     def delete_cell_subset(self, name: str, *, drop_derived: bool = False) -> dict[str, Any]:
-        """Remove a subset; optionally everything computed on it too."""
+        """Remove a subset; optionally everything computed on it too — its
+        results, and the shapes and territories drawn on its embeddings."""
         clean = self._sanitize_subset_name(name)
         self._subset_mask(clean)  # KeyError if unknown
         dropped: list[str] = []
+        dropped_lines: list[str] = []
+        dropped_territories: list[str] = []
         key = SUBSET_OBS_PREFIX + clean
         if key in self.adata.obs.columns:
             del self.adata.obs[key]
             dropped.append(key)
         registry = self._subset_registry()
-        registry.pop(clean, None)
+        gone = registry.pop(clean, None) or {}
+        # Its children move up to its parent, so the tree stays connected and
+        # nothing under the deleted node is lost or hidden.
+        for entry in registry.values():
+            if entry.get('parent') == clean:
+                if gone.get('parent'):
+                    entry['parent'] = gone['parent']
+                else:
+                    entry.pop('parent', None)
         self.adata.uns[CELL_SUBSETS_UNS] = registry
 
         if drop_derived:
-            derived = self._subset_derived_keys(clean)
+            derived = self._subset_derived_keys(clean, gone)
             if derived['hvg']:
                 del self.adata.var[derived['hvg']]
                 dropped.append(derived['hvg'])
@@ -4850,14 +5117,34 @@ class DataAdaptor:
                         del self.adata.obsp[k]
                         dropped.append(k)
                 self.adata.uns.pop(clean, None)
-            if derived['umap']:
-                del self.adata.obsm[derived['umap']]
-                dropped.append(derived['umap'])
+            for k in derived['pca_subsets']:
+                del self.adata.obsm[k]
+                self.adata.varm.pop('PCs_' + k[len('X_pca_'):], None)
+                dropped.append(k)
+            for k in derived['umap']:
+                del self.adata.obsm[k]
+                dropped.append(k)
             for col in derived['leiden']:
                 del self.adata.obs[col]
                 dropped.append(col)
 
-        result = {'name': clean, 'dropped': dropped}
+            # Shapes and territories drawn on an embedding that is gone have
+            # no coordinates left to live in, so they go with it.
+            gone_embeddings = {k for k in dropped if k.startswith('X_')}
+            for line in self._lines_on(gone_embeddings):
+                dropped_lines.append(line.get('name', ''))
+            if dropped_lines:
+                self.set_lines([line for line in self._drawn_lines
+                                if line.get('embeddingName') not in gone_embeddings])
+            dropped_territories = self._territories_on(gone_embeddings)
+            if dropped_territories:
+                stored = self.get_territories()
+                for t in dropped_territories:
+                    stored.pop(t, None)
+                self.adata.uns[self.TERRITORY_UNS_KEY] = json.dumps(stored)
+
+        result = {'name': clean, 'dropped': dropped,
+                  'dropped_lines': dropped_lines, 'dropped_territories': dropped_territories}
         self._log_action('delete_cell_subset',
                          {'name': clean, 'drop_derived': bool(drop_derived)}, result)
         return result
@@ -4978,7 +5265,10 @@ class DataAdaptor:
                 if 'gene_connectivities' not in self.adata.varp:
                     missing.append('gene_neighbors')
             elif prereq == 'pca_with_loadings':
-                if 'pca' not in self.adata.uns or 'PCs' not in self.adata.varm:
+                own = 'pca' in self.adata.uns and 'PCs' in self.adata.varm
+                subsets_own = bool(cell_subset) and (
+                    f'pca_{cell_subset}' in self.adata.uns and f'PCs_{cell_subset}' in self.adata.varm)
+                if not own and not subsets_own:
                     missing.append('pca_with_loadings')
             elif prereq == 'has_spatial':
                 if not self._has_spatial_coordinates():
@@ -6462,6 +6752,9 @@ class DataAdaptor:
             result['column'] = out_column
             result['cell_subset'] = subset_name
             params['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'hvg', out_column, {
+                'n_top_genes': n_top_genes, 'min_mean': min_mean, 'max_mean': max_mean,
+                'min_disp': min_disp, 'flavor': flavor})
         self._log_action('highly_variable_genes', params, result, subset=indices)
         return result
 
@@ -6612,7 +6905,9 @@ class DataAdaptor:
             for key in list(self.adata.obsm.keys()):
                 if key.startswith('X_pca_') and key != 'X_pca':
                     suffix = key[len('X_pca_'):]
-                    if suffix in subset_names:
+                    # A subset's PCA, and the PC subsets under it, are its own.
+                    if suffix in subset_names or any(
+                            suffix.startswith(n + '_') for n in subset_names):
                         continue
                     self.adata.obsm.pop(key, None)
                     self.adata.varm.pop(f"PCs_{suffix}", None)
@@ -6621,6 +6916,16 @@ class DataAdaptor:
                         subsets_meta = self.adata.uns['pca'].get('subsets', {})
                         if isinstance(subsets_meta, dict):
                             subsets_meta.pop(suffix, None)
+                    cleared_subsets.append(key)
+        else:
+            # The subset's own PC subsets reference columns of its previous
+            # PCA. (uns['pca_<name>'] was replaced wholesale above, so their
+            # variance ratios and metadata are already gone.)
+            for key in list(self.adata.obsm.keys()):
+                if key.startswith(f'{pca_key}_'):
+                    self.adata.obsm.pop(key, None)
+                    self.adata.varm.pop(f"{pcs_key}_{key[len(pca_key) + 1:]}", None)
+                    self._subset_forget_key(subset_name, key)
                     cleared_subsets.append(key)
         if cleared_subsets:
             result['cleared_subsets'] = cleared_subsets
@@ -6633,13 +6938,48 @@ class DataAdaptor:
         if subset_name is not None:
             result['cell_subset'] = subset_name
             params['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'pca', pca_key, {
+                'n_comps': n_comps, 'svd_solver': svd_solver,
+                'gene_subset_type': subset_type, 'n_genes_used': n_genes_used})
         self._log_action('pca', params, result, subset=cell_indices)
         return result
 
-    def get_pca_loadings(self, top_n: int = 10) -> dict[str, Any]:
+    def _pca_slots(self, cell_subset: str | None) -> tuple[str, str, str, str | None]:
+        """Where a PCA lives: ``(obsm key, varm key, uns key, subset name)``.
+
+        The dataset's own is ``X_pca`` / ``PCs`` / ``uns['pca']``; a named
+        subset's is each of those suffixed with its name. KeyError for an
+        unknown subset, so a route maps it to 404.
+        """
+        if not cell_subset:
+            return 'X_pca', 'PCs', 'pca', None
+        clean = self._sanitize_subset_name(cell_subset)
+        self._subset_mask(clean)
+        return f'X_pca_{clean}', f'PCs_{clean}', f'pca_{clean}', clean
+
+    def _pca_subset_owner(self, obsm_key: str) -> tuple[str | None, str]:
+        """Which subset a PC-subset key belongs to, and its suffix.
+
+        ``X_pca_chondro_noPC1`` is the subset chondro's; ``X_pca_noPC1`` is
+        the dataset's. The longest registered name wins, so a subset named
+        ``a`` does not claim ``X_pca_ab_noPC1``. A subset's *own* PCA is not a
+        PC subset at all.
+        """
+        names = sorted(self._subset_registry(), key=len, reverse=True)
+        for name in names:
+            if obsm_key == f'X_pca_{name}':
+                raise ValueError(
+                    f"'{obsm_key}' is the PCA of the subset '{name}' itself, not a "
+                    f"PC subset; delete the subset (with its results) instead.")
+            if obsm_key.startswith(f'X_pca_{name}_'):
+                return name, obsm_key[len(f'X_pca_{name}_'):]
+        return None, obsm_key[len('X_pca_'):]
+
+    def get_pca_loadings(self, top_n: int = 10, cell_subset: str | None = None) -> dict[str, Any]:
         """Return top +/- loading genes per computed PC.
 
-        Reads self.adata.varm['PCs'] and self.adata.uns['pca']['variance_ratio'].
+        Reads varm['PCs'] and uns['pca']['variance_ratio'] — or, for a named
+        subset, ``PCs_<name>`` and ``uns['pca_<name>']``, the subset's own.
         Gene rows containing NaN loadings (from subset-PCA runs) are excluded
         from per-PC rankings; up to top_n valid genes are returned per side.
 
@@ -6660,17 +7000,20 @@ class DataAdaptor:
               ]
             }
         """
-        if 'pca' not in self.adata.uns:
-            raise ValueError("PCA has not been run. Run pca first.")
-        if 'PCs' not in self.adata.varm:
-            raise ValueError("PC loadings are unavailable (varm['PCs'] missing). Re-run PCA.")
+        pca_key, pcs_key, uns_key, subset_name = self._pca_slots(cell_subset)
+        where = f" on subset '{subset_name}'" if subset_name else ''
+        if uns_key not in self.adata.uns:
+            raise ValueError(f"PCA has not been run{where}. Run pca first.")
+        if pcs_key not in self.adata.varm:
+            raise ValueError(
+                f"PC loadings are unavailable (varm['{pcs_key}'] missing). Re-run PCA{where}.")
 
-        pcs_matrix = np.asarray(self.adata.varm['PCs'])
+        pcs_matrix = np.asarray(self.adata.varm[pcs_key])
         if pcs_matrix.ndim != 2:
-            raise ValueError(f"Unexpected varm['PCs'] shape: {pcs_matrix.shape}")
+            raise ValueError(f"Unexpected varm['{pcs_key}'] shape: {pcs_matrix.shape}")
 
         n_genes, n_comps = pcs_matrix.shape
-        var_ratio = np.asarray(self.adata.uns['pca'].get('variance_ratio', []))
+        var_ratio = np.asarray(self.adata.uns[uns_key].get('variance_ratio', []))
         gene_names = list(self.adata.var_names)
         top_n = max(1, int(top_n))
         # Count genes with finite loadings on PC1 — mirrors the row-count a
@@ -6714,12 +7057,15 @@ class DataAdaptor:
             'n_genes_loaded': n_genes_loaded,
             'n_genes_total': n_genes,
             'pcs': pcs_out,
+            'cell_subset': subset_name,
+            'embedding': pca_key,
         }
 
     def create_pca_subset(
         self,
         drop_pc_indices: list[int],
         suffix: str | None = None,
+        cell_subset: str | None = None,
     ) -> dict[str, Any]:
         """Create derived PCA slots that exclude specific 1-indexed PCs.
 
@@ -6730,16 +7076,23 @@ class DataAdaptor:
           - uns['pca']['subsets'][suffix] = {'dropped_pcs': [i, j, ...]}
             (round-trips exact indices regardless of suffix).
 
+        On a named subset the base is its own PCA and every key carries its
+        name first — ``X_pca_<name>_<suffix>``, ``PCs_<name>_<suffix>``,
+        ``uns['pca_<name>']`` — and the registry records it, so the subset
+        owns the result and a dataset PCA re-run leaves it alone.
+
         Raises:
             ValueError: missing PCA, empty indices, out-of-range, all-dropped.
             ValueError: suffix collision with existing obsm key.
         """
-        if 'X_pca' not in self.adata.obsm:
-            raise ValueError("PCA has not been run. Run pca first.")
+        pca_key, pcs_key, uns_key, subset_name = self._pca_slots(cell_subset)
+        if pca_key not in self.adata.obsm:
+            where = f" on subset '{subset_name}'" if subset_name else ''
+            raise ValueError(f"PCA has not been run{where}. Run pca first.")
         if not drop_pc_indices:
             raise ValueError("drop_pc_indices must contain at least one PC.")
 
-        base_embed = np.asarray(self.adata.obsm['X_pca'])
+        base_embed = np.asarray(self.adata.obsm[pca_key])
         n_cells, n_pcs = base_embed.shape
 
         # Convert from 1-indexed user-facing to 0-indexed column positions.
@@ -6760,7 +7113,7 @@ class DataAdaptor:
         if suffix is None or suffix == '':
             suffix = f"noPC{'_'.join(str(i) for i in dropped_1indexed)}"
 
-        new_obsm_key = f"X_pca_{suffix}"
+        new_obsm_key = f"{pca_key}_{suffix}"
         if new_obsm_key in self.adata.obsm:
             raise ValueError(f"A PC subset named '{suffix}' already exists.")
 
@@ -6768,19 +7121,19 @@ class DataAdaptor:
         self.adata.obsm[new_obsm_key] = base_embed[:, keep]
 
         varm_key = None
-        if 'PCs' in self.adata.varm:
-            varm_key = f"PCs_{suffix}"
-            self.adata.varm[varm_key] = np.asarray(self.adata.varm['PCs'])[:, keep]
+        if pcs_key in self.adata.varm:
+            varm_key = f"{pcs_key}_{suffix}"
+            self.adata.varm[varm_key] = np.asarray(self.adata.varm[pcs_key])[:, keep]
 
         var_ratio_key = None
-        if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
-            if 'variance_ratio' in self.adata.uns['pca']:
+        if uns_key in self.adata.uns and isinstance(self.adata.uns[uns_key], dict):
+            if 'variance_ratio' in self.adata.uns[uns_key]:
                 var_ratio_key = f"variance_ratio_{suffix}"
-                self.adata.uns['pca'][var_ratio_key] = np.asarray(
-                    self.adata.uns['pca']['variance_ratio']
+                self.adata.uns[uns_key][var_ratio_key] = np.asarray(
+                    self.adata.uns[uns_key]['variance_ratio']
                 )[keep]
             # Record the dropped indices for round-tripping in list_pca_subsets.
-            subsets_meta = self.adata.uns['pca'].setdefault('subsets', {})
+            subsets_meta = self.adata.uns[uns_key].setdefault('subsets', {})
             subsets_meta[suffix] = {'dropped_pcs': dropped_1indexed}
 
         result = {
@@ -6790,30 +7143,40 @@ class DataAdaptor:
             'suffix': suffix,
             'n_pcs_kept': int(keep.size),
             'dropped_pcs': dropped_1indexed,
+            'cell_subset': subset_name,
         }
-        self._log_action('create_pca_subset', {
-            'drop_pc_indices': dropped_1indexed,
-            'suffix': suffix,
-        }, result)
+        params: dict[str, Any] = {'drop_pc_indices': dropped_1indexed, 'suffix': suffix}
+        if subset_name is not None:
+            params['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'pca_subsets', new_obsm_key,
+                                     extra={'dropped_pcs': dropped_1indexed})
+        self._log_action('create_pca_subset', params, result)
         return result
 
-    def list_pca_subsets(self) -> list[dict[str, Any]]:
-        """List every derived PC subset in adata.obsm.
+    def list_pca_subsets(self, cell_subset: str | None = None) -> list[dict[str, Any]]:
+        """List the derived PC subsets of the dataset's PCA, or of a subset's.
 
-        Iterates obsm keys with prefix 'X_pca_' (excluding the exact key
-        'X_pca'). For each, reports obsm_key, suffix, n_pcs_kept, and
-        dropped_pcs (from uns['pca']['subsets'][suffix] when present,
-        otherwise []).
+        For each, reports obsm_key, suffix, n_pcs_kept, and dropped_pcs (from
+        the owning uns entry's ``subsets`` when present, otherwise []). The
+        dataset's list leaves out every key under a registered subset's
+        prefix — a subset's own ``X_pca_<name>`` shares the shape of a PC
+        subset but is not one.
         """
+        pca_key, _, uns_key, subset_name = self._pca_slots(cell_subset)
         out: list[dict[str, Any]] = []
         subsets_meta = {}
-        if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
-            subsets_meta = self.adata.uns['pca'].get('subsets', {}) or {}
+        if uns_key in self.adata.uns and isinstance(self.adata.uns[uns_key], Mapping):
+            subsets_meta = self.adata.uns[uns_key].get('subsets', {}) or {}
+        prefix = f'{pca_key}_'
+        names = set(self._subset_registry())
 
         for key in sorted(self.adata.obsm.keys()):
-            if not key.startswith('X_pca_') or key == 'X_pca':
+            if not key.startswith(prefix):
                 continue
-            suffix = key[len('X_pca_'):]
+            suffix = key[len(prefix):]
+            if subset_name is None and (
+                    suffix in names or any(suffix.startswith(n + '_') for n in names)):
+                continue
             arr = np.asarray(self.adata.obsm[key])
             n_pcs_kept = int(arr.shape[1]) if arr.ndim == 2 else 0
             meta = subsets_meta.get(suffix, {})
@@ -6838,17 +7201,20 @@ class DataAdaptor:
             raise ValueError("Cannot delete the base X_pca embedding.")
         if not obsm_key.startswith('X_pca_'):
             raise ValueError(f"'{obsm_key}' is not a derived PC subset.")
+        owner, suffix = self._pca_subset_owner(obsm_key)
         if obsm_key not in self.adata.obsm:
             raise ValueError(f"'{obsm_key}' not found in obsm.")
 
-        suffix = obsm_key[len('X_pca_'):]
+        _, pcs_key, uns_key, _ = self._pca_slots(owner)
         self.adata.obsm.pop(obsm_key, None)
-        self.adata.varm.pop(f"PCs_{suffix}", None)
-        if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
-            self.adata.uns['pca'].pop(f"variance_ratio_{suffix}", None)
-            subsets_meta = self.adata.uns['pca'].get('subsets', {})
+        self.adata.varm.pop(f"{pcs_key}_{suffix}", None)
+        if uns_key in self.adata.uns and isinstance(self.adata.uns[uns_key], dict):
+            self.adata.uns[uns_key].pop(f"variance_ratio_{suffix}", None)
+            subsets_meta = self.adata.uns[uns_key].get('subsets', {})
             if isinstance(subsets_meta, dict):
                 subsets_meta.pop(suffix, None)
+        if owner is not None:
+            self._subset_forget_key(owner, obsm_key)
         self._log_action('delete_pca_subset', {'obsm_key': obsm_key}, None)
 
     def run_neighbors(
@@ -6970,6 +7336,9 @@ class DataAdaptor:
             result['use_rep'] = rep_key if rep_key is not None else 'X_pca'
             result['cell_subset'] = subset_name
             params['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'graph', result['graph_key'], {
+                'n_neighbors': n_neighbors, 'n_pcs': n_pcs, 'metric': metric,
+                'use_rep': result['use_rep']})
         self._log_action('neighbors', params, result, subset=cell_indices)
         return result
 
@@ -7466,6 +7835,9 @@ class DataAdaptor:
         if subset_name is not None:
             params['cell_subset'] = subset_name
             result['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'umap', name, {
+                'min_dist': min_dist, 'spread': spread, 'n_components': n_components,
+                'graph_key': graph_key})
         self._log_action('umap', params, result, subset=cell_indices)
         return result
 
@@ -7572,6 +7944,8 @@ class DataAdaptor:
         if subset_name is not None:
             params['cell_subset'] = subset_name
             result['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'leiden', name, {
+                'resolution': resolution, 'graph_key': graph_key})
         self._log_action('leiden', params, result, subset=cell_indices)
         return result
 

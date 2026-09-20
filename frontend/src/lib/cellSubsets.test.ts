@@ -65,8 +65,8 @@ describe('scoped outputs', () => {
   })
 
   it('summarises what has been derived', () => {
-    expect(derivedBadges({ hvg: 'highly_variable__c', pca: 'X_pca_c', graph: null, umap: null, leiden: ['leiden_c'] }))
-      .toEqual(['HVG', 'PCA', 'leiden_c'])
-    expect(derivedBadges({ hvg: null, pca: null, graph: null, umap: null, leiden: [] })).toEqual([])
+    expect(derivedBadges({ hvg: 'highly_variable__c', pca: 'X_pca_c', graph: null, umap: ['X_umap_c', 'X_umap_c_alt'], leiden: ['leiden_c'], pca_subsets: ['X_pca_c_noPC1'] }))
+      .toEqual(['HVG', 'PCA', 'X_pca_c_noPC1', 'X_umap_c', 'X_umap_c_alt', 'leiden_c'])
+    expect(derivedBadges({ hvg: null, pca: null, graph: null, umap: [], leiden: [], pca_subsets: [] })).toEqual([])
   })
 })

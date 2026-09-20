@@ -748,6 +748,16 @@ def get_obs_column(column: str, dataset: str | None = Query(None)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.delete("/obs/{column}")
+def delete_obs_column(column: str, dataset: str | None = Query(None)):
+    """Drop an .obs column, with its colour list and subset entry if any."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.delete_obs_column(column)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 class RenameObsLabelRequest(BaseModel):
     old_label: str
     new_label: str
@@ -1753,7 +1763,12 @@ def run_marker_genes(request: MarkerGenesRequest, dataset: str | None = Query(No
 
 
 class LineData(BaseModel):
-    """Data for a single drawn line."""
+    """One drawn shape or line, as the browser's store holds it.
+
+    Everything but the projections (recomputed on demand) travels, so a
+    reload or a re-opened export shows the shape exactly as it was drawn.
+    Older callers that send only name/embedding/points still work.
+    """
     name: str
     embeddingName: str
     points: list[list[float]]
@@ -1762,6 +1777,13 @@ class LineData(BaseModel):
     # projection/association use the same axes the user saw (default first two).
     dimX: int = 0
     dimY: int = 1
+    id: str | None = None
+    drawType: str = 'pencil'
+    closed: bool = False
+    visible: bool = True
+    strokeColor: str = '#4ecdc4'
+    strokeWidth: float = 2
+    fillColor: str | None = None
 
 
 class SetLinesRequest(BaseModel):
@@ -1784,8 +1806,12 @@ def set_lines(request: SetLinesRequest, dataset: str | None = Query(None)):
         Confirmation with line count
     """
     adaptor = get_adaptor(dataset)
-    # Convert Pydantic models to dicts
-    lines_data = [line.model_dump() for line in request.lines]
+    lines_data = []
+    for i, line in enumerate(request.lines):
+        d = line.model_dump()
+        # A line needs an id for the browser to address it after a reload.
+        d['id'] = d.get('id') or f'line_{i}_{abs(hash(d["name"])) % 10**8}'
+        lines_data.append(d)
     adaptor.set_lines(lines_data)
     return {"status": "ok", "line_count": len(lines_data)}
 
@@ -2217,6 +2243,7 @@ class CombineNeighborsRequest(BaseModel):
 class CreatePcaSubsetRequest(BaseModel):
     drop_pc_indices: list[int]
     suffix: str | None = None
+    cell_subset: str | None = None
 
 
 class UmapRequest(BaseModel):
@@ -2274,6 +2301,9 @@ class CellSubsetRequest(BaseModel):
     cell_indices: list[int]
     description: str | None = None
     overwrite: bool = False
+    # Unset → inferred by containment (the smallest subset holding every cell).
+    parent: str | None = None
+    origin: dict[str, Any] | None = None
 
 
 @router.get("/cell_subsets")
@@ -2290,6 +2320,7 @@ def create_cell_subset(request: CellSubsetRequest, dataset: str | None = Query(N
         return adaptor.create_cell_subset(
             request.name, request.cell_indices,
             description=request.description, overwrite=request.overwrite,
+            parent=request.parent, origin=request.origin,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2917,24 +2948,32 @@ def run_leiden(request: LeidenRequest, dataset: str | None = Query(None)):
 @router.get("/scanpy/pca_loadings")
 def get_pca_loadings(
     top_n: int = Query(10, ge=1, le=500),
+    cell_subset: str | None = Query(None),
     dataset: str | None = Query(None),
 ):
-    """Return top +/- loading genes per computed PC."""
+    """Return top +/- loading genes per computed PC (a named subset's own with cell_subset)."""
     adaptor = get_adaptor(dataset)
     try:
-        return adaptor.get_pca_loadings(top_n=top_n)
+        return adaptor.get_pca_loadings(top_n=top_n, cell_subset=cell_subset)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/scanpy/pca_subsets")
-def list_pca_subsets(dataset: str | None = Query(None)):
-    """List derived PC subsets (X_pca_no* obsm slots)."""
+def list_pca_subsets(
+    cell_subset: str | None = Query(None),
+    dataset: str | None = Query(None),
+):
+    """List derived PC subsets of the dataset's PCA, or of a named subset's."""
     adaptor = get_adaptor(dataset)
     try:
-        return {'subsets': adaptor.list_pca_subsets()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {'subsets': adaptor.list_pca_subsets(cell_subset=cell_subset)}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/scanpy/pca_subsets")
@@ -2948,7 +2987,10 @@ def create_pca_subset(
         return adaptor.create_pca_subset(
             drop_pc_indices=request.drop_pc_indices,
             suffix=request.suffix,
+            cell_subset=request.cell_subset,
         )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         # Use 409 for suffix collision so the UI can show a specific toast.
         if 'already exists' in str(e):

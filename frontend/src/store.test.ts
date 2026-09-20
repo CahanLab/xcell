@@ -484,3 +484,95 @@ describe('the active slot always names a dataset that exists', () => {
     expect(useStore.getState().activeSlot).toBe('primary')
   })
 })
+
+describe('forgetObsColumn', () => {
+  const column = (name: string) => ({ name, dtype: 'category' as const, values: [] })
+
+  it('clears everything that named the column', () => {
+    const s = useStore.getState()
+    s.setColorBy(column('leiden'))
+    s.setSelectedColorColumn('leiden')
+    s.setEmbeddingLabelColumn('leiden')
+    s.hideColumn('leiden')
+    s.setColumnDisplayName('leiden', 'Clusters')
+
+    useStore.getState().forgetObsColumn('leiden')
+
+    const after = useStore.getState()
+    expect(after.colorBy).toBeNull()
+    // The column the colour-by hook fetches — left set, it re-requests a 404.
+    expect(after.selectedColorColumn).toBeNull()
+    expect(after.embeddingLabelColumn).toBeNull()
+    expect(after.hiddenColumns.has('leiden')).toBe(false)
+    expect(after.columnDisplayNames['leiden']).toBeUndefined()
+  })
+
+  it('leaves other columns alone', () => {
+    const s = useStore.getState()
+    s.setColorBy(column('cell_type'))
+    s.setSelectedColorColumn('cell_type')
+    s.setEmbeddingLabelColumn('cell_type')
+    s.hideColumn('score')
+
+    useStore.getState().forgetObsColumn('leiden')
+
+    const after = useStore.getState()
+    expect(after.colorBy?.name).toBe('cell_type')
+    expect(after.selectedColorColumn).toBe('cell_type')
+    expect(after.embeddingLabelColumn).toBe('cell_type')
+    expect(after.hiddenColumns.has('score')).toBe(true)
+  })
+})
+
+describe('drawn lines hydrate per slot', () => {
+  const line = {
+    id: 'l1', name: 'a', embeddingName: 'X_umap', dimX: 0, dimY: 1,
+    points: [[0, 0], [1, 1]] as [number, number][], smoothedPoints: null, visible: true,
+    projections: [], drawType: 'pencil' as const, closed: false,
+    strokeColor: '#fff', strokeWidth: 2, fillColor: null,
+  }
+
+  it('marks the slot hydrated and mirrors the active slot', () => {
+    expect(useStore.getState().datasets.primary.linesHydrated).toBe(false)
+    useStore.getState().setDrawnLines('primary', [line])
+    const after = useStore.getState()
+    expect(after.datasets.primary.linesHydrated).toBe(true)
+    expect(after.drawnLines.map((l) => l.id)).toEqual(['l1'])
+  })
+
+  it('does not touch the flat mirror for an inactive slot', () => {
+    useStore.getState().setDrawnLines('secondary', [line])
+    const after = useStore.getState()
+    expect(after.datasets.secondary.linesHydrated).toBe(true)
+    expect(after.drawnLines).toEqual([])
+  })
+
+  it('a fresh load resets hydration', () => {
+    useStore.getState().setDrawnLines('primary', [line])
+    useStore.getState().loadDatasetIntoSlot('primary', PRIMARY)
+    expect(useStore.getState().datasets.primary.linesHydrated).toBe(false)
+    expect(useStore.getState().drawnLines).toEqual([])
+  })
+})
+
+describe('setSchema repairs a vanished primary embedding', () => {
+  it('re-picks by preference when the selected embedding is gone', () => {
+    const s = useStore.getState()
+    s.setSelectedEmbedding('X_umap')
+    s.setEmbedding({ name: 'X_umap', coordinates: [[0, 0]], dim_x: 0, dim_y: 1 } as any)
+    useStore.getState().setSchema(makeSchema(['X_pca', 'X_spatial'], 4212))
+    const after = useStore.getState()
+    expect(after.selectedEmbedding).toBe('X_spatial')
+    expect(after.embedding).toBeNull()
+  })
+
+  it('leaves a still-listed embedding alone', () => {
+    const s = useStore.getState()
+    s.setSelectedEmbedding('X_umap')
+    s.setEmbedding({ name: 'X_umap', coordinates: [[0, 0]], dim_x: 0, dim_y: 1 } as any)
+    useStore.getState().setSchema(makeSchema(['X_pca', 'X_umap'], 4212))
+    const after = useStore.getState()
+    expect(after.selectedEmbedding).toBe('X_umap')
+    expect(after.embedding?.name).toBe('X_umap')
+  })
+})

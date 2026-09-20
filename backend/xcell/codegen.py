@@ -399,7 +399,9 @@ REGISTRY: dict[str, ActionSpec] = {
         label='Cell subset', fidelity=XCELL, imports=XCELL_API,
         code=lambda step: (
             [f"{ADAPTOR}.create_cell_subset({_lit(step.params.get('name'))}, "
-             f"SELECTIONS[{_lit(f'step_{step.index}')}])"]
+             f"SELECTIONS[{_lit(f'step_{step.index}')}]"
+             + (f", parent={_lit(step.params['parent'])}" if step.params.get('parent') else '')
+             + ")"]
             if step.selection else None
         ),
         summary=lambda p, r: (
@@ -490,7 +492,7 @@ REGISTRY: dict[str, ActionSpec] = {
     # --- xcell's own analyses ---
     'create_pca_subset': ActionSpec(
         label='PC subset', fidelity=XCELL, imports=XCELL_API,
-        code=_direct('create_pca_subset', ('drop_pc_indices', 'suffix')),
+        code=_direct('create_pca_subset', ('drop_pc_indices', 'suffix', 'cell_subset')),
         summary=lambda p, r: (
             f"Derived a PC subset dropping PCs {p.get('drop_pc_indices')} → "
             f"`.obsm['{r.get('obsm_key', '?')}']`."
@@ -802,6 +804,11 @@ REGISTRY: dict[str, ActionSpec] = {
             f"Merged {p.get('labels')} into `{p.get('new_label')}` in "
             f"`.obs['{p.get('column')}']` ({_n(r.get('n_cells_merged'))} cells)."
         ),
+    ),
+    'delete_obs_column': ActionSpec(
+        label='Delete column', fidelity=EXACT, imports=(),
+        code=lambda s: [f"del {ADATA}.obs[{_lit(s.params.get('column'))}]"],
+        summary=lambda p, r: f"Deleted `.obs['{p.get('column')}']`.",
     ),
     'create_annotation': ActionSpec(
         label='New annotation column', fidelity=EXACT, imports=('import pandas as pd',),

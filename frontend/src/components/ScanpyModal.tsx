@@ -928,15 +928,18 @@ export default function ScanpyModal() {
   const pcaSubsetsFromStore: PCASubsetSummary[] =
     useStore((s) => s.datasets[s.activeSlot]?.pcaSubsets || [])
 
+  // With a saved subset active, Loadings and PC subsets act on its own PCA.
+  const pcaSubsetScope = activeCellMask && activeSubsetName ? activeSubsetName : null
+  const selectedEmbeddingName = useStore((s) => s.selectedEmbedding)
   const { loadings: pcaLoadings, loading: pcaLoadingsLoading, error: pcaLoadingsError } =
-    usePcaLoadings(pcaTopN, selectedFunction === 'pca_loadings')
+    usePcaLoadings(pcaTopN, selectedFunction === 'pca_loadings', pcaSubsetScope)
 
-  // Load existing subsets whenever we open the PCA Loadings tab.
+  // Load existing subsets whenever we open the PCA Loadings tab or the scope changes.
   useEffect(() => {
     if (selectedFunction === 'pca_loadings') {
-      fetchPcaSubsets().catch(() => { /* toast shown by global error handler */ })
+      fetchPcaSubsets(undefined, pcaSubsetScope).catch(() => { /* toast shown by global error handler */ })
     }
-  }, [selectedFunction, activeSlot])
+  }, [selectedFunction, activeSlot, pcaSubsetScope])
 
   // Reset checked set when loadings payload changes (e.g., PCA was re-run).
   useEffect(() => {
@@ -1513,7 +1516,9 @@ export default function ScanpyModal() {
               setIsRunning(false)
               return
             }
-            const created = await createCellSubset(sanitizeSubsetName(subsetDraft), activeIndices)
+            const created = await createCellSubset(sanitizeSubsetName(subsetDraft), activeIndices, {
+              origin: { kind: 'selection', embedding: selectedEmbeddingName ?? undefined },
+            })
             name = created.name
             setActiveSubsetName(name)
             await refreshCellSubsets()
@@ -2035,6 +2040,11 @@ export default function ScanpyModal() {
             <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '10px', lineHeight: 1.4 }}>
               {MESSAGES.pcaLoadings.description}
             </div>
+            {pcaSubsetScope && (
+              <div style={{ fontSize: '11px', color: '#4ecdc4', marginBottom: '8px' }}>
+                {MESSAGES.pcaLoadings.subsetHeader(pcaSubsetScope)}
+              </div>
+            )}
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
               <label style={{ fontSize: '12px', color: '#aaa' }}>
@@ -2175,6 +2185,8 @@ export default function ScanpyModal() {
                           const summary = await createPcaSubset(
                             droppedSorted,
                             pcaSuffix.trim() || null,
+                            undefined,
+                            pcaSubsetScope,
                           )
                           setPcaCheckedPCs(new Set())
                           setPcaSuffix('')

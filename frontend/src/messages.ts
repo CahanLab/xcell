@@ -23,6 +23,10 @@ export const MESSAGES = {
   errorPrefix: 'Error:',
 
   // Named cell subsets (Cells panel mask bar, Scanpy modal)
+  obsColumns: {
+    deleteConfirm: (name: string) => `Delete "${name}" from the dataset?`,
+    deleteHint: 'Remove this column from the dataset (Hide only tucks it away)',
+  },
   cellSubsets: {
     nameNeeded: 'Name the subset before running — the name is what keeps this result apart from the dataset\'s own.',
     nameUnusable: 'That name has no letters or digits, or is reserved (unassigned, nan).',
@@ -137,6 +141,8 @@ export const MESSAGES = {
     loading: 'Loading loadings…',
     fetchError: 'Failed to load PC loadings.',
     existingSubsetsHeader: 'Existing PC subsets',
+    subsetHeader: (name: string) =>
+      `Subset "${name}" is active: these are the loadings of X_pca_${name}, and a PC subset made here is X_pca_${name}_<suffix>.`,
     noSubsets: 'No derived PC subsets yet.',
     subsetSummary: (suffix: string, nKept: number, dropped: number[]) =>
       dropped.length > 0

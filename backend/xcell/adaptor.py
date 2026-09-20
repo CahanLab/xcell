@@ -4831,19 +4831,88 @@ class DataAdaptor:
                 f"Known subsets: {known if known else 'none'}")
         return self.adata.obs[key].values.astype(bool)
 
-    def _subset_derived_keys(self, name: str) -> dict[str, Any]:
-        """What has been computed on this subset, by the naming convention."""
-        obs_cols = list(self.adata.obs.columns)
-        leiden_cols = [c for c in obs_cols
-                       if c == f'leiden_{name}' or c.startswith(f'leiden_{name}_')]
+    def _subset_record_step(
+        self, name: str, step: str, key: str,
+        params: Mapping[str, Any] | None = None, extra: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Write what a scoped operation just produced into the registry.
+
+        ``hvg`` / ``pca`` / ``graph`` have one output per subset; ``umap`` and
+        ``leiden`` are keyed by output name so a re-run overwrites and a run
+        over another graph sits beside the first; ``pca_subsets`` keeps the
+        dropped PCs. Only flat scalars are kept — the notebook already gets
+        the full params from the analysis record.
+        """
+        registry = self._subset_registry()
+        entry = registry.get(name)
+        if entry is None:
+            return
+        derived = entry.setdefault('derived', {})
+        clean = {k: (v.item() if isinstance(v, np.generic) else v)
+                 for k, v in (params or {}).items()
+                 if v is None or isinstance(v, (str, int, float, bool, np.generic))}
+        if step in ('hvg', 'pca', 'graph'):
+            derived[step] = {'key': key, 'params': clean}
+        elif step in ('umap', 'leiden'):
+            derived.setdefault(step, {})[key] = clean
+        elif step == 'pca_subsets':
+            derived.setdefault('pca_subsets', {})[key] = dict(extra or {})
+        registry[name] = entry
+        self.adata.uns[CELL_SUBSETS_UNS] = registry
+
+    def _subset_forget_key(self, name: str, key: str) -> None:
+        """Drop any record of ``key`` from a subset's derived entry."""
+        registry = self._subset_registry()
+        entry = registry.get(name)
+        if entry is None:
+            return
+        derived = entry.get('derived') or {}
+        for step in ('hvg', 'pca', 'graph'):
+            if (derived.get(step) or {}).get('key') == key:
+                derived.pop(step)
+        for step in ('umap', 'leiden', 'pca_subsets'):
+            if isinstance(derived.get(step), dict):
+                derived[step].pop(key, None)
+        entry['derived'] = derived
+        registry[name] = entry
+        self.adata.uns[CELL_SUBSETS_UNS] = registry
+
+    def _subset_derived_keys(self, name: str, entry: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """What exists of this subset's results: the recorded keys, plus
+        anything the naming convention finds (files from before the record),
+        filtered to keys that are actually there."""
+        derived = (entry or {}).get('derived') or {}
+
+        def recorded(step: str) -> str | None:
+            rec = derived.get(step)
+            return rec.get('key') if isinstance(rec, Mapping) else None
+
+        def recorded_keys(step: str) -> list[str]:
+            rec = derived.get(step)
+            return list(rec.keys()) if isinstance(rec, Mapping) else []
+
+        hvg = recorded('hvg') or f'highly_variable__{name}'
+        pca = recorded('pca') or f'X_pca_{name}'
+        graph = recorded('graph') or f'{name}_connectivities'
+        umaps = recorded_keys('umap')
+        for k in self.adata.obsm.keys():
+            if (k == f'X_umap_{name}' or k.startswith(f'X_umap_{name}_')) and k not in umaps:
+                umaps.append(k)
+        leidens = recorded_keys('leiden')
+        for c in self.adata.obs.columns:
+            if (c == f'leiden_{name}' or c.startswith(f'leiden_{name}_')) and c not in leidens:
+                leidens.append(c)
+        pc_subsets = recorded_keys('pca_subsets')
+        for k in self.adata.obsm.keys():
+            if k.startswith(f'X_pca_{name}_') and k not in pc_subsets:
+                pc_subsets.append(k)
         return {
-            'hvg': (f'highly_variable__{name}'
-                    if f'highly_variable__{name}' in self.adata.var.columns else None),
-            'pca': f'X_pca_{name}' if f'X_pca_{name}' in self.adata.obsm else None,
-            'graph': (f'{name}_connectivities'
-                      if f'{name}_connectivities' in self.adata.obsp else None),
-            'umap': f'X_umap_{name}' if f'X_umap_{name}' in self.adata.obsm else None,
-            'leiden': leiden_cols,
+            'hvg': hvg if hvg in self.adata.var.columns else None,
+            'pca': pca if pca in self.adata.obsm else None,
+            'graph': graph if graph in self.adata.obsp else None,
+            'umap': [k for k in umaps if k in self.adata.obsm],
+            'leiden': [c for c in leidens if c in self.adata.obs.columns],
+            'pca_subsets': [k for k in pc_subsets if k in self.adata.obsm],
         }
 
     def _subset_summary(
@@ -4855,6 +4924,8 @@ class DataAdaptor:
         mask = self.adata.obs[SUBSET_OBS_PREFIX + name].values.astype(bool)
         parent = entry.get('parent')
         origin = entry.get('origin')
+        derived = self._subset_derived_keys(name, entry)
+        embeddings = ([derived['pca']] if derived['pca'] else []) + derived['pca_subsets'] + derived['umap']
         return {
             'name': name,
             'obs_key': SUBSET_OBS_PREFIX + name,
@@ -4866,7 +4937,9 @@ class DataAdaptor:
             'children': list(children.get(name, [])),
             'depth': int(depth.get(name, 0)),
             'origin': dict(origin) if isinstance(origin, Mapping) and origin else None,
-            'derived': self._subset_derived_keys(name),
+            'derived': derived,
+            'steps': entry.get('derived') or {},
+            'embeddings': embeddings,
         }
 
     def create_cell_subset(
@@ -4988,7 +5061,7 @@ class DataAdaptor:
         self.adata.uns[CELL_SUBSETS_UNS] = registry
 
         if drop_derived:
-            derived = self._subset_derived_keys(clean)
+            derived = self._subset_derived_keys(clean, gone)
             if derived['hvg']:
                 del self.adata.var[derived['hvg']]
                 dropped.append(derived['hvg'])
@@ -5003,9 +5076,13 @@ class DataAdaptor:
                         del self.adata.obsp[k]
                         dropped.append(k)
                 self.adata.uns.pop(clean, None)
-            if derived['umap']:
-                del self.adata.obsm[derived['umap']]
-                dropped.append(derived['umap'])
+            for k in derived['pca_subsets']:
+                del self.adata.obsm[k]
+                self.adata.varm.pop('PCs_' + k[len('X_pca_'):], None)
+                dropped.append(k)
+            for k in derived['umap']:
+                del self.adata.obsm[k]
+                dropped.append(k)
             for col in derived['leiden']:
                 del self.adata.obs[col]
                 dropped.append(col)
@@ -6615,6 +6692,9 @@ class DataAdaptor:
             result['column'] = out_column
             result['cell_subset'] = subset_name
             params['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'hvg', out_column, {
+                'n_top_genes': n_top_genes, 'min_mean': min_mean, 'max_mean': max_mean,
+                'min_disp': min_disp, 'flavor': flavor})
         self._log_action('highly_variable_genes', params, result, subset=indices)
         return result
 
@@ -6786,6 +6866,9 @@ class DataAdaptor:
         if subset_name is not None:
             result['cell_subset'] = subset_name
             params['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'pca', pca_key, {
+                'n_comps': n_comps, 'svd_solver': svd_solver,
+                'gene_subset_type': subset_type, 'n_genes_used': n_genes_used})
         self._log_action('pca', params, result, subset=cell_indices)
         return result
 
@@ -7123,6 +7206,9 @@ class DataAdaptor:
             result['use_rep'] = rep_key if rep_key is not None else 'X_pca'
             result['cell_subset'] = subset_name
             params['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'graph', result['graph_key'], {
+                'n_neighbors': n_neighbors, 'n_pcs': n_pcs, 'metric': metric,
+                'use_rep': result['use_rep']})
         self._log_action('neighbors', params, result, subset=cell_indices)
         return result
 
@@ -7619,6 +7705,9 @@ class DataAdaptor:
         if subset_name is not None:
             params['cell_subset'] = subset_name
             result['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'umap', name, {
+                'min_dist': min_dist, 'spread': spread, 'n_components': n_components,
+                'graph_key': graph_key})
         self._log_action('umap', params, result, subset=cell_indices)
         return result
 
@@ -7725,6 +7814,8 @@ class DataAdaptor:
         if subset_name is not None:
             params['cell_subset'] = subset_name
             result['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'leiden', name, {
+                'resolution': resolution, 'graph_key': graph_key})
         self._log_action('leiden', params, result, subset=cell_indices)
         return result
 

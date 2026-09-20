@@ -2284,6 +2284,9 @@ class CellSubsetRequest(BaseModel):
     cell_indices: list[int]
     description: str | None = None
     overwrite: bool = False
+    # Unset → inferred by containment (the smallest subset holding every cell).
+    parent: str | None = None
+    origin: dict[str, Any] | None = None
 
 
 @router.get("/cell_subsets")
@@ -2300,6 +2303,7 @@ def create_cell_subset(request: CellSubsetRequest, dataset: str | None = Query(N
         return adaptor.create_cell_subset(
             request.name, request.cell_indices,
             description=request.description, overwrite=request.overwrite,
+            parent=request.parent, origin=request.origin,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

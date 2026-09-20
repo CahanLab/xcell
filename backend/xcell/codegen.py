@@ -399,7 +399,9 @@ REGISTRY: dict[str, ActionSpec] = {
         label='Cell subset', fidelity=XCELL, imports=XCELL_API,
         code=lambda step: (
             [f"{ADAPTOR}.create_cell_subset({_lit(step.params.get('name'))}, "
-             f"SELECTIONS[{_lit(f'step_{step.index}')}])"]
+             f"SELECTIONS[{_lit(f'step_{step.index}')}]"
+             + (f", parent={_lit(step.params['parent'])}" if step.params.get('parent') else '')
+             + ")"]
             if step.selection else None
         ),
         summary=lambda p, r: (

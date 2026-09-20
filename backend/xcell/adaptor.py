@@ -4730,9 +4730,95 @@ class DataAdaptor:
             raise ValueError(f"'{clean}' is reserved; choose another subset name.")
         return clean
 
+    @staticmethod
+    def _plain(value: Any) -> Any:
+        """Give a uns value back its JSON shape.
+
+        h5ad turns an empty list into ``array([], dtype=float64)``, a list of
+        strings into a string array and a nested dict into an h5 group, so a
+        registry read back from disk compares unequal to the one written and
+        will not json.dumps. Normalising on read is what lets the registry
+        stay a plain dict — readable in scanpy — rather than a JSON blob.
+        """
+        if isinstance(value, np.ndarray):
+            return [DataAdaptor._plain(v) for v in value.tolist()]
+        if isinstance(value, Mapping):
+            return {str(k): DataAdaptor._plain(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [DataAdaptor._plain(v) for v in value]
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
+
     def _subset_registry(self) -> dict[str, dict[str, Any]]:
         reg = self.adata.uns.get(CELL_SUBSETS_UNS)
-        return {str(k): dict(v) for k, v in reg.items()} if isinstance(reg, Mapping) else {}
+        if not isinstance(reg, Mapping):
+            return {}
+        return {str(k): dict(v) for k, v in self._plain(reg).items() if isinstance(v, Mapping)}
+
+    def _subset_tree(
+        self, registry: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[dict[str, list[str]], dict[str, int], list[str]]:
+        """Children, depth and a depth-first order over the registry.
+
+        A ``parent`` naming a subset that is no longer registered counts as
+        none, so a column dropped in scanpy orphans its children rather than
+        hiding them. Roots and siblings sort by creation time, then name.
+        """
+        def sort_key(n: str) -> tuple[str, str]:
+            return (registry[n].get('created_at') or '', n)
+
+        children: dict[str, list[str]] = {n: [] for n in registry}
+        roots: list[str] = []
+        for n, e in registry.items():
+            parent = e.get('parent')
+            if parent and parent in registry and parent != n:
+                children[parent].append(n)
+            else:
+                roots.append(n)
+        for kids in children.values():
+            kids.sort(key=sort_key)
+        roots.sort(key=sort_key)
+
+        depth: dict[str, int] = {}
+        order: list[str] = []
+        stack = [(n, 0) for n in reversed(roots)]
+        while stack:
+            n, d = stack.pop()
+            if n in depth:   # a cycle in a hand-edited file
+                continue
+            depth[n] = d
+            order.append(n)
+            stack.extend((k, d + 1) for k in reversed(children[n]))
+        for n in registry:      # anything only reachable through a cycle
+            if n not in depth:
+                depth[n] = 0
+                order.append(n)
+        return children, depth, order
+
+    def _infer_parent(self, idx: np.ndarray, exclude: str | None = None) -> str | None:
+        """The smallest registered subset containing every cell of ``idx``.
+
+        A subset with exactly these cells is a twin, not a parent. Ties go to
+        the most recently created, which in the recursive workflow is the one
+        the user was just working in.
+        """
+        registry = self._subset_registry()
+        best: tuple[int, str, str] | None = None
+        for name, entry in registry.items():
+            if name == exclude:
+                continue
+            key = entry.get('obs_key', SUBSET_OBS_PREFIX + name)
+            if key not in self.adata.obs.columns:
+                continue
+            mask = self.adata.obs[key].values.astype(bool)
+            n = int(mask.sum())
+            if n <= len(idx) or not mask[idx].all():
+                continue
+            cand = (n, entry.get('created_at') or '', name)
+            if best is None or cand[0] < best[0] or (cand[0] == best[0] and cand[1] > best[1]):
+                best = cand
+        return best[2] if best else None
 
     def _subset_mask(self, name: str) -> np.ndarray:
         """Boolean membership of a registered subset; KeyError if unknown."""
@@ -4760,8 +4846,15 @@ class DataAdaptor:
             'leiden': leiden_cols,
         }
 
-    def _subset_summary(self, name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
+    def _subset_summary(
+        self, name: str, registry: Mapping[str, Mapping[str, Any]],
+        tree: tuple[dict[str, list[str]], dict[str, int], list[str]] | None = None,
+    ) -> dict[str, Any]:
+        entry = registry[name]
+        children, depth, _ = tree if tree is not None else self._subset_tree(registry)
         mask = self.adata.obs[SUBSET_OBS_PREFIX + name].values.astype(bool)
+        parent = entry.get('parent')
+        origin = entry.get('origin')
         return {
             'name': name,
             'obs_key': SUBSET_OBS_PREFIX + name,
@@ -4769,6 +4862,10 @@ class DataAdaptor:
             'n_total': self.n_cells,
             'created_at': entry.get('created_at'),
             'description': entry.get('description') or None,
+            'parent': parent if parent and parent in registry else None,
+            'children': list(children.get(name, [])),
+            'depth': int(depth.get(name, 0)),
+            'origin': dict(origin) if isinstance(origin, Mapping) and origin else None,
             'derived': self._subset_derived_keys(name),
         }
 
@@ -4779,6 +4876,8 @@ class DataAdaptor:
         *,
         description: str | None = None,
         overwrite: bool = False,
+        parent: str | None = None,
+        origin: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Persist a cell selection as a named subset.
 
@@ -4786,6 +4885,15 @@ class DataAdaptor:
         ``uns['xcell_cell_subsets']``. The subset is what the clustering-chain
         operations take as ``cell_subset=`` to run on those cells alone while
         writing to suffixed keys.
+
+        Args:
+            parent: The subset this one nests under. Left unset it is inferred
+                as the smallest registered subset containing every cell —
+                which, in the recursive sub-clustering workflow, is the one
+                the selection was made inside. Given, it must contain them.
+            origin: How the selection was made, e.g. ``{'kind': 'selection',
+                'embedding': 'X_umap'}``; stored as given, ``None`` values
+                dropped.
         """
         import datetime
         clean = self._sanitize_subset_name(name)
@@ -4804,18 +4912,39 @@ class DataAdaptor:
             raise ValueError(
                 f"A subset named '{clean}' already exists. Choose another name or overwrite it.")
 
+        if parent is not None:
+            parent = self._sanitize_subset_name(parent)
+            if parent not in registry:
+                raise ValueError(f"No cell subset named '{parent}' to be the parent.")
+            pkey = registry[parent].get('obs_key', SUBSET_OBS_PREFIX + parent)
+            if pkey not in self.adata.obs.columns or not self.adata.obs[pkey].values.astype(bool)[idx].all():
+                raise ValueError(
+                    f"Subset '{parent}' does not contain every cell of '{clean}', "
+                    f"so it cannot be its parent.")
+        else:
+            parent = self._infer_parent(idx, exclude=clean)
+
         mask = np.zeros(self.n_cells, dtype=bool)
         mask[idx] = True
         self.adata.obs[key] = mask
-        registry[clean] = {
+        entry: dict[str, Any] = {
             'obs_key': key,
             'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'description': str(description) if description else '',
         }
+        if parent:
+            entry['parent'] = parent
+        clean_origin = {str(k): v for k, v in (origin or {}).items() if v is not None}
+        if clean_origin:
+            entry['origin'] = clean_origin
+        registry[clean] = entry
         self.adata.uns[CELL_SUBSETS_UNS] = registry
 
-        out = self._subset_summary(clean, registry[clean])
-        self._log_action('create_cell_subset', {'name': clean},
+        out = self._subset_summary(clean, registry)
+        params: dict[str, Any] = {'name': clean}
+        if parent:
+            params['parent'] = parent
+        self._log_action('create_cell_subset', params,
                          {'n_cells': out['n_cells'], 'obs_key': key}, subset=idx)
         return out
 
@@ -4831,9 +4960,8 @@ class DataAdaptor:
                 if e.get('obs_key', SUBSET_OBS_PREFIX + n) in self.adata.obs.columns}
         if len(live) != len(registry):
             self.adata.uns[CELL_SUBSETS_UNS] = live
-        out = [self._subset_summary(n, e) for n, e in live.items()]
-        out.sort(key=lambda s: (s['created_at'] or '', s['name']))
-        return out
+        tree = self._subset_tree(live)
+        return [self._subset_summary(n, live, tree) for n in tree[2]]
 
     def get_cell_subset_indices(self, name: str) -> list[int]:
         return [int(i) for i in np.where(self._subset_mask(name))[0]]
@@ -4848,7 +4976,15 @@ class DataAdaptor:
             del self.adata.obs[key]
             dropped.append(key)
         registry = self._subset_registry()
-        registry.pop(clean, None)
+        gone = registry.pop(clean, None) or {}
+        # Its children move up to its parent, so the tree stays connected and
+        # nothing under the deleted node is lost or hidden.
+        for entry in registry.values():
+            if entry.get('parent') == clean:
+                if gone.get('parent'):
+                    entry['parent'] = gone['parent']
+                else:
+                    entry.pop('parent', None)
         self.adata.uns[CELL_SUBSETS_UNS] = registry
 
         if drop_derived:

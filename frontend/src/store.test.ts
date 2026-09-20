@@ -549,3 +549,25 @@ describe('drawn lines hydrate per slot', () => {
     expect(useStore.getState().drawnLines).toEqual([])
   })
 })
+
+describe('setSchema repairs a vanished primary embedding', () => {
+  it('re-picks by preference when the selected embedding is gone', () => {
+    const s = useStore.getState()
+    s.setSelectedEmbedding('X_umap')
+    s.setEmbedding({ name: 'X_umap', coordinates: [[0, 0]], dim_x: 0, dim_y: 1 } as any)
+    useStore.getState().setSchema(makeSchema(['X_pca', 'X_spatial'], 4212))
+    const after = useStore.getState()
+    expect(after.selectedEmbedding).toBe('X_spatial')
+    expect(after.embedding).toBeNull()
+  })
+
+  it('leaves a still-listed embedding alone', () => {
+    const s = useStore.getState()
+    s.setSelectedEmbedding('X_umap')
+    s.setEmbedding({ name: 'X_umap', coordinates: [[0, 0]], dim_x: 0, dim_y: 1 } as any)
+    useStore.getState().setSchema(makeSchema(['X_pca', 'X_umap'], 4212))
+    const after = useStore.getState()
+    expect(after.selectedEmbedding).toBe('X_umap')
+    expect(after.embedding?.name).toBe('X_umap')
+  })
+})

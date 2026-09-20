@@ -19,6 +19,7 @@ import {
   deleteCellSubset,
   refreshCellSubsets,
   deleteObsColumn,
+  fetchLines,
 } from '../hooks/useData'
 import {
   suggestSubsetName, isUsableSubsetName, sanitizeSubsetName, indicesFromMask, derivedBadges,
@@ -1081,6 +1082,10 @@ export default function CellPanel() {
         // Derived columns and embeddings may be what is on screen.
         setColorBy(null)
         setEmbedding(null)
+        // Shapes on the dropped embeddings went with them; take the backend's word.
+        const slot = useStore.getState().activeSlot
+        const lines = await fetchLines(slot)
+        useStore.getState().setDrawnLines(slot, lines)
       }
     } catch (err) {
       setSubsetError((err as Error).message)

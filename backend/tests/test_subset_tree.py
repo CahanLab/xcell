@@ -333,3 +333,38 @@ def test_the_lines_route_round_trips_every_field(monkeypatch):
     assert client.post('/api/lines', json={'lines': [minimal]}).status_code == 200
     got = client.get('/api/lines').json()['lines'][0]
     assert got['visible'] is True and got['closed'] is False and got['id']
+
+
+# --- deleting with results cascades to what was drawn on its embeddings -------
+
+def test_dropping_results_also_drops_decorations_on_its_embeddings():
+    a = _adaptor(); _global_pipeline(a)
+    a.create_cell_subset('chondro', ACTIVE); _chain(a, 'chondro')
+    a.set_lines([LINE, {**LINE, 'id': 'l2', 'name': 'keep', 'embeddingName': 'X_umap'}])
+    a.save_territories('zones', {'embedding': 'X_umap_chondro', 'sections': {'all': RING}})
+    a.save_territories('keepzones', {'embedding': 'X_umap', 'sections': {'all': RING}})
+    out = a.delete_cell_subset('chondro', drop_derived=True)
+    assert out['dropped_lines'] == ['ridge'] and out['dropped_territories'] == ['zones']
+    assert [line['name'] for line in a.get_lines()] == ['keep']
+    assert json.loads(a.adata.uns['xcell_lines_json'])[0]['name'] == 'keep'
+    assert set(a.get_territories()) == {'keepzones'}
+
+
+def test_deleting_without_results_keeps_decorations():
+    a = _adaptor(); _global_pipeline(a)
+    a.create_cell_subset('chondro', ACTIVE); _chain(a, 'chondro')
+    a.set_lines([LINE])
+    a.save_territories('zones', {'embedding': 'X_umap_chondro', 'sections': {'all': RING}})
+    out = a.delete_cell_subset('chondro')
+    assert out['dropped_lines'] == [] and out['dropped_territories'] == []
+    assert len(a.get_lines()) == 1 and 'zones' in a.get_territories()
+
+
+def test_the_delete_route_reports_the_cascade(monkeypatch):
+    a = _adaptor(); _global_pipeline(a)
+    a.create_cell_subset('chondro', ACTIVE); _chain(a, 'chondro')
+    a.set_lines([LINE])
+    monkeypatch.setattr(routes, 'get_adaptor', lambda dataset=None: a)
+    client = TestClient(app)
+    r = client.delete('/api/cell_subsets/chondro?drop_derived=true')
+    assert r.status_code == 200 and r.json()['dropped_lines'] == ['ridge']

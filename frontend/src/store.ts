@@ -740,6 +740,18 @@ export function createDefaultDatasetState(
   }
 }
 
+/** The embedding to show when none is chosen or the chosen one is gone:
+ * spatial first, then UMAP, then PCA, then whatever comes first. */
+export function pickPreferredEmbedding(names: readonly string[]): string | null {
+  if (names.length === 0) return null
+  const lower = names.map((e) => e.toLowerCase())
+  for (const pref of ['spatial', 'umap', 'pca']) {
+    const idx = lower.findIndex((l) => l.includes(pref))
+    if (idx >= 0) return names[idx]
+  }
+  return names[0]
+}
+
 /** Ensure a slot's split-view pane names an embedding that slot actually has.
  *
  * Embedding names are dataset-local, so a name chosen on one dataset is often
@@ -1486,7 +1498,16 @@ export const useStore = create<AppState>((set, get) => {
 
     // === Per-dataset actions (dual-write) ===
 
-    setSchema: (schema) => set(dsUpdate({ schema })),
+    setSchema: (schema) =>
+      set(dsUpdateFn((state) => {
+        // A refreshed schema can have lost the embedding on screen (a subset
+        // deleted with its results); re-pick rather than leave the picker
+        // naming a key that no longer exists.
+        if (!state.selectedEmbedding || schema.embeddings.includes(state.selectedEmbedding)) {
+          return { schema }
+        }
+        return { schema, selectedEmbedding: pickPreferredEmbedding(schema.embeddings), embedding: null }
+      })),
     setEmbedding: (embedding) => set(dsUpdate({ embedding })),
     setColorBy: (colorBy) => set(dsUpdate({ colorBy })),
 
@@ -2932,14 +2953,7 @@ export const useStore = create<AppState>((set, get) => {
       const overrides = displayPreferencesFromConfig(state.userConfig)
       const freshDs = createDefaultDatasetState(overrides)
       freshDs.schema = schema
-      // Auto-select embedding by preference: spatial > umap > pca > first
-      if (schema.embeddings.length > 0) {
-        const preferred = ['spatial', 'umap', 'pca']
-        const lower = schema.embeddings.map(e => e.toLowerCase())
-        const pick = preferred.find(p => lower.some(l => l.includes(p)))
-        const idx = pick != null ? lower.findIndex(l => l.includes(pick)) : 0
-        freshDs.selectedEmbedding = schema.embeddings[idx]
-      }
+      freshDs.selectedEmbedding = pickPreferredEmbedding(schema.embeddings)
       const newDatasets = repairSecondEmbedding(slot, {
         ...state.datasets,
         [slot]: freshDs,

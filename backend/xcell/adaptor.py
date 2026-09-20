@@ -5078,10 +5078,13 @@ class DataAdaptor:
         return [int(i) for i in np.where(self._subset_mask(name))[0]]
 
     def delete_cell_subset(self, name: str, *, drop_derived: bool = False) -> dict[str, Any]:
-        """Remove a subset; optionally everything computed on it too."""
+        """Remove a subset; optionally everything computed on it too — its
+        results, and the shapes and territories drawn on its embeddings."""
         clean = self._sanitize_subset_name(name)
         self._subset_mask(clean)  # KeyError if unknown
         dropped: list[str] = []
+        dropped_lines: list[str] = []
+        dropped_territories: list[str] = []
         key = SUBSET_OBS_PREFIX + clean
         if key in self.adata.obs.columns:
             del self.adata.obs[key]
@@ -5125,7 +5128,23 @@ class DataAdaptor:
                 del self.adata.obs[col]
                 dropped.append(col)
 
-        result = {'name': clean, 'dropped': dropped}
+            # Shapes and territories drawn on an embedding that is gone have
+            # no coordinates left to live in, so they go with it.
+            gone_embeddings = {k for k in dropped if k.startswith('X_')}
+            for line in self._lines_on(gone_embeddings):
+                dropped_lines.append(line.get('name', ''))
+            if dropped_lines:
+                self.set_lines([line for line in self._drawn_lines
+                                if line.get('embeddingName') not in gone_embeddings])
+            dropped_territories = self._territories_on(gone_embeddings)
+            if dropped_territories:
+                stored = self.get_territories()
+                for t in dropped_territories:
+                    stored.pop(t, None)
+                self.adata.uns[self.TERRITORY_UNS_KEY] = json.dumps(stored)
+
+        result = {'name': clean, 'dropped': dropped,
+                  'dropped_lines': dropped_lines, 'dropped_territories': dropped_territories}
         self._log_action('delete_cell_subset',
                          {'name': clean, 'drop_derived': bool(drop_derived)}, result)
         return result

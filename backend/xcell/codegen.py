@@ -803,6 +803,11 @@ REGISTRY: dict[str, ActionSpec] = {
             f"`.obs['{p.get('column')}']` ({_n(r.get('n_cells_merged'))} cells)."
         ),
     ),
+    'delete_obs_column': ActionSpec(
+        label='Delete column', fidelity=EXACT, imports=(),
+        code=lambda s: [f"del {ADATA}.obs[{_lit(s.params.get('column'))}]"],
+        summary=lambda p, r: f"Deleted `.obs['{p.get('column')}']`.",
+    ),
     'create_annotation': ActionSpec(
         label='New annotation column', fidelity=EXACT, imports=('import pandas as pd',),
         code=lambda s: [

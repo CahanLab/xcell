@@ -748,6 +748,16 @@ def get_obs_column(column: str, dataset: str | None = Query(None)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.delete("/obs/{column}")
+def delete_obs_column(column: str, dataset: str | None = Query(None)):
+    """Drop an .obs column, with its colour list and subset entry if any."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.delete_obs_column(column)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 class RenameObsLabelRequest(BaseModel):
     old_label: str
     new_label: str

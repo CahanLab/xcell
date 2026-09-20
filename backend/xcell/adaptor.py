@@ -3058,19 +3058,36 @@ class DataAdaptor:
                          subset=cell_indices)
         return self.get_obs_column_summary(annotation)
 
-    def delete_annotation(self, name: str) -> None:
-        """Delete an annotation column.
-
-        Args:
-            name: Name of the annotation column to delete
+    def delete_obs_column(self, column: str) -> dict[str, Any]:
+        """Drop an .obs column, its scanpy colour list, and — if it was a
+        named subset's membership column — the subset's registry entry, since
+        a subset with no column can never be activated again.
 
         Raises:
-            KeyError: If annotation doesn't exist
+            KeyError: If the column doesn't exist
         """
-        if name not in self.adata.obs.columns:
-            raise KeyError(f"Annotation '{name}' not found")
+        if column not in self.adata.obs.columns:
+            raise KeyError(f"Column '{column}' not found in .obs")
 
-        self.adata.obs.drop(columns=[name], inplace=True)
+        self.adata.obs.drop(columns=[column], inplace=True)
+        dropped_colors = self.adata.uns.pop(f'{column}_colors', None) is not None
+        subset_removed = None
+        registry = self._subset_registry()
+        for name, entry in registry.items():
+            if entry.get('obs_key', SUBSET_OBS_PREFIX + name) == column:
+                subset_removed = name
+                break
+        if subset_removed is not None:
+            registry.pop(subset_removed)
+            self.adata.uns[CELL_SUBSETS_UNS] = registry
+        result = {'column': column, 'dropped_colors': dropped_colors,
+                  'subset_removed': subset_removed}
+        self._log_action('delete_obs_column', {'column': column}, result)
+        return result
+
+    def delete_annotation(self, name: str) -> None:
+        """Older name for delete_obs_column; the /annotations route still calls it."""
+        self.delete_obs_column(name)
 
     def rename_obs_label(self, column: str, old_label: str, new_label: str) -> dict[str, Any]:
         """Rename a single category value in a categorical or string .obs column.

@@ -3,6 +3,7 @@ import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/sh
 import { sortGeneSetInCategory } from './lib/geneSetOps'
 import { sectionForCut } from './lib/territoryGeometry'
 import { pickSecondEmbedding, pickPreferredEmbedding } from './lib/pickSecondEmbedding'
+import type { PCASubsetSummary } from './lib/pcaSubsets'
 export { pickPreferredEmbedding }
 import { loadedSlots, slotAfterUnload, moveItem, paneGrid, activeSlotFrom } from './lib/datasetSlots'
 import type { Workspace } from './lib/workspaceLayout'
@@ -480,12 +481,8 @@ export interface GeneMaskConfig {
   visibleGeneNames: string[] | null  // null when inactive
 }
 
-export interface PCASubsetSummary {
-  obsmKey: string       // e.g. 'X_pca_noPC2_5'
-  suffix: string        // e.g. 'noPC2_5'
-  droppedPcs: number[]  // 1-indexed
-  nPcsKept: number
-}
+// The PC-subset summary lives with its helpers; re-exported so existing imports hold.
+export type { PCASubsetSummary } from './lib/pcaSubsets'
 
 // Interaction mode for the scatter plot
 export type InteractionMode = 'pan' | 'lasso' | 'draw' | 'adjust' | 'quilt'

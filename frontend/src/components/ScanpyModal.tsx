@@ -3,6 +3,7 @@ import { isParamVisible } from '../lib/paramVisibility'
 import { useStore, ScanpyActionRecord, PCASubsetSummary, userConfigGet } from '../store'
 import { appendDataset, pollTask, cancelTask, runDiffExp, fetchGeneMask, usePcaLoadings, fetchPcaSubsets, createPcaSubset, deletePcaSubset, createCellSubset, refreshCellSubsets } from '../hooks/useData'
 import { SUBSET_SCOPED_OPS, scopedOutput, suggestSubsetName, isUsableSubsetName, sanitizeSubsetName, indicesFromMask, subsetGraphKey, subsetPcaKey } from '../lib/cellSubsets'
+import { pcSourceOptions } from '../lib/pcaSubsets'
 import { defaultGraphKey } from '../lib/graphChoice'
 import { FilterCellsQcPanel, FilterCellsDistributions } from './FilterCellsQcPanel'
 import { MESSAGES } from '../messages'
@@ -930,14 +931,19 @@ export default function ScanpyModal() {
 
   // With a saved subset active, Loadings and PC subsets act on its own PCA.
   const pcaSubsetScope = activeCellMask && activeSubsetName ? activeSubsetName : null
+  // The PCA Loadings list shows the current scope's PC subsets only; the
+  // Neighbors picker offers the whole owner-tagged list.
+  const pcaSubsetsInScope = pcaSubsetsFromStore.filter((s) => s.cellSubset === pcaSubsetScope)
   const selectedEmbeddingName = useStore((s) => s.selectedEmbedding)
   const { loadings: pcaLoadings, loading: pcaLoadingsLoading, error: pcaLoadingsError } =
     usePcaLoadings(pcaTopN, selectedFunction === 'pca_loadings', pcaSubsetScope)
 
-  // Load existing subsets whenever we open the PCA Loadings tab or the scope changes.
+  // Load PC subsets whenever PCA Loadings or Neighbors is opened, or the
+  // scope changes — always with the scope. A refresh without it lists only
+  // the dataset's and the subset's own PC subsets vanish from the picker.
   useEffect(() => {
-    if (selectedFunction === 'pca_loadings') {
-      fetchPcaSubsets(undefined, pcaSubsetScope).catch(() => { /* toast shown by global error handler */ })
+    if (selectedFunction === 'pca_loadings' || selectedFunction === 'neighbors') {
+      fetchPcaSubsets(undefined, pcaSubsetScope).catch(() => { /* dropdown falls back to X_pca */ })
     }
   }, [selectedFunction, activeSlot, pcaSubsetScope])
 
@@ -982,14 +988,6 @@ export default function ScanpyModal() {
       .then(setCellVarianceData)
       .catch(() => setCellVarianceData(null))
   }, [selectedFunction, scanpyActionHistory])
-
-  // Load derived PC subsets when the Neighbors tab is selected so the
-  // PC source dropdown has up-to-date options.
-  useEffect(() => {
-    if (selectedFunction === 'neighbors') {
-      fetchPcaSubsets().catch(() => { /* ignore; dropdown falls back to X_pca */ })
-    }
-  }, [selectedFunction, activeSlot])
 
   // Load obs columns (split by dtype) for any function exposing an
   // obs_column_select. A param's obsDtype selects which list it offers.
@@ -2235,13 +2233,13 @@ export default function ScanpyModal() {
               <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
                 {MESSAGES.pcaLoadings.existingSubsetsHeader}
               </div>
-              {pcaSubsetsFromStore.length === 0 ? (
+              {pcaSubsetsInScope.length === 0 ? (
                 <div style={{ fontSize: '11px', color: '#666', padding: '6px 8px' }}>
                   {MESSAGES.pcaLoadings.noSubsets}
                 </div>
               ) : (
                 <div style={{ border: '1px solid #1a1a2e', borderRadius: '4px' }}>
-                  {pcaSubsetsFromStore.map((s) => (
+                  {pcaSubsetsInScope.map((s) => (
                     <div
                       key={s.obsmKey}
                       style={{
@@ -2626,14 +2624,8 @@ export default function ScanpyModal() {
                             handleParamChange(param.name, e.target.value)
                           }}
                         >
-                          {subsetPca && (
-                            <option value={subsetPca}>{subsetPca} (this subset's PCA)</option>
-                          )}
-                          <option value="X_pca">{MESSAGES.pcaLoadings.neighborsSourceBaseLabel}</option>
-                          {pcaSubsetsFromStore.map((s) => (
-                            <option key={s.obsmKey} value={s.obsmKey}>
-                              {s.obsmKey} ({s.nPcsKept} kept)
-                            </option>
+                          {pcSourceOptions(subsetPca || null, pcaSubsetsFromStore).map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
                           ))}
                         </select>
                       ) : param.type === 'layer_select' ? (

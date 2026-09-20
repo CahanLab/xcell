@@ -1362,8 +1362,10 @@ export interface PCALoadingsResponse {
 export async function fetchPcaLoadings(
   topN: number,
   slot?: DatasetSlot,
+  cellSubset?: string | null,
 ): Promise<PCALoadingsResponse> {
-  const url = appendDataset(`/api/scanpy/pca_loadings?top_n=${topN}`, slot)
+  const subsetQuery = cellSubset ? `&cell_subset=${encodeURIComponent(cellSubset)}` : ''
+  const url = appendDataset(`/api/scanpy/pca_loadings?top_n=${topN}${subsetQuery}`, slot)
   const res = await fetch(url)
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))
@@ -1372,7 +1374,8 @@ export async function fetchPcaLoadings(
   return res.json()
 }
 
-export function usePcaLoadings(topN: number, enabled: boolean): {
+/** Loadings of the dataset's PCA — or, with `cellSubset`, of that subset's own. */
+export function usePcaLoadings(topN: number, enabled: boolean, cellSubset: string | null = null): {
   loadings: PCALoadingsResponse | null
   loading: boolean
   error: string | null
@@ -1389,19 +1392,22 @@ export function usePcaLoadings(topN: number, enabled: boolean): {
     let cancelled = false
     setLoading(true)
     setError(null)
-    fetchPcaLoadings(topN, activeSlot)
+    fetchPcaLoadings(topN, activeSlot, cellSubset)
       .then((data) => { if (!cancelled) setLoadings(data) })
       .catch((e) => { if (!cancelled) setError(e.message || 'Failed to fetch loadings') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [topN, enabled, activeSlot, reloadToken])
+  }, [topN, enabled, activeSlot, cellSubset, reloadToken])
 
   const reload = useCallback(() => setReloadToken((n) => n + 1), [])
   return { loadings, loading, error, reload }
 }
 
-export async function fetchPcaSubsets(slot?: DatasetSlot): Promise<PCASubsetSummary[]> {
-  const url = appendDataset('/api/scanpy/pca_subsets', slot)
+/** PC subsets of the dataset's PCA — or, with `cellSubset`, of that subset's
+ * own. Whichever was fetched last is what the store's `pcaSubsets` holds. */
+export async function fetchPcaSubsets(slot?: DatasetSlot, cellSubset?: string | null): Promise<PCASubsetSummary[]> {
+  const subsetQuery = cellSubset ? `?cell_subset=${encodeURIComponent(cellSubset)}` : ''
+  const url = appendDataset(`/api/scanpy/pca_subsets${subsetQuery}`, slot)
   const res = await fetch(url)
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))
@@ -1425,12 +1431,14 @@ export async function createPcaSubset(
   dropPcIndices: number[],
   suffix: string | null,
   slot?: DatasetSlot,
+  cellSubset?: string | null,
 ): Promise<PCASubsetSummary> {
   const url = appendDataset('/api/scanpy/pca_subsets', slot)
-  const body: { drop_pc_indices: number[]; suffix?: string } = {
+  const body: { drop_pc_indices: number[]; suffix?: string; cell_subset?: string } = {
     drop_pc_indices: dropPcIndices,
   }
   if (suffix && suffix.trim() !== '') body.suffix = suffix.trim()
+  if (cellSubset) body.cell_subset = cellSubset
 
   const res = await fetch(url, {
     method: 'POST',

@@ -141,6 +141,8 @@ export const MESSAGES = {
     loading: 'Loading loadings…',
     fetchError: 'Failed to load PC loadings.',
     existingSubsetsHeader: 'Existing PC subsets',
+    subsetHeader: (name: string) =>
+      `Subset "${name}" is active: these are the loadings of X_pca_${name}, and a PC subset made here is X_pca_${name}_<suffix>.`,
     noSubsets: 'No derived PC subsets yet.',
     subsetSummary: (suffix: string, nKept: number, dropped: number[]) =>
       dropped.length > 0

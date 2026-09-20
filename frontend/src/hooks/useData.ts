@@ -1578,7 +1578,14 @@ export async function refreshCellSubsets(): Promise<void> {
 
 export async function createCellSubset(
   name: string, cellIndices: number[],
-  opts: { overwrite?: boolean; description?: string; slot?: DatasetSlot } = {},
+  opts: {
+    overwrite?: boolean
+    description?: string
+    slot?: DatasetSlot
+    // The embedding on screen when the subset was saved. The parent is not
+    // sent: the backend infers it by containment.
+    origin?: { kind: string; embedding?: string }
+  } = {},
 ): Promise<CellSubsetInfo> {
   return fetchJson<CellSubsetInfo>(appendDataset(`${API_BASE}/cell_subsets`, opts.slot), {
     method: 'POST',
@@ -1586,6 +1593,7 @@ export async function createCellSubset(
     body: JSON.stringify({
       name, cell_indices: cellIndices,
       overwrite: !!opts.overwrite, description: opts.description ?? null,
+      origin: opts.origin ?? null,
     }),
   })
 }

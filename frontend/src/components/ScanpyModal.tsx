@@ -930,6 +930,7 @@ export default function ScanpyModal() {
 
   // With a saved subset active, Loadings and PC subsets act on its own PCA.
   const pcaSubsetScope = activeCellMask && activeSubsetName ? activeSubsetName : null
+  const selectedEmbeddingName = useStore((s) => s.selectedEmbedding)
   const { loadings: pcaLoadings, loading: pcaLoadingsLoading, error: pcaLoadingsError } =
     usePcaLoadings(pcaTopN, selectedFunction === 'pca_loadings', pcaSubsetScope)
 
@@ -1515,7 +1516,9 @@ export default function ScanpyModal() {
               setIsRunning(false)
               return
             }
-            const created = await createCellSubset(sanitizeSubsetName(subsetDraft), activeIndices)
+            const created = await createCellSubset(sanitizeSubsetName(subsetDraft), activeIndices, {
+              origin: { kind: 'selection', embedding: selectedEmbeddingName ?? undefined },
+            })
             name = created.name
             setActiveSubsetName(name)
             await refreshCellSubsets()

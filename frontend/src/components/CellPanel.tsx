@@ -22,8 +22,9 @@ import {
   fetchLines,
 } from '../hooks/useData'
 import {
-  suggestSubsetName, isUsableSubsetName, sanitizeSubsetName, indicesFromMask, derivedBadges,
+  suggestSubsetName, isUsableSubsetName, sanitizeSubsetName, indicesFromMask,
 } from '../lib/cellSubsets'
+import { subsetChips, dropSummary, refineTarget, type SubsetChip } from '../lib/subsetTree'
 import { MESSAGES } from '../messages'
 import { OverflowMenu } from './GenePanel'
 import MergeLabelsModal from './MergeLabelsModal'
@@ -484,6 +485,59 @@ const styles = {
     fontSize: '10px',
     color: '#e94560',
   },
+}
+
+/** One chip on a subset row. Embedding chips switch the plot; a Leiden chip
+ * colours by the column and offers to refine its parent's clusters with it;
+ * decoration chips switch to the embedding they were drawn on. */
+function SubsetChipView({ chip, onShowEmbedding, onColorBy, refineInto, onRefine }: {
+  chip: SubsetChip
+  onShowEmbedding: (embedding: string) => void
+  onColorBy: (column: string) => void
+  refineInto: string | null
+  onRefine: (column: string) => void
+}) {
+  const clickable = chip.kind !== 'step'
+  const title =
+    chip.kind === 'embedding' ? 'Show this embedding'
+    : chip.kind === 'leiden' ? 'Color cells by this clustering'
+    : chip.kind === 'lines' || chip.kind === 'territories'
+      ? (chip.embedding ? `Drawn on ${chip.embedding} — click to show it` : 'Drawn on this subset\'s embeddings')
+    : chip.key ?? chip.label
+  const onClick = () => {
+    if (chip.kind === 'embedding' && chip.key) onShowEmbedding(chip.key)
+    else if (chip.kind === 'leiden' && chip.key) onColorBy(chip.key)
+    else if ((chip.kind === 'lines' || chip.kind === 'territories') && chip.embedding) onShowEmbedding(chip.embedding)
+  }
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+      <span
+        style={{ ...styles.subsetBadge, cursor: clickable ? 'pointer' : 'default',
+                 color: chip.kind === 'lines' || chip.kind === 'territories' ? '#e9a23b' : '#4ecdc4',
+                 borderColor: chip.kind === 'lines' || chip.kind === 'territories' ? 'rgba(233,162,59,0.4)' : 'rgba(78,205,196,0.3)' }}
+        title={title}
+        onClick={clickable ? onClick : undefined}
+      >
+        {chip.label}
+      </span>
+      {chip.kind === 'leiden' && chip.key && (
+        <span onClick={(e) => e.stopPropagation()}>
+          <OverflowMenu
+            items={[
+              {
+                label: refineInto ? `Refine ${refineInto} with this…` : 'Refine parent labels with this…',
+                disabled: !refineInto,
+                tooltip: refineInto
+                  ? `Fold ${chip.key} into ${refineInto}, keeping the other cells' labels`
+                  : 'No parent clustering to refine',
+                onClick: () => onRefine(chip.key!),
+              },
+            ]}
+          />
+        </span>
+      )}
+    </span>
+  )
 }
 
 /** Inline confirmation under a column whose Delete was clicked. */
@@ -992,7 +1046,7 @@ export default function CellPanel() {
   } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
   const cellSubsets = useCellSubsets()
-  const { selectColorColumn, addCellSetHighlight, colorByGene, colorByGenes } = useDataActions()
+  const { selectColorColumn, addCellSetHighlight, colorByGene, colorByGenes, selectEmbedding } = useDataActions()
   const { runComparison, isDiffExpLoading } = useDiffExp()
   const highlightLayers = useStore((s) => s.highlightLayers)
   const embedding = useStore((s) => s.embedding)
@@ -1041,7 +1095,9 @@ export default function CellPanel() {
     setSubsetBusy(true)
     setSubsetError(null)
     try {
-      const created = await createCellSubset(sanitizeSubsetName(subsetDraft), indicesFromMask(activeCellMask))
+      const created = await createCellSubset(sanitizeSubsetName(subsetDraft), indicesFromMask(activeCellMask), {
+        origin: { kind: 'selection', embedding: selectedEmbeddingName ?? undefined },
+      })
       setActiveSubsetName(created.name)
       await refreshCellSubsets()
       // A subset is a new .obs column, so both channels.
@@ -1052,7 +1108,7 @@ export default function CellPanel() {
     } finally {
       setSubsetBusy(false)
     }
-  }, [activeCellMask, subsetDraft, setActiveSubsetName, refresh])
+  }, [activeCellMask, subsetDraft, setActiveSubsetName, refresh, selectedEmbeddingName])
 
   const handleActivateSubset = useCallback(async (name: string) => {
     setSubsetBusy(true)
@@ -1112,6 +1168,8 @@ export default function CellPanel() {
   const [mergeModalColumn, setMergeModalColumn] = useState<string | null>(null)
   // Transfer/refine-labels modal state (target column the menu was opened on)
   const [transferModalColumn, setTransferModalColumn] = useState<string | null>(null)
+  // A subset's Leiden chip can open the refine modal with itself as the source.
+  const [transferSource, setTransferSource] = useState<string | null>(null)
 
   // Embedding categorical-label overlay
   const embeddingLabelColumn = useStore((s) => s.embeddingLabelColumn)
@@ -1668,10 +1726,19 @@ export default function CellPanel() {
             </div>
             {cellSubsets.map((s) => {
               const isActive = activeSubsetName === s.name
-              const badges = derivedBadges(s.derived)
+              const chips = subsetChips(s)
+              const drops = dropSummary(s)
+              const refineInto = refineTarget(s, cellSubsets, summaries.map((c) => c.name))
+              const hint = [`.obs["${s.obs_key}"]`,
+                            s.parent ? `inside ${s.parent}` : null,
+                            s.origin?.embedding ? `saved on ${s.origin.embedding}` : null]
+                .filter(Boolean).join('\n')
               return (
-                <div key={s.name} style={styles.subsetRow} title={`.obs["${s.obs_key}"]`}>
+                <div key={s.name}
+                     style={{ ...styles.subsetRow, paddingLeft: `${16 + s.depth * 12}px` }}
+                     title={hint}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {s.depth > 0 && <span style={{ color: '#555', fontSize: '10px' }}>└</span>}
                     <span style={{ ...styles.subsetName, color: isActive ? '#4ecdc4' : '#ddd' }}>{s.name}</span>
                     <span style={styles.subsetCount}>
                       {s.n_cells.toLocaleString()} of {s.n_total.toLocaleString()}
@@ -1694,31 +1761,51 @@ export default function CellPanel() {
                       ✕
                     </button>
                   </div>
-                  {badges.length > 0 && (
+                  {chips.length > 0 && (
                     <div style={styles.subsetBadges}>
-                      {badges.map((b) => <span key={b} style={styles.subsetBadge}>{b}</span>)}
+                      {chips.map((chip) => (
+                        <SubsetChipView
+                          key={chip.label}
+                          chip={chip}
+                          onShowEmbedding={(name) => selectEmbedding(name)}
+                          onColorBy={(column) => selectColorColumn(column)}
+                          refineInto={refineInto}
+                          onRefine={(column) => {
+                            if (!refineInto) return
+                            setTransferSource(column)
+                            setTransferModalColumn(refineInto)
+                          }}
+                        />
+                      ))}
                     </div>
                   )}
                   {subsetDeleteConfirm === s.name && (
-                    <div style={styles.subsetConfirm}>
-                      <span>Delete “{s.name}”?</span>
-                      <button style={styles.maskActionButton} disabled={subsetBusy}
-                              onClick={() => handleDeleteSubset(s.name, false)}
-                              title="Remove the subset; keep anything computed on it">
-                        Subset only
-                      </button>
-                      {badges.length > 0 && (
-                        <button style={{ ...styles.maskActionButton, color: '#e94560', border: '1px solid #e94560' }}
-                                disabled={subsetBusy}
-                                onClick={() => handleDeleteSubset(s.name, true)}
-                                title="Also remove its HVG column, PCA, graph, UMAP and Leiden columns">
-                          + results
+                    <>
+                      <div style={styles.subsetConfirm}>
+                        <span>Delete “{s.name}”?</span>
+                        <button style={styles.maskActionButton} disabled={subsetBusy}
+                                onClick={() => handleDeleteSubset(s.name, false)}
+                                title="Remove the subset; keep anything computed on it">
+                          Subset only
                         </button>
+                        {drops && (
+                          <button style={{ ...styles.maskActionButton, color: '#e94560', border: '1px solid #e94560' }}
+                                  disabled={subsetBusy}
+                                  onClick={() => handleDeleteSubset(s.name, true)}
+                                  title={`Also removes: ${drops}`}>
+                            + results
+                          </button>
+                        )}
+                        <button style={styles.maskActionButton} onClick={() => setSubsetDeleteConfirm(null)}>
+                          Cancel
+                        </button>
+                      </div>
+                      {drops && (
+                        <div style={{ fontSize: '10px', color: '#888', marginTop: '2px' }}>
+                          “+ results” also removes: {drops}
+                        </div>
                       )}
-                      <button style={styles.maskActionButton} onClick={() => setSubsetDeleteConfirm(null)}>
-                        Cancel
-                      </button>
-                    </div>
+                    </>
                   )}
                 </div>
               )
@@ -2006,8 +2093,9 @@ export default function CellPanel() {
       {transferModalColumn && (
         <TransferLabelsModal
           targetColumnDefault={transferModalColumn}
+          sourceColumnDefault={transferSource ?? undefined}
           summaries={summaries}
-          onClose={() => setTransferModalColumn(null)}
+          onClose={() => { setTransferModalColumn(null); setTransferSource(null) }}
           onApply={handleTransferLabels}
           onColorBy={(column) => selectColorColumn(column)}
         />

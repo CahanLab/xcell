@@ -42,6 +42,9 @@ export interface CellSubsetInfo {
   steps: Record<string, unknown>
   // Every .obsm key the subset owns that still exists: its PCA, PC subsets, UMAPs.
   embeddings: string[]
+  // What is drawn on those embeddings — resolved by embedding name at listing
+  // time, never copied into the registry.
+  decorations: { lines: string[]; territories: string[] }
 }
 
 /** Operations whose results a subset scopes to suffixed keys. Everything else

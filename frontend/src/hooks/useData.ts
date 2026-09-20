@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
+import { mergePcaSubsetLists } from '../lib/pcaSubsets'
 import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, DrawnLine, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
 import { assertJsonResponse } from '../lib/foreignServer'
@@ -1403,25 +1404,34 @@ export function usePcaLoadings(topN: number, enabled: boolean, cellSubset: strin
   return { loadings, loading, error, reload }
 }
 
-/** PC subsets of the dataset's PCA — or, with `cellSubset`, of that subset's
- * own. Whichever was fetched last is what the store's `pcaSubsets` holds. */
-export async function fetchPcaSubsets(slot?: DatasetSlot, cellSubset?: string | null): Promise<PCASubsetSummary[]> {
+async function fetchPcaSubsetList(slot: DatasetSlot | undefined, cellSubset: string | null): Promise<PCASubsetSummary[]> {
   const subsetQuery = cellSubset ? `?cell_subset=${encodeURIComponent(cellSubset)}` : ''
-  const url = appendDataset(`/api/scanpy/pca_subsets${subsetQuery}`, slot)
-  const res = await fetch(url)
+  const res = await fetch(appendDataset(`/api/scanpy/pca_subsets${subsetQuery}`, slot))
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(detail.detail || 'Failed to fetch PCA subsets')
   }
   const data = await res.json()
-  const subsets: PCASubsetSummary[] = (data.subsets || []).map((s: any) => ({
+  return (data.subsets || []).map((s: any) => ({
     obsmKey: s.obsm_key,
     suffix: s.suffix,
     droppedPcs: s.dropped_pcs || [],
     nPcsKept: s.n_pcs_kept,
+    cellSubset,
   }))
-  // Write directly into the active dataset's store so the Neighbors dropdown
-  // and PCA Loadings subsets list stay in sync.
+}
+
+/** The PC subsets the store holds: with a saved subset active, that subset's
+ * own (from its PCA) followed by the dataset's; otherwise the dataset's. One
+ * combined, owner-tagged list, so the PCA Loadings list can show the current
+ * scope's and the Neighbors picker can offer every source a run could use. */
+export async function fetchPcaSubsets(slot?: DatasetSlot, cellSubset?: string | null): Promise<PCASubsetSummary[]> {
+  const scope = cellSubset || null
+  const [own, dataset] = await Promise.all([
+    scope ? fetchPcaSubsetList(slot, scope) : Promise.resolve([]),
+    fetchPcaSubsetList(slot, null),
+  ])
+  const subsets = mergePcaSubsetLists(own, dataset, scope)
   const targetSlot = slot ?? useStore.getState().activeSlot
   useStore.getState().patchSlotState(targetSlot, { pcaSubsets: subsets })
   return subsets
@@ -1457,6 +1467,7 @@ export async function createPcaSubset(
     suffix: data.suffix,
     droppedPcs: data.dropped_pcs || [],
     nPcsKept: data.n_pcs_kept,
+    cellSubset: data.cell_subset ?? (cellSubset || null),
   }
   // Optimistically append to the store.
   const targetSlot = slot ?? useStore.getState().activeSlot

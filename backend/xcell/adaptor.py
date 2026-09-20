@@ -686,9 +686,34 @@ def _default_output_name(base: str, graph_key: str | None) -> str:
     return f'{base}_{suffix}' if suffix else base
 
 
+def _subset_output_name(base: str, subset_name: str, graph_key: str | None) -> str:
+    """Where a run on a named cell subset writes by default.
+
+    Always carries the subset's name, so it can never land on the dataset's
+    own key whatever graph was chosen — the browser sends the default graph
+    explicitly as 'connectivities', which contributes no suffix of its own.
+    The subset's own graph adds nothing more ('leiden_chondro'); any other
+    named graph is appended ('leiden_chondro_spatial').
+    """
+    suffix = _graph_suffix(graph_key)
+    if not suffix or suffix == subset_name:
+        return f'{base}_{subset_name}'
+    return f'{base}_{subset_name}_{suffix}'
+
+
 # Where the synthesized neighbors entry lives while sc.tl.umap reads it. Also
 # emitted by codegen, so the exported notebook uses the same name.
 _GRAPH_META_KEY = '_xcell_graph'
+
+# Named cell subsets: the persisted form of the browser's active cell mask.
+# Membership is a boolean .obs column (it survives a reload, exports with the
+# h5ad, and reads naturally in scanpy: ``adata[adata.obs['subset_x']]``); the
+# .uns registry carries what the column cannot. Everything the clustering chain
+# computes on a subset is suffixed with its name — the shape
+# prepare_cluster_cells_by_gene_set already uses — so the dataset's own X_pca /
+# connectivities / X_umap / leiden are never overwritten by a sub-clustering.
+CELL_SUBSETS_UNS = 'xcell_cell_subsets'
+SUBSET_OBS_PREFIX = 'subset_'
 
 
 def _umap_neighbors_meta(adata, graph_key: str) -> dict[str, Any]:
@@ -2776,8 +2801,15 @@ class DataAdaptor:
             out.append(str(c))
         return out
 
-    def crosstab(self, column_a: str, column_b: str) -> dict[str, Any]:
+    def crosstab(
+        self, column_a: str, column_b: str,
+        active_cell_indices: list[int] | None = None,
+    ) -> dict[str, Any]:
         """Count cells by two .obs columns at once, for the stacked barplot.
+
+        ``active_cell_indices`` restricts the count to those cells, so a
+        composition drawn while a mask is active describes the cells the user
+        is looking at rather than the whole dataset.
 
         A stacked bar claims a composition — "38% of cluster 3 is proximal" —
         so every cell in a bar has to land in exactly one box or the bar lies
@@ -2819,6 +2851,10 @@ class DataAdaptor:
 
         series_a, cats_a, colors_a = categories(column_a)
         series_b, cats_b, colors_b = categories(column_b)
+        indices = self._validate_cell_indices(active_cell_indices)
+        if indices is not None:
+            series_a = series_a.iloc[indices]
+            series_b = series_b.iloc[indices]
 
         MISSING = "(none)"
         a_vals = series_a.astype("object").where(series_a.notna(), MISSING).astype(str)
@@ -2846,7 +2882,8 @@ class DataAdaptor:
             "a_colors": colors_a,
             "b_colors": colors_b,
             "counts": counts,
-            "n_cells": int(self.adata.n_obs),
+            "n_cells": int(len(series_a)),
+            "n_total": int(self.adata.n_obs),
         }
 
     def get_obs_column_summary(self, name: str) -> dict[str, Any]:
@@ -4661,6 +4698,184 @@ class DataAdaptor:
             n_total=self.n_cells,
         )
 
+    # =========================================================================
+    # Named cell subsets
+    # =========================================================================
+
+    @staticmethod
+    def _sanitize_subset_name(name: str) -> str:
+        """A subset name suffixes obsm/obsp/obs keys, so it must be key-safe."""
+        import re
+        clean = re.sub(r'[^A-Za-z0-9_]+', '_', str(name or '')).strip('_')
+        if not clean:
+            raise ValueError("Subset name must contain at least one letter or digit.")
+        if clean.lower() in {'unassigned', 'nan', 'none', 'null'}:
+            raise ValueError(f"'{clean}' is reserved; choose another subset name.")
+        return clean
+
+    def _subset_registry(self) -> dict[str, dict[str, Any]]:
+        reg = self.adata.uns.get(CELL_SUBSETS_UNS)
+        return {str(k): dict(v) for k, v in reg.items()} if isinstance(reg, Mapping) else {}
+
+    def _subset_mask(self, name: str) -> np.ndarray:
+        """Boolean membership of a registered subset; KeyError if unknown."""
+        clean = self._sanitize_subset_name(name)
+        key = SUBSET_OBS_PREFIX + clean
+        if clean not in self._subset_registry() or key not in self.adata.obs.columns:
+            known = sorted(self._subset_registry())
+            raise KeyError(
+                f"No cell subset named '{clean}'. "
+                f"Known subsets: {known if known else 'none'}")
+        return self.adata.obs[key].values.astype(bool)
+
+    def _subset_derived_keys(self, name: str) -> dict[str, Any]:
+        """What has been computed on this subset, by the naming convention."""
+        obs_cols = list(self.adata.obs.columns)
+        leiden_cols = [c for c in obs_cols
+                       if c == f'leiden_{name}' or c.startswith(f'leiden_{name}_')]
+        return {
+            'hvg': (f'highly_variable__{name}'
+                    if f'highly_variable__{name}' in self.adata.var.columns else None),
+            'pca': f'X_pca_{name}' if f'X_pca_{name}' in self.adata.obsm else None,
+            'graph': (f'{name}_connectivities'
+                      if f'{name}_connectivities' in self.adata.obsp else None),
+            'umap': f'X_umap_{name}' if f'X_umap_{name}' in self.adata.obsm else None,
+            'leiden': leiden_cols,
+        }
+
+    def _subset_summary(self, name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
+        mask = self.adata.obs[SUBSET_OBS_PREFIX + name].values.astype(bool)
+        return {
+            'name': name,
+            'obs_key': SUBSET_OBS_PREFIX + name,
+            'n_cells': int(mask.sum()),
+            'n_total': self.n_cells,
+            'created_at': entry.get('created_at'),
+            'description': entry.get('description') or None,
+            'derived': self._subset_derived_keys(name),
+        }
+
+    def create_cell_subset(
+        self,
+        name: str,
+        cell_indices: list[int],
+        *,
+        description: str | None = None,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Persist a cell selection as a named subset.
+
+        Writes ``obs['subset_<name>']`` (bool) and a registry entry in
+        ``uns['xcell_cell_subsets']``. The subset is what the clustering-chain
+        operations take as ``cell_subset=`` to run on those cells alone while
+        writing to suffixed keys.
+        """
+        import datetime
+        clean = self._sanitize_subset_name(name)
+        if cell_indices is None or len(cell_indices) == 0:
+            raise ValueError("A subset needs at least one cell.")
+        idx = np.unique(np.asarray(cell_indices, dtype=int))
+        if idx.min() < 0 or idx.max() >= self.n_cells:
+            raise ValueError(
+                f"Cell indices out of range: max index {int(idx.max())}, n_cells {self.n_cells}")
+        if len(idx) == self.n_cells:
+            raise ValueError(
+                "The selection covers every cell — that is the dataset itself, not a subset.")
+        key = SUBSET_OBS_PREFIX + clean
+        registry = self._subset_registry()
+        if not overwrite and (clean in registry or key in self.adata.obs.columns):
+            raise ValueError(
+                f"A subset named '{clean}' already exists. Choose another name or overwrite it.")
+
+        mask = np.zeros(self.n_cells, dtype=bool)
+        mask[idx] = True
+        self.adata.obs[key] = mask
+        registry[clean] = {
+            'obs_key': key,
+            'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
+            'description': str(description) if description else '',
+        }
+        self.adata.uns[CELL_SUBSETS_UNS] = registry
+
+        out = self._subset_summary(clean, registry[clean])
+        self._log_action('create_cell_subset', {'name': clean},
+                         {'n_cells': out['n_cells'], 'obs_key': key}, subset=idx)
+        return out
+
+    def list_cell_subsets(self) -> list[dict[str, Any]]:
+        """Every registered subset with its live cell count and derived keys.
+
+        An entry whose column has vanished (a user dropped it in scanpy) is
+        pruned rather than reported, so the list never names a subset that
+        cannot be activated.
+        """
+        registry = self._subset_registry()
+        live = {n: e for n, e in registry.items()
+                if e.get('obs_key', SUBSET_OBS_PREFIX + n) in self.adata.obs.columns}
+        if len(live) != len(registry):
+            self.adata.uns[CELL_SUBSETS_UNS] = live
+        out = [self._subset_summary(n, e) for n, e in live.items()]
+        out.sort(key=lambda s: (s['created_at'] or '', s['name']))
+        return out
+
+    def get_cell_subset_indices(self, name: str) -> list[int]:
+        return [int(i) for i in np.where(self._subset_mask(name))[0]]
+
+    def delete_cell_subset(self, name: str, *, drop_derived: bool = False) -> dict[str, Any]:
+        """Remove a subset; optionally everything computed on it too."""
+        clean = self._sanitize_subset_name(name)
+        self._subset_mask(clean)  # KeyError if unknown
+        dropped: list[str] = []
+        key = SUBSET_OBS_PREFIX + clean
+        if key in self.adata.obs.columns:
+            del self.adata.obs[key]
+            dropped.append(key)
+        registry = self._subset_registry()
+        registry.pop(clean, None)
+        self.adata.uns[CELL_SUBSETS_UNS] = registry
+
+        if drop_derived:
+            derived = self._subset_derived_keys(clean)
+            if derived['hvg']:
+                del self.adata.var[derived['hvg']]
+                dropped.append(derived['hvg'])
+            if derived['pca']:
+                del self.adata.obsm[derived['pca']]
+                dropped.append(derived['pca'])
+                self.adata.varm.pop(f'PCs_{clean}', None)
+                self.adata.uns.pop(f'pca_{clean}', None)
+            if derived['graph']:
+                for k in (derived['graph'], f'{clean}_distances'):
+                    if k in self.adata.obsp:
+                        del self.adata.obsp[k]
+                        dropped.append(k)
+                self.adata.uns.pop(clean, None)
+            if derived['umap']:
+                del self.adata.obsm[derived['umap']]
+                dropped.append(derived['umap'])
+            for col in derived['leiden']:
+                del self.adata.obs[col]
+                dropped.append(col)
+
+        result = {'name': clean, 'dropped': dropped}
+        self._log_action('delete_cell_subset',
+                         {'name': clean, 'drop_derived': bool(drop_derived)}, result)
+        return result
+
+    def _resolve_cell_scope(
+        self, cell_subset: str | None, active_cell_indices: list[int] | None,
+    ) -> tuple[np.ndarray | None, str | None]:
+        """The cells an operation runs on, and the subset name if it came from one.
+
+        A named subset wins over ad-hoc indices: the name is what scopes the
+        output keys, and the indices the browser holds for it are the same
+        cells anyway.
+        """
+        if cell_subset:
+            clean = self._sanitize_subset_name(cell_subset)
+            return np.where(self._subset_mask(clean))[0], clean
+        return self._validate_cell_indices(active_cell_indices), None
+
     def _validate_cell_indices(
         self, active_cell_indices: list[int] | None,
     ) -> np.ndarray | None:
@@ -4704,11 +4919,16 @@ class DataAdaptor:
             return self.adata, None
         return self.adata[indices].copy(), indices
 
-    def check_prerequisites(self, action: str) -> dict[str, Any]:
+    def check_prerequisites(
+        self, action: str, cell_subset: str | None = None,
+    ) -> dict[str, Any]:
         """Check if prerequisites are met for a scanpy action.
 
         Args:
             action: The scanpy action to check
+            cell_subset: A named subset's own keys (``X_pca_<name>``,
+                ``<name>_connectivities``) satisfy the check as well as the
+                dataset's, since an operation on that subset can use either.
 
         Returns:
             Dict with 'satisfied' (bool) and 'missing' (list of missing prereqs)
@@ -4744,10 +4964,12 @@ class DataAdaptor:
 
         for prereq in required:
             if prereq == 'pca':
-                if 'X_pca' not in self.adata.obsm:
+                keys = ['X_pca'] + ([f'X_pca_{cell_subset}'] if cell_subset else [])
+                if not any(k in self.adata.obsm for k in keys):
                     missing.append('pca')
             elif prereq == 'neighbors':
-                if 'connectivities' not in self.adata.obsp:
+                keys = ['connectivities'] + ([f'{cell_subset}_connectivities'] if cell_subset else [])
+                if not any(k in self.adata.obsp for k in keys):
                     missing.append('neighbors')
             elif prereq == 'gene_pca':
                 if 'X_gene_pca' not in self.adata.varm:
@@ -6103,10 +6325,14 @@ class DataAdaptor:
         add_union: bool = False,
         add_intersection: bool = False,
         min_cells_per_group: int = 10,
+        cell_subset: str | None = None,
     ) -> dict[str, Any]:
         """Identify highly variable genes.
 
-        Adds 'highly_variable' boolean column to .var.
+        Adds 'highly_variable' boolean column to .var. On a named
+        ``cell_subset`` the result goes to ``highly_variable__<name>`` instead
+        and the pooled column is left untouched, so sub-clustering a
+        population does not change which genes the whole dataset's PCA uses.
 
         Args:
             n_top_genes: Number of top genes to select (overrides min/max thresholds)
@@ -6144,6 +6370,12 @@ class DataAdaptor:
                     "single gene set to subset to. Run the split first, then "
                     "subset on the union or intersection column."
                 )
+            if cell_subset:
+                raise ValueError(
+                    "split_by cannot be combined with a cell subset: the per-group "
+                    "columns are named after the groups, not the subset. Run the "
+                    "split on the whole dataset, or the subset on its own."
+                )
             return self._run_hvg_split(
                 split_by=split_by, n_top_genes=n_top_genes, min_mean=min_mean,
                 max_mean=max_mean, min_disp=min_disp, flavor=flavor,
@@ -6152,9 +6384,15 @@ class DataAdaptor:
                 min_cells_per_group=min_cells_per_group,
             )
 
-        adata_sub, indices = self._get_active_adata(active_cell_indices)
+        indices, subset_name = self._resolve_cell_scope(cell_subset, active_cell_indices)
+        if subset_name is not None and subset:
+            raise ValueError(
+                "subset=True (drop non-variable genes) cannot be combined with a cell "
+                "subset: the genes belong to the whole dataset.")
+        out_column = 'highly_variable' if subset_name is None else f'highly_variable__{subset_name}'
         if indices is not None:
             from scipy import sparse
+            adata_sub = self.adata[indices].copy()
             # Drop genes with zero expression in the subset to avoid
             # degenerate bin edges in scanpy's HVG binning step
             if sparse.issparse(adata_sub.X):
@@ -6175,16 +6413,23 @@ class DataAdaptor:
                 n_bins=n_bins,
                 subset=False,
             )
-            # Map results back to full gene set — unexpressed genes are not HVG
-            for col in ['highly_variable', 'means', 'dispersions', 'dispersions_norm']:
-                if col in adata_hvg.var.columns:
-                    default = False if col == 'highly_variable' else 0.0
-                    full_col = pd.Series(default, index=self.adata.var_names, dtype=adata_hvg.var[col].dtype)
-                    full_col.loc[adata_hvg.var_names] = adata_hvg.var[col]
-                    self.adata.var[col] = full_col.values
-            # Apply subset on full adata if requested
-            if subset:
-                self.adata = self.adata[:, self.adata.var['highly_variable']].copy()
+            if subset_name is not None:
+                # Only the flag: the pooled means / dispersions stay the
+                # dataset's, as with the split-by-group columns.
+                full_col = pd.Series(False, index=self.adata.var_names)
+                full_col.loc[adata_hvg.var_names] = adata_hvg.var['highly_variable'].values
+                self.adata.var[out_column] = full_col.values.astype(bool)
+            else:
+                # Map results back to full gene set — unexpressed genes are not HVG
+                for col in ['highly_variable', 'means', 'dispersions', 'dispersions_norm']:
+                    if col in adata_hvg.var.columns:
+                        default = False if col == 'highly_variable' else 0.0
+                        full_col = pd.Series(default, index=self.adata.var_names, dtype=adata_hvg.var[col].dtype)
+                        full_col.loc[adata_hvg.var_names] = adata_hvg.var[col]
+                        self.adata.var[col] = full_col.values
+                # Apply subset on full adata if requested
+                if subset:
+                    self.adata = self.adata[:, self.adata.var['highly_variable']].copy()
         else:
             sc.pp.highly_variable_genes(
                 self.adata,
@@ -6197,7 +6442,7 @@ class DataAdaptor:
                 subset=subset,
             )
 
-        n_hvg = int(self.adata.var['highly_variable'].sum())
+        n_hvg = int(self.adata.var[out_column].sum())
 
         result = {
             'status': 'completed',
@@ -6205,14 +6450,19 @@ class DataAdaptor:
             'n_total_genes': self.n_genes,
             'flavor': flavor,
         }
-        self._log_action('highly_variable_genes', {
+        params: dict[str, Any] = {
             'n_top_genes': n_top_genes,
             'min_mean': min_mean,
             'max_mean': max_mean,
             'min_disp': min_disp,
             'flavor': flavor,
             'subset': subset,
-        }, result, subset=indices)
+        }
+        if subset_name is not None:
+            result['column'] = out_column
+            result['cell_subset'] = subset_name
+            params['cell_subset'] = subset_name
+        self._log_action('highly_variable_genes', params, result, subset=indices)
         return result
 
     def run_pca(
@@ -6222,6 +6472,7 @@ class DataAdaptor:
         gene_subset: str | list[str] | dict[str, Any] | None = None,
         use_highly_variable: bool | None = None,
         active_cell_indices: list[int] | None = None,
+        cell_subset: str | None = None,
     ) -> dict[str, Any]:
         """Run PCA dimensionality reduction.
 
@@ -6237,18 +6488,35 @@ class DataAdaptor:
                 If True and gene_subset is None, uses 'highly_variable' column.
             active_cell_indices: If provided, compute PCA on these cells only;
                 inactive cells get NaN in X_pca.
+            cell_subset: A named subset. The embedding goes to
+                ``obsm['X_pca_<name>']`` (NaN outside the subset), loadings to
+                ``varm['PCs_<name>']`` and metadata to ``uns['pca_<name>']``;
+                the dataset's own ``X_pca`` is not touched. With no
+                ``gene_subset`` the subset's own ``highly_variable__<name>``
+                column is used when it exists, then the pooled one.
 
         Returns:
             Dict with operation status and variance explained
         """
+        cell_indices, subset_name = self._resolve_cell_scope(cell_subset, active_cell_indices)
+
         # Handle legacy use_highly_variable parameter
         if gene_subset is None and use_highly_variable is True:
             if 'highly_variable' in self.adata.var.columns:
                 gene_subset = 'highly_variable'
 
+        auto_label: str | None = None
+        if gene_subset is None and subset_name is not None:
+            own = f'highly_variable__{subset_name}'
+            if own in self.adata.var.columns:
+                gene_subset = own
+                auto_label = f'{own} (auto)'
+
         # Resolve gene subset
         if gene_subset is not None:
             gene_mask, subset_type, subset_metadata = self._resolve_gene_mask(gene_subset)
+            if auto_label:
+                subset_type = auto_label
             n_genes_used = int(gene_mask.sum())
 
             # Create a temporary subset for PCA
@@ -6263,7 +6531,6 @@ class DataAdaptor:
                 subset_type = 'highly_variable (auto)'
 
         # Apply cell mask
-        adata_sub, cell_indices = self._get_active_adata(active_cell_indices)
         if cell_indices is not None:
             # Subset cells from the (possibly gene-subsetted) adata
             if gene_subset is not None:
@@ -6271,22 +6538,37 @@ class DataAdaptor:
             else:
                 adata_pca = self.adata[cell_indices].copy()
 
-        # Limit n_comps to valid range
-        max_comps = min(adata_pca.n_obs - 1, adata_pca.n_vars - 1)
+        # Limit n_comps to valid range. n_genes_used, not n_vars: on the
+        # default path scanpy masks to the highly_variable column, so a
+        # 76-gene dataset with 40 HVGs can give at most 39 components.
+        max_comps = min(adata_pca.n_obs - 1, n_genes_used - 1)
         n_comps = min(n_comps, max_comps)
 
-        # Run PCA on subset
-        sc.tl.pca(adata_pca, n_comps=n_comps, svd_solver=svd_solver)
+        # Run PCA on subset. An explicit gene subset must be used whole:
+        # scanpy's mask_var defaults to the 'highly_variable' column whenever
+        # one exists, which silently intersected 'spatially_variable' (or a
+        # subset's own HVG column) with the pooled HVGs — and failed outright
+        # when the two did not overlap.
+        pca_kwargs: dict[str, Any] = {'n_comps': n_comps, 'svd_solver': svd_solver}
+        if gene_subset is not None:
+            pca_kwargs['mask_var'] = None
+        sc.tl.pca(adata_pca, **pca_kwargs)
+
+        if subset_name is not None:
+            pca_key, pcs_key, uns_key = (f'X_pca_{subset_name}', f'PCs_{subset_name}',
+                                         f'pca_{subset_name}')
+        else:
+            pca_key, pcs_key, uns_key = 'X_pca', 'PCs', 'pca'
 
         # Copy results back to main adata
         if cell_indices is not None:
-            # Store X_pca with NaN for inactive cells
+            # Store the embedding with NaN for inactive cells
             full_pca = np.full((self.n_cells, n_comps), np.nan)
             full_pca[cell_indices] = adata_pca.obsm['X_pca']
-            self.adata.obsm['X_pca'] = full_pca
+            self.adata.obsm[pca_key] = full_pca
         else:
-            self.adata.obsm['X_pca'] = adata_pca.obsm['X_pca']
-        self.adata.uns['pca'] = adata_pca.uns['pca']
+            self.adata.obsm[pca_key] = adata_pca.obsm['X_pca']
+        self.adata.uns[uns_key] = adata_pca.uns['pca']
 
         # Copy gene loadings back as a full-size (n_genes, n_comps) matrix
         # with NaN rows for genes not included in the subset. Downstream
@@ -6298,20 +6580,20 @@ class DataAdaptor:
                 full_pcs[gene_mask, :] = adata_pca.varm['PCs']
             else:
                 full_pcs[:, :] = adata_pca.varm['PCs']
-            self.adata.varm['PCs'] = full_pcs
-            self.adata.uns['pca']['gene_subset'] = {
+            self.adata.varm[pcs_key] = full_pcs
+            self.adata.uns[uns_key]['gene_subset'] = {
                 'type': subset_type,
                 'n_genes': n_genes_used,
             }
 
         # Get variance explained
-        variance_ratio = self.adata.uns['pca']['variance_ratio'][:10].tolist()
+        variance_ratio = self.adata.uns[uns_key]['variance_ratio'][:10].tolist()
 
         result = {
             'status': 'completed',
             'n_comps': n_comps,
             'variance_explained_top10': variance_ratio,
-            'embedding_name': 'X_pca',
+            'embedding_name': pca_key,
             'gene_subset_type': subset_type,
             'n_genes_used': n_genes_used,
         }
@@ -6321,27 +6603,37 @@ class DataAdaptor:
         # sc.tl.pca does replace adata.uns['pca'] wholesale, so variance_ratio_*
         # and the 'subsets' metadata dict are already gone — the uns pops below
         # are defensive against stale obsm keys from externally loaded h5ad
-        # files and to keep the invariant explicit.
+        # files and to keep the invariant explicit. A named cell subset's PCA
+        # shares the X_pca_<suffix> shape but is not derived from X_pca, so it
+        # is skipped; and a subset run clears nothing, since X_pca is unchanged.
         cleared_subsets: list[str] = []
-        for key in list(self.adata.obsm.keys()):
-            if key.startswith('X_pca_') and key != 'X_pca':
-                suffix = key[len('X_pca_'):]
-                self.adata.obsm.pop(key, None)
-                self.adata.varm.pop(f"PCs_{suffix}", None)
-                if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
-                    self.adata.uns['pca'].pop(f"variance_ratio_{suffix}", None)
-                    subsets_meta = self.adata.uns['pca'].get('subsets', {})
-                    if isinstance(subsets_meta, dict):
-                        subsets_meta.pop(suffix, None)
-                cleared_subsets.append(key)
+        if subset_name is None:
+            subset_names = set(self._subset_registry())
+            for key in list(self.adata.obsm.keys()):
+                if key.startswith('X_pca_') and key != 'X_pca':
+                    suffix = key[len('X_pca_'):]
+                    if suffix in subset_names:
+                        continue
+                    self.adata.obsm.pop(key, None)
+                    self.adata.varm.pop(f"PCs_{suffix}", None)
+                    if 'pca' in self.adata.uns and isinstance(self.adata.uns['pca'], dict):
+                        self.adata.uns['pca'].pop(f"variance_ratio_{suffix}", None)
+                        subsets_meta = self.adata.uns['pca'].get('subsets', {})
+                        if isinstance(subsets_meta, dict):
+                            subsets_meta.pop(suffix, None)
+                    cleared_subsets.append(key)
         if cleared_subsets:
             result['cleared_subsets'] = cleared_subsets
 
-        self._log_action('pca', {
+        params: dict[str, Any] = {
             'n_comps': n_comps,
             'svd_solver': svd_solver,
             'gene_subset': gene_subset,
-        }, result, subset=cell_indices)
+        }
+        if subset_name is not None:
+            result['cell_subset'] = subset_name
+            params['cell_subset'] = subset_name
+        self._log_action('pca', params, result, subset=cell_indices)
         return result
 
     def get_pca_loadings(self, top_n: int = 10) -> dict[str, Any]:
@@ -6566,6 +6858,7 @@ class DataAdaptor:
         metric: str = 'euclidean',
         use_rep: str | None = None,
         active_cell_indices: list[int] | None = None,
+        cell_subset: str | None = None,
     ) -> dict[str, Any]:
         """Compute neighborhood graph.
 
@@ -6578,14 +6871,22 @@ class DataAdaptor:
                 Any other value must exist in adata.obsm.
             active_cell_indices: If provided, compute neighbors on these cells only;
                 results are remapped into full-size sparse matrices.
+            cell_subset: A named subset. The graph goes to
+                ``obsp['<name>_connectivities']`` / ``['<name>_distances']``
+                with scanpy's neighbours entry at ``uns['<name>']``, so UMAP
+                and Leiden can pick it by ``graph_key``; the dataset's own
+                graph is not touched. With no ``use_rep`` the subset's own
+                ``X_pca_<name>`` is used when it exists, then ``X_pca``.
 
         Returns:
             Dict with operation status
         """
         from scipy.sparse import coo_matrix
 
+        cell_indices, subset_name = self._resolve_cell_scope(cell_subset, active_cell_indices)
+
         # Check prerequisites
-        prereq = self.check_prerequisites('neighbors')
+        prereq = self.check_prerequisites('neighbors', cell_subset=subset_name)
         if not prereq['satisfied']:
             raise ValueError(f"Prerequisites not met: {prereq['missing']}")
 
@@ -6599,6 +6900,10 @@ class DataAdaptor:
         # Resolve and validate use_rep. None / 'X_pca' preserve the existing
         # default path. Any other value must exist in adata.obsm.
         rep_key = use_rep if use_rep and use_rep != 'X_pca' else None
+        # Unasked, a subset run uses its own PCA when it has one. An explicit
+        # 'X_pca' is a choice — the dataset's embedding sliced to the subset.
+        if not use_rep and subset_name is not None and f'X_pca_{subset_name}' in self.adata.obsm:
+            rep_key = f'X_pca_{subset_name}'
         if rep_key is not None:
             if rep_key not in self.adata.obsm:
                 raise ValueError(
@@ -6607,13 +6912,18 @@ class DataAdaptor:
                 )
             kwargs['use_rep'] = rep_key
 
-        cell_indices = self._validate_cell_indices(active_cell_indices)
         if cell_indices is not None:
             # Build a subset AnnData with PCA from the active cells
             import anndata as ad
             source_key = rep_key if rep_key is not None else 'X_pca'
-            pca_full = self.adata.obsm[source_key]
+            pca_full = np.asarray(self.adata.obsm[source_key])
             pca_sub = pca_full[cell_indices]
+            if np.isnan(pca_sub).any():
+                n_bad = int(np.isnan(pca_sub).any(axis=1).sum())
+                raise ValueError(
+                    f"'{source_key}' has no values for {n_bad:,} of the selected cells "
+                    f"(it was computed on a different selection). Run PCA on this "
+                    f"selection first.")
             adata_sub = ad.AnnData(obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
             adata_sub.obsm[source_key] = pca_sub
 
@@ -6628,6 +6938,7 @@ class DataAdaptor:
 
             # Remap sparse obsp matrices to full size
             n_full = self.n_cells
+            prefix = f'{subset_name}_' if subset_name is not None else ''
             for key in ['connectivities', 'distances']:
                 if key in adata_sub.obsp:
                     sub_coo = adata_sub.obsp[key].tocoo()
@@ -6637,15 +6948,29 @@ class DataAdaptor:
                         (sub_coo.data, (full_rows, full_cols)),
                         shape=(n_full, n_full),
                     )
-                    self.adata.obsp[key] = full_mat.tocsr()
+                    self.adata.obsp[prefix + key] = full_mat.tocsr()
 
-            # Copy uns['neighbors'] metadata
-            self.adata.uns['neighbors'] = adata_sub.uns['neighbors']
+            if subset_name is not None:
+                # scanpy's own key_added shape, so tl.umap / tl.leiden find the
+                # graph through neighbors_key and list_neighbor_graphs sees it.
+                meta = dict(adata_sub.uns['neighbors'])
+                meta['connectivities_key'] = f'{subset_name}_connectivities'
+                meta['distances_key'] = f'{subset_name}_distances'
+                self.adata.uns[subset_name] = meta
+            else:
+                # Copy uns['neighbors'] metadata
+                self.adata.uns['neighbors'] = adata_sub.uns['neighbors']
         else:
             sc.pp.neighbors(self.adata, **kwargs)
 
-        result = {'status': 'completed', 'n_neighbors': n_neighbors}
-        self._log_action('neighbors', kwargs, result, subset=cell_indices)
+        result: dict[str, Any] = {'status': 'completed', 'n_neighbors': n_neighbors}
+        params = dict(kwargs)
+        if subset_name is not None:
+            result['graph_key'] = f'{subset_name}_connectivities'
+            result['use_rep'] = rep_key if rep_key is not None else 'X_pca'
+            result['cell_subset'] = subset_name
+            params['cell_subset'] = subset_name
+        self._log_action('neighbors', params, result, subset=cell_indices)
         return result
 
     def list_neighbor_graphs(self) -> list[dict[str, Any]]:
@@ -6672,7 +6997,8 @@ class DataAdaptor:
                     label = 'Spatial neighbors'
                 else:
                     prefix = key[:-len('_connectivities')]
-                    label = f'{prefix} neighbors'
+                    label = (f'Subset {prefix} neighbors'
+                             if prefix in self._subset_registry() else f'{prefix} neighbors')
                 graphs.append({
                     'key': key,
                     'label': label,
@@ -7019,6 +7345,7 @@ class DataAdaptor:
         graph_key: str | None = None,
         key_added: str | None = None,
         active_cell_indices: list[int] | None = None,
+        cell_subset: str | None = None,
     ) -> dict[str, Any]:
         """Compute a UMAP embedding.
 
@@ -7036,10 +7363,20 @@ class DataAdaptor:
                 otherwise, so embeddings from different graphs coexist.
             active_cell_indices: If provided, compute UMAP on these cells only;
                 inactive cells get NaN coordinates.
+            cell_subset: A named subset. Embeds the subset's own graph
+                (``<name>_connectivities``) when it exists and no graph_key is
+                given, otherwise the chosen or default graph sliced to the
+                subset; the result goes to ``X_umap_<name>`` unless key_added
+                names it, and the dataset's own ``X_umap`` is not touched.
 
         Returns:
             Dict with status, embedding_name, n_components, graph_key.
         """
+        cell_indices, subset_name = self._resolve_cell_scope(cell_subset, active_cell_indices)
+        if subset_name is not None and not graph_key:
+            own_graph = f'{subset_name}_connectivities'
+            if own_graph in self.adata.obsp:
+                graph_key = own_graph
         if graph_key:
             # A named graph carries its own prerequisite. check_prerequisites
             # looks for obsp['connectivities'], which a spatial-only dataset
@@ -7050,16 +7387,25 @@ class DataAdaptor:
             if not prereq['satisfied']:
                 raise ValueError(f"Prerequisites not met: {prereq['missing']}")
 
-        name = (key_added or '').strip() or _default_output_name('X_umap', graph_key)
+        name = (key_added or '').strip()
+        if not name:
+            name = (_subset_output_name('X_umap', subset_name, graph_key)
+                    if subset_name is not None
+                    else _default_output_name('X_umap', graph_key))
         meta = _umap_neighbors_meta(self.adata, graph_key) if graph_key else None
 
-        cell_indices = self._validate_cell_indices(active_cell_indices)
         if cell_indices is not None:
             import anndata as ad
             adata_sub = ad.AnnData(
                 obs=pd.DataFrame(index=self.adata.obs_names[cell_indices]))
-            if 'X_pca' in self.adata.obsm:
-                adata_sub.obsm['X_pca'] = self.adata.obsm['X_pca'][cell_indices]
+            # sc.tl.umap reads the representation the neighbours entry names
+            # (to seed the layout), so the slice needs that key, not just X_pca.
+            wanted_reps = {'X_pca'}
+            if meta is not None and meta['params'].get('use_rep') not in (None, 'X'):
+                wanted_reps.add(meta['params']['use_rep'])
+            for rep in wanted_reps:
+                if rep in self.adata.obsm:
+                    adata_sub.obsm[rep] = np.asarray(self.adata.obsm[rep])[cell_indices]
 
             # Slice the graph this run actually uses. Hardcoding
             # 'connectivities' here sliced the wrong matrix for any other
@@ -7117,6 +7463,9 @@ class DataAdaptor:
             params['neighbors_meta'] = meta
         if name != 'X_umap':
             params['key_added'] = name
+        if subset_name is not None:
+            params['cell_subset'] = subset_name
+            result['cell_subset'] = subset_name
         self._log_action('umap', params, result, subset=cell_indices)
         return result
 
@@ -7126,6 +7475,7 @@ class DataAdaptor:
         key_added: str = 'leiden',
         graph_key: str | None = None,
         active_cell_indices: list[int] | None = None,
+        cell_subset: str | None = None,
     ) -> dict[str, Any]:
         """Run Leiden clustering.
 
@@ -7138,10 +7488,20 @@ class DataAdaptor:
                 ``obsp['connectivities']`` via ``uns['neighbors']``, as before.
             active_cell_indices: If provided, cluster only these cells;
                 inactive cells are labeled 'unassigned'.
+            cell_subset: A named subset. Clusters the subset's own graph when
+                it exists and no graph_key is given, otherwise the chosen or
+                default graph sliced to the subset; labels go to
+                ``leiden_<name>`` (``unassigned`` outside) unless key_added
+                names the column, and the dataset's own ``leiden`` is not touched.
 
         Returns:
             Dict with status, key_added, n_clusters, resolution, graph_key.
         """
+        cell_indices, subset_name = self._resolve_cell_scope(cell_subset, active_cell_indices)
+        if subset_name is not None and not graph_key:
+            own_graph = f'{subset_name}_connectivities'
+            if own_graph in self.adata.obsp:
+                graph_key = own_graph
         if graph_key:
             self._require_graph(graph_key)
         else:
@@ -7152,14 +7512,17 @@ class DataAdaptor:
         # key_added defaults to a string rather than None, so an explicit
         # 'leiden' is indistinguishable from an unset one — treat the default
         # value as unset and let the graph name the column.
-        name = (_default_output_name('leiden', graph_key)
-                if key_added == 'leiden' else key_added)
+        if key_added != 'leiden':
+            name = key_added
+        elif subset_name is not None:
+            name = _subset_output_name('leiden', subset_name, graph_key)
+        else:
+            name = _default_output_name('leiden', graph_key)
         # sc.tl.leiden takes the adjacency directly; unlike UMAP it needs no
         # synthesized uns entry. obsp and neighbors_key are mutually exclusive,
         # so only one is ever passed.
         graph_kwargs = {'obsp': graph_key} if graph_key else {}
 
-        cell_indices = self._validate_cell_indices(active_cell_indices)
         if cell_indices is not None:
             # Build subset AnnData with neighbor graph
             import anndata as ad
@@ -7206,6 +7569,9 @@ class DataAdaptor:
         params: dict[str, Any] = {'resolution': resolution, 'key_added': name}
         if graph_key:
             params['graph_key'] = graph_key
+        if subset_name is not None:
+            params['cell_subset'] = subset_name
+            result['cell_subset'] = subset_name
         self._log_action('leiden', params, result, subset=cell_indices)
         return result
 
@@ -8493,6 +8859,9 @@ class DataAdaptor:
         string_weight: float = 0.0,
         string_species: str | None = None,
         string_required_score: int = 400,
+        go_weight: float = 0.0,
+        go_aspect: str = 'bp',
+        go_species: str | None = None,
         n_neighbors: int = 15,
         resolution: float = 1.0,
         embedding: str = 'umap',
@@ -8501,18 +8870,21 @@ class DataAdaptor:
         seed: int = 0,
         overwrite: bool = False,
     ) -> tuple[Callable[[Callable], dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
-        """Build a gene map: similarity from expression, annotation and STRING → modules + 2-D layout.
+        """Build a gene map: similarity from expression, annotation, STRING and GO → modules + 2-D layout.
 
         Genes come from an explicit list or a ``gene_subset`` (a boolean
         ``.var`` column, a gene list, or a ``{columns, operation}`` spec).
         Annotation libraries must already be in the Gene set library cache;
         naming one that is not is a 400 here, not a failed task. STRING edges
-        are fetched inside the task. The result lives in
+        are fetched inside the task. The GO channel needs the ontology and the
+        species GAF on disk — the ``go`` source's one library — and is checked
+        here for the same reason. The result lives in
         ``uns['xcell_gene_maps'][key]`` with the similarity matrix itself.
         """
         import re  # noqa: PLC0415
 
         from xcell import gene_set_sources as gss  # noqa: PLC0415
+        from xcell import go_semantic as gos  # noqa: PLC0415
 
         key = re.sub(r'[^A-Za-z0-9_]+', '_', str(key or '')).strip('_')
         if not key:
@@ -8576,11 +8948,25 @@ class DataAdaptor:
             if len(found) > gss.MAX_STRING_IDENTIFIERS:
                 raise ValueError(f"STRING accepts at most {gss.MAX_STRING_IDENTIFIERS} genes per query; got {len(found)}")
 
-        if X_genes is None and not memberships and species is None:
-            raise ValueError('No similarity channel is available — enable expression, annotation (with a cached library) or STRING')
+        go_sp: str | None = None
+        if float(go_weight) > 0:
+            go_sp = go_species or string_species or self.guess_species().get('species')
+            if go_sp not in gos.GAF_URLS:
+                raise ValueError("The GO channel needs a species ('human' or 'mouse'); the dataset's could not be guessed")
+            if go_aspect not in gos.ASPECTS:
+                raise ValueError(f"go_aspect must be one of {', '.join(gos.ASPECTS)}; got '{go_aspect}'")
+            have = gos.availability(go_sp)
+            if not (have['obo'] and have['gaf'].get(go_sp)):
+                raise ValueError(
+                    f"GO annotations for {go_sp} have not been fetched — fetch 'GO annotations ({go_sp})' "
+                    "under Gene Ontology in the Gene set library first")
+
+        if X_genes is None and not memberships and species is None and go_sp is None:
+            raise ValueError('No similarity channel is available — enable expression, annotation (with a cached library), STRING or GO')
 
         snap_found, snap_missing = list(found), list(missing)
-        snap_w = (float(expression_weight), float(annotation_weight), float(string_weight))
+        snap_w = (float(expression_weight), float(annotation_weight), float(string_weight), float(go_weight))
+        snap_go_aspect = str(go_aspect)
         snap_metric, snap_score = str(expression_metric), int(string_required_score)
         snap_nn, snap_res, snap_seed = int(n_neighbors), float(resolution), int(seed)
         snap_layer, snap_subset_type = layer, subset_type
@@ -8606,6 +8992,13 @@ class DataAdaptor:
                 S_str, n_edges = gsim.string_similarity(snap_found, net.get('edges', []))
                 channels['string'] = (S_str, snap_w[2])
                 info['string'] = {'weight': snap_w[2], 'species': species, 'required_score': snap_score, 'n_edges': n_edges}
+            if go_sp is not None:
+                report(0.52, f'GO semantic similarity ({snap_go_aspect.upper()})…')
+                S_go, go_meta = gsim.go_similarity(snap_found, go_sp, snap_go_aspect)
+                channels['go'] = (S_go, snap_w[3])
+                info['go'] = {'weight': snap_w[3], 'species': go_sp, 'aspect': snap_go_aspect,
+                              'n_genes_annotated': int(go_meta['n_genes_annotated']), 'n_terms': int(go_meta['n_terms']),
+                              'terms_per_gene': [int(t) for t in go_meta['terms_per_gene']]}
             report(0.6, 'Modules and layout…')
             out = gsim.build_gene_map(snap_found, channels=channels, n_neighbors=snap_nn,
                                       resolution=snap_res, embedding=embedding, seed=snap_seed)
@@ -8619,6 +9012,7 @@ class DataAdaptor:
                 'expression_weight': snap_w[0], 'expression_metric': snap_metric,
                 'annotation_weight': snap_w[1], 'annotation_libraries': libs_used,
                 'string_weight': snap_w[2], 'string_species': species, 'string_required_score': snap_score,
+                'go_weight': snap_w[3], 'go_aspect': snap_go_aspect if go_sp is not None else None, 'go_species': go_sp,
                 'n_neighbors': snap_nn, 'resolution': snap_res, 'embedding': embedding,
                 'layer': snap_layer, 'seed': snap_seed,
             }

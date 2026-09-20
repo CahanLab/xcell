@@ -5,6 +5,7 @@ import { sectionForCut } from './lib/territoryGeometry'
 import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
 import { loadedSlots, slotAfterUnload, moveItem, paneGrid, activeSlotFrom } from './lib/datasetSlots'
 import type { Workspace } from './lib/workspaceLayout'
+import type { CellSubsetInfo } from './lib/cellSubsets'
 
 export interface Schema {
   n_cells: number
@@ -563,6 +564,12 @@ export interface DatasetState {
   selectedCellIndices: number[]
   activeCellMask: boolean[] | null
   showMaskedCells: boolean
+  // Subsets saved on the backend for this dataset, and which of them the mask
+  // currently is — null while the mask is unsaved or has been edited since.
+  // A named subset is what lets a sub-clustering write to suffixed keys
+  // instead of over the dataset's own results.
+  cellSubsets: CellSubsetInfo[]
+  activeSubsetName: string | null
   cellSortOrder: number[] | null
   cellSortVersion: number
   bivariateSortReversed: boolean
@@ -698,6 +705,8 @@ export function createDefaultDatasetState(
     selectedCellIndices: [],
     activeCellMask: null,
     showMaskedCells: true,
+    cellSubsets: [],
+    activeSubsetName: null,
     cellSortOrder: null,
     cellSortVersion: 0,
     bivariateSortReversed: false,
@@ -853,6 +862,8 @@ interface AppState {
   // Cell masking - null means all cells are active (no mask)
   activeCellMask: boolean[] | null
   showMaskedCells: boolean  // Whether to display masked (inactive) cells
+  cellSubsets: CellSubsetInfo[]
+  activeSubsetName: string | null
 
   // Cell ordering for z-stacking
   cellSortOrder: number[] | null  // Custom sort order for rendering (indices), null = default order
@@ -1105,6 +1116,11 @@ interface AppState {
   removeSelectionFromActive: () => void  // Remove current selection from active cells
   resetActiveCells: () => void  // Clear mask, make all cells active
   setShowMaskedCells: (show: boolean) => void
+  setCellSubsets: (subsets: CellSubsetInfo[]) => void
+  // Make a saved subset the mask; its indices come from the backend.
+  activateCellSubset: (name: string, indices: number[]) => void
+  // Record that the current mask is (or is no longer) a saved subset.
+  setActiveSubsetName: (name: string | null) => void
 
   // Cell ordering actions
   sortCellsByExpression: () => void  // Sort cells so high-expression renders on top
@@ -1312,6 +1328,8 @@ export const useStore = create<AppState>((set, get) => {
       selectedCellIndices: ds.selectedCellIndices,
       activeCellMask: ds.activeCellMask,
       showMaskedCells: ds.showMaskedCells,
+      cellSubsets: ds.cellSubsets,
+      activeSubsetName: ds.activeSubsetName,
       cellSortOrder: ds.cellSortOrder,
       cellSortVersion: ds.cellSortVersion,
       bivariateSortReversed: ds.bivariateSortReversed,
@@ -1384,6 +1402,8 @@ export const useStore = create<AppState>((set, get) => {
     columnDisplayNames: {},
     activeCellMask: null,
     showMaskedCells: true,
+    cellSubsets: [],
+    activeSubsetName: null,
     cellSortOrder: null,
     cellSortVersion: 0,
     bivariateSortReversed: false,
@@ -2166,7 +2186,7 @@ export const useStore = create<AppState>((set, get) => {
         state.selectedCellIndices.forEach((i) => {
           mask[i] = true
         })
-        return { activeCellMask: mask }
+        return { activeCellMask: mask, activeSubsetName: null }
       })),
 
     addSelectionToActive: () =>
@@ -2179,7 +2199,7 @@ export const useStore = create<AppState>((set, get) => {
         state.selectedCellIndices.forEach((i) => {
           mask[i] = true
         })
-        return { activeCellMask: mask }
+        return { activeCellMask: mask, activeSubsetName: null }
       })),
 
     removeSelectionFromActive: () =>
@@ -2192,12 +2212,24 @@ export const useStore = create<AppState>((set, get) => {
         state.selectedCellIndices.forEach((i) => {
           mask[i] = false
         })
-        return { activeCellMask: mask }
+        return { activeCellMask: mask, activeSubsetName: null }
       })),
 
-    resetActiveCells: () => set(dsUpdate({ activeCellMask: null })),
+    resetActiveCells: () => set(dsUpdate({ activeCellMask: null, activeSubsetName: null })),
 
     setShowMaskedCells: (show) => set(dsUpdate({ showMaskedCells: show })),
+
+    setCellSubsets: (subsets) => set(dsUpdate({ cellSubsets: subsets })),
+
+    activateCellSubset: (name, indices) =>
+      set(dsUpdateFn((state) => {
+        if (!state.schema) return {}
+        const mask = new Array<boolean>(state.schema.n_cells).fill(false)
+        indices.forEach((i) => { if (i >= 0 && i < mask.length) mask[i] = true })
+        return { activeCellMask: mask, activeSubsetName: name }
+      })),
+
+    setActiveSubsetName: (name) => set(dsUpdate({ activeSubsetName: name })),
 
     // Cell ordering actions (per-dataset)
     sortCellsByExpression: () =>

@@ -10,7 +10,11 @@ Three channels, each a genes × genes matrix in [0, 1] with a unit diagonal:
   belongs to is a column). A gene no library mentions is similar to nothing
   but itself, and the caller is told how many such genes there are;
 * **STRING** — the combined score of each edge STRING returns for the list,
-  zero where it has no edge.
+  zero where it has no edge;
+* **go** — IC-weighted semantic similarity over the Gene Ontology
+  (:mod:`go_semantic`, SimGIC), so sharing "chondrocyte differentiation"
+  counts for more than sharing "biological process" — which the annotation
+  channel cannot tell apart.
 
 :func:`combine` takes a weighted mean over the channels that are present;
 :func:`modules` runs Leiden on the kNN graph of the combined similarity;
@@ -94,11 +98,19 @@ def string_similarity(genes: list[str], edges: list[dict[str, Any]]) -> tuple[np
     return S, len(used)
 
 
+def go_similarity(genes: list[str], species: str, aspect: str = 'bp') -> tuple[np.ndarray, dict[str, Any]]:
+    """SimGIC over the cached GO files; the matrix and what to report about it."""
+    from xcell import go_semantic as gos  # noqa: PLC0415
+
+    out = gos.similarity(genes, species, aspect)
+    return out['similarity'], out
+
+
 def combine(channels: dict[str, tuple[np.ndarray | None, float]]) -> tuple[np.ndarray, dict[str, float]]:
     """Weighted mean over the channels that are present with a positive weight."""
     present = {name: (S, float(w)) for name, (S, w) in channels.items() if S is not None and float(w) > 0.0}
     if not present:
-        raise ValueError('No similarity channel is available — enable expression, annotation or STRING')
+        raise ValueError('No similarity channel is available — enable expression, annotation, STRING or GO')
     total = sum(w for _, w in present.values())
     S = None
     for mat, w in present.values():

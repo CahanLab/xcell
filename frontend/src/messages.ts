@@ -22,6 +22,17 @@ export const MESSAGES = {
   // Generic
   errorPrefix: 'Error:',
 
+  // Named cell subsets (Cells panel mask bar, Scanpy modal)
+  cellSubsets: {
+    nameNeeded: 'Name the subset before running — the name is what keeps this result apart from the dataset\'s own.',
+    nameUnusable: 'That name has no letters or digits, or is reserved (unassigned, nan).',
+    saveHint: 'Save the mask as a named subset so it survives a reload and sub-clustering writes to its own keys.',
+    scopedExplain: (name: string) =>
+      `Runs on subset "${name}" only. Results go to keys suffixed with its name; the dataset's own results are left as they are.`,
+    maskedCellsHidden: (name: string) =>
+      `Cells outside "${name}" have no coordinates here. Switch the embedding to see all cells.`,
+  },
+
   // Analysis cancellation
   analysisCancelled: 'Analysis cancelled',
   analysisCancelledDetail: 'The operation was stopped. No changes were made.',

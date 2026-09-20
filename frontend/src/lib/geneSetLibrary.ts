@@ -35,6 +35,8 @@ export interface LibrarySet {
   url: string
   n_genes: number
   genes: string[]
+  /** A directional set (CollecTRI regulon): its repressed targets. */
+  genes_down?: string[]
 }
 
 /** One row of `POST /api/gene_sets/overlap`. */
@@ -55,13 +57,15 @@ export interface SetRow extends LibrarySet {
   overlap?: OverlapEntry
 }
 
-/** Browsed species first, then libraries already on disk, then by name. */
+/** Browsed species first, then libraries already on disk, then by name —
+ * numerically where names carry numbers, so Theiler stages read TS1, TS2, …
+ * TS10 rather than TS1, TS10, TS11. */
 export function sortLibraries(entries: LibraryEntry[], species: Species): LibraryEntry[] {
   return [...entries].sort(
     (a, b) =>
       Number(a.species !== species) - Number(b.species !== species) ||
       Number(!a.cached) - Number(!b.cached) ||
-      a.name.localeCompare(b.name),
+      a.name.localeCompare(b.name, undefined, { numeric: true }),
   )
 }
 

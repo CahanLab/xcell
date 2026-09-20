@@ -13,7 +13,16 @@ import {
   mergeObsLabels,
   transferObsLabels,
   refreshSchema,
+  useCellSubsets,
+  createCellSubset,
+  fetchCellSubsetIndices,
+  deleteCellSubset,
+  refreshCellSubsets,
 } from '../hooks/useData'
+import {
+  suggestSubsetName, isUsableSubsetName, sanitizeSubsetName, indicesFromMask, derivedBadges,
+} from '../lib/cellSubsets'
+import { MESSAGES } from '../messages'
 import { OverflowMenu } from './GenePanel'
 import MergeLabelsModal from './MergeLabelsModal'
 import TransferLabelsModal from './TransferLabelsModal'
@@ -432,6 +441,46 @@ const styles = {
     border: '1px solid #1a1a2e',
     borderRadius: '3px',
     cursor: 'pointer',
+  },
+  subsetRow: {
+    padding: '4px 16px',
+    borderBottom: '1px solid #0f1625',
+  },
+  subsetName: {
+    fontSize: '12px',
+    fontWeight: 600,
+  },
+  subsetCount: {
+    fontSize: '10px',
+    color: '#888',
+  },
+  subsetActiveButton: {
+    backgroundColor: '#4ecdc4',
+    color: '#0f1625',
+    border: '1px solid #4ecdc4',
+    cursor: 'default',
+  },
+  subsetBadges: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: '4px',
+    marginTop: '3px',
+  },
+  subsetBadge: {
+    fontSize: '9px',
+    color: '#4ecdc4',
+    backgroundColor: 'rgba(78,205,196,0.12)',
+    border: '1px solid rgba(78,205,196,0.3)',
+    borderRadius: '3px',
+    padding: '0 4px',
+  },
+  subsetConfirm: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    marginTop: '4px',
+    fontSize: '10px',
+    color: '#e94560',
   },
 }
 
@@ -880,6 +929,9 @@ export default function CellPanel() {
     removeSelectionFromActive,
     resetActiveCells,
     setShowMaskedCells,
+    activeSubsetName,
+    activateCellSubset,
+    setActiveSubsetName,
     setDownsampleModalOpen,
     setSchema,
     setEmbedding,
@@ -893,6 +945,7 @@ export default function CellPanel() {
     setCenterPanelView,
   } = useStore()
   const { summaries, isLoading, error, refresh } = useObsSummaries()
+  const cellSubsets = useCellSubsets()
   const { selectColorColumn, addCellSetHighlight, colorByGene, colorByGenes } = useDataActions()
   const { runComparison, isDiffExpLoading } = useDiffExp()
   const highlightLayers = useStore((s) => s.highlightLayers)
@@ -902,6 +955,79 @@ export default function CellPanel() {
   // State for creating new annotation
   const [newAnnotationName, setNewAnnotationName] = useState('')
   const [isCreating, setIsCreating] = useState(false)
+
+  // Named cell subsets: saving the mask, and the per-row delete confirmation.
+  const [subsetDraft, setSubsetDraft] = useState('')
+  const [subsetBusy, setSubsetBusy] = useState(false)
+  const [subsetError, setSubsetError] = useState<string | null>(null)
+  const [subsetDeleteConfirm, setSubsetDeleteConfirm] = useState<string | null>(null)
+  useEffect(() => {
+    // Offer a free name whenever the saved list changes and the draft is not
+    // something the user typed and could still use.
+    setSubsetDraft((d) => {
+      const taken = cellSubsets.map((s) => s.name)
+      if (d && isUsableSubsetName(d) && !taken.includes(sanitizeSubsetName(d))) return d
+      return suggestSubsetName(taken)
+    })
+  }, [cellSubsets])
+
+  const handleSaveSubset = useCallback(async () => {
+    if (!activeCellMask) return
+    if (!isUsableSubsetName(subsetDraft)) {
+      setSubsetError(MESSAGES.cellSubsets.nameUnusable)
+      return
+    }
+    setSubsetBusy(true)
+    setSubsetError(null)
+    try {
+      const created = await createCellSubset(sanitizeSubsetName(subsetDraft), indicesFromMask(activeCellMask))
+      setActiveSubsetName(created.name)
+      await refreshCellSubsets()
+      // A subset is a new .obs column, so both channels.
+      await refreshSchema()
+      refresh()
+    } catch (err) {
+      setSubsetError((err as Error).message)
+    } finally {
+      setSubsetBusy(false)
+    }
+  }, [activeCellMask, subsetDraft, setActiveSubsetName, refresh])
+
+  const handleActivateSubset = useCallback(async (name: string) => {
+    setSubsetBusy(true)
+    setSubsetError(null)
+    try {
+      const indices = await fetchCellSubsetIndices(name)
+      activateCellSubset(name, indices)
+      clearSelection()
+    } catch (err) {
+      setSubsetError((err as Error).message)
+    } finally {
+      setSubsetBusy(false)
+    }
+  }, [activateCellSubset, clearSelection])
+
+  const handleDeleteSubset = useCallback(async (name: string, dropDerived: boolean) => {
+    setSubsetBusy(true)
+    setSubsetError(null)
+    try {
+      await deleteCellSubset(name, dropDerived)
+      if (activeSubsetName === name) setActiveSubsetName(null)
+      setSubsetDeleteConfirm(null)
+      await refreshCellSubsets()
+      await refreshSchema()
+      refresh()
+      if (dropDerived) {
+        // Derived columns and embeddings may be what is on screen.
+        setColorBy(null)
+        setEmbedding(null)
+      }
+    } catch (err) {
+      setSubsetError((err as Error).message)
+    } finally {
+      setSubsetBusy(false)
+    }
+  }, [activeSubsetName, setActiveSubsetName, refresh, setColorBy, setEmbedding])
 
   // State for labeling cells
   const [selectedAnnotation, setSelectedAnnotation] = useState<string | null>(null)
@@ -1432,18 +1558,115 @@ export default function CellPanel() {
         {visibleSummaries.length === 0 && hiddenSummaries.length === 0 && (
           <div style={styles.emptyState}>No cell metadata available</div>
         )}
+
+        {/* Saved cell subsets — persisted masks, and what has been computed on them */}
+        {cellSubsets.length > 0 && (
+          <div style={styles.section}>
+            <div style={{ ...styles.sectionHeader, cursor: 'default' }}>
+              Subsets ({cellSubsets.length})
+            </div>
+            {cellSubsets.map((s) => {
+              const isActive = activeSubsetName === s.name
+              const badges = derivedBadges(s.derived)
+              return (
+                <div key={s.name} style={styles.subsetRow} title={`.obs["${s.obs_key}"]`}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ ...styles.subsetName, color: isActive ? '#4ecdc4' : '#ddd' }}>{s.name}</span>
+                    <span style={styles.subsetCount}>
+                      {s.n_cells.toLocaleString()} of {s.n_total.toLocaleString()}
+                    </span>
+                    <div style={{ flex: 1 }} />
+                    <button
+                      style={{ ...styles.maskActionButton, ...(isActive ? styles.subsetActiveButton : {}) }}
+                      disabled={subsetBusy || isActive}
+                      onClick={() => handleActivateSubset(s.name)}
+                      title={isActive ? 'This subset is the current mask' : 'Make this subset the cell mask'}
+                    >
+                      {isActive ? 'Active' : 'Activate'}
+                    </button>
+                    <button
+                      style={{ ...styles.maskActionButton, padding: '4px 6px' }}
+                      disabled={subsetBusy}
+                      onClick={() => setSubsetDeleteConfirm(subsetDeleteConfirm === s.name ? null : s.name)}
+                      title="Delete this subset"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  {badges.length > 0 && (
+                    <div style={styles.subsetBadges}>
+                      {badges.map((b) => <span key={b} style={styles.subsetBadge}>{b}</span>)}
+                    </div>
+                  )}
+                  {subsetDeleteConfirm === s.name && (
+                    <div style={styles.subsetConfirm}>
+                      <span>Delete “{s.name}”?</span>
+                      <button style={styles.maskActionButton} disabled={subsetBusy}
+                              onClick={() => handleDeleteSubset(s.name, false)}
+                              title="Remove the subset; keep anything computed on it">
+                        Subset only
+                      </button>
+                      {badges.length > 0 && (
+                        <button style={{ ...styles.maskActionButton, color: '#e94560', border: '1px solid #e94560' }}
+                                disabled={subsetBusy}
+                                onClick={() => handleDeleteSubset(s.name, true)}
+                                title="Also remove its HVG column, PCA, graph, UMAP and Leiden columns">
+                          + results
+                        </button>
+                      )}
+                      <button style={styles.maskActionButton} onClick={() => setSubsetDeleteConfirm(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {subsetError && !activeCellMask && (
+              <div style={{ fontSize: '10px', color: '#e94560', padding: '2px 16px' }}>{subsetError}</div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Cell Mask Status Bar */}
       {activeCellMask && (
         <div style={styles.maskBar}>
           <div style={styles.maskTitle}>
-            <span>Cell Mask</span>
+            <span>Cell Mask{activeSubsetName ? ` · subset ${activeSubsetName}` : ''}</span>
           </div>
           <div style={styles.maskInfo}>
             {activeCellMask.filter(Boolean).length.toLocaleString()} of{' '}
             {schema?.n_cells.toLocaleString()} cells active
           </div>
+          {!activeSubsetName && (
+            <div style={{ marginBottom: '8px' }} title={MESSAGES.cellSubsets.saveHint}>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  style={{ ...styles.input, flex: 1, fontSize: '11px', padding: '3px 6px' }}
+                  value={subsetDraft}
+                  placeholder="subset name"
+                  onChange={(e) => { setSubsetDraft(e.target.value); setSubsetError(null) }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSaveSubset()}
+                />
+                <button
+                  style={{ ...styles.smallButton, ...styles.primaryButton }}
+                  disabled={subsetBusy || !isUsableSubsetName(subsetDraft)}
+                  onClick={handleSaveSubset}
+                  title={MESSAGES.cellSubsets.saveHint}
+                >
+                  {subsetBusy ? '...' : 'Save as subset'}
+                </button>
+              </div>
+              <div style={{ fontSize: '10px', color: '#888', marginTop: '4px' }}>
+                Saved subsets survive a reload; HVG / PCA / Neighbors / UMAP / Leiden on one write to its own keys.
+              </div>
+              {subsetError && (
+                <div style={{ fontSize: '10px', color: '#e94560', marginTop: '4px' }}>{subsetError}</div>
+              )}
+            </div>
+          )}
           <div style={styles.toggleRow}>
             <div
               style={{

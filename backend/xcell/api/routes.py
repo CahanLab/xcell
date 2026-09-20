@@ -706,6 +706,27 @@ def get_obs_crosstab(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class CrosstabRequest(BaseModel):
+    a: str
+    b: str
+    #: Count only these cells — the active cell mask, which is too long for a
+    #: query string on a real dataset.
+    active_cell_indices: list[int] | None = None
+
+
+@router.post("/obs/crosstab")
+def post_obs_crosstab(request: CrosstabRequest, dataset: str | None = Query(None)):
+    """The GET crosstab, with the active cell mask in the body."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.crosstab(request.a, request.b,
+                                active_cell_indices=request.active_cell_indices)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/obs/{column}")
 def get_obs_column(column: str, dataset: str | None = Query(None)):
     """Get cell metadata column values.
@@ -2145,6 +2166,12 @@ class HighlyVariableGenesRequest(BaseModel):
     add_union: bool = False
     add_intersection: bool = False
     min_cells_per_group: int = 10
+    #: A named cell subset (see /cell_subsets): compute on its cells only and
+    #: write to highly_variable__<name>, leaving the pooled column alone.
+    cell_subset: str | None = None
+    #: A named cell subset (see /cell_subsets): compute on its cells only and
+    #: write to highly_variable__<name>, leaving the pooled column alone.
+    cell_subset: str | None = None
 
 
 class GeneSubsetSpec(BaseModel):
@@ -2163,6 +2190,8 @@ class PcaRequest(BaseModel):
     # - GeneSubsetSpec: combine multiple columns with AND/OR
     gene_subset: str | list[str] | GeneSubsetSpec | None = None
     active_cell_indices: list[int] | None = None
+    #: A named cell subset: the embedding goes to X_pca_<name>; X_pca is untouched.
+    cell_subset: str | None = None
 
 
 class NeighborsRequest(BaseModel):
@@ -2171,6 +2200,8 @@ class NeighborsRequest(BaseModel):
     metric: str = 'euclidean'
     use_rep: str | None = None
     active_cell_indices: list[int] | None = None
+    #: A named cell subset: the graph goes to <name>_connectivities.
+    cell_subset: str | None = None
 
 
 class CombineNeighborsSource(BaseModel):
@@ -2195,6 +2226,8 @@ class UmapRequest(BaseModel):
     graph_key: str | None = None
     key_added: str | None = None
     active_cell_indices: list[int] | None = None
+    #: A named cell subset: the embedding goes to X_umap_<name>.
+    cell_subset: str | None = None
 
 
 class LeidenRequest(BaseModel):
@@ -2202,6 +2235,8 @@ class LeidenRequest(BaseModel):
     key_added: str = 'leiden'
     graph_key: str | None = None
     active_cell_indices: list[int] | None = None
+    #: A named cell subset: labels go to leiden_<name>, 'unassigned' outside.
+    cell_subset: str | None = None
 
 
 @router.get("/scanpy/history")
@@ -2216,17 +2251,76 @@ def get_action_history(dataset: str | None = Query(None)):
 
 
 @router.get("/scanpy/prerequisites/{action}")
-def check_prerequisites(action: str, dataset: str | None = Query(None)):
+def check_prerequisites(
+    action: str,
+    cell_subset: str | None = Query(None),
+    dataset: str | None = Query(None),
+):
     """Check if prerequisites are met for a scanpy action.
 
     Args:
         action: The scanpy action to check
+        cell_subset: A named subset whose own keys also satisfy the check
 
     Returns:
         Dict with satisfied (bool) and missing prerequisites
     """
     adaptor = get_adaptor(dataset)
-    return adaptor.check_prerequisites(action)
+    return adaptor.check_prerequisites(action, cell_subset=cell_subset or None)
+
+
+class CellSubsetRequest(BaseModel):
+    name: str
+    cell_indices: list[int]
+    description: str | None = None
+    overwrite: bool = False
+
+
+@router.get("/cell_subsets")
+def list_cell_subsets(dataset: str | None = Query(None)):
+    """Named cell subsets: the persisted form of the active cell mask."""
+    return {"subsets": get_adaptor(dataset).list_cell_subsets()}
+
+
+@router.post("/cell_subsets")
+def create_cell_subset(request: CellSubsetRequest, dataset: str | None = Query(None)):
+    """Persist a cell selection as obs['subset_<name>'] plus a registry entry."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.create_cell_subset(
+            request.name, request.cell_indices,
+            description=request.description, overwrite=request.overwrite,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/cell_subsets/{name}/indices")
+def get_cell_subset_indices(name: str, dataset: str | None = Query(None)):
+    """The subset's cell indices, for re-activating it as the mask."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return {"name": name, "indices": adaptor.get_cell_subset_indices(name)}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/cell_subsets/{name}")
+def delete_cell_subset(
+    name: str,
+    drop_derived: bool = Query(False),
+    dataset: str | None = Query(None),
+):
+    """Remove a subset; with drop_derived also everything computed on it."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.delete_cell_subset(name, drop_derived=drop_derived)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/scanpy/exclude_genes")
@@ -2364,7 +2458,10 @@ def run_highly_variable_genes(request: HighlyVariableGenesRequest, dataset: str 
             add_union=request.add_union,
             add_intersection=request.add_intersection,
             min_cells_per_group=request.min_cells_per_group,
+            cell_subset=request.cell_subset,
         )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -2655,7 +2752,10 @@ def run_pca(request: PcaRequest, dataset: str | None = Query(None)):
             svd_solver=request.svd_solver,
             gene_subset=gene_subset,
             active_cell_indices=request.active_cell_indices,
+            cell_subset=request.cell_subset,
         )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -2677,7 +2777,10 @@ def run_neighbors(request: NeighborsRequest, dataset: str | None = Query(None)):
             metric=request.metric,
             use_rep=request.use_rep,
             active_cell_indices=request.active_cell_indices,
+            cell_subset=request.cell_subset,
         )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -2775,7 +2878,10 @@ def run_umap(request: UmapRequest, dataset: str | None = Query(None)):
             graph_key=request.graph_key,
             key_added=request.key_added,
             active_cell_indices=request.active_cell_indices,
+            cell_subset=request.cell_subset,
         )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -2798,7 +2904,10 @@ def run_leiden(request: LeidenRequest, dataset: str | None = Query(None)):
             key_added=request.key_added,
             graph_key=request.graph_key,
             active_cell_indices=request.active_cell_indices,
+            cell_subset=request.cell_subset,
         )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -3183,6 +3292,10 @@ class GeneMapRequest(BaseModel):
     string_weight: float = 0.0
     string_species: str | None = None
     string_required_score: int = 400
+    #: GO semantic similarity (SimGIC over go-basic.obo + the species GAF, fetched via the 'go' source).
+    go_weight: float = 0.0
+    go_aspect: str = 'bp'
+    go_species: str | None = None
     n_neighbors: int = 15
     resolution: float = 1.0
     embedding: str = 'umap'
@@ -3211,6 +3324,7 @@ def run_gene_map(request: GeneMapRequest, dataset: str | None = Query(None)):
             annotation_weight=request.annotation_weight, annotation_libraries=request.annotation_libraries,
             string_weight=request.string_weight, string_species=request.string_species,
             string_required_score=request.string_required_score,
+            go_weight=request.go_weight, go_aspect=request.go_aspect, go_species=request.go_species,
             n_neighbors=request.n_neighbors, resolution=request.resolution, embedding=request.embedding,
             layer=request.layer, cell_indices=cell_indices, seed=request.seed, overwrite=request.overwrite)
     except HTTPException:

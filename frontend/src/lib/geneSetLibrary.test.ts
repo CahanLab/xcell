@@ -19,6 +19,10 @@ describe('sortLibraries', () => {
     ], 'mouse')
     expect(out.map((l) => l.id)).toEqual(['gamma', 'beta', 'alpha', 'zeta'])
   })
+  it('orders numbered names numerically', () => {
+    const mk = (name: string): LibraryEntry => ({ source: 'mgi', id: name, name, description: '', species: 'mouse', n_sets: null, version: null, url: '', cached: false, fetched_at: null })
+    expect(sortLibraries([mk('TS10 · E7'), mk('TS2 · E1'), mk('TS1 · E0')], 'mouse').map((e) => e.name)).toEqual(['TS1 · E0', 'TS2 · E1', 'TS10 · E7'])
+  })
 })
 
 describe('filterLibraries', () => {

@@ -32,6 +32,7 @@ import DefineSectionsPanel from './components/DefineSectionsPanel'
 import TerritoryPanel from './components/TerritoryPanel'
 import AssignTerritoriesModal from './components/AssignTerritoriesModal'
 import ShapeManager from './components/ShapeManager'
+import CoverageNotice from './components/CoverageNotice'
 import HeatmapView from './components/HeatmapView'
 import BarplotView from './components/BarplotView'
 import FigureBuilder from './components/FigureBuilder'
@@ -638,6 +639,7 @@ export default function App() {
   const secondEmbedding = useStore((s) => s.secondEmbedding)
   const setSecondEmbedding = useStore((s) => s.setSecondEmbedding)
   const secondEmbeddingData = useSecondEmbedding()
+  const cellSubsets = useStore((s) => s.cellSubsets)
   const umPerUnitForSecond = (): number | null => {
     const ds = datasets[activeSlot]
     const sc = ds?.spatialScale
@@ -1895,6 +1897,12 @@ export default function App() {
                       <>
                         <div style={{ display: 'flex', width: '100%', height: '100%' }}>
                           <div style={{ flex: 1, position: 'relative', minWidth: 0, borderRight: splitView && secondEmbeddingData ? '1px solid #0f3460' : undefined }}>
+                            <CoverageNotice
+                              embedding={embedding}
+                              embeddings={schema?.embeddings}
+                              subsets={cellSubsets}
+                              onSelectEmbedding={selectEmbedding}
+                            />
                             <EmbeddingPlot
                               umPerUnit={umPerUnitFor(activeSlot)}
                               embedding={embedding}
@@ -1930,6 +1938,12 @@ export default function App() {
                                 onLineDrawn={() => {}}
                                 onTransformEmbedding={() => {}}
                                 onTransformEmbeddingSubset={() => {}}
+                              />
+                              <CoverageNotice
+                                embedding={secondEmbeddingData}
+                                embeddings={schema?.embeddings}
+                                subsets={cellSubsets}
+                                onSelectEmbedding={(name) => setSecondEmbedding(name)}
                               />
                               <div style={{
                                 position: 'absolute', bottom: 12, left: 12, zIndex: 12,

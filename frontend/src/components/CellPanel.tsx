@@ -25,6 +25,7 @@ import {
   suggestSubsetName, isUsableSubsetName, sanitizeSubsetName, indicesFromMask,
 } from '../lib/cellSubsets'
 import { subsetChips, dropSummary, refineTarget, type SubsetChip } from '../lib/subsetTree'
+import { cellsWithoutCoordinates, supersetEmbedding } from '../lib/embeddingCoverage'
 import { MESSAGES } from '../messages'
 import { OverflowMenu } from './GenePanel'
 import MergeLabelsModal from './MergeLabelsModal'
@@ -1111,6 +1112,17 @@ export default function CellPanel() {
     }
   }, [activeCellMask, subsetDraft, setActiveSubsetName, refresh, selectedEmbeddingName])
 
+  // Reset Mask means "show me everything again". On a subset's own embedding
+  // the other cells have no coordinates, so clearing the mask alone changes
+  // nothing on screen — that was the "I can never get the masked cells back"
+  // report. Go back to the embedding the subset was drawn on.
+  const handleResetMask = useCallback(() => {
+    resetActiveCells()
+    if (!embedding || !schema || cellsWithoutCoordinates(embedding.coordinates) === 0) return
+    const target = supersetEmbedding(embedding.name, schema.embeddings, cellSubsets)
+    if (target) selectEmbedding(target)
+  }, [resetActiveCells, embedding, schema, cellSubsets, selectEmbedding])
+
   const handleActivateSubset = useCallback(async (name: string) => {
     setSubsetBusy(true)
     setSubsetError(null)
@@ -1876,7 +1888,8 @@ export default function CellPanel() {
           <div style={{ ...styles.maskButtons, marginTop: '8px' }}>
             <button
               style={{ ...styles.smallButton, ...styles.dangerButton, flex: 1 }}
-              onClick={resetActiveCells}
+              onClick={handleResetMask}
+              title="Clear the mask; if this embedding cannot show every cell, go back to one that can"
             >
               Reset Mask
             </button>

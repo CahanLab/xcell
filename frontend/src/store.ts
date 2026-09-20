@@ -2,7 +2,8 @@ import { create } from 'zustand'
 import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/shapeTransform'
 import { sortGeneSetInCategory } from './lib/geneSetOps'
 import { sectionForCut } from './lib/territoryGeometry'
-import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
+import { pickSecondEmbedding, pickPreferredEmbedding } from './lib/pickSecondEmbedding'
+export { pickPreferredEmbedding }
 import { loadedSlots, slotAfterUnload, moveItem, paneGrid, activeSlotFrom } from './lib/datasetSlots'
 import type { Workspace } from './lib/workspaceLayout'
 import type { CellSubsetInfo } from './lib/cellSubsets'
@@ -738,18 +739,6 @@ export function createDefaultDatasetState(
     displayLayer: 'X',
     spatialScale: null,
   }
-}
-
-/** The embedding to show when none is chosen or the chosen one is gone:
- * spatial first, then UMAP, then PCA, then whatever comes first. */
-export function pickPreferredEmbedding(names: readonly string[]): string | null {
-  if (names.length === 0) return null
-  const lower = names.map((e) => e.toLowerCase())
-  for (const pref of ['spatial', 'umap', 'pca']) {
-    const idx = lower.findIndex((l) => l.includes(pref))
-    if (idx >= 0) return names[idx]
-  }
-  return names[0]
 }
 
 /** Ensure a slot's split-view pane names an embedding that slot actually has.

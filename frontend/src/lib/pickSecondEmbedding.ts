@@ -15,3 +15,15 @@ export function pickSecondEmbedding(
   }
   return others[0]
 }
+
+/** The embedding to show when none is chosen or the chosen one is gone:
+ * spatial first, then UMAP, then PCA, then whatever comes first. */
+export function pickPreferredEmbedding(names: readonly string[]): string | null {
+  if (names.length === 0) return null
+  const lower = names.map((e) => e.toLowerCase())
+  for (const pref of ['spatial', 'umap', 'pca']) {
+    const idx = lower.findIndex((l) => l.includes(pref))
+    if (idx >= 0) return names[idx]
+  }
+  return names[0]
+}

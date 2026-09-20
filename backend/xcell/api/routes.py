@@ -3292,6 +3292,10 @@ class GeneMapRequest(BaseModel):
     string_weight: float = 0.0
     string_species: str | None = None
     string_required_score: int = 400
+    #: GO semantic similarity (SimGIC over go-basic.obo + the species GAF, fetched via the 'go' source).
+    go_weight: float = 0.0
+    go_aspect: str = 'bp'
+    go_species: str | None = None
     n_neighbors: int = 15
     resolution: float = 1.0
     embedding: str = 'umap'
@@ -3320,6 +3324,7 @@ def run_gene_map(request: GeneMapRequest, dataset: str | None = Query(None)):
             annotation_weight=request.annotation_weight, annotation_libraries=request.annotation_libraries,
             string_weight=request.string_weight, string_species=request.string_species,
             string_required_score=request.string_required_score,
+            go_weight=request.go_weight, go_aspect=request.go_aspect, go_species=request.go_species,
             n_neighbors=request.n_neighbors, resolution=request.resolution, embedding=request.embedding,
             layer=request.layer, cell_indices=cell_indices, seed=request.seed, overwrite=request.overwrite)
     except HTTPException:

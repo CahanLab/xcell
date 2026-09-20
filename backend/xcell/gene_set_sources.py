@@ -14,6 +14,16 @@ Three sources behind one interface:
 * **STRING** — not a library but a query service: interaction partners of
   seed genes, or the edges among a gene list. Used to expand a set and, by
   the gene map, as a similarity channel.
+* **OmniPath** — CollecTRI regulons (one signed set per transcription
+  factor: activated targets up, repressed targets down) and curated
+  ligand–receptor pairs (the receptors of each ligand, the ligands of each
+  receptor), for mouse and human from the OmniPath web service.
+* **MGI GXD** — one library per Theiler stage: the genes the Gene Expression
+  Database has seen detected in each anatomical structure at that stage
+  (in situ, blot and RNA-seq assays). Mouse only.
+* **GO** — the ontology and a species' GAF from the GO Consortium, kept as
+  raw files for :mod:`go_semantic` (the gene map's GO channel) and also
+  offered as sets, one per term with ancestors included.
 
 A fetched library is written as one JSON file under :func:`cache_dir`
 (``$XDG_CACHE_HOME/xcell/gene_set_sources/<source>/<species>/<id>.json``,
@@ -78,6 +88,31 @@ def fetch_json(url: str, *, timeout: float = TIMEOUT) -> Any:
         return json.loads(text)
     except ValueError as e:
         raise ValueError(f"{url} did not return JSON: {e}") from e
+
+
+def fetch_bytes(url: str, *, timeout: float = TIMEOUT) -> bytes:
+    """GET ``url`` raw — for gzipped files that must land on disk as they are."""
+    import urllib.request  # noqa: PLC0415
+
+    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except Exception as e:
+        raise ValueError(f"Could not fetch {url}: {e}") from e
+
+
+def parse_tsv(text: str) -> list[dict[str, str]]:
+    """Header-keyed rows of a tab-separated table; a trailing tab adds no column."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return []
+    header = [h.strip() for h in lines[0].rstrip('\t').split('\t')]
+    rows: list[dict[str, str]] = []
+    for ln in lines[1:]:
+        cells = ln.split('\t')
+        rows.append({h: (cells[i].strip() if i < len(cells) else '') for i, h in enumerate(header)})
+    return rows
 
 
 # --- cache location ------------------------------------------------------------
@@ -450,8 +485,316 @@ class STRINGSource(Source):
         return {'edges': edges, 'species': species, 'n_genes': len(genes)}
 
 
+class OmniPathSource(Source):
+    id = 'omnipath'
+    name = 'OmniPath'
+    description = 'CollecTRI transcription-factor regulons (signed) and curated ligand–receptor pairs'
+    url = 'https://omnipathdb.org/'
+
+    BASE = 'https://omnipathdb.org/interactions'
+    #: Ligand–receptor resources OmniPath aggregates; the pairs are split
+    #: across its ``omnipath`` and ``ligrecextra`` datasets.
+    LR_RESOURCES = 'CellPhoneDB,CellChatDB,CellTalkDB,ICELLNET,connectomeDB2020,Cellinker,Baccin2019'
+    LIBRARIES = [
+        ('collectri', 'CollecTRI regulons',
+         'One set per transcription factor: its activated targets as the set, repressed targets as '
+         'the down genes (a directional set, so UCell scores TF activity). Targets of unknown sign '
+         'count as activated, CollecTRI\'s own convention.'),
+        ('ligrec', 'Ligand–receptor pairs',
+         'The receptors of each ligand and the ligands of each receptor, from CellPhoneDB, CellChatDB, '
+         'CellTalkDB, ICELLNET, connectomeDB2020, Cellinker and Baccin2019 as curated by OmniPath. '
+         'Complexes contribute every subunit.'),
+    ]
+
+    def catalogue(self, species: str) -> list[dict[str, Any]]:
+        check_species(species)
+        return [_entry(self.id, lid, name, desc, species, url=self.url) for lid, name, desc in self.LIBRARIES]
+
+    def validate_library(self, library_id: str, species: str) -> dict[str, Any]:
+        check_species(species)
+        known = {lid: (name, desc) for lid, name, desc in self.LIBRARIES}
+        if library_id not in known:
+            raise ValueError(f"'{library_id}' is not an OmniPath library; expected one of {', '.join(known)}")
+        name, desc = known[library_id]
+        return _entry(self.id, library_id, name, desc, species, url=self.url)
+
+    def collectri_url(self, species: str) -> str:
+        return (f'{self.BASE}?datasets=collectri&organisms={SPECIES_TAXON[species]}'
+                f'&genesymbols=yes&fields=sources,references,curation_effort')
+
+    def ligrec_url(self, species: str) -> str:
+        return (f'{self.BASE}?datasets=omnipath,ligrecextra&organisms={SPECIES_TAXON[species]}'
+                f'&genesymbols=yes&resources={self.LR_RESOURCES}'
+                f'&fields=sources,references,curation_effort,entity_type')
+
+    @staticmethod
+    def _true(v: str) -> bool:
+        return str(v).strip().lower() in ('true', '1', 'yes')
+
+    #: UniProt accession shapes (P12345, Q9WUP1, A0A8Q0P8A2). OmniPath prints
+    #: the accession in the gene-symbol column when an entry has no symbol —
+    #: unreviewed TrEMBL records, mostly — and no dataset spells a gene that way.
+    _ACCESSION = re.compile(r'^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$')
+
+    @classmethod
+    def _is_symbol(cls, name: str) -> bool:
+        return bool(name) and not cls._ACCESSION.match(name)
+
+    @classmethod
+    def _members(cls, symbol: str) -> list[str]:
+        """A complex is written ``ITGA10_ITGB1``; a plain gene has no underscore
+        (mouse symbols never carry one, human symbols only in rare readthroughs
+        and those are not receptors). Accessions standing in for symbols are dropped."""
+        return [m for m in str(symbol).split('_') if cls._is_symbol(m)]
+
+    @classmethod
+    def parse_collectri(cls, text: str) -> list[dict[str, Any]]:
+        regulons: dict[str, dict[str, list[str]]] = {}
+        refs: dict[str, set[str]] = {}
+        for row in parse_tsv(text):
+            tf, target = row.get('source_genesymbol', ''), row.get('target_genesymbol', '')
+            if not cls._is_symbol(tf) or not cls._is_symbol(target):
+                continue
+            r = regulons.setdefault(tf, {'up': [], 'down': []})
+            side = 'down' if cls._true(row.get('consensus_inhibition', '')) and not cls._true(row.get('consensus_stimulation', '')) else 'up'
+            if target not in r['up'] and target not in r['down']:
+                r[side].append(target)
+            for ref in str(row.get('references', '')).split(';'):
+                if ref.strip():
+                    refs.setdefault(tf, set()).add(ref.strip())
+        sets: list[dict[str, Any]] = []
+        for tf in sorted(regulons, key=str.lower):
+            up, down = regulons[tf]['up'], regulons[tf]['down']
+            n_ref = len(refs.get(tf, ()))
+            sets.append({
+                'name': f'{tf} regulon',
+                'description': f'{len(up) + len(down)} targets: {len(up)} activated or unknown, {len(down)} repressed'
+                               + (f' · {n_ref} references' if n_ref else '') + ' · CollecTRI',
+                'genes': up,
+                'genes_down': down,
+                'url': f'https://omnipathdb.org/interactions?datasets=collectri&genesymbols=yes&sources={quote(tf)}',
+            })
+        return sets
+
+    @classmethod
+    def parse_ligrec(cls, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        by_ligand: dict[str, dict[str, Any]] = {}
+        by_receptor: dict[str, dict[str, Any]] = {}
+        pairs: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in parse_tsv(text):
+            lig, rec = row.get('source_genesymbol', ''), row.get('target_genesymbol', '')
+            if not cls._members(lig) or not cls._members(rec) or (lig, rec) in seen:
+                continue
+            seen.add((lig, rec))
+            sources = [x for x in str(row.get('sources', '')).split(';') if x]
+            pairs.append({'ligand': lig, 'receptor': rec, 'sources': sources,
+                          'n_references': len([x for x in str(row.get('references', '')).split(';') if x])})
+            L = by_ligand.setdefault(lig, {'genes': [], 'partners': [], 'sources': set()})
+            for m in cls._members(rec):
+                if m not in L['genes']:
+                    L['genes'].append(m)
+            L['partners'].append(rec)
+            L['sources'].update(sources)
+            R = by_receptor.setdefault(rec, {'genes': [], 'partners': [], 'sources': set()})
+            for m in cls._members(lig):
+                if m not in R['genes']:
+                    R['genes'].append(m)
+            R['partners'].append(lig)
+            R['sources'].update(sources)
+
+        def describe(kind: str, entry: dict[str, Any]) -> str:
+            n = len(entry['partners'])
+            src = ', '.join(sorted(entry['sources']))
+            return f"{n} {kind}{'' if n == 1 else 's'}" + (f' · {src}' if src else '') + ' · OmniPath'
+
+        sets: list[dict[str, Any]] = []
+        for lig in sorted(by_ligand, key=str.lower):
+            e = by_ligand[lig]
+            sets.append({'name': f'{lig} receptors', 'description': describe('receptor', e),
+                         'genes': e['genes'], 'url': f'https://omnipathdb.org/interactions?datasets=omnipath,ligrecextra&genesymbols=yes&sources={quote(lig)}'})
+        for rec in sorted(by_receptor, key=str.lower):
+            e = by_receptor[rec]
+            sets.append({'name': f'{rec} ligands', 'description': describe('ligand', e),
+                         'genes': e['genes'], 'url': f'https://omnipathdb.org/interactions?datasets=omnipath,ligrecextra&genesymbols=yes&targets={quote(rec)}'})
+        return sets, pairs
+
+    def fetch(self, library_id: str, species: str, report: Report) -> dict[str, Any]:
+        entry = self.validate_library(library_id, species)
+        pairs: list[dict[str, Any]] = []
+        if library_id == 'collectri':
+            report(0.05, f'Downloading CollecTRI ({species})…')
+            sets = self.parse_collectri(fetch_text(self.collectri_url(species)))
+        else:
+            report(0.05, f'Downloading ligand–receptor pairs ({species})…')
+            sets, pairs = self.parse_ligrec(fetch_text(self.ligrec_url(species)))
+        report(1.0, 'Done')
+        # OmniPath publishes no data version; the fetch date is the version.
+        lib = {
+            'source': self.id, 'id': library_id, 'name': entry['name'], 'description': entry['description'],
+            'species': species, 'version': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
+            'url': self.url, 'sets': sets,
+        }
+        if pairs:
+            lib['pairs'] = pairs
+        return lib
+
+
+class MGISource(Source):
+    id = 'mgi'
+    name = 'MGI GXD'
+    description = 'Mouse Gene Expression Database: genes detected in each anatomical structure, one library per Theiler stage'
+    url = 'https://www.informatics.jax.org/expression.shtml'
+
+    REPORT_URL = 'https://www.informatics.jax.org/gxd/report.txt'
+    SUMMARY_URL = 'https://www.informatics.jax.org/gxd/summary'
+    #: Theiler stage → embryonic day, the label an embryologist reads.
+    STAGES = {
+        1: 'E0–0.9', 2: 'E1', 3: 'E2', 4: 'E3', 5: 'E4', 6: 'E4.5', 7: 'E5', 8: 'E6', 9: 'E6.5',
+        10: 'E7', 11: 'E7.5', 12: 'E8', 13: 'E8.5', 14: 'E9', 15: 'E9.5', 16: 'E10', 17: 'E10.5',
+        18: 'E11', 19: 'E11.5', 20: 'E12', 21: 'E13', 22: 'E14', 23: 'E15', 24: 'E16', 25: 'E17',
+        26: 'E18', 27: 'P0–P3 (newborn)', 28: 'P4 to adult',
+    }
+
+    @staticmethod
+    def _stage_of(library_id: str) -> int:
+        m = re.fullmatch(r'ts(\d{1,2})', str(library_id).lower())
+        if not m or int(m.group(1)) not in MGISource.STAGES:
+            raise ValueError(f"'{library_id}' is not a Theiler stage library; expected ts1 … ts28")
+        return int(m.group(1))
+
+    def _entry_for(self, stage: int, species: str) -> dict[str, Any]:
+        return _entry(
+            self.id, f'ts{stage}', f'TS{stage} · {self.STAGES[stage]}',
+            f'Genes GXD has seen detected in each anatomical structure (EMAPA) at Theiler stage {stage}, '
+            'from in situ, blot, immunohistochemistry and RNA-seq assays; one set per structure.',
+            species, url=f'{self.SUMMARY_URL}?theilerStage={stage}&detected=Yes',
+        )
+
+    def catalogue(self, species: str) -> list[dict[str, Any]]:
+        check_species(species)
+        if species != 'mouse':
+            return []  # the resource is mouse; an empty list, not an error, so the browser just shows nothing
+        return [self._entry_for(st, species) for st in sorted(self.STAGES)]
+
+    def validate_library(self, library_id: str, species: str) -> dict[str, Any]:
+        check_species(species)
+        if species != 'mouse':
+            raise ValueError('MGI GXD is a mouse resource — choose the mouse species')
+        return self._entry_for(self._stage_of(library_id), species)
+
+    def report_url(self, stage: int) -> str:
+        return f'{self.REPORT_URL}?theilerStage={stage}&detected=Yes'
+
+    @classmethod
+    def parse_report(cls, text: str, stage: int) -> list[dict[str, Any]]:
+        """One set per structure from the GXD summary export.
+
+        Only ``Detected == Yes`` rows count (the export can carry No / Ambiguous
+        when asked for them); the assay-type mix is kept in the description so a
+        set built from one RNA-seq experiment reads differently from one built
+        from a hundred in situs.
+        """
+        by_structure: dict[str, dict[str, Any]] = {}
+        for row in parse_tsv(text):
+            if row.get('Detected', '') != 'Yes':
+                continue
+            structure, gene = row.get('Structure', ''), row.get('Gene Symbol', '')
+            if not structure or not gene:
+                continue
+            e = by_structure.setdefault(structure, {'genes': [], 'seen': set(), 'assays': {}})
+            if gene not in e['seen']:
+                e['seen'].add(gene)
+                e['genes'].append(gene)
+            assay = row.get('Assay Type', '') or 'unspecified'
+            e['assays'][assay] = e['assays'].get(assay, 0) + 1
+        sets: list[dict[str, Any]] = []
+        for structure in sorted(by_structure, key=str.lower):
+            e = by_structure[structure]
+            assays = ', '.join(f'{k} {v}' for k, v in sorted(e['assays'].items(), key=lambda kv: -kv[1]))
+            sets.append({
+                'name': structure,
+                'description': f"{len(e['genes'])} genes detected at TS{stage} · assays: {assays}",
+                'genes': sorted(e['genes'], key=str.lower),
+                'url': f'{cls.SUMMARY_URL}?structure={quote(structure)}&theilerStage={stage}&detected=Yes',
+            })
+        return sets
+
+    def fetch(self, library_id: str, species: str, report: Report) -> dict[str, Any]:
+        entry = self.validate_library(library_id, species)
+        stage = self._stage_of(library_id)
+        report(0.05, f'Downloading GXD detected-expression report for TS{stage} (tens of MB)…')
+        text = fetch_text(self.report_url(stage), timeout=600)
+        report(0.8, 'Grouping by structure…')
+        sets = self.parse_report(text, stage)
+        report(1.0, 'Done')
+        return {
+            'source': self.id, 'id': library_id, 'name': entry['name'], 'description': entry['description'],
+            'species': species, 'version': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
+            'url': entry['url'], 'sets': sets,
+        }
+
+
+class GOSource(Source):
+    id = 'go'
+    name = 'Gene Ontology'
+    description = 'The ontology and a species\' annotations (GAF): GO terms as sets, and the files the gene map\'s GO channel needs'
+    url = 'https://geneontology.org/'
+
+    LIBRARY_ID = 'annotations'
+
+    def _entry_for(self, species: str) -> dict[str, Any]:
+        return _entry(
+            self.id, self.LIBRARY_ID, f'GO annotations ({species})',
+            'go-basic.obo plus the species GAF from the GO Consortium. Fetching this is what switches on the '
+            'GO channel of the gene map (IC-weighted semantic similarity). Also browsable as sets: one per term '
+            'with 5–500 genes, ancestors included.',
+            species, url=self.url,
+        )
+
+    def catalogue(self, species: str) -> list[dict[str, Any]]:
+        check_species(species)
+        return [self._entry_for(species)]
+
+    def validate_library(self, library_id: str, species: str) -> dict[str, Any]:
+        check_species(species)
+        if library_id != self.LIBRARY_ID:
+            raise ValueError(f"'{library_id}' is not a GO library; the only one is '{self.LIBRARY_ID}'")
+        return self._entry_for(species)
+
+    def fetch(self, library_id: str, species: str, report: Report) -> dict[str, Any]:
+        from xcell import go_semantic as gos  # noqa: PLC0415
+
+        entry = self.validate_library(library_id, species)
+        gos.go_dir().mkdir(parents=True, exist_ok=True)
+        report(0.02, 'Downloading go-basic.obo (~30 MB)…')
+        obo = fetch_bytes(gos.OBO_URL, timeout=600)
+        tmp = gos.obo_path().with_suffix('.obo.tmp')
+        tmp.write_bytes(obo)
+        tmp.replace(gos.obo_path())
+        report(0.35, f'Downloading the {species} GAF (~15 MB)…')
+        gaf = fetch_bytes(gos.GAF_URLS[species], timeout=600)
+        tmp = gos.gaf_path(species).with_suffix('.gz.tmp')
+        tmp.write_bytes(gaf)
+        tmp.replace(gos.gaf_path(species))
+        report(0.6, 'Reading the ontology…')
+        onto = gos.load_ontology()
+        report(0.75, 'Reading the annotations…')
+        ann = gos.load_gaf(species)
+        report(0.85, 'Building term sets…')
+        sets = gos.term_sets(onto, ann)
+        report(1.0, 'Done')
+        version = ' · '.join(v for v in (onto.get('version') or '', f"GAF {ann.get('date')}" if ann.get('date') else '') if v)
+        return {
+            'source': self.id, 'id': library_id, 'name': entry['name'], 'description': entry['description'],
+            'species': species, 'version': version or None, 'url': self.url, 'sets': sets,
+            'files': {'obo': str(gos.obo_path()), 'gaf': str(gos.gaf_path(species))},
+        }
+
+
 SOURCES: dict[str, Source] = {
-    s.id: s for s in (MSigDBSource(), EnrichrSource(), STRINGSource())
+    s.id: s for s in (MSigDBSource(), EnrichrSource(), STRINGSource(),
+                      OmniPathSource(), MGISource(), GOSource())
 }
 
 
@@ -604,19 +947,22 @@ def search_sets(library: dict[str, Any], *, q: str = '', gene: str = '',
                 rank = 2
             else:
                 continue
-        if gl and gl not in {str(g).lower() for g in s.get('genes', [])}:
+        if gl and gl not in {str(g).lower() for g in list(s.get('genes', [])) + list(s.get('genes_down') or [])}:
             continue
         ranked.append((rank, s))
     ranked.sort(key=lambda t: t[0])
     offset = max(0, int(offset))
     limit = max(1, int(limit))
-    page = [
-        {
+    page = []
+    for _, s in ranked[offset:offset + limit]:
+        down = list(s.get('genes_down') or [])
+        rec = {
             'name': s['name'], 'description': s.get('description') or '', 'url': s.get('url') or '',
-            'n_genes': len(s.get('genes', [])), 'genes': list(s.get('genes', [])),
+            'n_genes': len(s.get('genes', [])) + len(down), 'genes': list(s.get('genes', [])),
         }
-        for _, s in ranked[offset:offset + limit]
-    ]
+        if down:
+            rec['genes_down'] = down
+        page.append(rec)
     return {'total': len(ranked), 'offset': offset, 'limit': limit, 'sets': page}
 
 

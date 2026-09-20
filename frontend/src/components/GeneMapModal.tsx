@@ -1,8 +1,9 @@
 /**
  * GeneMapModal — genes as points.
  *
- * Builds a gene–gene similarity from up to three channels (expression across
- * cells, annotation membership in cached libraries, STRING edges), clusters
+ * Builds a gene–gene similarity from up to four channels (expression across
+ * cells, annotation membership in cached libraries, STRING edges, GO semantic
+ * similarity over the fetched ontology), clusters
  * it into modules, lays the genes out in 2-D, and draws them on a canvas:
  * hover for the gene, lasso to make a gene set. A second view is the
  * clustered similarity heatmap; a third lists the modules for saving.
@@ -94,6 +95,11 @@ export default function GeneMapModal() {
   const [stringWeight, setStringWeight] = useState<number>(() => cfgDefault(['gene_map', 'string_weight'], 0.5))
   const [species, setSpecies] = useState<Species>('mouse')
   const [stringScore, setStringScore] = useState(400)
+  // GO semantic similarity needs the 'go' source's files on disk for the
+  // species; the Gene set library is where they are fetched.
+  const [useGo, setUseGo] = useState(false)
+  const [goWeight, setGoWeight] = useState<number>(() => cfgDefault(['gene_map', 'go_weight'], 1.0))
+  const [goAspect, setGoAspect] = useState<string>(() => cfgDefault(['gene_map', 'go_aspect'], 'bp'))
   const [nNeighbors, setNNeighbors] = useState<number>(() => cfgDefault(['gene_map', 'n_neighbors'], 15))
   const [resolution, setResolution] = useState<number>(() => cfgDefault(['gene_map', 'resolution'], 1.0))
   const [embedding, setEmbedding] = useState<string>(() => cfgDefault(['gene_map', 'embedding'], 'umap'))
@@ -127,6 +133,7 @@ export default function GeneMapModal() {
   }, [source, phase, setSource])
 
   const nGenesHint = source?.genes ? source.genes.length : (subset.selection.geneSets.reduce((n, s) => n + s.genes.length, 0) || null)
+  const goCached = cachedLibs.some((l) => l.source === 'go' && l.species === species)
 
   const run = async (overwrite = false) => {
     if (!source) return
@@ -152,6 +159,9 @@ export default function GeneMapModal() {
         string_weight: useString ? stringWeight : 0,
         string_species: species,
         string_required_score: stringScore,
+        go_weight: useGo ? goWeight : 0,
+        go_aspect: goAspect,
+        go_species: species,
         n_neighbors: nNeighbors, resolution, embedding, overwrite,
         ...cellBody,
       }
@@ -225,7 +235,7 @@ export default function GeneMapModal() {
                 <GeneSubsetPicker control={subset} />
               </div>
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10 }}>
               <Channel title="Expression" on={useExpr} setOn={setUseExpr} weight={exprWeight} setWeight={setExprWeight} tip="Correlation across cells, mapped to [0, 1]">
                 <select value={metric} onChange={(e) => setMetric(e.target.value)} style={{ ...field, width: '100%' }}>
                   <option value="bicor">bicor (robust)</option><option value="pearson">Pearson</option><option value="spearman">Spearman</option>
@@ -260,6 +270,16 @@ export default function GeneMapModal() {
                 </select>
                 <input type="number" min={0} max={1000} step={50} value={stringScore} onChange={(e) => setStringScore(Math.min(1000, Math.max(0, Number(e.target.value) || 0)))} style={{ ...field, width: '100%', marginTop: 4 }} title="Minimum combined score (0–1000)" />
               </Channel>
+              <Channel title="GO semantic" on={useGo} setOn={setUseGo} weight={goWeight} setWeight={setGoWeight} tip="Information-content-weighted similarity over the Gene Ontology (SimGIC): sharing a specific term counts for more than sharing a broad one">
+                {goCached ? (
+                  <select value={goAspect} onChange={(e) => setGoAspect(e.target.value)} style={{ ...field, width: '100%' }} title="Which ontology">
+                    <option value="bp">biological process</option><option value="mf">molecular function</option><option value="cc">cellular component</option>
+                  </select>
+                ) : (
+                  <div style={{ color: dark.warn }}>Fetch “GO annotations ({species})” under Gene Ontology in the Gene set library first.</div>
+                )}
+                <div style={{ color: dark.dim, marginTop: 4 }}>species: {species}</div>
+              </Channel>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
               <Labeled label="Neighbours" tip="kNN for modules and the UMAP"><input type="number" min={2} max={100} value={nNeighbors} onChange={(e) => setNNeighbors(Math.max(2, Number(e.target.value) || 2))} style={{ ...field, width: '100%' }} /></Labeled>
@@ -289,7 +309,7 @@ export default function GeneMapModal() {
               <span><b style={{ color: dark.text }}>{data.genes.length}</b> genes</span>
               <span><b style={{ color: dark.text }}>{data.n_modules}</b> modules</span>
               {Object.entries(data.channel_weights).map(([c, w]) => (
-                <span key={c}>{c} {Math.round(w * 100)}%{c === 'annotation' && data.channels.annotation ? ` (${String(data.channels.annotation.n_genes_annotated)} of ${data.genes.length} annotated, ${String(data.channels.annotation.n_terms)} sets)` : ''}{c === 'string' && data.channels.string ? ` (${String(data.channels.string.n_edges)} edges)` : ''}</span>
+                <span key={c}>{c} {Math.round(w * 100)}%{c === 'annotation' && data.channels.annotation ? ` (${String(data.channels.annotation.n_genes_annotated)} of ${data.genes.length} annotated, ${String(data.channels.annotation.n_terms)} sets)` : ''}{c === 'string' && data.channels.string ? ` (${String(data.channels.string.n_edges)} edges)` : ''}{c === 'go' && data.channels.go ? ` (${String(data.channels.go.aspect).toUpperCase()}: ${String(data.channels.go.n_genes_annotated)} of ${data.genes.length} annotated, ${String(data.channels.go.n_terms)} terms)` : ''}</span>
               ))}
               <span style={{ color: dark.dim }}>stored as <code>uns['xcell_gene_maps']['{data.key}']</code></span>
               <div style={{ flex: 1 }} />

@@ -8859,6 +8859,9 @@ class DataAdaptor:
         string_weight: float = 0.0,
         string_species: str | None = None,
         string_required_score: int = 400,
+        go_weight: float = 0.0,
+        go_aspect: str = 'bp',
+        go_species: str | None = None,
         n_neighbors: int = 15,
         resolution: float = 1.0,
         embedding: str = 'umap',
@@ -8867,18 +8870,21 @@ class DataAdaptor:
         seed: int = 0,
         overwrite: bool = False,
     ) -> tuple[Callable[[Callable], dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
-        """Build a gene map: similarity from expression, annotation and STRING → modules + 2-D layout.
+        """Build a gene map: similarity from expression, annotation, STRING and GO → modules + 2-D layout.
 
         Genes come from an explicit list or a ``gene_subset`` (a boolean
         ``.var`` column, a gene list, or a ``{columns, operation}`` spec).
         Annotation libraries must already be in the Gene set library cache;
         naming one that is not is a 400 here, not a failed task. STRING edges
-        are fetched inside the task. The result lives in
+        are fetched inside the task. The GO channel needs the ontology and the
+        species GAF on disk — the ``go`` source's one library — and is checked
+        here for the same reason. The result lives in
         ``uns['xcell_gene_maps'][key]`` with the similarity matrix itself.
         """
         import re  # noqa: PLC0415
 
         from xcell import gene_set_sources as gss  # noqa: PLC0415
+        from xcell import go_semantic as gos  # noqa: PLC0415
 
         key = re.sub(r'[^A-Za-z0-9_]+', '_', str(key or '')).strip('_')
         if not key:
@@ -8942,11 +8948,25 @@ class DataAdaptor:
             if len(found) > gss.MAX_STRING_IDENTIFIERS:
                 raise ValueError(f"STRING accepts at most {gss.MAX_STRING_IDENTIFIERS} genes per query; got {len(found)}")
 
-        if X_genes is None and not memberships and species is None:
-            raise ValueError('No similarity channel is available — enable expression, annotation (with a cached library) or STRING')
+        go_sp: str | None = None
+        if float(go_weight) > 0:
+            go_sp = go_species or string_species or self.guess_species().get('species')
+            if go_sp not in gos.GAF_URLS:
+                raise ValueError("The GO channel needs a species ('human' or 'mouse'); the dataset's could not be guessed")
+            if go_aspect not in gos.ASPECTS:
+                raise ValueError(f"go_aspect must be one of {', '.join(gos.ASPECTS)}; got '{go_aspect}'")
+            have = gos.availability(go_sp)
+            if not (have['obo'] and have['gaf'].get(go_sp)):
+                raise ValueError(
+                    f"GO annotations for {go_sp} have not been fetched — fetch 'GO annotations ({go_sp})' "
+                    "under Gene Ontology in the Gene set library first")
+
+        if X_genes is None and not memberships and species is None and go_sp is None:
+            raise ValueError('No similarity channel is available — enable expression, annotation (with a cached library), STRING or GO')
 
         snap_found, snap_missing = list(found), list(missing)
-        snap_w = (float(expression_weight), float(annotation_weight), float(string_weight))
+        snap_w = (float(expression_weight), float(annotation_weight), float(string_weight), float(go_weight))
+        snap_go_aspect = str(go_aspect)
         snap_metric, snap_score = str(expression_metric), int(string_required_score)
         snap_nn, snap_res, snap_seed = int(n_neighbors), float(resolution), int(seed)
         snap_layer, snap_subset_type = layer, subset_type
@@ -8972,6 +8992,13 @@ class DataAdaptor:
                 S_str, n_edges = gsim.string_similarity(snap_found, net.get('edges', []))
                 channels['string'] = (S_str, snap_w[2])
                 info['string'] = {'weight': snap_w[2], 'species': species, 'required_score': snap_score, 'n_edges': n_edges}
+            if go_sp is not None:
+                report(0.52, f'GO semantic similarity ({snap_go_aspect.upper()})…')
+                S_go, go_meta = gsim.go_similarity(snap_found, go_sp, snap_go_aspect)
+                channels['go'] = (S_go, snap_w[3])
+                info['go'] = {'weight': snap_w[3], 'species': go_sp, 'aspect': snap_go_aspect,
+                              'n_genes_annotated': int(go_meta['n_genes_annotated']), 'n_terms': int(go_meta['n_terms']),
+                              'terms_per_gene': [int(t) for t in go_meta['terms_per_gene']]}
             report(0.6, 'Modules and layout…')
             out = gsim.build_gene_map(snap_found, channels=channels, n_neighbors=snap_nn,
                                       resolution=snap_res, embedding=embedding, seed=snap_seed)
@@ -8985,6 +9012,7 @@ class DataAdaptor:
                 'expression_weight': snap_w[0], 'expression_metric': snap_metric,
                 'annotation_weight': snap_w[1], 'annotation_libraries': libs_used,
                 'string_weight': snap_w[2], 'string_species': species, 'string_required_score': snap_score,
+                'go_weight': snap_w[3], 'go_aspect': snap_go_aspect if go_sp is not None else None, 'go_species': go_sp,
                 'n_neighbors': snap_nn, 'resolution': snap_res, 'embedding': embedding,
                 'layer': snap_layer, 'seed': snap_seed,
             }

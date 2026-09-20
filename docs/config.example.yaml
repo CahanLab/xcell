@@ -126,6 +126,8 @@ gene_map:
   expression_weight: 1.0
   annotation_weight: 1.0
   string_weight: 0.5                # applied when STRING is switched on
+  go_weight: 1.0                    # applied when the GO channel is switched on (needs the GO files fetched)
+  go_aspect: bp                     # bp|mf|cc — which ontology the semantic similarity is over
   n_neighbors: 15
   resolution: 1.0
   embedding: umap                   # umap|mds

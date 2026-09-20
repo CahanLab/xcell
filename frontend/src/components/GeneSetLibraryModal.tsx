@@ -190,7 +190,7 @@ export default function GeneSetLibraryModal() {
     if (!hasDataset || sets.length === 0) return sets
     try {
       const body = await postJson<{ sets: OverlapEntry[] }>(appendDataset(`${API_BASE}/gene_sets/overlap`), {
-        sets: sets.map((s) => ({ name: s.name, genes: s.genes })),
+        sets: sets.map((s) => ({ name: s.name, genes: s.genes, genesDown: s.genes_down ?? [] })),
         columns: activeColumns,
       })
       return attachOverlap(sets, body.sets)

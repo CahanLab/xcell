@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, createDefaultCategories, DatasetSlot } from './store'
 import { mergeHydratedCategories } from './lib/geneSetHydration'
 import { meanOf, convexHull, type ShapeAffine } from './utils/shapeTransform'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, useSlotEmbedding, useSecondEmbedding, appendDataset, fetchGeneMask } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, useSlotEmbedding, useSecondEmbedding, appendDataset, fetchGeneMask, fetchLines, syncLinesToBackend } from './hooks/useData'
 import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
 import EmbeddingPlot from './components/EmbeddingPlot'
 import DatasetPane from './components/DatasetPane'
@@ -1012,24 +1012,35 @@ export default function App() {
     return result
   }, [geneSetCategories])
 
+  // Drawn shapes live in the h5ad. Read the active slot's once per load…
+  const slotsResolved = useStore((s) => s.slotsResolved)
+  const linesHydrated = useStore((s) => s.datasets[s.activeSlot]?.linesHydrated ?? false)
+  useEffect(() => {
+    if (!slotsResolved || !schema || linesHydrated) return
+    const slot = useStore.getState().activeSlot
+    fetchLines(slot)
+      .then((lines) => useStore.getState().setDrawnLines(slot, lines))
+      .catch((err) => console.warn('Could not load drawn shapes:', err))
+  }, [slotsResolved, schema, linesHydrated])
+  // …and write them back, debounced, whenever they change. Never before
+  // hydration: an empty store would wipe the file's shapes.
+  useEffect(() => {
+    if (!linesHydrated) return
+    const slot = useStore.getState().activeSlot
+    const t = setTimeout(() => {
+      syncLinesToBackend(drawnLines, slot)
+        .catch((err) => console.warn('Could not save drawn shapes:', err))
+    }, 500)
+    return () => clearTimeout(t)
+  }, [drawnLines, linesHydrated])
+
   const handleExportH5ad = useCallback(async () => {
     try {
-      // First, send drawn lines to backend so they can be included in export
+      // Flush the shapes before exporting so the file carries the latest.
       if (drawnLines.length > 0) {
-        const linesPayload = drawnLines.map((line) => ({
-          name: line.name,
-          embeddingName: line.embeddingName,
-          points: line.points,
-          smoothedPoints: line.smoothedPoints,
-        }))
-        const linesResponse = await fetch(appendDataset('/api/lines'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lines: linesPayload }),
-        })
-        if (!linesResponse.ok) {
+        await syncLinesToBackend(drawnLines).catch(() => {
           console.warn('Failed to send lines to backend, continuing with export')
-        }
+        })
       }
 
       // Now export h5ad

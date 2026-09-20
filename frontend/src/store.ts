@@ -575,6 +575,9 @@ export interface DatasetState {
   bivariateSortReversed: boolean
   displayPreferences: DisplayPreferences
   drawnLines: DrawnLine[]
+  // Set once the slot's shapes have been read from the backend. The on-change
+  // sync waits for it, or an empty store would overwrite the file's shapes.
+  linesHydrated: boolean
   hiddenColumns: Set<string>
   columnDisplayNames: Record<string, string>
   obsSummariesVersion: number
@@ -712,6 +715,7 @@ export function createDefaultDatasetState(
     bivariateSortReversed: false,
     displayPreferences: { ...defaultDisplayPreferences(), ...displayOverrides },
     drawnLines: [],
+    linesHydrated: false,
     hiddenColumns: new Set<string>(),
     columnDisplayNames: {},
     obsSummariesVersion: 0,
@@ -1137,6 +1141,8 @@ interface AppState {
   updateLineAppearance: (id: string, updates: { strokeColor?: string; strokeWidth?: number; fillColor?: string | null; closed?: boolean }) => void
   addLine: (name: string, points: [number, number][], embeddingName: string, drawType?: DrawTool, closed?: boolean) => void
   removeLine: (id: string) => void
+  // Replace a slot's shapes wholesale (hydration from the backend) and mark it hydrated.
+  setDrawnLines: (slot: DatasetSlot, lines: DrawnLine[]) => void
   setActiveLine: (id: string | null) => void
   setEmbeddingDims: (embeddingName: string, x: number, y: number, z?: number) => void
   renameLine: (id: string, name: string) => void
@@ -2360,6 +2366,14 @@ export const useStore = create<AppState>((set, get) => {
         },
       })
     },
+
+    setDrawnLines: (slot, lines) =>
+      set((state) => {
+        const ds = state.datasets[slot]
+        if (!ds) return {}
+        const datasets = { ...state.datasets, [slot]: { ...ds, drawnLines: lines, linesHydrated: true } }
+        return slot === state.activeSlot ? { datasets, drawnLines: lines } : { datasets }
+      }),
 
     removeLine: (id) => {
       const state = get()

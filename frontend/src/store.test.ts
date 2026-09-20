@@ -518,3 +518,34 @@ describe('forgetObsColumn', () => {
     expect(after.hiddenColumns.has('score')).toBe(true)
   })
 })
+
+describe('drawn lines hydrate per slot', () => {
+  const line = {
+    id: 'l1', name: 'a', embeddingName: 'X_umap', dimX: 0, dimY: 1,
+    points: [[0, 0], [1, 1]] as [number, number][], smoothedPoints: null, visible: true,
+    projections: [], drawType: 'pencil' as const, closed: false,
+    strokeColor: '#fff', strokeWidth: 2, fillColor: null,
+  }
+
+  it('marks the slot hydrated and mirrors the active slot', () => {
+    expect(useStore.getState().datasets.primary.linesHydrated).toBe(false)
+    useStore.getState().setDrawnLines('primary', [line])
+    const after = useStore.getState()
+    expect(after.datasets.primary.linesHydrated).toBe(true)
+    expect(after.drawnLines.map((l) => l.id)).toEqual(['l1'])
+  })
+
+  it('does not touch the flat mirror for an inactive slot', () => {
+    useStore.getState().setDrawnLines('secondary', [line])
+    const after = useStore.getState()
+    expect(after.datasets.secondary.linesHydrated).toBe(true)
+    expect(after.drawnLines).toEqual([])
+  })
+
+  it('a fresh load resets hydration', () => {
+    useStore.getState().setDrawnLines('primary', [line])
+    useStore.getState().loadDatasetIntoSlot('primary', PRIMARY)
+    expect(useStore.getState().datasets.primary.linesHydrated).toBe(false)
+    expect(useStore.getState().drawnLines).toEqual([])
+  })
+})

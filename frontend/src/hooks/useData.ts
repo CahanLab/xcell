@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
-import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
+import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, DrawnLine, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
 import { assertJsonResponse } from '../lib/foreignServer'
 import { pollTaskLoop, TaskStatus } from '../lib/taskPolling'
@@ -1866,21 +1866,27 @@ export interface LineAssociationParams {
   clusterGenes?: boolean
 }
 
-// Sync lines to backend
-async function syncLinesToBackend(lines: { name: string; embeddingName: string; dimX?: number; dimY?: number; points: [number, number][]; smoothedPoints: [number, number][] | null }[], slot?: DatasetSlot) {
-  const payload = lines.map((line) => ({
-    name: line.name,
-    embeddingName: line.embeddingName,
+/** Send the slot's shapes to the backend, which keeps them in the h5ad.
+ * Everything but the projections travels (they are recomputed on demand), so
+ * a partial payload here would silently strip ids and styling from the file. */
+export async function syncLinesToBackend(lines: DrawnLine[], slot?: DatasetSlot) {
+  const payload = lines.map(({ projections: _p, ...line }) => ({
+    ...line,
     dimX: line.dimX ?? 0,
     dimY: line.dimY ?? 1,
-    points: line.points,
-    smoothedPoints: line.smoothedPoints,
   }))
   await fetchJson(appendDataset(`${API_BASE}/lines`, slot), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ lines: payload }),
   })
+}
+
+/** The shapes stored with the dataset, as store lines with empty projections. */
+export async function fetchLines(slot?: DatasetSlot): Promise<DrawnLine[]> {
+  const data = await fetchJson<{ lines: Array<Omit<DrawnLine, 'projections'>> }>(
+    appendDataset(`${API_BASE}/lines`, slot))
+  return (data.lines || []).map((l) => ({ ...l, projections: [] }))
 }
 
 export async function runLineAssociation(params: LineAssociationParams, slot?: DatasetSlot): Promise<LineAssociationResult> {

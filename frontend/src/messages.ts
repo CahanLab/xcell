@@ -23,6 +23,10 @@ export const MESSAGES = {
   errorPrefix: 'Error:',
 
   // Named cell subsets (Cells panel mask bar, Scanpy modal)
+  obsColumns: {
+    deleteConfirm: (name: string) => `Delete "${name}" from the dataset?`,
+    deleteHint: 'Remove this column from the dataset (Hide only tucks it away)',
+  },
   cellSubsets: {
     nameNeeded: 'Name the subset before running — the name is what keeps this result apart from the dataset\'s own.',
     nameUnusable: 'That name has no letters or digits, or is reserved (unassigned, nan).',

@@ -484,3 +484,37 @@ describe('the active slot always names a dataset that exists', () => {
     expect(useStore.getState().activeSlot).toBe('primary')
   })
 })
+
+describe('forgetObsColumn', () => {
+  const column = (name: string) => ({ name, dtype: 'category' as const, values: [] })
+
+  it('clears everything that named the column', () => {
+    const s = useStore.getState()
+    s.setColorBy(column('leiden'))
+    s.setEmbeddingLabelColumn('leiden')
+    s.hideColumn('leiden')
+    s.setColumnDisplayName('leiden', 'Clusters')
+
+    useStore.getState().forgetObsColumn('leiden')
+
+    const after = useStore.getState()
+    expect(after.colorBy).toBeNull()
+    expect(after.embeddingLabelColumn).toBeNull()
+    expect(after.hiddenColumns.has('leiden')).toBe(false)
+    expect(after.columnDisplayNames['leiden']).toBeUndefined()
+  })
+
+  it('leaves other columns alone', () => {
+    const s = useStore.getState()
+    s.setColorBy(column('cell_type'))
+    s.setEmbeddingLabelColumn('cell_type')
+    s.hideColumn('score')
+
+    useStore.getState().forgetObsColumn('leiden')
+
+    const after = useStore.getState()
+    expect(after.colorBy?.name).toBe('cell_type')
+    expect(after.embeddingLabelColumn).toBe('cell_type')
+    expect(after.hiddenColumns.has('score')).toBe(true)
+  })
+})

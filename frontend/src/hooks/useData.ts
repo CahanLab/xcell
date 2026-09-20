@@ -1648,6 +1648,15 @@ export async function labelCells(
   })
 }
 
+/** Drop an .obs column. The backend also drops its colour list and, if the
+ * column was a saved subset's, that subset's entry — `subset_removed` says so,
+ * so the caller can refresh the Subsets section. */
+export async function deleteObsColumn(
+  name: string, slot?: DatasetSlot,
+): Promise<{ column: string; dropped_colors: boolean; subset_removed: string | null }> {
+  return fetchJson(appendDataset(`${API_BASE}/obs/${encodeURIComponent(name)}`, slot), { method: 'DELETE' })
+}
+
 export async function deleteAnnotation(name: string, slot?: DatasetSlot): Promise<void> {
   await fetchJson<{ status: string }>(appendDataset(`${API_BASE}/annotations/${encodeURIComponent(name)}`, slot), {
     method: 'DELETE',

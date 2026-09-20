@@ -18,6 +18,7 @@ import {
   fetchCellSubsetIndices,
   deleteCellSubset,
   refreshCellSubsets,
+  deleteObsColumn,
 } from '../hooks/useData'
 import {
   suggestSubsetName, isUsableSubsetName, sanitizeSubsetName, indicesFromMask, derivedBadges,
@@ -484,6 +485,27 @@ const styles = {
   },
 }
 
+/** Inline confirmation under a column whose Delete was clicked. */
+function ColumnDeleteConfirm({ displayName, onConfirm, onCancel }: {
+  displayName: string
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div style={{ ...styles.subsetConfirm, marginTop: 0, padding: '2px 16px 6px' }}>
+      <span>{MESSAGES.obsColumns.deleteConfirm(displayName)}</span>
+      <button
+        style={{ ...styles.maskActionButton, color: '#e94560', border: '1px solid #e94560' }}
+        onClick={onConfirm}
+        title="Remove the column from the dataset"
+      >
+        Delete
+      </button>
+      <button style={styles.maskActionButton} onClick={onCancel}>Cancel</button>
+    </div>
+  )
+}
+
 interface CategoryColumnProps {
   summary: ObsSummary
   displayName: string
@@ -494,6 +516,7 @@ interface CategoryColumnProps {
   checkedCategories: Set<string>
   onToggleCategory: (category: string) => void
   onHide: () => void
+  onDelete: () => void
   onRename: (newName: string) => void
   onRenameLabel: (oldLabel: string, newLabel: string) => Promise<void> | void
   onMergeLabels: () => void
@@ -624,7 +647,7 @@ function CategoryRow({ cat, totalCount, checked, onToggle, onSelectCells, onHigh
   )
 }
 
-function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, onHighlightCells, checkedCategories, onToggleCategory, onHide, onRename, onRenameLabel, onMergeLabels, onTransferLabels, labelsShown, onToggleLabels, selectedCategorySource }: CategoryColumnProps) {
+function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCells, onHighlightCells, checkedCategories, onToggleCategory, onHide, onDelete, onRename, onRenameLabel, onMergeLabels, onTransferLabels, labelsShown, onToggleLabels, selectedCategorySource }: CategoryColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -710,6 +733,16 @@ function CategoryColumn({ summary, displayName, isActive, onColorBy, onSelectCel
             >
               Hide
             </button>
+            <button
+              style={{ ...styles.columnActionButton, color: '#e94560' }}
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete()
+              }}
+              title={MESSAGES.obsColumns.deleteHint}
+            >
+              Delete
+            </button>
           </div>
         )}
         <button
@@ -778,6 +811,7 @@ interface ContinuousColumnProps {
   isActive: boolean
   onColorBy: () => void
   onHide: () => void
+  onDelete: () => void
   onRename: (newName: string) => void
 }
 
@@ -786,7 +820,7 @@ function formatStat(v: number | null | undefined): string {
   return v == null ? '\u2014' : v.toFixed(2)
 }
 
-function ContinuousColumn({ summary, displayName, isActive, onColorBy, onHide, onRename }: ContinuousColumnProps) {
+function ContinuousColumn({ summary, displayName, isActive, onColorBy, onHide, onDelete, onRename }: ContinuousColumnProps) {
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editName, setEditName] = useState(displayName)
@@ -866,6 +900,16 @@ function ContinuousColumn({ summary, displayName, isActive, onColorBy, onHide, o
             >
               Hide
             </button>
+            <button
+              style={{ ...styles.columnActionButton, color: '#e94560' }}
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete()
+              }}
+              title={MESSAGES.obsColumns.deleteHint}
+            >
+              Delete
+            </button>
           </div>
         )}
         <button
@@ -920,6 +964,7 @@ export default function CellPanel() {
     columnDisplayNames,
     hideColumn,
     showColumn,
+    forgetObsColumn,
     setColumnDisplayName,
     schema,
     activeCellMask,
@@ -961,6 +1006,21 @@ export default function CellPanel() {
   const [subsetBusy, setSubsetBusy] = useState(false)
   const [subsetError, setSubsetError] = useState<string | null>(null)
   const [subsetDeleteConfirm, setSubsetDeleteConfirm] = useState<string | null>(null)
+  // Which .obs column's Delete is awaiting confirmation.
+  const [columnDeleteConfirm, setColumnDeleteConfirm] = useState<string | null>(null)
+  const handleDeleteColumn = useCallback(async (name: string) => {
+    try {
+      const out = await deleteObsColumn(name)
+      forgetObsColumn(name)
+      setColumnDeleteConfirm(null)
+      // A column is gone from the schema and the summaries, so both channels.
+      await refreshSchema()
+      refresh()
+      if (out.subset_removed) await refreshCellSubsets()
+    } catch (err) {
+      alert(`Failed to delete column: ${(err as Error).message}`)
+    }
+  }, [forgetObsColumn, refresh])
   useEffect(() => {
     // Offer a free name whenever the saved list changes and the draft is not
     // something the user typed and could still use.
@@ -1484,8 +1544,8 @@ export default function CellPanel() {
           categoricalColumns.length > 0 ? (
             <div style={styles.section}>
               {categoricalColumns.map((summary) => (
+                <div key={summary.name}>
                 <CategoryColumn
-                  key={summary.name}
                   summary={summary}
                   displayName={getDisplayName(summary.name)}
                   isActive={colorMode === 'metadata' && selectedColorColumn === summary.name}
@@ -1495,6 +1555,7 @@ export default function CellPanel() {
                   checkedCategories={comparisonCheckedColumn === summary.name ? comparisonCheckedCategories : new Set<string>()}
                   onToggleCategory={(category) => handleCheckboxToggle(summary.name, category)}
                   onHide={() => hideColumn(summary.name)}
+                  onDelete={() => setColumnDeleteConfirm(summary.name)}
                   onRename={(newName) => setColumnDisplayName(summary.name, newName)}
                   onRenameLabel={(oldLabel, newLabel) => handleRenameLabel(summary.name, oldLabel, newLabel)}
                   onMergeLabels={() => setMergeModalColumn(summary.name)}
@@ -1503,6 +1564,14 @@ export default function CellPanel() {
                   onToggleLabels={() => handleToggleLabels(summary.name)}
                   selectedCategorySource={selectedCategorySource}
                 />
+                {columnDeleteConfirm === summary.name && (
+                  <ColumnDeleteConfirm
+                    displayName={getDisplayName(summary.name)}
+                    onConfirm={() => handleDeleteColumn(summary.name)}
+                    onCancel={() => setColumnDeleteConfirm(null)}
+                  />
+                )}
+                </div>
               ))}
             </div>
           ) : (
@@ -1514,15 +1583,24 @@ export default function CellPanel() {
           continuousColumns.length > 0 ? (
             <div style={styles.section}>
               {continuousColumns.map((summary) => (
+                <div key={summary.name}>
                 <ContinuousColumn
-                  key={summary.name}
                   summary={summary}
                   displayName={getDisplayName(summary.name)}
                   isActive={colorMode === 'metadata' && selectedColorColumn === summary.name}
                   onColorBy={() => handleColorBy(summary.name)}
                   onHide={() => hideColumn(summary.name)}
+                  onDelete={() => setColumnDeleteConfirm(summary.name)}
                   onRename={(newName) => setColumnDisplayName(summary.name, newName)}
                 />
+                {columnDeleteConfirm === summary.name && (
+                  <ColumnDeleteConfirm
+                    displayName={getDisplayName(summary.name)}
+                    onConfirm={() => handleDeleteColumn(summary.name)}
+                    onCancel={() => setColumnDeleteConfirm(null)}
+                  />
+                )}
+                </div>
               ))}
             </div>
           ) : (
@@ -1542,14 +1620,32 @@ export default function CellPanel() {
             </div>
             {hiddenExpanded &&
               hiddenSummaries.map((summary) => (
-                <div key={summary.name} style={styles.hiddenItem}>
-                  <span>{getDisplayName(summary.name)}</span>
-                  <button
-                    style={styles.smallButton}
-                    onClick={() => showColumn(summary.name)}
-                  >
-                    Show
-                  </button>
+                <div key={summary.name}>
+                  <div style={styles.hiddenItem}>
+                    <span>{getDisplayName(summary.name)}</span>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      <button
+                        style={styles.smallButton}
+                        onClick={() => showColumn(summary.name)}
+                      >
+                        Show
+                      </button>
+                      <button
+                        style={{ ...styles.smallButton, color: '#e94560' }}
+                        onClick={() => setColumnDeleteConfirm(summary.name)}
+                        title={MESSAGES.obsColumns.deleteHint}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                  {columnDeleteConfirm === summary.name && (
+                    <ColumnDeleteConfirm
+                      displayName={getDisplayName(summary.name)}
+                      onConfirm={() => handleDeleteColumn(summary.name)}
+                      onCancel={() => setColumnDeleteConfirm(null)}
+                    />
+                  )}
                 </div>
               ))}
           </div>

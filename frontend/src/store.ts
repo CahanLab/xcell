@@ -1107,6 +1107,9 @@ interface AppState {
   // Column management actions
   hideColumn: (name: string) => void
   showColumn: (name: string) => void
+  // A column deleted on the backend: clear colour-by, the label overlay,
+  // hidden state and display name so nothing keeps pointing at it.
+  forgetObsColumn: (name: string) => void
   setColumnDisplayName: (originalName: string, displayName: string) => void
   clearColumnDisplayName: (originalName: string) => void
 
@@ -2167,6 +2170,21 @@ export const useStore = create<AppState>((set, get) => {
         next.delete(name)
         return { hiddenColumns: next }
       })),
+    forgetObsColumn: (name) => {
+      const patch = dsUpdateFn((state) => {
+        const hidden = new Set(state.hiddenColumns)
+        hidden.delete(name)
+        const { [name]: _dropped, ...names } = state.columnDisplayNames
+        return {
+          hiddenColumns: hidden,
+          columnDisplayNames: names,
+          colorBy: state.colorBy?.name === name ? null : state.colorBy,
+        }
+      })
+      // The label overlay is global (it is drawn only when colorBy matches).
+      const labels = get().embeddingLabelColumn === name ? { embeddingLabelColumn: null } : {}
+      set({ ...patch, ...labels })
+    },
     setColumnDisplayName: (originalName, displayName) =>
       set(dsUpdateFn((state) => ({
         columnDisplayNames: { ...state.columnDisplayNames, [originalName]: displayName },

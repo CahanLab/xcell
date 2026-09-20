@@ -3,6 +3,7 @@ import { useStore, type DatasetSlot } from '../store'
 import EmbeddingPlot from './EmbeddingPlot'
 import { CategoryLegend, ContinuousLegend, ExpressionLegend, BivariateLegend } from './PlotLegends'
 import { umPerUnitForSlot, expressionLegendTitle } from '../lib/datasetPanes'
+import CoverageNotice from './CoverageNotice'
 
 // One dataset's plot, with the chrome that belongs to that dataset rather than
 // to the app: its own embedding picker, its own legend, its own scale bar.
@@ -123,6 +124,12 @@ export default function DatasetPane({
             onLineDrawn={onLineDrawn}
             onTransformEmbedding={onTransformEmbedding}
             onTransformEmbeddingSubset={onTransformEmbeddingSubset}
+          />
+          <CoverageNotice
+            embedding={ds.embedding}
+            embeddings={ds.schema?.embeddings}
+            subsets={ds.cellSubsets}
+            onSelectEmbedding={(name) => { activate(); onSelectEmbedding(name) }}
           />
           {/* Per-plot embedding selector */}
           {ds.schema && ds.schema.embeddings.length > 1 && (

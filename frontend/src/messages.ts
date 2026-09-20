@@ -33,8 +33,9 @@ export const MESSAGES = {
     saveHint: 'Save the mask as a named subset so it survives a reload and sub-clustering writes to its own keys.',
     scopedExplain: (name: string) =>
       `Runs on subset "${name}" only. Results go to keys suffixed with its name; the dataset's own results are left as they are.`,
-    maskedCellsHidden: (name: string) =>
-      `Cells outside "${name}" have no coordinates here. Switch the embedding to see all cells.`,
+    hiddenCells: (n: number, total: number, embedding: string) =>
+      `${n.toLocaleString()} of ${total.toLocaleString()} cells have no coordinates in ${embedding} — it was computed on a subset.`,
+    showAllOn: (embedding: string) => `Show all cells on ${embedding}`,
   },
 
   // Analysis cancellation

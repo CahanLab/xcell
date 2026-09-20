@@ -2206,6 +2206,8 @@ export const useStore = create<AppState>((set, get) => {
           hiddenColumns: hidden,
           columnDisplayNames: names,
           colorBy: state.colorBy?.name === name ? null : state.colorBy,
+          // The name the colour-by hook fetches; left set it re-requests a column that is gone.
+          selectedColorColumn: state.selectedColorColumn === name ? null : state.selectedColorColumn,
         }
       })
       // The label overlay is global (it is drawn only when colorBy matches).

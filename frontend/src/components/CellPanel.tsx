@@ -498,6 +498,7 @@ function SubsetChipView({ chip, onShowEmbedding, onColorBy, refineInto, onRefine
   onRefine: (column: string) => void
 }) {
   const clickable = chip.kind !== 'step'
+  const drawn = chip.kind === 'lines' || chip.kind === 'territories'
   const title =
     chip.kind === 'embedding' ? 'Show this embedding'
     : chip.kind === 'leiden' ? 'Color cells by this clustering'
@@ -513,8 +514,8 @@ function SubsetChipView({ chip, onShowEmbedding, onColorBy, refineInto, onRefine
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
       <span
         style={{ ...styles.subsetBadge, cursor: clickable ? 'pointer' : 'default',
-                 color: chip.kind === 'lines' || chip.kind === 'territories' ? '#e9a23b' : '#4ecdc4',
-                 borderColor: chip.kind === 'lines' || chip.kind === 'territories' ? 'rgba(233,162,59,0.4)' : 'rgba(78,205,196,0.3)' }}
+                 color: drawn ? '#e9a23b' : '#4ecdc4',
+                 border: `1px solid ${drawn ? 'rgba(233,162,59,0.4)' : 'rgba(78,205,196,0.3)'}` }}
         title={title}
         onClick={clickable ? onClick : undefined}
       >
@@ -1735,7 +1736,7 @@ export default function CellPanel() {
                 .filter(Boolean).join('\n')
               return (
                 <div key={s.name}
-                     style={{ ...styles.subsetRow, paddingLeft: `${16 + s.depth * 12}px` }}
+                     style={{ ...styles.subsetRow, padding: `4px 16px 4px ${16 + s.depth * 12}px` }}
                      title={hint}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {s.depth > 0 && <span style={{ color: '#555', fontSize: '10px' }}>└</span>}

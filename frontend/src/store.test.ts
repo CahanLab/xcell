@@ -491,6 +491,7 @@ describe('forgetObsColumn', () => {
   it('clears everything that named the column', () => {
     const s = useStore.getState()
     s.setColorBy(column('leiden'))
+    s.setSelectedColorColumn('leiden')
     s.setEmbeddingLabelColumn('leiden')
     s.hideColumn('leiden')
     s.setColumnDisplayName('leiden', 'Clusters')
@@ -499,6 +500,8 @@ describe('forgetObsColumn', () => {
 
     const after = useStore.getState()
     expect(after.colorBy).toBeNull()
+    // The column the colour-by hook fetches — left set, it re-requests a 404.
+    expect(after.selectedColorColumn).toBeNull()
     expect(after.embeddingLabelColumn).toBeNull()
     expect(after.hiddenColumns.has('leiden')).toBe(false)
     expect(after.columnDisplayNames['leiden']).toBeUndefined()
@@ -507,6 +510,7 @@ describe('forgetObsColumn', () => {
   it('leaves other columns alone', () => {
     const s = useStore.getState()
     s.setColorBy(column('cell_type'))
+    s.setSelectedColorColumn('cell_type')
     s.setEmbeddingLabelColumn('cell_type')
     s.hideColumn('score')
 
@@ -514,6 +518,7 @@ describe('forgetObsColumn', () => {
 
     const after = useStore.getState()
     expect(after.colorBy?.name).toBe('cell_type')
+    expect(after.selectedColorColumn).toBe('cell_type')
     expect(after.embeddingLabelColumn).toBe('cell_type')
     expect(after.hiddenColumns.has('score')).toBe(true)
   })

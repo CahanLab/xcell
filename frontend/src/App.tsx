@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useStore, createDefaultCategories, DatasetSlot } from './store'
 import { mergeHydratedCategories } from './lib/geneSetHydration'
 import { meanOf, convexHull, type ShapeAffine } from './utils/shapeTransform'
-import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, useSlotEmbedding, useSecondEmbedding, appendDataset, fetchGeneMask, fetchLines, syncLinesToBackend } from './hooks/useData'
+import { useSchema, useEmbedding, useColorBy, useDataActions, exportAnnotations, useExpressionTransformEffect, useBivariateTransformEffect, useHighlightSync, useSpatialScale, useSlotEmbedding, useSecondEmbedding, appendDataset, fetchGeneMask, fetchLines, syncLinesToBackend, refreshCellSubsets } from './hooks/useData'
 import { pickSecondEmbedding } from './lib/pickSecondEmbedding'
 import EmbeddingPlot from './components/EmbeddingPlot'
 import DatasetPane from './components/DatasetPane'
@@ -1029,6 +1029,8 @@ export default function App() {
     const slot = useStore.getState().activeSlot
     const t = setTimeout(() => {
       syncLinesToBackend(drawnLines, slot)
+        // The Subsets section counts shapes per embedding from the backend's copy.
+        .then(() => refreshCellSubsets())
         .catch((err) => console.warn('Could not save drawn shapes:', err))
     }, 500)
     return () => clearTimeout(t)

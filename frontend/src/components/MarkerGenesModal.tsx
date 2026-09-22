@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { markerGenesParams } from '../lib/markerGenes'
 import { useStore, cfgDefault } from '../store'
 import { useObsSummaries, runMarkerGenes, MarkerGenesGroupResult, appendDataset } from '../hooks/useData'
 
@@ -320,34 +321,16 @@ export default function MarkerGenesModal() {
     setAddedToSets(false)
 
     try {
-      const params: {
-        obs_column: string
-        groups?: string[]
-        top_n: number
-        min_in_group_fraction?: number
-        max_out_group_fraction?: number
-        min_fold_change?: number
-        gene_subset?: string | null
-      } = {
-        obs_column: markerGenesColumn,
-        top_n: topN,
-      }
-
-      if (geneSubset) params.gene_subset = geneSubset
-
-      // Only send groups if not all selected
-      if (selectedGroups.size < categories.length) {
-        params.groups = Array.from(selectedGroups)
-      }
-
-      const minIGF = parseFloat(minInGroupFraction)
-      if (!isNaN(minIGF)) params.min_in_group_fraction = minIGF
-
-      const maxOGF = parseFloat(maxOutGroupFraction)
-      if (!isNaN(maxOGF)) params.max_out_group_fraction = maxOGF
-
-      const minFC = parseFloat(minFoldChange)
-      if (!isNaN(minFC)) params.min_fold_change = minFC
+      const params = markerGenesParams({
+        obsColumn: markerGenesColumn,
+        selectedGroups,
+        nCategories: categories.length,
+        topN,
+        geneSubset,
+        minInGroupFraction,
+        maxOutGroupFraction,
+        minFoldChange,
+      })
 
       const response = await runMarkerGenes(params, activeSlot)
       setResults(response.results)
@@ -360,7 +343,7 @@ export default function MarkerGenesModal() {
     } finally {
       setIsRunning(false)
     }
-  }, [markerGenesColumn, selectedGroups, categories.length, topN, minInGroupFraction, maxOutGroupFraction, minFoldChange, activeSlot])
+  }, [markerGenesColumn, selectedGroups, categories.length, topN, geneSubset, minInGroupFraction, maxOutGroupFraction, minFoldChange, activeSlot])
 
   const handleAddToGeneSets = useCallback(() => {
     if (!results || !markerGenesColumn) return

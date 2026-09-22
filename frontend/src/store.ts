@@ -457,7 +457,9 @@ export interface BarplotConfig {
 }
 
 export interface HeatmapConfig {
-  selectedGeneSets: { name: string; genes: string[] }[]
+  // `name` is the row-group label (it carries the folder when folders are
+  // mixed); `id` is what the config modal restores the selection from.
+  selectedGeneSets: { id?: string; name: string; genes: string[] }[]
   cellOrdering: 'none' | 'category' | 'line_position' | 'line_distance' | 'category_then_position'
   obsColumn: string | null
   lineName: string | null

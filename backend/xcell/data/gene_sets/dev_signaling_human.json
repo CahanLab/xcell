@@ -1,0 +1,1510 @@
+{
+  "name": "Developmental signalling pathways (human)",
+  "description": "The major developmental signalling pathways, one folder per pathway, with each pathway's genes split by role in a fixed order: ligands, receptors, modulators, effectors, inhibitors, targets. Pick a whole folder in the heatmap to see a pathway laid out by role; the targets set is the pathway's transcriptional readout. A gene with two roles appears in both.",
+  "sets": [
+    {
+      "name": "ligands",
+      "folder": "Wnt (canonical)",
+      "genes": [
+        "WNT1",
+        "WNT2",
+        "WNT2B",
+        "WNT3",
+        "WNT3A",
+        "WNT4",
+        "WNT5A",
+        "WNT5B",
+        "WNT6",
+        "WNT7A",
+        "WNT7B",
+        "WNT8A",
+        "WNT8B",
+        "WNT9A",
+        "WNT9B",
+        "WNT10A",
+        "WNT10B",
+        "WNT11",
+        "WNT16",
+        "RSPO1",
+        "RSPO2",
+        "RSPO3",
+        "RSPO4",
+        "NDP"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Wnt (canonical)",
+      "genes": [
+        "FZD1",
+        "FZD2",
+        "FZD3",
+        "FZD4",
+        "FZD5",
+        "FZD6",
+        "FZD7",
+        "FZD8",
+        "FZD9",
+        "FZD10",
+        "LRP5",
+        "LRP6",
+        "LGR4",
+        "LGR5",
+        "LGR6"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Wnt (canonical)",
+      "genes": [
+        "PORCN",
+        "WLS",
+        "GPC3",
+        "GPC4",
+        "TSPAN12",
+        "ROR2",
+        "RYK",
+        "CSNK1E",
+        "CSNK1G1"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Wnt (canonical)",
+      "genes": [
+        "CTNNB1",
+        "TCF7",
+        "TCF7L1",
+        "TCF7L2",
+        "LEF1",
+        "DVL1",
+        "DVL2",
+        "DVL3",
+        "BCL9",
+        "BCL9L",
+        "PYGO1",
+        "PYGO2"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "Wnt (canonical)",
+      "genes": [
+        "SFRP1",
+        "SFRP2",
+        "SFRP4",
+        "SFRP5",
+        "FRZB",
+        "DKK1",
+        "DKK2",
+        "DKK3",
+        "DKK4",
+        "WIF1",
+        "NOTUM",
+        "CER1",
+        "SOST",
+        "SOSTDC1",
+        "APCDD1",
+        "SHISA2",
+        "SHISA3",
+        "ZNRF3",
+        "RNF43",
+        "NKD1",
+        "NKD2",
+        "AXIN1",
+        "AXIN2",
+        "APC",
+        "GSK3B",
+        "CSNK1A1",
+        "CTNNBIP1",
+        "TLE1",
+        "TLE2",
+        "TLE3",
+        "TLE4",
+        "DACT1",
+        "KREMEN1",
+        "KREMEN2",
+        "DRAXIN"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "Wnt (canonical)",
+      "genes": [
+        "AXIN2",
+        "LEF1",
+        "NKD1",
+        "NKD2",
+        "NOTUM",
+        "SP5",
+        "LGR5",
+        "CCND1",
+        "MYC",
+        "RNF43",
+        "ZNRF3",
+        "TCF7",
+        "DKK1",
+        "APCDD1",
+        "CDX1",
+        "CDX2",
+        "TBXT",
+        "MSX1",
+        "MSX2"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Wnt/PCP",
+      "genes": [
+        "WNT5A",
+        "WNT5B",
+        "WNT11"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Wnt/PCP",
+      "genes": [
+        "FZD3",
+        "FZD6",
+        "FZD7",
+        "ROR1",
+        "ROR2",
+        "RYK",
+        "PTK7",
+        "CELSR1",
+        "CELSR2",
+        "CELSR3",
+        "VANGL1",
+        "VANGL2"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Wnt/PCP",
+      "genes": [
+        "PRICKLE1",
+        "PRICKLE2",
+        "ANKRD6",
+        "SCRIB",
+        "DACT1"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Wnt/PCP",
+      "genes": [
+        "DVL1",
+        "DVL2",
+        "DVL3",
+        "DAAM1",
+        "DAAM2",
+        "RHOA",
+        "RAC1",
+        "ROCK1",
+        "ROCK2",
+        "MAPK8"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "BMP",
+      "genes": [
+        "BMP2",
+        "BMP3",
+        "BMP4",
+        "BMP5",
+        "BMP6",
+        "BMP7",
+        "BMP8A",
+        "BMP8B",
+        "BMP10",
+        "BMP15",
+        "GDF2",
+        "GDF5",
+        "GDF6",
+        "GDF7",
+        "AMH"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "BMP",
+      "genes": [
+        "BMPR1A",
+        "BMPR1B",
+        "BMPR2",
+        "ACVR1",
+        "ACVR2A",
+        "ACVR2B",
+        "ACVRL1",
+        "AMHR2"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "BMP",
+      "genes": [
+        "RGMA",
+        "RGMB",
+        "HJV",
+        "BMPER",
+        "TWSG1",
+        "CRIM1",
+        "ENG"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "BMP",
+      "genes": [
+        "SMAD1",
+        "SMAD5",
+        "SMAD9",
+        "SMAD4"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "BMP",
+      "genes": [
+        "NOG",
+        "CHRD",
+        "CHRDL1",
+        "CHRDL2",
+        "GREM1",
+        "GREM2",
+        "FST",
+        "FSTL1",
+        "SOST",
+        "SOSTDC1",
+        "CER1",
+        "DAND5",
+        "NBL1",
+        "SMAD6",
+        "SMAD7",
+        "SMURF1",
+        "BAMBI"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "BMP",
+      "genes": [
+        "ID1",
+        "ID2",
+        "ID3",
+        "ID4",
+        "MSX1",
+        "MSX2",
+        "SMAD6",
+        "SMAD7",
+        "BAMBI",
+        "DLX5",
+        "HEY1",
+        "GATA2"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "TGFβ/Activin/Nodal",
+      "genes": [
+        "TGFB1",
+        "TGFB2",
+        "TGFB3",
+        "INHBA",
+        "INHBB",
+        "NODAL",
+        "GDF1",
+        "GDF3",
+        "GDF11",
+        "MSTN"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "TGFβ/Activin/Nodal",
+      "genes": [
+        "TGFBR1",
+        "TGFBR2",
+        "TGFBR3",
+        "ACVR1B",
+        "ACVR1C",
+        "ACVR2A",
+        "ACVR2B"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "TGFβ/Activin/Nodal",
+      "genes": [
+        "CRIPTO",
+        "CFC1",
+        "LTBP1",
+        "LTBP2",
+        "LTBP3",
+        "LTBP4",
+        "THBS1",
+        "ENG",
+        "BAMBI"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "TGFβ/Activin/Nodal",
+      "genes": [
+        "SMAD2",
+        "SMAD3",
+        "SMAD4",
+        "FOXH1"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "TGFβ/Activin/Nodal",
+      "genes": [
+        "LEFTY1",
+        "LEFTY2",
+        "FST",
+        "FSTL3",
+        "INHA",
+        "SMAD7",
+        "SMURF1",
+        "SMURF2",
+        "SKI",
+        "SKIL",
+        "TGIF1",
+        "CER1",
+        "BAMBI"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "TGFβ/Activin/Nodal",
+      "genes": [
+        "SERPINE1",
+        "LEFTY1",
+        "LEFTY2",
+        "NODAL",
+        "PITX2",
+        "SKIL",
+        "SMAD7",
+        "TGFBI",
+        "CCN2",
+        "COL1A1"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "FGF",
+      "genes": [
+        "FGF1",
+        "FGF2",
+        "FGF3",
+        "FGF4",
+        "FGF5",
+        "FGF6",
+        "FGF7",
+        "FGF8",
+        "FGF9",
+        "FGF10",
+        "FGF19",
+        "FGF16",
+        "FGF17",
+        "FGF18",
+        "FGF20",
+        "FGF21",
+        "FGF22",
+        "FGF23"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "FGF",
+      "genes": [
+        "FGFR1",
+        "FGFR2",
+        "FGFR3",
+        "FGFR4",
+        "FGFRL1"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "FGF",
+      "genes": [
+        "KL",
+        "KLB",
+        "FGFBP1",
+        "FGFBP3",
+        "FRS2",
+        "GRB2",
+        "SOS1",
+        "PTPN11"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "FGF",
+      "genes": [
+        "ETV4",
+        "ETV5",
+        "ETV1",
+        "MAPK1",
+        "MAPK3"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "FGF",
+      "genes": [
+        "SPRY1",
+        "SPRY2",
+        "SPRY3",
+        "SPRY4",
+        "SPRED1",
+        "SPRED2",
+        "SPRED3",
+        "DUSP6",
+        "IL17RD"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "FGF",
+      "genes": [
+        "SPRY2",
+        "SPRY4",
+        "DUSP6",
+        "ETV4",
+        "ETV5",
+        "IL17RD",
+        "SPRED1"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Hedgehog",
+      "genes": [
+        "SHH",
+        "IHH",
+        "DHH"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Hedgehog",
+      "genes": [
+        "PTCH1",
+        "PTCH2",
+        "SMO"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Hedgehog",
+      "genes": [
+        "GAS1",
+        "CDON",
+        "BOC",
+        "LRP2",
+        "HHAT",
+        "DISP1",
+        "SCUBE2",
+        "KIF7"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Hedgehog",
+      "genes": [
+        "GLI1",
+        "GLI2",
+        "GLI3"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "Hedgehog",
+      "genes": [
+        "SUFU",
+        "HHIP",
+        "GPR161",
+        "PTCH1",
+        "PTCH2"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "Hedgehog",
+      "genes": [
+        "PTCH1",
+        "GLI1",
+        "HHIP",
+        "PTCH2",
+        "FOXF1",
+        "FOXA2",
+        "NKX2-2",
+        "OLIG2"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Notch",
+      "genes": [
+        "DLL1",
+        "DLL3",
+        "DLL4",
+        "JAG1",
+        "JAG2",
+        "DLK1",
+        "DLK2",
+        "DNER"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Notch",
+      "genes": [
+        "NOTCH1",
+        "NOTCH2",
+        "NOTCH3",
+        "NOTCH4"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Notch",
+      "genes": [
+        "LFNG",
+        "MFNG",
+        "RFNG",
+        "ADAM10",
+        "ADAM17",
+        "PSEN1",
+        "PSEN2",
+        "NCSTN",
+        "APH1A",
+        "PSENEN",
+        "MIB1",
+        "MIB2"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Notch",
+      "genes": [
+        "RBPJ",
+        "RBPJL",
+        "MAML1",
+        "MAML2",
+        "MAML3"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "Notch",
+      "genes": [
+        "NUMB",
+        "NUMBL",
+        "NRARP",
+        "FBXW7",
+        "ITCH",
+        "DLK1"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "Notch",
+      "genes": [
+        "HES1",
+        "HES5",
+        "HES7",
+        "HEY1",
+        "HEY2",
+        "HEYL",
+        "NRARP"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Retinoic acid",
+      "genes": [
+        "ALDH1A1",
+        "ALDH1A2",
+        "ALDH1A3",
+        "RDH10"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Retinoic acid",
+      "genes": [
+        "RARA",
+        "RARB",
+        "RARG",
+        "RXRA",
+        "RXRB",
+        "RXRG"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Retinoic acid",
+      "genes": [
+        "CRABP1",
+        "CRABP2",
+        "RBP1",
+        "RBP4",
+        "STRA6",
+        "LRAT"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "Retinoic acid",
+      "genes": [
+        "CYP26A1",
+        "CYP26B1",
+        "CYP26C1",
+        "DHRS3"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "Retinoic acid",
+      "genes": [
+        "CYP26A1",
+        "RARB",
+        "HOXA1",
+        "HOXB1",
+        "CRABP2",
+        "DHRS3",
+        "STRA6",
+        "MEIS1",
+        "MEIS2"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Hippo/YAP",
+      "genes": [
+        "FAT1",
+        "FAT4",
+        "DCHS1",
+        "DCHS2",
+        "CRB3"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Hippo/YAP",
+      "genes": [
+        "NF2",
+        "WWC1",
+        "FRMD6",
+        "SAV1",
+        "MOB1A",
+        "MOB1B",
+        "AMOT",
+        "AMOTL1",
+        "AMOTL2"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Hippo/YAP",
+      "genes": [
+        "YAP1",
+        "WWTR1",
+        "TEAD1",
+        "TEAD2",
+        "TEAD3",
+        "TEAD4"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "Hippo/YAP",
+      "genes": [
+        "LATS1",
+        "LATS2",
+        "STK3",
+        "STK4",
+        "VGLL4",
+        "PTPN14"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "Hippo/YAP",
+      "genes": [
+        "CCN1",
+        "CCN2",
+        "ANKRD1",
+        "BIRC5",
+        "AXL",
+        "AMOTL2",
+        "LATS2"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "JAK-STAT",
+      "genes": [
+        "IL6",
+        "LIF",
+        "OSM",
+        "CNTF",
+        "IL11",
+        "CTF1",
+        "EPO",
+        "THPO",
+        "GH1",
+        "PRL",
+        "IFNG",
+        "IFNB1",
+        "IL2",
+        "IL4",
+        "IL7",
+        "IL10",
+        "IL21"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "JAK-STAT",
+      "genes": [
+        "IL6R",
+        "IL6ST",
+        "LIFR",
+        "OSMR",
+        "CNTFR",
+        "IL11RA",
+        "EPOR",
+        "MPL",
+        "GHR",
+        "PRLR",
+        "IFNGR1",
+        "IFNGR2",
+        "IFNAR1",
+        "IFNAR2",
+        "IL2RA",
+        "IL2RB",
+        "IL2RG",
+        "IL4R",
+        "IL7R",
+        "IL10RA",
+        "IL10RB"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "JAK-STAT",
+      "genes": [
+        "JAK1",
+        "JAK2",
+        "JAK3",
+        "TYK2",
+        "STAT1",
+        "STAT2",
+        "STAT3",
+        "STAT4",
+        "STAT5A",
+        "STAT5B",
+        "STAT6"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "JAK-STAT",
+      "genes": [
+        "SOCS1",
+        "SOCS2",
+        "SOCS3",
+        "SOCS4",
+        "SOCS5",
+        "SOCS6",
+        "SOCS7",
+        "CISH",
+        "PTPN1",
+        "PTPN2",
+        "PTPN6",
+        "PIAS1",
+        "PIAS2",
+        "PIAS3",
+        "PIAS4"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "JAK-STAT",
+      "genes": [
+        "SOCS3",
+        "SOCS1",
+        "IRF1",
+        "BCL3",
+        "JUNB",
+        "CEBPD",
+        "PIM1",
+        "OSMR"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "EGF/ErbB",
+      "genes": [
+        "EGF",
+        "TGFA",
+        "AREG",
+        "EREG",
+        "BTC",
+        "HBEGF",
+        "EPGN",
+        "NRG1",
+        "NRG2",
+        "NRG3",
+        "NRG4"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "EGF/ErbB",
+      "genes": [
+        "EGFR",
+        "ERBB2",
+        "ERBB3",
+        "ERBB4"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "EGF/ErbB",
+      "genes": [
+        "ADAM17",
+        "ADAM10"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "EGF/ErbB",
+      "genes": [
+        "GRB2",
+        "SOS1",
+        "SHC1",
+        "PTPN11",
+        "KRAS",
+        "HRAS",
+        "NRAS"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "EGF/ErbB",
+      "genes": [
+        "ERRFI1",
+        "LRIG1",
+        "SPRY2",
+        "CBL"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "EGF/ErbB",
+      "genes": [
+        "EGR1",
+        "FOS",
+        "DUSP6",
+        "IER3",
+        "AREG"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "PDGF",
+      "genes": [
+        "PDGFA",
+        "PDGFB",
+        "PDGFC",
+        "PDGFD"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "PDGF",
+      "genes": [
+        "PDGFRA",
+        "PDGFRB"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "PDGF",
+      "genes": [
+        "GRB2",
+        "SOS1",
+        "SHC1",
+        "PTPN11",
+        "PIK3R1",
+        "PLCG1"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "PDGF",
+      "genes": [
+        "EGR1",
+        "FOS",
+        "CCND1",
+        "MYC"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "VEGF",
+      "genes": [
+        "VEGFA",
+        "VEGFB",
+        "VEGFC",
+        "VEGFD",
+        "PGF"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "VEGF",
+      "genes": [
+        "KDR",
+        "FLT1",
+        "FLT4"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "VEGF",
+      "genes": [
+        "NRP1",
+        "NRP2"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "VEGF",
+      "genes": [
+        "PLCG1",
+        "SHC1",
+        "GRB2",
+        "AKT1"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "VEGF",
+      "genes": [
+        "DLL4",
+        "ESM1",
+        "KDR",
+        "ANGPT2",
+        "APLN",
+        "NOS3",
+        "EGR3"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "IGF/insulin",
+      "genes": [
+        "IGF1",
+        "IGF2",
+        "INS"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "IGF/insulin",
+      "genes": [
+        "IGF1R",
+        "INSR",
+        "IGF2R"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "IGF/insulin",
+      "genes": [
+        "IGFBP1",
+        "IGFBP2",
+        "IGFBP3",
+        "IGFBP4",
+        "IGFBP5",
+        "IGFBP6",
+        "IGFBP7",
+        "PAPPA",
+        "PAPPA2",
+        "HTRA1"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "IGF/insulin",
+      "genes": [
+        "IRS1",
+        "IRS2",
+        "PIK3CA",
+        "PIK3R1",
+        "AKT1",
+        "AKT2",
+        "FOXO1",
+        "FOXO3"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "IGF/insulin",
+      "genes": [
+        "PTEN",
+        "PTPN1",
+        "GRB10"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "HGF/MET",
+      "genes": [
+        "HGF",
+        "MST1"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "HGF/MET",
+      "genes": [
+        "MET",
+        "MST1R"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "HGF/MET",
+      "genes": [
+        "HGFAC",
+        "ST14",
+        "CD44"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "HGF/MET",
+      "genes": [
+        "GAB1",
+        "GRB2",
+        "PTPN11",
+        "STAT3"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "HGF/MET",
+      "genes": [
+        "SPINT1",
+        "SPINT2",
+        "CBL"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "GDNF/RET",
+      "genes": [
+        "GDNF",
+        "NRTN",
+        "ARTN",
+        "PSPN"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "GDNF/RET",
+      "genes": [
+        "RET",
+        "GFRA1",
+        "GFRA2",
+        "GFRA3",
+        "GFRA4"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "GDNF/RET",
+      "genes": [
+        "GRB2",
+        "SHC1",
+        "FRS2",
+        "GAB1"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "GDNF/RET",
+      "genes": [
+        "SPRY1",
+        "CBL"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "GDNF/RET",
+      "genes": [
+        "ETV4",
+        "ETV5",
+        "WNT11",
+        "SPRY1"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Eph/ephrin",
+      "genes": [
+        "EFNA1",
+        "EFNA2",
+        "EFNA3",
+        "EFNA4",
+        "EFNA5",
+        "EFNB1",
+        "EFNB2",
+        "EFNB3"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Eph/ephrin",
+      "genes": [
+        "EPHA1",
+        "EPHA2",
+        "EPHA3",
+        "EPHA4",
+        "EPHA5",
+        "EPHA6",
+        "EPHA7",
+        "EPHA8",
+        "EPHA10",
+        "EPHB1",
+        "EPHB2",
+        "EPHB3",
+        "EPHB4",
+        "EPHB6"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Eph/ephrin",
+      "genes": [
+        "ADAM10"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Eph/ephrin",
+      "genes": [
+        "NGEF",
+        "VAV2",
+        "VAV3",
+        "RAC1",
+        "RHOA",
+        "NCK1"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Semaphorin/plexin",
+      "genes": [
+        "SEMA3A",
+        "SEMA3B",
+        "SEMA3C",
+        "SEMA3D",
+        "SEMA3E",
+        "SEMA3F",
+        "SEMA3G",
+        "SEMA4A",
+        "SEMA4B",
+        "SEMA4C",
+        "SEMA4D",
+        "SEMA4F",
+        "SEMA4G",
+        "SEMA5A",
+        "SEMA5B",
+        "SEMA6A",
+        "SEMA6B",
+        "SEMA6C",
+        "SEMA6D",
+        "SEMA7A"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Semaphorin/plexin",
+      "genes": [
+        "PLXNA1",
+        "PLXNA2",
+        "PLXNA3",
+        "PLXNA4",
+        "PLXNB1",
+        "PLXNB2",
+        "PLXNB3",
+        "PLXNC1",
+        "PLXND1"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Semaphorin/plexin",
+      "genes": [
+        "NRP1",
+        "NRP2"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Semaphorin/plexin",
+      "genes": [
+        "DPYSL2",
+        "DPYSL3",
+        "RND1",
+        "MICAL1"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Slit/Robo",
+      "genes": [
+        "SLIT1",
+        "SLIT2",
+        "SLIT3"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Slit/Robo",
+      "genes": [
+        "ROBO1",
+        "ROBO2",
+        "ROBO3",
+        "ROBO4"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Slit/Robo",
+      "genes": [
+        "GPC1"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Slit/Robo",
+      "genes": [
+        "SRGAP1",
+        "SRGAP2",
+        "SRGAP3",
+        "ENAH",
+        "VASP",
+        "EVL"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Netrin",
+      "genes": [
+        "NTN1",
+        "NTN3",
+        "NTN4",
+        "NTN5",
+        "NTNG1",
+        "NTNG2"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Netrin",
+      "genes": [
+        "DCC",
+        "NEO1",
+        "UNC5A",
+        "UNC5B",
+        "UNC5C",
+        "UNC5D",
+        "DSCAM"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Netrin",
+      "genes": [
+        "DOCK1",
+        "NCK1",
+        "PAK1"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "Netrin",
+      "genes": [
+        "DRAXIN"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Endothelin",
+      "genes": [
+        "EDN1",
+        "EDN2",
+        "EDN3"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Endothelin",
+      "genes": [
+        "EDNRA",
+        "EDNRB"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Endothelin",
+      "genes": [
+        "ECE1",
+        "ECE2"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Endothelin",
+      "genes": [
+        "GNAQ",
+        "GNA11",
+        "PLCB1"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "Endothelin",
+      "genes": [
+        "HAND2",
+        "DLX5",
+        "DLX6",
+        "DLX3",
+        "GATA3",
+        "MSX1"
+      ]
+    },
+    {
+      "name": "ligands",
+      "folder": "Prostaglandin",
+      "genes": [
+        "PTGS1",
+        "PTGS2",
+        "PTGES",
+        "PTGES2",
+        "PTGDS",
+        "PTGIS",
+        "TBXAS1",
+        "PLA2G4A"
+      ]
+    },
+    {
+      "name": "receptors",
+      "folder": "Prostaglandin",
+      "genes": [
+        "PTGER1",
+        "PTGER2",
+        "PTGER3",
+        "PTGER4",
+        "PTGFR",
+        "PTGDR",
+        "PTGDR2",
+        "PTGIR",
+        "TBXA2R"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Prostaglandin",
+      "genes": [
+        "SLCO2A1"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Prostaglandin",
+      "genes": [
+        "GNAS",
+        "CREB1"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "Prostaglandin",
+      "genes": [
+        "HPGD"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "Prostaglandin",
+      "genes": [
+        "PTGS2",
+        "NR4A1",
+        "FOS",
+        "IL6"
+      ]
+    },
+    {
+      "name": "modulators",
+      "folder": "Hypoxia/HIF",
+      "genes": [
+        "EGLN1",
+        "EGLN2",
+        "EGLN3",
+        "HIF1AN"
+      ]
+    },
+    {
+      "name": "effectors",
+      "folder": "Hypoxia/HIF",
+      "genes": [
+        "HIF1A",
+        "EPAS1",
+        "HIF3A",
+        "ARNT",
+        "ARNT2"
+      ]
+    },
+    {
+      "name": "inhibitors",
+      "folder": "Hypoxia/HIF",
+      "genes": [
+        "VHL",
+        "EGLN1",
+        "HIF1AN"
+      ]
+    },
+    {
+      "name": "targets",
+      "folder": "Hypoxia/HIF",
+      "genes": [
+        "VEGFA",
+        "SLC2A1",
+        "PGK1",
+        "LDHA",
+        "BNIP3",
+        "CA9",
+        "EGLN3",
+        "ADM",
+        "NDRG1",
+        "PDK1",
+        "ANKRD37",
+        "P4HA1"
+      ]
+    }
+  ]
+}

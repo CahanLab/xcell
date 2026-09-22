@@ -12,7 +12,8 @@
  * Rollback: delete this file and remove imports from HeatmapView.tsx.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { orderSelectedSets, groupLabel, folderSelectionState, restoreSelectedIds } from '../lib/heatmapGroups'
 import { useStore, HeatmapConfig, GeneSet, GeneSetCategoryType, cfgDefault } from '../store'
 
 const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial', 'marker_genes', 'line_association']
@@ -50,6 +51,20 @@ function getAllGeneSets(categories: Record<GeneSetCategoryType, { geneSets: Gene
   return all
 }
 
+/** A folder header with a tri-state checkbox: none, some or all of its sets picked. */
+function FolderRow({ name, state, onToggle }: { name: string; state: 'none' | 'some' | 'all'; onToggle: () => void }) {
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = state === 'some'
+  }, [state])
+  return (
+    <label style={{ ...styles.checkboxRow, fontWeight: 600 }} title="Select every set in this folder">
+      <input ref={ref} type="checkbox" checked={state === 'all'} onChange={onToggle} />
+      <span style={{ ...styles.geneSetName, color: '#4ecdc4' }}>{name}</span>
+    </label>
+  )
+}
+
 interface Props {
   config: HeatmapConfig | null
   onApply: (config: HeatmapConfig) => void
@@ -66,7 +81,7 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
 
   // Initialize from existing config or defaults
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
-    () => new Set(config?.selectedGeneSets.map((gs) => nonEmptySets.find((s) => s.name === gs.name && s.genes.length === gs.genes.length)?.id || '').filter(Boolean))
+    () => restoreSelectedIds(config?.selectedGeneSets ?? [], nonEmptySets)
   )
   const [cellOrdering, setCellOrdering] = useState<HeatmapConfig['cellOrdering']>(config?.cellOrdering ?? cfgDefault(['heatmap', 'cell_ordering'], 'none' as HeatmapConfig['cellOrdering']))
   const [obsColumn, setObsColumn] = useState<string | null>(config?.obsColumn ?? null)
@@ -100,6 +115,18 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
     })
   }
 
+  // One click for a whole folder — a pathway bundle's roles come as a folder.
+  const toggleFolder = (folderName: string, category: GeneSetCategoryType) => {
+    const ids = nonEmptySets.filter((gs) => gs.category === category && gs.folderName === folderName).map((gs) => gs.id)
+    const state = folderSelectionState(nonEmptySets.filter((gs) => gs.category === category), folderName, selectedIds)
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (state === 'all') ids.forEach((id) => next.delete(id))
+      else ids.forEach((id) => next.add(id))
+      return next
+    })
+  }
+
   const selectAllGeneSets = () => {
     setSelectedIds(new Set(nonEmptySets.map((gs) => gs.id)))
   }
@@ -109,11 +136,13 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
   }
 
   const handleApply = () => {
-    const selected = nonEmptySets.filter((gs) => selectedIds.has(gs.id))
+    // Folder order, then each folder's own set order — a pathway reads
+    // ligands → receptors → … whatever order the boxes were ticked in.
+    const selected = orderSelectedSets(nonEmptySets, selectedIds)
     if (selected.length === 0) return
 
     onApply({
-      selectedGeneSets: selected.map((gs) => ({ name: gs.name, genes: gs.genes })),
+      selectedGeneSets: selected.map((gs) => ({ id: gs.id, name: groupLabel(gs, selected), genes: gs.genes })),
       cellOrdering,
       obsColumn: (cellOrdering === 'category' || cellOrdering === 'category_then_position') ? obsColumn : null,
       lineName: (cellOrdering === 'line_position' || cellOrdering === 'line_distance' || cellOrdering === 'category_then_position') ? lineName : null,
@@ -159,21 +188,37 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
               {CATEGORY_ORDER.map((catType) => {
                 const catSets = nonEmptySets.filter((gs) => gs.category === catType)
                 if (catSets.length === 0) return null
+                // Loose sets first, then each folder under its own header
+                // with a folder-level checkbox.
+                const loose = catSets.filter((gs) => !gs.folderName)
+                const folderNames: string[] = []
+                for (const gs of catSets) {
+                  if (gs.folderName && !folderNames.includes(gs.folderName)) folderNames.push(gs.folderName)
+                }
+                const row = (gs: FlatGeneSet, indent: boolean) => (
+                  <label key={gs.id} style={{ ...styles.checkboxRow, ...(indent ? { paddingLeft: '22px' } : {}) }}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(gs.id)}
+                      onChange={() => toggleGeneSet(gs.id)}
+                    />
+                    <span style={styles.geneSetName}>{gs.name}</span>
+                    <span style={styles.geneSetCount}>({gs.genes.length})</span>
+                  </label>
+                )
                 return (
                   <div key={catType}>
                     <div style={styles.categoryLabel}>{CATEGORY_NAMES[catType]}</div>
-                    {catSets.map((gs) => (
-                      <label key={gs.id} style={styles.checkboxRow}>
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(gs.id)}
-                          onChange={() => toggleGeneSet(gs.id)}
+                    {loose.map((gs) => row(gs, false))}
+                    {folderNames.map((folderName) => (
+                      <div key={folderName}>
+                        <FolderRow
+                          name={folderName}
+                          state={folderSelectionState(catSets, folderName, selectedIds)}
+                          onToggle={() => toggleFolder(folderName, catType)}
                         />
-                        <span style={styles.geneSetName}>
-                          {gs.folderName ? `${gs.folderName} / ` : ''}{gs.name}
-                        </span>
-                        <span style={styles.geneSetCount}>({gs.genes.length})</span>
-                      </label>
+                        {catSets.filter((gs) => gs.folderName === folderName).map((gs) => row(gs, true))}
+                      </div>
                     ))}
                   </div>
                 )

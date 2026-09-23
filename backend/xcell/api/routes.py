@@ -1915,7 +1915,9 @@ class LineAssociationRequest(BaseModel):
     n_spline_knots: int = 5
     min_cells: int = 20
     fdr_threshold: float = 0.05
-    top_n: int = 50
+    # An optional cap on genes returned per direction (per module when
+    # clustering); None returns every significant gene.
+    top_n: int | None = None
     cluster_genes: bool = False
 
 
@@ -2020,7 +2022,9 @@ class MultiLineAssociationRequest(BaseModel):
     n_spline_knots: int = 5
     min_cells: int = 20
     fdr_threshold: float = 0.05
-    top_n: int = 50
+    # An optional cap on genes returned per direction (per module when
+    # clustering); None returns every significant gene.
+    top_n: int | None = None
     cluster_genes: bool = False
 
 

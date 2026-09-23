@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { useStore, userConfigGet } from '../store'
 import { useLineAssociation, createLineEmbedding, appendDataset, cancelTask } from '../hooks/useData'
 import GeneSubsetPicker, { useGeneSubset } from './GeneSubsetPicker'
+import { parseGeneCap, GENE_CAP_MAX } from '../lib/lineAssociation'
 
 // Pull line_association defaults from user config, with hardcoded fallbacks.
 // Evaluated lazily inside useState so that if the config loads after the
@@ -10,6 +11,10 @@ function laDefault<T>(path: string, fallback: T): T {
   const cfg = useStore.getState().userConfig
   return userConfigGet(cfg, ['line_association', path], fallback)
 }
+
+const CAP_TITLE =
+  'Optional cap on how many genes are returned. Leave blank to keep every gene ' +
+  'that passes the FDR threshold; a cap keeps the highest-scoring ones.'
 
 
 const styles = {
@@ -251,7 +256,7 @@ function LineToolsModal({
   const [testVariable, setTestVariable] = useState<'position' | 'distance'>(() => laDefault('test_variable', 'position'))
   const [nSplineKnots, setNSplineKnots] = useState<number>(() => laDefault('n_spline_knots', 5))
   const [fdrThreshold, setFdrThreshold] = useState<number>(() => laDefault('fdr_threshold', 0.05))
-  const [topN, setTopN] = useState<number>(() => laDefault('top_n', 50))
+  const [topN, setTopN] = useState<number | null>(() => laDefault<number | null>('top_n', null))
   const [clusterGenes, setClusterGenes] = useState<boolean>(() => laDefault('cluster_genes', false))
 
   const { runAssociation, isLineAssociationLoading } = useLineAssociation()
@@ -497,21 +502,21 @@ function LineToolsModal({
                 />
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: '#ccc' }}>
-                <span title={clusterGenes
-                  ? 'Maximum number of genes to return per module.'
-                  : 'Maximum number of genes to return per direction (positive/negative).'}>
+                <span title={CAP_TITLE}>
                   {clusterGenes ? 'Max genes/module' : 'Max genes/direction'}
                 </span>
                 <input
                   type="number"
-                  min="10"
-                  max="500"
+                  min="1"
+                  max={GENE_CAP_MAX}
                   step="10"
-                  value={topN}
-                  onChange={(e) => setTopN(Math.max(10, Math.min(500, parseInt(e.target.value) || 50)))}
-                  style={styles.smallInput}
-                  title="Maximum genes returned (10-500)"
+                  value={topN ?? ''}
+                  placeholder="all"
+                  onChange={(e) => setTopN(parseGeneCap(e.target.value))}
+                  style={{ ...styles.smallInput, width: '56px' }}
+                  title={CAP_TITLE}
                 />
+                <span style={{ color: '#888' }}>{topN === null ? '(all)' : ''}</span>
               </div>
               <label
                 style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontSize: '11px', color: '#ccc', cursor: 'pointer' }}
@@ -599,7 +604,7 @@ function MultiLineToolsModal({
   const [testVariable, setTestVariable] = useState<'position' | 'distance'>(() => laDefault('test_variable', 'position'))
   const [nSplineKnots, setNSplineKnots] = useState<number>(() => laDefault('n_spline_knots', 5))
   const [fdrThreshold, setFdrThreshold] = useState<number>(() => laDefault('fdr_threshold', 0.05))
-  const [topN, setTopN] = useState<number>(() => laDefault('top_n', 50))
+  const [topN, setTopN] = useState<number | null>(() => laDefault<number | null>('top_n', null))
   const [clusterGenes, setClusterGenes] = useState<boolean>(() => laDefault('cluster_genes', false))
 
   const geneSubset = useGeneSubset()
@@ -742,10 +747,12 @@ function MultiLineToolsModal({
                 style={{ ...styles.smallInput, width: '56px' }} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: '#ccc' }}>
-              <span>{clusterGenes ? 'Max genes/module' : 'Max genes/direction'}</span>
-              <input type="number" min="10" max="500" step="10" value={topN}
-                onChange={(e) => setTopN(Math.max(10, Math.min(500, parseInt(e.target.value) || 50)))}
-                style={styles.smallInput} />
+              <span title={CAP_TITLE}>{clusterGenes ? 'Max genes/module' : 'Max genes/direction'}</span>
+              <input type="number" min="1" max={GENE_CAP_MAX} step="10" value={topN ?? ''}
+                placeholder="all" title={CAP_TITLE}
+                onChange={(e) => setTopN(parseGeneCap(e.target.value))}
+                style={{ ...styles.smallInput, width: '56px' }} />
+              <span style={{ color: '#888' }}>{topN === null ? '(all)' : ''}</span>
             </div>
             <label
               style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontSize: '11px', color: '#ccc', cursor: 'pointer' }}

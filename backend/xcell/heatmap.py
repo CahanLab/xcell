@@ -212,18 +212,25 @@ def _order_by_category(adata, cell_idx, obs_column):
     return ordered, groups
 
 
+def _project(adaptor, line):
+    """(positions, distances) for every cell, against this line's own axes.
+
+    The adaptor projects onto the two .obsm columns the line was drawn
+    against, which is not necessarily columns 0/1.
+    """
+    pts = line.get("smoothedPoints") or line.get("points") or []
+    coords = adaptor._line_view_coords(line)
+    return adaptor._project_cells_onto_line(pts, coords)
+
+
 def _order_by_line(adaptor, cell_idx, line_name, use_distance):
     line = _find_line(adaptor, line_name)
     if line is None:
         return cell_idx, []
 
-    pts = line.get("smoothedPoints") or line["points"]
-    projs = adaptor._project_cells_onto_line(np.array(pts), line["embeddingName"])
-
-    key = "distanceToLine" if use_distance else "positionOnLine"
-    all_vals = np.array([p[key] for p in projs])
-    subset_vals = all_vals[cell_idx]
-    order = np.argsort(subset_vals)
+    positions, distances = _project(adaptor, line)
+    all_vals = distances if use_distance else positions
+    order = np.argsort(all_vals[cell_idx], kind="stable")
     return cell_idx[order], []
 
 
@@ -245,9 +252,7 @@ def _order_category_then_position(adaptor, cell_idx, obs_column, line_name):
     if line is None:
         return _order_by_category(adata, cell_idx, obs_column)
 
-    pts = line.get("smoothedPoints") or line["points"]
-    projs = adaptor._project_cells_onto_line(np.array(pts), line["embeddingName"])
-    positions = np.array([p["positionOnLine"] for p in projs])
+    positions, _ = _project(adaptor, line)
     subset_pos = positions[cell_idx]
 
     order = np.lexsort((subset_pos, codes))
@@ -266,8 +271,8 @@ def _order_category_then_position(adaptor, cell_idx, obs_column, line_name):
 
 
 def _find_line(adaptor, line_name):
-    for dl in adaptor._drawn_lines:
-        if dl["name"] == line_name:
+    for dl in adaptor.get_lines():
+        if dl.get("name") == line_name:
             return dl
     return None
 

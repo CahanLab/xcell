@@ -3800,7 +3800,7 @@ class DataAdaptor:
         gene_mask: np.ndarray,
         n_spline_knots: int = 5,
         fdr_threshold: float = 0.05,
-        top_n: int = 50,
+        top_n: int | None = None,
         cluster_genes: bool = False,
     ) -> dict[str, Any]:
         """Core spline regression engine for line association analysis.
@@ -3819,7 +3819,9 @@ class DataAdaptor:
                       to test.
             n_spline_knots: Number of interior knots for the B-spline basis.
             fdr_threshold: FDR threshold for significance.
-            top_n: Number of top genes to return for each direction.
+            top_n: Optional cap on how many genes to return per direction
+                (per module when clustering). None returns every
+                significant gene; a cap keeps the highest-scoring ones.
             cluster_genes: If True, cluster significant genes by expression
                 profile shape and return modules. If False, skip clustering
                 and return only positive/negative lists (modules will be empty).
@@ -3959,18 +3961,17 @@ class DataAdaptor:
         pos_mask = sig_mask & (results['direction'] > 0)
         neg_mask = sig_mask & (results['direction'] < 0)
 
+        # top_n is an optional cap: None returns every significant gene, which
+        # is what a user who has already set an FDR threshold usually meant.
+        cap = len(results) if top_n is None else max(0, int(top_n))
+        cols = ['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']
+
         positive_genes = (
-            results[pos_mask]
-            .nlargest(top_n, 'score')
-            [['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']]
-            .to_dict('records')
+            results[pos_mask].nlargest(cap, 'score')[cols].to_dict('records')
         )
 
         negative_genes = (
-            results[neg_mask]
-            .nlargest(top_n, 'score')
-            [['gene', 'f_stat', 'pval', 'fdr', 'r_squared', 'amplitude', 'direction']]
-            .to_dict('records')
+            results[neg_mask].nlargest(cap, 'score')[cols].to_dict('records')
         )
 
         # ---- Module-based clustering of ALL significant genes ----
@@ -4040,9 +4041,11 @@ class DataAdaptor:
                 # Sort genes within module by peak position along the line
                 member_genes = member_genes.copy()
                 member_genes['peak_position'] = member_peak_positions
+                if top_n is not None and len(member_genes) > cap:
+                    # Cap by score, not by peak position — truncating the
+                    # peak-ordered list would keep one end of the line only.
+                    member_genes = member_genes.nlargest(cap, 'score')
                 member_genes_sorted = member_genes.sort_values('peak_position')
-                if len(member_genes_sorted) > top_n:
-                    member_genes_sorted = member_genes_sorted.head(top_n)
 
                 # Build gene records with per-gene profiles
                 gene_records = []
@@ -4065,7 +4068,7 @@ class DataAdaptor:
                 modules.append({
                     'module_id': mod_idx,
                     'pattern': pattern,
-                    'n_genes': int(member_mask.sum()),
+                    'n_genes': len(gene_records),
                     'representative_profile': rep_profile.tolist(),
                     'profile_positions': profile_positions.tolist(),
                     'genes': gene_records,
@@ -4132,7 +4135,7 @@ class DataAdaptor:
         n_spline_knots: int = 5,
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
-        top_n: int = 50,
+        top_n: int | None = None,
         cluster_genes: bool = False,
     ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
         """Prepare line association computation (cancellable).
@@ -4202,7 +4205,7 @@ class DataAdaptor:
         n_spline_knots: int = 5,
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
-        top_n: int = 50,
+        top_n: int | None = None,
         cluster_genes: bool = False,
     ) -> dict[str, Any]:
         """Test genes for association with position along or distance from a line.
@@ -4225,7 +4228,9 @@ class DataAdaptor:
                            Total df = n_spline_knots + 2 (for cubic splines).
             min_cells: Minimum number of cells required for testing.
             fdr_threshold: FDR threshold for significance.
-            top_n: Number of top genes to return for each direction.
+            top_n: Optional cap on how many genes to return per direction
+                (per module when clustering). None returns every
+                significant gene; a cap keeps the highest-scoring ones.
 
         Returns:
             Dict containing:
@@ -4327,7 +4332,7 @@ class DataAdaptor:
         n_spline_knots: int = 5,
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
-        top_n: int = 50,
+        top_n: int | None = None,
         cluster_genes: bool = False,
     ) -> tuple[Callable[[], dict[str, Any]], Callable[[dict[str, Any]], None]]:
         """Prepare multi-line association computation (cancellable).
@@ -4390,7 +4395,7 @@ class DataAdaptor:
         n_spline_knots: int = 5,
         min_cells: int = 20,
         fdr_threshold: float = 0.05,
-        top_n: int = 50,
+        top_n: int | None = None,
         cluster_genes: bool = False,
     ) -> dict[str, Any]:
         """Test genes for association across multiple lines (pooled analysis).
@@ -4409,7 +4414,9 @@ class DataAdaptor:
             n_spline_knots: Number of interior knots for the B-spline basis.
             min_cells: Minimum number of pooled cells required.
             fdr_threshold: FDR threshold for significance.
-            top_n: Number of top genes to return per direction.
+            top_n: Optional cap on how many genes to return per direction
+                (per module when clustering). None returns every
+                significant gene; a cap keeps the highest-scoring ones.
 
         Returns:
             Dict with spline association results plus multi-line metadata:

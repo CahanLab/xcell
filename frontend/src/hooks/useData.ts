@@ -1889,7 +1889,8 @@ export interface LineAssociationParams {
   nSplineKnots?: number
   minCells?: number
   fdrThreshold?: number
-  topN?: number
+  /** Optional cap on genes returned per direction; null/undefined = no cap. */
+  topN?: number | null
   clusterGenes?: boolean
 }
 
@@ -1928,7 +1929,7 @@ export async function runLineAssociation(params: LineAssociationParams, slot?: D
       n_spline_knots: params.nSplineKnots ?? 5,
       min_cells: params.minCells ?? 20,
       fdr_threshold: params.fdrThreshold ?? 0.05,
-      top_n: params.topN ?? 50,
+      top_n: params.topN ?? null,
       cluster_genes: params.clusterGenes ?? false,
     }),
   })
@@ -1972,7 +1973,8 @@ export interface MultiLineAssociationParams {
   nSplineKnots?: number
   minCells?: number
   fdrThreshold?: number
-  topN?: number
+  /** Optional cap on genes returned per direction; null/undefined = no cap. */
+  topN?: number | null
   clusterGenes?: boolean
 }
 
@@ -1991,7 +1993,7 @@ export async function runMultiLineAssociation(params: MultiLineAssociationParams
       n_spline_knots: params.nSplineKnots ?? 5,
       min_cells: params.minCells ?? 20,
       fdr_threshold: params.fdrThreshold ?? 0.05,
-      top_n: params.topN ?? 50,
+      top_n: params.topN ?? null,
       cluster_genes: params.clusterGenes ?? false,
     }),
   })

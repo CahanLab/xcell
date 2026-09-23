@@ -52,7 +52,9 @@ scanpy:
 line_association:
   n_spline_knots: 5
   fdr_threshold: 0.25
-  top_n: 50
+  # Optional cap on genes returned per direction (per module when
+  # clustering). null keeps every gene that passes the FDR threshold.
+  top_n: null
   cluster_genes: false
   test_variable: position
 

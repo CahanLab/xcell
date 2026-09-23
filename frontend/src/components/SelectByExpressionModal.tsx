@@ -16,6 +16,7 @@ import {
   defaultThresholds,
   matchingIndices,
 } from '../utils/histogram'
+import { runSignature, isOutcomeCurrent } from '../lib/selectByExpression'
 
 export type { ThresholdMode, Histogram } from '../utils/histogram'
 export { computeHistogram, matchingIndices, defaultThresholds } from '../utils/histogram'
@@ -184,7 +185,12 @@ export default function SelectByExpressionModal() {
         lowIndices: number[]
       }
 
-  const [applyStatus, setApplyStatus] = useState<ApplyStatus>({ kind: 'idle' })
+  // The outcome is kept with the run it describes; see lib/selectByExpression.
+  // This modal never unmounts, so a bare status would survive into the next
+  // gene set and leave it stuck on the previous run's success footer.
+  const [outcome, setOutcome] = useState<
+    { source: unknown; signature: string; status: ApplyStatus } | null
+  >(null)
 
   const nameCollision =
     action === 'labelCells' &&
@@ -203,6 +209,32 @@ export default function SelectByExpressionModal() {
       setLabelContext('all')
     }
   }, [selectedCellIndices, labelContext])
+
+  // A new open is a new run. Reset what belongs to the previous one during
+  // render (React re-renders before committing, so nothing stale is painted):
+  // the name follows the new source again and the labels go back to their
+  // defaults instead of carrying the last gene set's wording over.
+  const [prevSource, setPrevSource] = useState(source)
+  if (source !== prevSource) {
+    setPrevSource(source)
+    setUserEditedName(false)
+    setHighLabel(MESSAGES.selectByExpression.defaultHighLabel)
+    setLowLabel(MESSAGES.selectByExpression.defaultLowLabel)
+    setOutcome(null)
+  }
+
+  // An Apply's outcome is shown only while the source and the inputs that
+  // produced it are unchanged; otherwise the modal is back to idle and the
+  // Apply button is available again.
+  const runSig = runSignature({
+    mode, lo, hi, action, labelContext, annotationName, highLabel, lowLabel,
+  })
+  const applyStatus: ApplyStatus =
+    outcome && isOutcomeCurrent(outcome, source, runSig)
+      ? outcome.status
+      : { kind: 'idle' }
+  const setApplyStatus = (status: ApplyStatus) =>
+    setOutcome({ source, signature: runSig, status })
 
   // Keep annotationName in sync with the default until the user has edited it.
   useEffect(() => {

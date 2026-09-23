@@ -3548,7 +3548,7 @@ class DataAdaptor:
             raise ValueError(f"Groups have {len(overlap)} overlapping cells")
 
         # Resolve gene subset
-        if gene_subset is not None:
+        if gene_subset is not None or self._visible_gene_mask is not None:
             gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
             work_adata = self.adata[:, gene_mask].copy()
         else:
@@ -5463,7 +5463,10 @@ class DataAdaptor:
         # The veto reads normalized profiles even though the merge sums raw
         # counts: on raw counts any two spots correlate highly, because both are
         # dominated by the same few high expressors, and the veto never fires.
-        gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+        # Structural: this rebuilds the cells, so it reads the whole dataset
+        # rather than the Gene Panel's current view.
+        gene_mask, subset_type, _ = self._resolve_gene_mask(
+            gene_subset, apply_visible_mask=False)
         result = _merge(coords, region_counts, region_counts[:, gene_mask], params)
 
         stats: dict[str, Any] = {
@@ -5981,9 +5984,10 @@ class DataAdaptor:
     ) -> dict[str, Any]:
         """Describe a resolved gene subset for an API response.
 
-        Always the same four keys, whatever kind of subset it was, so the UI
+        Always the same five keys, whatever kind of subset it was, so the UI
         renders one shape instead of branching. ``n_requested`` is None unless
-        the subset was an explicit gene list.
+        the subset was an explicit gene list; ``n_hidden_by_gene_mask`` is 0
+        unless the active gene mask narrowed the selection.
         """
         missing = metadata.get('genes_missing') or []
         return {
@@ -5991,13 +5995,24 @@ class DataAdaptor:
             'n_genes': int(metadata.get('n_genes', 0)),
             'n_requested': metadata.get('genes_requested'),
             'genes_missing': list(missing[:cls.MAX_REPORTED_MISSING_GENES]),
+            'n_hidden_by_gene_mask': int(metadata.get('n_hidden_by_gene_mask', 0)),
         }
 
     def _resolve_gene_mask(
         self,
         gene_subset: str | list[str] | dict[str, Any] | None,
+        *,
+        apply_visible_mask: bool = True,
     ) -> tuple[np.ndarray, str, dict[str, Any]]:
         """Resolve a gene_subset specification into a boolean mask.
+
+        The result is intersected with the active ``.var`` gene mask, so an
+        operation that reports genes works in the universe the Gene Panel
+        shows. Callers that build cell-space structure (PCA and the rest of
+        the scanpy chain), rebuild the cells (spot merging), or hand genes to
+        another dataset (the Localize reference) pass
+        ``apply_visible_mask=False``: a session-only view must not silently
+        change an embedding that gets written into the file.
 
         Args:
             gene_subset: Gene subset specification. Can be:
@@ -6005,10 +6020,42 @@ class DataAdaptor:
                 - str: single boolean column name from .var (e.g., 'highly_variable')
                 - list[str]: explicit list of gene names
                 - dict: {'columns': [...], 'operation': 'intersection'|'union'}
+            apply_visible_mask: Intersect with the active gene mask (default).
 
         Returns:
-            Tuple of (boolean mask, subset_type string, metadata dict)
+            Tuple of (boolean mask, subset_type string, metadata dict). When
+            the gene mask removed anything, the metadata carries
+            ``n_hidden_by_gene_mask`` and ``n_genes`` counts what survived.
+
+        Raises:
+            ValueError: If the subset is empty, or the gene mask hides all of it.
         """
+        mask, subset_type, metadata = self._resolve_gene_subset_spec(gene_subset)
+        if not apply_visible_mask or self._visible_gene_mask is None:
+            return mask, subset_type, metadata
+
+        hidden = int(np.sum(mask & ~self._visible_gene_mask))
+        if hidden == 0:
+            return mask, subset_type, metadata
+
+        visible = mask & self._visible_gene_mask
+        if not visible.any():
+            raise ValueError(
+                "The active gene mask hides every gene in this selection. "
+                "Clear the gene mask, or widen it, and run again."
+            )
+        metadata = {
+            **metadata,
+            'n_genes': int(visible.sum()),
+            'n_hidden_by_gene_mask': hidden,
+        }
+        return visible, subset_type, metadata
+
+    def _resolve_gene_subset_spec(
+        self,
+        gene_subset: str | list[str] | dict[str, Any] | None,
+    ) -> tuple[np.ndarray, str, dict[str, Any]]:
+        """The gene_subset spec on its own, before the gene mask narrows it."""
         if gene_subset is None:
             return (
                 np.ones(self.n_genes, dtype=bool),
@@ -6814,7 +6861,10 @@ class DataAdaptor:
 
         # Resolve gene subset
         if gene_subset is not None:
-            gene_mask, subset_type, subset_metadata = self._resolve_gene_mask(gene_subset)
+            # The gene mask is a session-only Gene-Panel view; it must not
+            # silently change an embedding that gets written into the file.
+            gene_mask, subset_type, subset_metadata = self._resolve_gene_mask(
+                gene_subset, apply_visible_mask=False)
             if auto_label:
                 subset_type = auto_label
             n_genes_used = int(gene_mask.sum())
@@ -8240,7 +8290,7 @@ class DataAdaptor:
         elif basis == 'expression':
             from sklearn.preprocessing import StandardScaler
 
-            if gene_subset is not None:
+            if gene_subset is not None or self._visible_gene_mask is not None:
                 gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
             else:
                 gene_mask = np.ones(self.adata.n_vars, dtype=bool)
@@ -8422,7 +8472,7 @@ class DataAdaptor:
             from sklearn.preprocessing import StandardScaler
 
             # Resolve gene subset
-            if gene_subset is not None:
+            if gene_subset is not None or self._visible_gene_mask is not None:
                 gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
             else:
                 gene_mask = np.ones(self.adata.n_vars, dtype=bool)
@@ -8709,12 +8759,14 @@ class DataAdaptor:
         return result
 
     def _resolve_gene_indices(
-        self, gene_names: list[str], *, use_gene_mask: bool = False
+        self, gene_names: list[str], *, use_gene_mask: bool = True
     ) -> tuple[list[str], list[int]]:
         """Map requested gene names to (found_names, .var row indices).
 
-        Unknown names are dropped. When ``use_gene_mask`` and a .var gene mask
-        is active, masked-out genes are skipped (no-op otherwise).
+        Unknown names are dropped. When ``use_gene_mask`` (the default) and a
+        .var gene mask is active, masked-out genes are skipped — the same rule
+        ``_resolve_gene_mask`` applies to every gene-reporting operation. Pass
+        False to read the whole .var axis regardless.
         """
         var_names = self.adata.var_names
         active_mask = (
@@ -8769,7 +8821,7 @@ class DataAdaptor:
         *,
         cell_indices: list[int] | None = None,
         layer: str | None = None,
-        use_gene_mask: bool = False,
+        use_gene_mask: bool = True,
         metric: str = 'bicor',
         min_genes: int = 5,
         merge_threshold: float = 0.8,
@@ -8813,7 +8865,7 @@ class DataAdaptor:
         eps: float = 0.3,
         min_samples: int = 3,
         layer: str | None = None,
-        use_gene_mask: bool = False,
+        use_gene_mask: bool = True,
         metric: str = 'bicor',
         min_genes: int = 5,
         merge_threshold: float = 0.8,
@@ -9276,7 +9328,7 @@ class DataAdaptor:
             found_set = set(found)
             missing = [g for g in requested if g not in found_set]
             subset_type = 'gene_list'
-        elif gene_subset is not None:
+        elif gene_subset is not None or self._visible_gene_mask is not None:
             mask, subset_type, _meta = self._resolve_gene_mask(gene_subset)
             gene_idx = [int(i) for i in np.flatnonzero(mask)]
             found = [str(self.adata.var_names[i]) for i in gene_idx]
@@ -10439,7 +10491,7 @@ class DataAdaptor:
 
         # Resolve gene_subset to gene list if no explicit genes provided
         subset_type = 'all'
-        if genes is None and gene_subset is not None:
+        if genes is None and (gene_subset is not None or self._visible_gene_mask is not None):
             gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
             genes = self.adata.var_names[gene_mask].tolist()
 
@@ -10599,7 +10651,7 @@ class DataAdaptor:
 
         # Resolve gene_subset to gene list if no explicit genes provided
         subset_type = 'all'
-        if genes is None and gene_subset is not None:
+        if genes is None and (gene_subset is not None or self._visible_gene_mask is not None):
             gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
             genes = self.adata.var_names[gene_mask].tolist()
 
@@ -11352,7 +11404,10 @@ class DataAdaptor:
                 'This dataset has no spatial coordinates, so it cannot act as a '
                 "reference. Expected .obsm['spatial'] or .obsm['X_spatial']."
             )
-        mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
+        # These genes become the shared space with the query dataset, which
+        # has its own mask (or none), so this reads the whole reference.
+        mask, subset_type, _ = self._resolve_gene_mask(
+            gene_subset, apply_visible_mask=False)
         sections = self._resolve_sections(section_col)
 
         matrix = self._resolve_source_matrix(layer)
@@ -11914,7 +11969,7 @@ class DataAdaptor:
         # column, an explicit gene list, or a column-combination spec): restrict
         # eligible genes so only pairs whose subunits all fall in the subset run.
         allowed: set[str] | None = None
-        if gene_subset is not None:
+        if gene_subset is not None or self._visible_gene_mask is not None:
             mask, _subset_type, _ = self._resolve_gene_mask(gene_subset)
             allowed = {str(g) for g, keep in zip(var_names_list, mask) if keep}
 
@@ -12334,7 +12389,7 @@ class DataAdaptor:
             raise ValueError(f"Column '{obs_column}' is not categorical (dtype: {dtype})")
 
         # Resolve gene subset
-        if gene_subset is not None:
+        if gene_subset is not None or self._visible_gene_mask is not None:
             gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
             work_adata = self.adata[:, gene_mask].copy()
         else:

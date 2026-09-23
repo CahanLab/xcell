@@ -377,6 +377,7 @@ export interface LineAssociationGeneSubset {
   n_genes: number
   n_requested?: number | null   // gene lists only
   genes_missing?: string[]      // gene lists only; capped at 100
+  n_hidden_by_gene_mask?: number  // removed by the active .var gene mask
 }
 
 // Center panel view mode

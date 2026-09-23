@@ -58,6 +58,8 @@ interface HeatmapData {
   column_groups: { name: string; start: number; size: number }[]
   n_bins: number
   n_cells: number
+  /** Requested genes the active .var gene mask removed. */
+  n_genes_hidden?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +471,9 @@ export default function HeatmapView() {
     return (
       <div style={hmStyles.centered}>
         <div style={{ color: '#888', fontSize: '13px', marginBottom: '12px' }}>
-          No data to display. Check that selected gene sets contain valid genes.
+          {data?.n_genes_hidden
+            ? `${data.n_genes_hidden === 1 ? 'The selected gene is' : `All ${data.n_genes_hidden} selected genes are`} hidden by the active gene mask (Genes ⋯ → Gene mask…).`
+            : 'No data to display. Check that selected gene sets contain valid genes.'}
         </div>
         <button style={hmStyles.settingsButton} onClick={() => setConfigOpen(true)}>
           Configure Heatmap
@@ -489,6 +493,14 @@ export default function HeatmapView() {
           {data.row_labels.length} genes &times; {data.n_bins} {data.n_bins < data.n_cells ? 'bins' : 'cells'}
           {data.n_bins < data.n_cells && ` (${data.n_cells.toLocaleString()} cells)`}
           {heatmapConfig?.cellLabel && ` · ${heatmapConfig.cellLabel}`}
+          {!!data.n_genes_hidden && (
+            <span
+              style={{ color: '#e9a23b' }}
+              title="These genes are in the chosen sets but hidden by the active gene mask (Genes ⋯ → Gene mask…)."
+            >
+              {` · ${data.n_genes_hidden} hidden by gene mask`}
+            </span>
+          )}
         </span>
         <span style={hmStyles.hint}>Click a gene row to color scatter plot</span>
       </div>

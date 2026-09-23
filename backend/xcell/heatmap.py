@@ -43,12 +43,17 @@ def compute_heatmap_data(
         cell_indices: Optional subset of cell indices
 
     Returns:
-        Dictionary with matrix, row_labels, row_groups, column_groups, n_bins, n_cells
+        Dictionary with matrix, row_labels, row_groups, column_groups, n_bins,
+        n_cells, and n_genes_hidden (how many requested genes the active .var
+        gene mask removed).
     """
     adata = adaptor.adata
 
-    # Filter to valid genes
+    # Filter to valid genes, then to the ones the active .var gene mask
+    # leaves visible — the heatmap draws what the Gene Panel shows, so a
+    # masked gene must not appear as a row.
     valid_genes = [g for g in genes if g in adata.var.index]
+    valid_genes, n_genes_hidden = adaptor._filter_to_visible(valid_genes)
     if not valid_genes:
         return {
             "matrix": [],
@@ -57,6 +62,7 @@ def compute_heatmap_data(
             "column_groups": [],
             "n_bins": 0,
             "n_cells": 0,
+            "n_genes_hidden": n_genes_hidden,
         }
 
     # Data source
@@ -110,6 +116,7 @@ def compute_heatmap_data(
             "column_groups": col_groups,
             "n_bins": effective_bins,
             "n_cells": n_cells,
+            "n_genes_hidden": n_genes_hidden,
         }
 
     # Per-row min-max normalization
@@ -149,6 +156,7 @@ def compute_heatmap_data(
         "column_groups": col_groups,
         "n_bins": effective_bins,
         "n_cells": n_cells,
+        "n_genes_hidden": n_genes_hidden,
     }
 
 

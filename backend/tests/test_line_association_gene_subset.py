@@ -111,6 +111,7 @@ def test_result_reports_the_resolved_subset():
         "n_genes": 2,
         "n_requested": 2,
         "genes_missing": [],
+        "n_hidden_by_gene_mask": 0,
     }
 
 
@@ -133,6 +134,7 @@ def test_result_reports_subset_when_no_subset_given():
         "n_genes": N_GENES,
         "n_requested": None,
         "genes_missing": [],
+        "n_hidden_by_gene_mask": 0,
     }
 
 
@@ -188,6 +190,7 @@ def test_multi_line_association_accepts_a_gene_list():
         "n_genes": 2,
         "n_requested": 3,
         "genes_missing": ["NOPE"],
+        "n_hidden_by_gene_mask": 0,
     }
 
 

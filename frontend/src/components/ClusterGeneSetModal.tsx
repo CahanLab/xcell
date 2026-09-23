@@ -34,7 +34,7 @@ export default function ClusterGeneSetModal() {
   const [purityThreshold, setPurityThreshold] = useState(() => cfgDefault(['cluster_gene_sets', 'purity_threshold'], 0.5))
   const [minModuleCorr, setMinModuleCorr] = useState(() => cfgDefault(['cluster_gene_sets', 'min_module_corr'], 0.2))
   const [cellContext, setCellContext] = useState<CellContext>(() => cfgDefault(['cluster_gene_sets', 'cell_context'], 'all' as CellContext))
-  const [useGeneMask, setUseGeneMask] = useState(() => cfgDefault(['cluster_gene_sets', 'use_gene_mask'], false))
+  const [useGeneMask, setUseGeneMask] = useState(() => cfgDefault(['cluster_gene_sets', 'use_gene_mask'], true))
   const [layer, setLayer] = useState<string>('X')
   const [availableLayers, setAvailableLayers] = useState<LayerInfo[]>([])
   const [annotationColumn, setAnnotationColumn] = useState<string>('')

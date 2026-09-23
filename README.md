@@ -300,7 +300,31 @@ To scope the Gene Panel to a relevant gene universe, click the `⋯` button in t
 
 When you have multiple Keep columns, choose whether to match **ANY** (union) or **ALL** (intersection). Hide columns always combine as a union.
 
-The mask applies to the gene browse list, gene search, expanded gene set rows, and gene set score aggregation used for display coloring. It does **not** apply to analysis operations (Diff Exp, Marker Genes, Gene PCA, etc.) — those have their own gene subset dropdowns. The mask is per-dataset and session-only; reloading the page clears it.
+The mask sets the visible gene universe. It applies to everything that
+**reports or displays genes**: the gene browse list and search, expanded gene
+set rows, gene set score aggregation, the heatmap, Diff Exp, Marker Genes,
+line association, gene NMF and meta-programs, the gene map, gene PCA and gene
+neighbours, gene-set clustering, spatial autocorrelation, and ligand–receptor
+analysis. Where an operation also has its own gene subset dropdown, the two
+intersect — and if the mask hides the whole subset, the run stops with a
+message rather than silently testing nothing.
+
+It deliberately does **not** apply to three things, which read the whole `.var`
+axis whatever the mask says:
+
+- **The scanpy chain** (Filter Genes, Highly Variable Genes, PCA, Neighbors,
+  UMAP, Leiden) — these build cell-space structure that gets written into the
+  file, and a session-only view should not silently change an embedding.
+  `highly_variable` is also a common mask column, which would make masking and
+  then re-running it circular.
+- **Merge Spots** — it rebuilds the cells from raw counts.
+- **The Localize reference bundle** — those genes become the shared space with
+  the query dataset, which has its own mask, or none.
+
+Where an operation drops genes because of the mask, it says so: the heatmap
+toolbar reads `· 3 hidden by gene mask`, and the line-association result names
+the count. The mask is per-dataset and session-only; reloading the page clears
+it.
 
 ### 8. Gene Sets
 
@@ -377,9 +401,9 @@ values in a `.obs` column). Clicking Run creates a new folder in
 cluster. Re-running with different K or a different cell context appends
 another folder so you can compare runs side by side.
 
-When a gene mask is active, a **Restrict to active gene mask** checkbox appears
-(showing how many of the set's genes pass the mask). Enable it to cluster only
-the genes visible under the current `.var` mask.
+When a gene mask is active, a **Restrict to active gene mask** checkbox appears,
+checked, and shows how many of the set's genes pass. Uncheck it to cluster the
+set's genes regardless of the mask.
 
 When the run finishes, **Show heatmap** opens the Heatmap tab with one row
 band per cluster, restricted to the cells the clustering ran on (the toolbar

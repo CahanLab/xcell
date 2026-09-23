@@ -2232,7 +2232,7 @@ export async function runClusterGeneSet(
       eps: params.eps,
       min_samples: params.minSamples,
       layer: params.layer,
-      use_gene_mask: params.useGeneMask ?? false,
+      use_gene_mask: params.useGeneMask ?? true,
       metric: params.metric,
       min_genes: params.minGenes,
       merge_threshold: params.mergeThreshold,

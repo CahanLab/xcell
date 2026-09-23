@@ -1691,9 +1691,10 @@ class ClusterGeneSetRequest(BaseModel):
     # set to a layer name, that layer is read directly without renormalization
     # — pass the output of run_smooth here to cluster on smoothed expression.
     layer: str | None = None
-    # When True, restrict the clustered genes to those visible under the active
-    # .var gene mask (no-op if no mask is active).
-    use_gene_mask: bool = False
+    # Restrict the clustered genes to those visible under the active .var gene
+    # mask (no-op if no mask is active). On by default, like every other
+    # gene-reporting operation; False reads the whole .var axis.
+    use_gene_mask: bool = True
     # method='auto' (co-expression modules) knobs; ignored by other methods.
     metric: str = "bicor"            # 'bicor' | 'pearson' | 'spearman'
     min_genes: int = 5               # min genes per surviving module

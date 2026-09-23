@@ -749,6 +749,7 @@ export default function LineAssociationModal() {
   const { n_cells, n_significant, line_name, test_variable, fdr_threshold, diagnostics, modules, n_lines, lines_used, gene_subset } = lineAssociationResult
   const restricted = gene_subset != null && gene_subset.type !== 'all'
   const missingGenes = gene_subset?.genes_missing ?? []
+  const maskHidden = gene_subset?.n_hidden_by_gene_mask ?? 0
   const hasModules = modules && modules.length > 0
 
   // Apply client-side filters to modules
@@ -956,6 +957,23 @@ export default function LineAssociationModal() {
             )}
           </div>
 
+          {/* The gene mask is a Gene-Panel view, so a run scoped by it looks
+              like a run over everything unless the modal says otherwise. */}
+          {!!maskHidden && (
+            <div style={{
+              backgroundColor: '#1a1408',
+              border: '1px solid #e9a23b',
+              borderRadius: '6px',
+              padding: '8px 12px',
+              marginBottom: '16px',
+              fontSize: '11px',
+              color: '#e9a23b',
+            }}>
+              {maskHidden.toLocaleString()} gene{maskHidden === 1 ? '' : 's'} left out by
+              the active gene mask (Genes ⋯ → Gene mask…). Clear it to test them.
+            </div>
+          )}
+
           {/* Genes the requested set named but this dataset doesn't have. Left
               unsaid, a 40%-overlap run reads as though it tested the whole set. */}
           {missingGenes.length > 0 && gene_subset?.n_requested != null && (
@@ -968,7 +986,7 @@ export default function LineAssociationModal() {
               fontSize: '11px',
               color: '#e9a23b',
             }}>
-              {(gene_subset.n_requested - gene_subset.n_genes).toLocaleString()} of{' '}
+              {missingGenes.length.toLocaleString()} of{' '}
               {gene_subset.n_requested.toLocaleString()} requested genes are not in this dataset:{' '}
               <span style={{ color: '#c9922f' }}>
                 {missingGenes.slice(0, 12).join(', ')}

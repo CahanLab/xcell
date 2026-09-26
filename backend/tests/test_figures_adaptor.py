@@ -134,8 +134,8 @@ def test_figure_data_after_input_deleted_raises_but_figure_stays_listed():
     with pytest.raises(FigureInputMissing, match=col['key']):
         a.figure_data(f['id'])
     assert [x['id'] for x in a.list_figures()] == [f['id']]
-    with pytest.raises(ValueError, match='not renderable'):
-        a.figure_data(a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch'})['id'])
+    # the other kinds draw from live .obs, so deleting an enrichment result never touches them
+    assert 'counts' in a.figure_data(a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch'})['id'])
 
 
 def test_attach_links_record_figure_to_the_figure():
@@ -147,3 +147,43 @@ def test_attach_links_record_figure_to_the_figure():
     assert fig.to_dict()['figure_id'] == f['id']
     with pytest.raises(KeyError):
         a.attach_figure_to_record('fig_99', 'iVBORw0KGgo=')
+
+
+# --- Part C: barplot and expression heatmap kinds -------------------------------
+
+def _adata_c():
+    ad = _adata()
+    ad.obs['subset_half'] = [True] * 40 + [False] * 50
+    ad.uns['xcell_cell_subsets'] = {'half': {'n_cells': 40, 'created_at': 't', 'origin': 'test'}}
+    return ad
+
+
+def test_barplot_figure_data_matches_crosstab_and_honours_cells():
+    a = DataAdaptor('x.h5ad', adata=_adata_c())
+    f = a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch'})
+    d = a.figure_data(f['id'])
+    assert d['a_categories'] == a.crosstab('grp', 'batch')['a_categories'] and d['counts'] == a.crosstab('grp', 'batch')['counts']
+    assert f['params'] == {'order': 'category', 'share_of': None, 'normalize': True, 'min_cells': 0, 'show_values': False}
+    g = a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch', 'cell_subset': 'half'})
+    assert a.figure_data(g['id'])['n_cells'] == 40 and g['inputs']['cell_subset'] == 'half'
+    h = a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch', 'cell_indices': list(range(10))})
+    assert a.figure_data(h['id'])['n_cells'] == 10 and h['inputs']['cell_indices'] == list(range(10))
+    with pytest.raises(KeyError):
+        a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch', 'cell_subset': 'ghost'})
+
+
+def test_expression_heatmap_figure_data_and_validation():
+    a = DataAdaptor('x.h5ad', adata=_adata_c())
+    sets = [{'name': 'collagen', 'genes': ['Col1a1', 'Col1a2', 'Col3a1']}, {'name': 'immune', 'genes': ['Ptprc', 'Cd3e', 'Cd19']}]
+    f = a.create_figure('expression_heatmap', inputs={'gene_sets': sets, 'obs_column': 'grp'})
+    d = a.figure_data(f['id'])
+    assert len(d['row_labels']) == 6 and len(d['matrix']) == 6 and [c['name'] for c in d['column_groups']] == ['a', 'b', 'c']
+    assert f['params']['cell_ordering'] == 'category' and f['params']['n_bins'] == 50
+    agg = a.figure_data(f['id'], params_override={'aggregate_gene_sets': True})
+    assert len(agg['row_labels']) == 2
+    sub = a.create_figure('expression_heatmap', inputs={'gene_sets': sets, 'obs_column': 'grp', 'cell_subset': 'half'})
+    assert a.figure_data(sub['id'])['n_cells'] == 40
+    with pytest.raises(ValueError, match='gene_sets'):
+        a.create_figure('expression_heatmap', inputs={'gene_sets': []})
+    with pytest.raises(ValueError, match='nope'):
+        a.create_figure('expression_heatmap', inputs={'gene_sets': sets, 'line_name': 'nope'})

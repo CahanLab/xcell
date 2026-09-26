@@ -6603,18 +6603,45 @@ class DataAdaptor:
                 col = inputs.get(f)
                 if not col or col not in self.adata.obs.columns:
                     raise ValueError(f"inputs.{f} must name an .obs column (got {col!r})")
-            if inputs.get('cell_subset'):
-                self._subset_mask(inputs['cell_subset'])
             return {'column_a': inputs['column_a'], 'column_b': inputs['column_b'],
-                    'cell_subset': inputs.get('cell_subset') or None}
+                    **self._figure_cell_inputs(inputs)}
         if kind == 'expression_heatmap':
             sets = inputs.get('gene_sets')
             if not isinstance(sets, list) or not sets or not all(isinstance(s, dict) and s.get('genes') for s in sets):
                 raise ValueError('inputs.gene_sets must be a non-empty list of {name, genes}')
+            obs_column = inputs.get('obs_column') or None
+            if obs_column and obs_column not in self.adata.obs.columns:
+                raise ValueError(f"inputs.obs_column '{obs_column}' is not an .obs column")
+            line_name = inputs.get('line_name') or None
+            if line_name and line_name not in {l.get('name') for l in self.get_lines()}:
+                raise ValueError(f"inputs.line_name '{line_name}' is not a drawn line")
             return {'gene_sets': [{'name': str(s.get('name', '')), 'genes': [str(g) for g in s['genes']]} for s in sets],
-                    'obs_column': inputs.get('obs_column') or None, 'line_name': inputs.get('line_name') or None,
-                    'cell_subset': inputs.get('cell_subset') or None}
+                    'obs_column': obs_column, 'line_name': line_name, **self._figure_cell_inputs(inputs)}
         raise ValueError(f"Unknown figure kind '{kind}'; expected one of {', '.join(self.FIGURE_KINDS)}")
+
+    def _figure_cell_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Which cells a figure counts: a named subset (validated now, resolved
+        at draw time so it follows edits) or an explicit index list (a
+        selection, frozen like the record's selections). A figure saved under
+        the ephemeral mask must record it, or it silently draws every cell."""
+        subset = inputs.get('cell_subset') or None
+        if subset:
+            self._subset_mask(subset)   # KeyError when unknown
+            return {'cell_subset': subset, 'cell_indices': None}
+        idx = inputs.get('cell_indices')
+        if idx is not None:
+            if not isinstance(idx, list) or not idx:
+                raise ValueError('inputs.cell_indices must be a non-empty list of cell indices')
+            arr = np.asarray(idx, dtype=np.int64)
+            if arr.min() < 0 or arr.max() >= self.n_cells:
+                raise ValueError('inputs.cell_indices out of range')
+            return {'cell_subset': None, 'cell_indices': [int(i) for i in arr]}
+        return {'cell_subset': None, 'cell_indices': None}
+
+    def _figure_cells(self, inputs: dict[str, Any]) -> list[int] | None:
+        if inputs.get('cell_subset'):
+            return self.get_cell_subset_indices(inputs['cell_subset'])
+        return inputs.get('cell_indices') or None
 
     def _figure_provenance_steps(self, kind: str, inputs: dict[str, Any]) -> list[int]:
         """Record steps that produced the inputs — best effort by key match."""
@@ -6805,6 +6832,27 @@ class DataAdaptor:
                 cols, value=params['value'], padj_max=float(params['padj_max']), top_n=int(params['top_n']),
                 direction=params['direction'], set_edge_jaccard=params.get('set_edge_jaccard'),
                 layout=params['layout'], seed=int(params['seed']), members=members)
+        if kind == 'composition_barplot':
+            inp = record['inputs']
+            out = self.crosstab(inp['column_a'], inp['column_b'], active_cell_indices=self._figure_cells(inp))
+            out['params'] = params
+            return out
+        if kind == 'expression_heatmap':
+            from xcell.heatmap import compute_heatmap_data  # noqa: PLC0415
+            inp = record['inputs']
+            genes: list[str] = []
+            seen: set[str] = set()
+            for s_ in inp['gene_sets']:
+                for g in s_['genes']:
+                    if g not in seen:
+                        seen.add(g)
+                        genes.append(g)
+            return compute_heatmap_data(
+                self, genes, gene_set_groups=[{'name': s_['name'], 'genes': list(s_['genes'])} for s_ in inp['gene_sets']],
+                aggregate_gene_sets=bool(params.get('aggregate_gene_sets')), cell_ordering=str(params.get('cell_ordering', 'category')),
+                obs_column=inp.get('obs_column'), line_name=inp.get('line_name'),
+                gene_ordering=str(params.get('gene_ordering', 'as_provided')), n_bins=int(params.get('n_bins', 0)),
+                transform=None, cell_indices=self._figure_cells(inp))
         raise ValueError(f"figure kind '{kind}' is not renderable yet")
 
     def attach_figure_to_record(self, figure_id: str, png_b64: str, caption: str | None = None) -> dict[str, Any]:

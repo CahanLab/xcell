@@ -1,5 +1,6 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
 import type { OraResult, EnrichmentSummary, CachedLibrary, AnyEnrichmentResult, BatchCollection } from '../lib/enrichment'
+import type { FigureRecord, FigureSummary, FigureData } from '../lib/figures'
 import { mergePcaSubsetLists } from '../lib/pcaSubsets'
 import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, DrawnLine, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
@@ -2169,6 +2170,46 @@ export async function fetchEnrichmentResult(key: string, slot?: DatasetSlot): Pr
 
 export async function deleteEnrichmentResult(key: string, slot?: DatasetSlot): Promise<void> {
   await fetchJson(appendDataset(`${API_BASE}/enrichment/results/${encodeURIComponent(key)}`, slot), { method: 'DELETE' })
+}
+
+// --- Figures ------------------------------------------------------------------
+
+export async function fetchFigures(slot?: DatasetSlot): Promise<FigureSummary[]> {
+  return (await fetchJson<{ figures: FigureSummary[] }>(appendDataset(`${API_BASE}/figures`, slot))).figures
+}
+
+export async function createFigure(body: { kind: string; title?: string | null; caption?: string; inputs: Record<string, unknown>; params?: Record<string, unknown> | null }, slot?: DatasetSlot): Promise<FigureRecord> {
+  return fetchJson<FigureRecord>(appendDataset(`${API_BASE}/figures`, slot), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+}
+
+export async function fetchFigure(id: string, slot?: DatasetSlot): Promise<FigureRecord> {
+  return fetchJson<FigureRecord>(appendDataset(`${API_BASE}/figures/${encodeURIComponent(id)}`, slot))
+}
+
+export async function updateFigure(id: string, body: { title?: string; caption?: string; params?: Record<string, unknown> }, slot?: DatasetSlot): Promise<FigureRecord> {
+  return fetchJson<FigureRecord>(appendDataset(`${API_BASE}/figures/${encodeURIComponent(id)}`, slot), {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+}
+
+export async function deleteFigure(id: string, slot?: DatasetSlot): Promise<void> {
+  await fetchJson(appendDataset(`${API_BASE}/figures/${encodeURIComponent(id)}`, slot), { method: 'DELETE' })
+}
+
+/** The plotted table/graph; `paramsOverride` previews without saving. A 409
+ *  (input result deleted) surfaces as an Error whose message names the key. */
+export async function fetchFigureData(id: string, paramsOverride?: Record<string, unknown> | null, slot?: DatasetSlot): Promise<FigureData> {
+  return fetchJson<FigureData>(appendDataset(`${API_BASE}/figures/${encodeURIComponent(id)}/data`, slot), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ params: paramsOverride ?? null }),
+  })
+}
+
+export async function attachFigureToRecord(id: string, pngB64: string, caption?: string, slot?: DatasetSlot): Promise<{ record_figure_id: string; step_index: number | null }> {
+  return fetchJson(appendDataset(`${API_BASE}/figures/${encodeURIComponent(id)}/attach`, slot), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ png_b64: pngB64, caption: caption ?? null }),
+  })
 }
 
 /** The libraries already fetched into the gene-set source cache (no network). */

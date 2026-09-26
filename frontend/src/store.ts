@@ -9,6 +9,7 @@ import { loadedSlots, slotAfterUnload, moveItem, paneGrid, activeSlotFrom } from
 import type { Workspace } from './lib/workspaceLayout'
 import type { CellSubsetInfo } from './lib/cellSubsets'
 import type { EnrichmentSource } from './lib/enrichment'
+import type { FigureSummary } from './lib/figures'
 
 export interface Schema {
   n_cells: number
@@ -393,7 +394,7 @@ export interface LineAssociationGeneSubset {
 }
 
 // Center panel view mode
-export type CenterPanelView = 'scatter' | 'heatmap' | 'figure' | 'barplot'
+export type CenterPanelView = 'scatter' | 'heatmap' | 'figure' | 'barplot' | 'figures'
 
 // Figure builder — multi-panel publication-quality compositor. A figure
 // freezes a snapshot of cell indices at creation time; each panel renders
@@ -598,6 +599,10 @@ export interface DatasetState {
   varIdentifierColumns: string[]
   currentVarIndex: string
   geneMaskConfig: GeneMaskConfig | null
+  // Saved figures (uns['xcell_figures']) — a list refetched when figuresVersion bumps
+  figures: FigureSummary[]
+  activeFigureId: string | null
+  figuresVersion: number
   pcaSubsets: PCASubsetSummary[]
   // A comparison names rows of *this* matrix, so it cannot travel to another
   // dataset. The danger is silent rather than loud: a smaller dataset's indices
@@ -736,6 +741,9 @@ export function createDefaultDatasetState(
     varIdentifierColumns: [],
     currentVarIndex: '_index',
     geneMaskConfig: null,
+    figures: [],
+    activeFigureId: null,
+    figuresVersion: 0,
     pcaSubsets: [],
     comparison: { group1: null, group2: null, group1Label: null, group2Label: null, obsColumn: null },
     diffExpResult: null,
@@ -934,6 +942,11 @@ interface AppState {
 
   // Observable summaries refresh trigger
   obsSummariesVersion: number
+
+  // Figures (per-dataset, flat mirror)
+  figures: FigureSummary[]
+  activeFigureId: string | null
+  figuresVersion: number
 
   // Var identifier column switching (per-dataset, flat mirror)
   varIdentifierColumns: string[]
@@ -1220,6 +1233,9 @@ interface AppState {
 
   // Observable summaries refresh
   refreshObsSummaries: () => void
+  setFigures: (figures: FigureSummary[]) => void
+  setActiveFigureId: (id: string | null) => void
+  refreshFigures: () => void
 
   // Marker genes modal actions
   setMarkerGenesModalOpen: (open: boolean) => void
@@ -1364,6 +1380,9 @@ export const useStore = create<AppState>((set, get) => {
       hiddenColumns: ds.hiddenColumns,
       columnDisplayNames: ds.columnDisplayNames,
       obsSummariesVersion: ds.obsSummariesVersion,
+      figures: ds.figures,
+      activeFigureId: ds.activeFigureId,
+      figuresVersion: ds.figuresVersion,
       scanpyActionHistory: ds.scanpyActionHistory,
       varIdentifierColumns: ds.varIdentifierColumns,
       currentVarIndex: ds.currentVarIndex,
@@ -1467,6 +1486,9 @@ export const useStore = create<AppState>((set, get) => {
     isMetaProgramsModalOpen: false,
     scanpyActionHistory: [],
     obsSummariesVersion: 0,
+    figures: [],
+    activeFigureId: null,
+    figuresVersion: 0,
     varIdentifierColumns: [],
     currentVarIndex: '_index',
     isMarkerGenesModalOpen: false,
@@ -2757,6 +2779,10 @@ export const useStore = create<AppState>((set, get) => {
     // Observable summaries refresh (per-dataset)
     refreshObsSummaries: () =>
       set(dsUpdateFn((state) => ({ obsSummariesVersion: state.obsSummariesVersion + 1 }))),
+    setFigures: (figures) => set(dsUpdate({ figures })),
+    setActiveFigureId: (id) => set(dsUpdate({ activeFigureId: id })),
+    refreshFigures: () =>
+      set(dsUpdateFn((state) => ({ figuresVersion: state.figuresVersion + 1 }))),
 
     // Marker genes modal actions (global)
     setMarkerGenesModalOpen: (open) => set({ isMarkerGenesModalOpen: open }),

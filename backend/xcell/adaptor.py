@@ -5946,6 +5946,144 @@ class DataAdaptor:
             })
         return {'sets': out_sets, 'n_genes_dataset': len(var_names), 'columns': columns}
 
+    # ------------------------------------------------------------------
+    # Gene-set enrichment (overlap + preranked GSEA)
+    # ------------------------------------------------------------------
+    ENRICHMENT_UNS_KEY = 'xcell_enrichment'
+
+    def _enrichment_sets(self, libraries: list[dict[str, Any]] | None,
+                         sets: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        """Cached libraries plus inline sets, each tagged with a library label."""
+        from xcell import gene_set_sources as gss  # noqa: PLC0415
+        out: list[dict[str, Any]] = []
+        for ref in libraries or []:
+            source = str(ref.get('source') or '')
+            lib_id = str(ref.get('id') or '')
+            lib = gss.find_library(source, lib_id, ref.get('species'))
+            if lib is None:
+                raise ValueError(
+                    f"Library '{lib_id}' from {source or '?'} is not cached; "
+                    "fetch it from the Gene set library first")
+            label = str(lib.get('name') or lib_id)
+            for s in lib.get('sets') or []:
+                if isinstance(s, dict):
+                    out.append({
+                        'name': s.get('name', ''), 'genes': list(s.get('genes') or []),
+                        'genes_down': list(s.get('genes_down') or []), 'library': label,
+                        'description': s.get('description', ''), 'url': s.get('url', ''),
+                    })
+        for s in sets or []:
+            if isinstance(s, dict):
+                out.append({
+                    'name': s.get('name', ''), 'genes': list(s.get('genes') or []),
+                    'genes_down': list(s.get('genes_down') or s.get('genesDown') or []),
+                    'library': 'My gene sets', 'description': '', 'url': '',
+                })
+        if not out:
+            raise ValueError('No gene sets to test: choose at least one library or gene set')
+        return out
+
+    def _enrichment_store(self) -> dict[str, str]:
+        raw = self.adata.uns.get(self.ENRICHMENT_UNS_KEY)
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def _store_enrichment(self, key_hint: str, result: dict[str, Any]) -> str:
+        """Persist as JSON under a never-colliding key; returns the key used.
+
+        JSON strings, not nested dicts: a result is a list of records and
+        h5ad cannot write an object array of dicts (same reason drawn lines
+        and territories are stored this way).
+        """
+        base = self._sanitize_subset_name(key_hint)
+        store = self._enrichment_store()
+        key, n = base, 1
+        while key in store:
+            n += 1
+            key = f'{base}_{n}'
+        result['key'] = key
+        store[key] = json.dumps(result)
+        self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
+        return key
+
+    def get_enrichment_results(self) -> list[dict[str, Any]]:
+        out = []
+        for raw in self._enrichment_store().values():
+            try:
+                r = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            out.append({k: r.get(k) for k in
+                        ('key', 'kind', 'label', 'n_sets_tested', 'n_significant', 'created_at')})
+        out.sort(key=lambda s: s.get('created_at') or '', reverse=True)
+        return out
+
+    def get_enrichment_result(self, key: str) -> dict[str, Any]:
+        store = self._enrichment_store()
+        if key not in store:
+            raise KeyError(f"No enrichment result named '{key}'")
+        return json.loads(store[key])
+
+    def delete_enrichment_result(self, key: str) -> dict[str, Any]:
+        store = self._enrichment_store()
+        if key not in store:
+            raise KeyError(f"No enrichment result named '{key}'")
+        del store[key]
+        self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
+        self._log_action('enrichment_delete', {'key': key}, {'deleted': key})
+        return {'deleted': key}
+
+    def run_overlap_enrichment(self, genes: list[str], *, name: str | None = None,
+                               libraries: list[dict[str, Any]] | None = None,
+                               sets: list[dict[str, Any]] | None = None,
+                               gene_subset: Any = None, min_set_size: int = 5,
+                               max_set_size: int = 500, min_overlap: int = 2,
+                               key: str | None = None) -> dict[str, Any]:
+        """Hypergeometric over-representation of ``genes`` in each library set.
+
+        The universe is the dataset's genes after the session gene mask and
+        ``gene_subset`` — the same genes the Gene Panel shows.
+        """
+        from datetime import datetime, timezone  # noqa: PLC0415
+        from xcell import enrichment as en  # noqa: PLC0415
+        if min_set_size < 1 or max_set_size < min_set_size:
+            raise ValueError('Set size range must satisfy 1 <= min <= max')
+        raw_sets = self._enrichment_sets(libraries, sets)
+        mask, subset_type, _meta = self._resolve_gene_mask(gene_subset)
+        universe = [str(g) for g in self.adata.var_names[mask]]
+        q_idx, missing = en.resolve_symbols(list(genes or []), universe)
+        if len(q_idx) < 2:
+            raise ValueError(
+                f'Need at least 2 query genes present in the universe; {len(q_idx)} of '
+                f'{len(genes or [])} resolved')
+        resolved, rmeta = en.resolve_sets(raw_sets, universe, min_size=min_set_size,
+                                          max_size=max_set_size, directional='union')
+        if not resolved:
+            raise ValueError(
+                f'No gene set has between {min_set_size} and {max_set_size} members in the universe')
+        records = en.overlap_enrichment(q_idx, resolved, len(universe), min_overlap=min_overlap)
+        for r in records:
+            r['genes'] = [universe[i] for i in r['genes']]
+        label = name or 'gene list'
+        params = {
+            'name': label, 'n_query': len(genes or []), 'libraries': list(libraries or []),
+            'n_inline_sets': len(sets or []), 'gene_subset': gene_subset,
+            'min_set_size': min_set_size, 'max_set_size': max_set_size, 'min_overlap': min_overlap,
+        }
+        result = {
+            'kind': 'ora', 'label': f'Overlap: {label}',
+            'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            'query': {'name': label, 'n_input': len(genes or []), 'n_in_universe': len(q_idx),
+                      'genes_missing': missing[:self.MAX_REPORTED_OVERLAP_MISSING]},
+            'universe_size': len(universe), 'gene_subset_type': subset_type,
+            'n_sets_input': rmeta['n_input'], 'n_sets_tested': len(records),
+            'n_significant': sum(1 for r in records if r['padj'] <= 0.05),
+            'results': records, 'params': params,
+        }
+        stored_key = self._store_enrichment(key or f'ora_{label}', result)
+        self._log_action('enrichment_ora', params, {
+            'key': stored_key, 'n_sets_tested': len(records), 'n_significant': result['n_significant']})
+        return result
+
     def guess_species(self) -> dict[str, Any]:
         """Species guess from the current var index (Ensembl prefix, else symbol case)."""
         from xcell import gene_symbols as gs  # noqa: PLC0415

@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
-import type { OraResult, EnrichmentResult, EnrichmentSummary, CachedLibrary } from '../lib/enrichment'
+import type { OraResult, EnrichmentSummary, CachedLibrary, AnyEnrichmentResult, BatchCollection } from '../lib/enrichment'
 import { mergePcaSubsetLists } from '../lib/pcaSubsets'
 import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, DrawnLine, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
@@ -2142,13 +2142,29 @@ export async function startGsea(body: Record<string, unknown>, slot?: DatasetSlo
   })
 }
 
+export async function startGseaBatch(body: Record<string, unknown>, slot?: DatasetSlot): Promise<{ task_id: string }> {
+  return fetchJson<{ task_id: string }>(appendDataset(`${API_BASE}/enrichment/gsea_batch`, slot), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function runOraBatch(body: Record<string, unknown>, slot?: DatasetSlot): Promise<BatchCollection> {
+  return fetchJson<BatchCollection>(appendDataset(`${API_BASE}/enrichment/ora_batch`, slot), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export async function fetchEnrichmentResults(slot?: DatasetSlot): Promise<EnrichmentSummary[]> {
   const r = await fetchJson<{ results: EnrichmentSummary[] }>(appendDataset(`${API_BASE}/enrichment/results`, slot))
   return r.results
 }
 
-export async function fetchEnrichmentResult(key: string, slot?: DatasetSlot): Promise<EnrichmentResult> {
-  return fetchJson<EnrichmentResult>(appendDataset(`${API_BASE}/enrichment/results/${encodeURIComponent(key)}`, slot))
+export async function fetchEnrichmentResult(key: string, slot?: DatasetSlot): Promise<AnyEnrichmentResult> {
+  return fetchJson<AnyEnrichmentResult>(appendDataset(`${API_BASE}/enrichment/results/${encodeURIComponent(key)}`, slot))
 }
 
 export async function deleteEnrichmentResult(key: string, slot?: DatasetSlot): Promise<void> {

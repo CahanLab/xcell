@@ -2,22 +2,28 @@ import { Fragment, useState, useCallback, useEffect, useMemo, useRef } from 'rea
 import { useStore, cfgDefault, GeneSet } from '../store'
 import {
   useObsSummaries, appendDataset, pollTask,
-  runOverlapEnrichment, startGsea, fetchEnrichmentResults, fetchEnrichmentResult, deleteEnrichmentResult,
-  fetchCachedLibraries,
+  runOverlapEnrichment, startGsea, startGseaBatch, runOraBatch,
+  fetchEnrichmentResults, fetchEnrichmentResult, deleteEnrichmentResult, fetchCachedLibraries,
 } from '../hooks/useData'
 import {
   formatP, curvePath, hitTicks, filterRows, resultsToGeneSets, libraryGroups, rowsToTsv, metricStripBins, reconcileChoice,
-  type EnrichmentResult, type EnrichmentSummary, type CachedLibrary, type GseaResult, type GseaRow, type OraRow,
+  isBatch, batchGroupsSorted, batchToGeneSets,
+  type EnrichmentResult, type AnyEnrichmentResult, type BatchCollection, type EnrichmentSummary, type CachedLibrary,
+  type GseaResult, type GseaRow, type OraRow,
 } from '../lib/enrichment'
 import { standaloneSvg, downloadText } from '../lib/svgExport'
 import { flattenGeneSets } from './GenePanel'
 
 /** Overlap (hypergeometric) enrichment and preranked GSEA against the
  *  gene-set libraries already in the source cache, plus the user's own sets.
- *  Global modal: mounted always, gated on `enrichmentSource`. */
+ *  Single contrasts and whole-column batches (one result per group plus a
+ *  collection). Global modal: mounted always, gated on `enrichmentSource`. */
 
 const ACCENT = '#4ecdc4'
 const ALERT = '#e94560'
+const ALL_GROUPS = '__all__'
+const MARKERS = '__markers__'
+const PRESET = '__preset__'
 
 const styles = {
   backdrop: {
@@ -84,6 +90,10 @@ const styles = {
     display: 'inline-block', padding: '1px 6px', margin: '2px', fontSize: '11px', borderRadius: '3px',
     backgroundColor: '#0f3460', color: '#eee', cursor: 'pointer',
   },
+  groupChip: (active: boolean) => ({
+    display: 'inline-block', padding: '3px 10px', margin: '2px', fontSize: '12px', borderRadius: '12px', cursor: 'pointer',
+    backgroundColor: active ? ACCENT : '#0f3460', color: active ? '#000' : '#eee',
+  }),
   progressTrack: { height: '6px', backgroundColor: '#0f1625', borderRadius: '3px', overflow: 'hidden', marginTop: '8px' },
   progressBar: (frac: number) => ({ height: '100%', width: `${Math.round(frac * 100)}%`, backgroundColor: ACCENT, transition: 'width 0.3s' }),
 }
@@ -94,6 +104,11 @@ interface BoolColumn { name: string; n_true: number; n_total: number }
 
 function libKey(l: { source: string; id: string }) {
   return `${l.source}/${l.id}`
+}
+
+function optionalNumber(text: string): number | null {
+  const v = Number(text)
+  return text.trim() === '' || !Number.isFinite(v) ? null : v
 }
 
 function GseaCurve({ row, ranking, svgRef }: {
@@ -155,6 +170,12 @@ export default function EnrichmentModal() {
   const [minOverlap, setMinOverlap] = useState(() => cfgDefault(['enrichment', 'min_overlap'], 2))
   const [oraMin, setOraMin] = useState(() => cfgDefault(['enrichment', 'min_set_size'], 5))
   const [oraMax, setOraMax] = useState(() => cfgDefault(['enrichment', 'max_set_size'], 500))
+  // ORA on the markers of every group
+  const [markersColumn, setMarkersColumn] = useState('')
+  const [markerTopN, setMarkerTopN] = useState(() => cfgDefault(['marker_genes', 'top_n'], 100))
+  const [markerMinIn, setMarkerMinIn] = useState(() => String(cfgDefault(['marker_genes', 'min_in_group_fraction'], '')))
+  const [markerMaxOut, setMarkerMaxOut] = useState(() => String(cfgDefault(['marker_genes', 'max_out_group_fraction'], '')))
+  const [markerMinFc, setMarkerMinFc] = useState(() => String(cfgDefault(['marker_genes', 'min_fold_change'], '')))
   // GSEA
   const [rankKind, setRankKind] = useState<'diffexp' | 'pca'>('diffexp')
   const [obsColumn, setObsColumn] = useState('')
@@ -173,7 +194,8 @@ export default function EnrichmentModal() {
   const [phase, setPhase] = useState<Phase>('config')
   const [progress, setProgress] = useState({ frac: 0, message: '' })
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<EnrichmentResult | null>(null)
+  const [result, setResult] = useState<AnyEnrichmentResult | null>(null)
+  const [selectedGroup, setSelectedGroup] = useState('')
   const [previous, setPrevious] = useState<EnrichmentSummary[]>([])
   const [padjMax, setPadjMax] = useState<number | null>(() => cfgDefault(['enrichment', 'padj_cutoff'], 0.05))
   const [padjText, setPadjText] = useState(() => String(cfgDefault(['enrichment', 'padj_cutoff'], 0.05)))
@@ -186,6 +208,8 @@ export default function EnrichmentModal() {
   // The set the modal was opened from, if any: its genes are the query
   // without a lookup by name (names are not unique across categories).
   const presetRef = useRef<{ name: string; genes: string[] } | null>(null)
+  // Groups a batch run is limited to (from Compare Cells); null = every group.
+  const batchGroupsRef = useRef<string[] | null>(null)
 
   const flatSets = useMemo(
     () => flattenGeneSets(geneSetCategories).filter((g) => g.genes.length > 0),
@@ -217,7 +241,25 @@ export default function EnrichmentModal() {
     if (!source) return
     setTab(source.kind)
     presetRef.current = source.kind === 'ora' && source.genes ? { name: source.name ?? 'gene set', genes: source.genes } : null
-    setQuerySetId(presetRef.current ? '__preset__' : '')
+    batchGroupsRef.current = null
+    if (source.kind === 'ora') {
+      if (source.markersOf) {
+        setQuerySetId(MARKERS)
+        setMarkersColumn(source.markersOf.obsColumn)
+        batchGroupsRef.current = source.markersOf.groups ?? null
+      } else {
+        setQuerySetId(presetRef.current ? PRESET : '')
+      }
+    } else {
+      setRankKind('diffexp')
+      if (source.obsColumn) setObsColumn(source.obsColumn)
+      if (source.obsColumn && source.reference && source.groups && source.groups.length === 1) {
+        setGroup(source.groups[0]); setReference(source.reference)
+      } else if (source.obsColumn) {
+        setGroup(ALL_GROUPS); setReference('rest')
+        batchGroupsRef.current = source.groups ?? null
+      }
+    }
     setPhase('config'); setResult(null); setError(null); setSaved(false); setCopied(false); setExpanded(null)
     fetchCachedLibraries().then(setCached).catch(() => setCached([]))
     fetch(appendDataset('/api/var/boolean_columns', activeSlot))
@@ -234,6 +276,7 @@ export default function EnrichmentModal() {
     const names = categoricalColumns.map((c) => c.name)
     const pick = categoricalColumns.find((c) => (c.categories?.length ?? 0) <= 200) ?? categoricalColumns[0]
     setObsColumn((v) => reconcileChoice(v, names, pick?.name ?? '') || (pick?.name ?? ''))
+    setMarkersColumn((v) => reconcileChoice(v, names, pick?.name ?? '') || (pick?.name ?? ''))
   }, [categoricalColumns])
   useEffect(() => {
     setCellSubset((v) => reconcileChoice(v, cellSubsets.map((s) => s.name), ''))
@@ -243,7 +286,7 @@ export default function EnrichmentModal() {
   }, [booleanColumns])
 
   useEffect(() => {
-    if (groupOptions.length > 0 && !groupOptions.some((g) => g.value === group)) setGroup(groupOptions[0].value)
+    if (groupOptions.length > 0 && group !== ALL_GROUPS && !groupOptions.some((g) => g.value === group)) setGroup(groupOptions[0].value)
     if (reference !== 'rest' && !groupOptions.some((g) => g.value === reference)) setReference('rest')
   }, [groupOptions, group, reference])
 
@@ -269,16 +312,18 @@ export default function EnrichmentModal() {
   const nothingToTest = libraries.length === 0 && inlineSets.length === 0
 
   const queryGenes = useMemo(() => {
-    if (querySetId === '__preset__') return presetRef.current?.genes ?? []
+    if (querySetId === PRESET) return presetRef.current?.genes ?? []
+    if (querySetId === MARKERS) return []
     if (querySetId) return flatSets.find((g) => g.id === querySetId)?.genes ?? []
     return pasted.split(/[\s,;]+/).map((g) => g.trim()).filter(Boolean)
   }, [querySetId, flatSets, pasted])
-  const queryName = querySetId === '__preset__'
+  const queryName = querySetId === PRESET
     ? presetRef.current?.name ?? 'gene set'
     : querySetId ? flatSets.find((g) => g.id === querySetId)?.name ?? 'gene set' : 'pasted list'
 
-  const finishRun = useCallback(async (res: EnrichmentResult, action: string, body: Record<string, unknown>) => {
+  const finishRun = useCallback(async (res: AnyEnrichmentResult, action: string, body: Record<string, unknown>) => {
     setResult(res); setPhase('results'); setSaved(false); setCopied(false); setExpanded(null)
+    setSelectedGroup(isBatch(res) ? batchGroupsSorted(res)[0] ?? '' : '')
     addScanpyAction({
       action, params: body,
       result: { key: res.key, n_sets_tested: res.n_sets_tested, n_significant: res.n_significant },
@@ -288,31 +333,58 @@ export default function EnrichmentModal() {
   }, [addScanpyAction, activeSlot])
 
   const runOra = useCallback(async () => {
-    const body = {
-      genes: queryGenes, name: queryName, libraries, sets: inlineSets, gene_subset: universeCol || null,
-      min_set_size: oraMin, max_set_size: oraMax, min_overlap: minOverlap,
-    }
     setPhase('running'); setError(null); setProgress({ frac: 0, message: 'Testing overlaps…' })
     try {
+      if (querySetId === MARKERS) {
+        const body = {
+          obs_column: markersColumn, groups: batchGroupsRef.current, top_n: markerTopN,
+          min_in_group_fraction: optionalNumber(markerMinIn), max_out_group_fraction: optionalNumber(markerMaxOut),
+          min_fold_change: optionalNumber(markerMinFc),
+          libraries, sets: inlineSets, gene_subset: universeCol || null,
+          min_set_size: oraMin, max_set_size: oraMax, min_overlap: minOverlap,
+        }
+        setProgress({ frac: 0, message: 'Marker genes, then overlaps for every group…' })
+        const res = await runOraBatch(body, activeSlot)
+        await finishRun(res, 'enrichment_ora_batch', body)
+        return
+      }
+      const body = {
+        genes: queryGenes, name: queryName, libraries, sets: inlineSets, gene_subset: universeCol || null,
+        min_set_size: oraMin, max_set_size: oraMax, min_overlap: minOverlap,
+      }
       const res = await runOverlapEnrichment(body, activeSlot)
       await finishRun(res, 'enrichment_ora', body)
     } catch (e) {
       setError((e as Error).message); setPhase('config')
     }
-  }, [queryGenes, queryName, libraries, inlineSets, universeCol, oraMin, oraMax, minOverlap, activeSlot, finishRun])
+  }, [querySetId, markersColumn, markerTopN, markerMinIn, markerMaxOut, markerMinFc, queryGenes, queryName,
+    libraries, inlineSets, universeCol, oraMin, oraMax, minOverlap, activeSlot, finishRun])
 
   const runGsea = useCallback(async () => {
-    const ranking = rankKind === 'diffexp'
-      ? { kind: 'diffexp', obs_column: obsColumn, group, reference, method, metric, cell_subset: cellSubset || null }
-      : { kind: 'pca', component: component - 1, cell_subset: cellSubset || null }
-    const body = {
-      ranking, libraries, sets: inlineSets, gene_subset: universeCol || null,
-      n_perm: nPerm, min_set_size: gMin, max_set_size: gMax, weight, seed,
-    }
     setPhase('running'); setError(null); setProgress({ frac: 0, message: 'Starting…' })
     try {
+      const onProgress = (s: { progress?: number; message?: string }) => setProgress({ frac: s.progress ?? 0, message: s.message ?? '' })
+      if (rankKind === 'diffexp' && group === ALL_GROUPS) {
+        const body = {
+          obs_column: obsColumn, groups: batchGroupsRef.current, reference: 'rest', method, metric,
+          cell_subset: cellSubset || null, libraries, sets: inlineSets, gene_subset: universeCol || null,
+          n_perm: nPerm, min_set_size: gMin, max_set_size: gMax, weight, seed,
+        }
+        const { task_id } = await startGseaBatch(body, activeSlot)
+        const task = await pollTask(task_id, activeSlot, onProgress)
+        if (task.status !== 'completed') throw new Error(task.error || `Run ${task.status}`)
+        await finishRun(task.result as unknown as BatchCollection, 'enrichment_gsea_batch', body)
+        return
+      }
+      const ranking = rankKind === 'diffexp'
+        ? { kind: 'diffexp', obs_column: obsColumn, group, reference, method, metric, cell_subset: cellSubset || null }
+        : { kind: 'pca', component: component - 1, cell_subset: cellSubset || null }
+      const body = {
+        ranking, libraries, sets: inlineSets, gene_subset: universeCol || null,
+        n_perm: nPerm, min_set_size: gMin, max_set_size: gMax, weight, seed,
+      }
       const { task_id } = await startGsea(body, activeSlot)
-      const task = await pollTask(task_id, activeSlot, (s) => setProgress({ frac: s.progress ?? 0, message: s.message ?? '' }))
+      const task = await pollTask(task_id, activeSlot, onProgress)
       if (task.status !== 'completed') throw new Error(task.error || `Run ${task.status}`)
       await finishRun(task.result as unknown as GseaResult, 'enrichment_gsea', body)
     } catch (e) {
@@ -327,7 +399,8 @@ export default function EnrichmentModal() {
     try {
       const res = await fetchEnrichmentResult(key, activeSlot)
       setResult(res); setPhase('results'); setSaved(false); setCopied(false); setExpanded(null)
-      setTab(res.kind)
+      setSelectedGroup(isBatch(res) ? batchGroupsSorted(res)[0] ?? '' : '')
+      setTab(res.kind.startsWith('gsea') ? 'gsea' : 'ora')
     } catch (e) {
       setError((e as Error).message)
     }
@@ -343,39 +416,56 @@ export default function EnrichmentModal() {
     }
   }, [activeSlot, result])
 
+  // The table always shows one single-contrast result: the run itself, or
+  // the selected member of a batch.
+  const activeResult: EnrichmentResult | null = useMemo(() => {
+    if (!result) return null
+    if (isBatch(result)) return result.member_results?.[selectedGroup] ?? null
+    return result
+  }, [result, selectedGroup])
+
   const visibleRows = useMemo(() => {
-    if (!result) return []
-    return result.kind === 'ora'
-      ? filterRows(result.results, { padjMax, query, hideBelowMinOverlap: hideBelow })
-      : filterRows(result.results, { padjMax, query })
-  }, [result, padjMax, query, hideBelow])
+    if (!activeResult) return []
+    return activeResult.kind === 'ora'
+      ? filterRows(activeResult.results, { padjMax, query, hideBelowMinOverlap: hideBelow })
+      : filterRows(activeResult.results, { padjMax, query })
+  }, [activeResult, padjMax, query, hideBelow])
 
   const saveSets = useCallback(() => {
     if (!result) return
-    const sets = resultsToGeneSets(result, { padjMax, topN: 50 })
-    if (sets.length === 0) return
-    addFolderToCategory('enrichment', result.key, sets)
+    if (isBatch(result)) {
+      const folders = batchToGeneSets(result, { padjMax, topN: 50 })
+      if (folders.length === 0) return
+      for (const f of folders) addFolderToCategory('enrichment', f.folder, f.sets)
+    } else {
+      const sets = resultsToGeneSets(result, { padjMax, topN: 50 })
+      if (sets.length === 0) return
+      addFolderToCategory('enrichment', result.key, sets)
+    }
     setSaved(true)
   }, [result, padjMax, addFolderToCategory])
 
   const copyTsv = useCallback(() => {
-    if (!result) return
-    navigator.clipboard?.writeText(rowsToTsv(result)).then(() => setCopied(true)).catch(() => setCopied(false))
-  }, [result])
+    if (!activeResult) return
+    navigator.clipboard?.writeText(rowsToTsv(activeResult)).then(() => setCopied(true)).catch(() => setCopied(false))
+  }, [activeResult])
 
   const downloadSvg = useCallback(() => {
-    if (!svgRef.current || !result || !expanded) return
+    if (!svgRef.current || !activeResult || !expanded) return
     const safe = expanded.split('\u0000').pop()!.replace(/[^A-Za-z0-9_-]+/g, '_')
-    downloadText(`${result.key}_${safe}.svg`, standaloneSvg(svgRef.current.outerHTML, { background: '#16213e' }), 'image/svg+xml')
-  }, [result, expanded])
+    downloadText(`${activeResult.key}_${safe}.svg`, standaloneSvg(svgRef.current.outerHTML, { background: '#16213e' }), 'image/svg+xml')
+  }, [activeResult, expanded])
 
   // Global modals never unmount: every hook above runs whether or not we are open.
   if (!source) return null
 
   const groups = libraryGroups(cached)
-  const canRunOra = queryGenes.length >= 2 && !nothingToTest
+  const canRunOra = !nothingToTest && (querySetId === MARKERS ? Boolean(markersColumn) : queryGenes.length >= 2)
   const canRunGsea = !nothingToTest && (rankKind === 'diffexp' ? Boolean(obsColumn && group) : nPcs > 0)
-  const pFloor = result?.kind === 'gsea' ? 1 / (1 + Math.floor(result.n_perm / 2)) : undefined
+  const pFloor = activeResult?.kind === 'gsea' ? 1 / (1 + Math.floor(activeResult.n_perm / 2)) : undefined
+  const batchNote = batchGroupsRef.current
+    ? `limited to ${batchGroupsRef.current.length} group${batchGroupsRef.current.length === 1 ? '' : 's'}: ${batchGroupsRef.current.join(', ')}`
+    : 'every group'
 
   const setsBlock = (
     <div style={styles.section}>
@@ -425,14 +515,31 @@ export default function EnrichmentModal() {
         <span style={styles.label}>Query gene list</span>
         <div style={styles.row}>
           <select style={styles.select} value={querySetId} onChange={(e) => setQuerySetId(e.target.value)}>
-            {presetRef.current && <option value="__preset__">{presetRef.current.name} ({presetRef.current.genes.length})</option>}
+            {presetRef.current && <option value={PRESET}>{presetRef.current.name} ({presetRef.current.genes.length})</option>}
             <option value="">Paste genes…</option>
+            <option value={MARKERS}>Marker genes of each group in a column…</option>
             {flatSets.map((g) => <option key={g.id} value={g.id}>{g.name} ({g.genes.length})</option>)}
           </select>
-          <span style={styles.muted}>{queryGenes.length} genes</span>
+          {querySetId !== MARKERS && <span style={styles.muted}>{queryGenes.length} genes</span>}
         </div>
         {querySetId === '' && (
           <textarea style={styles.textarea} value={pasted} onChange={(e) => setPasted(e.target.value)} placeholder="One symbol per line, or comma / space separated" />
+        )}
+        {querySetId === MARKERS && (
+          <div style={{ ...styles.row, marginBottom: 0 }}>
+            <select style={styles.select} value={markersColumn} onChange={(e) => { setMarkersColumn(e.target.value); batchGroupsRef.current = null }}>
+              {categoricalColumns.map((c) => <option key={c.name} value={c.name}>{c.name} ({c.categories?.length ?? 0} groups)</option>)}
+            </select>
+            <span style={styles.muted}>{batchNote}</span>
+            <span style={{ fontSize: '12px', color: '#ccc' }}>Top N markers</span>
+            <input style={styles.input} type="number" min={2} value={markerTopN} onChange={(e) => setMarkerTopN(Math.max(2, Math.round(Number(e.target.value)) || 2))} />
+            <span style={{ fontSize: '12px', color: '#ccc' }}>Min in-group frac.</span>
+            <input style={{ ...styles.input, width: '60px' }} value={markerMinIn} onChange={(e) => setMarkerMinIn(e.target.value)} placeholder="—" />
+            <span style={{ fontSize: '12px', color: '#ccc' }}>Max out-group frac.</span>
+            <input style={{ ...styles.input, width: '60px' }} value={markerMaxOut} onChange={(e) => setMarkerMaxOut(e.target.value)} placeholder="—" />
+            <span style={{ fontSize: '12px', color: '#ccc' }}>Min fold change</span>
+            <input style={{ ...styles.input, width: '60px' }} value={markerMinFc} onChange={(e) => setMarkerMinFc(e.target.value)} placeholder="—" />
+          </div>
         )}
       </div>
       {setsBlock}
@@ -444,7 +551,10 @@ export default function EnrichmentModal() {
         <span style={styles.muted}>to</span>
         <input style={styles.input} type="number" min={1} value={oraMax} onChange={(e) => setOraMax(Math.max(1, Number(e.target.value) || 1))} />
       </div>
-      <div style={styles.muted}>Hypergeometric test of each set's overlap with the query, Benjamini–Hochberg across sets. The universe is the dataset's genes (after the gene mask and the Universe column).</div>
+      <div style={styles.muted}>
+        Hypergeometric test of each set's overlap with the query, Benjamini–Hochberg across sets. The universe is the dataset's genes (after the gene mask and the Universe column).
+        {querySetId === MARKERS && ' Marker genes are one-vs-rest Wilcoxon per group; each group gets its own result.'}
+      </div>
     </>
   )
 
@@ -463,17 +573,24 @@ export default function EnrichmentModal() {
         </div>
         {rankKind === 'diffexp' ? (
           <div style={{ ...styles.row, marginBottom: 0 }}>
-            <select style={styles.select} value={obsColumn} onChange={(e) => setObsColumn(e.target.value)}>
+            <select style={styles.select} value={obsColumn} onChange={(e) => { setObsColumn(e.target.value); batchGroupsRef.current = null }}>
               {categoricalColumns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
             </select>
-            <select style={styles.select} value={group} onChange={(e) => setGroup(e.target.value)}>
+            <select style={styles.select} value={group} onChange={(e) => { setGroup(e.target.value); if (e.target.value !== ALL_GROUPS) batchGroupsRef.current = null }}>
+              <option value={ALL_GROUPS}>All groups (one vs rest)</option>
               {groupOptions.map((g) => <option key={g.value} value={g.value}>{g.value} ({g.count.toLocaleString()})</option>)}
             </select>
-            <span style={styles.muted}>vs</span>
-            <select style={styles.select} value={reference} onChange={(e) => setReference(e.target.value)}>
-              <option value="rest">rest</option>
-              {groupOptions.filter((g) => g.value !== group).map((g) => <option key={g.value} value={g.value}>{g.value}</option>)}
-            </select>
+            {group === ALL_GROUPS ? (
+              <span style={styles.muted}>{batchNote}; one result per group plus a collection</span>
+            ) : (
+              <>
+                <span style={styles.muted}>vs</span>
+                <select style={styles.select} value={reference} onChange={(e) => setReference(e.target.value)}>
+                  <option value="rest">rest</option>
+                  {groupOptions.filter((g) => g.value !== group).map((g) => <option key={g.value} value={g.value}>{g.value}</option>)}
+                </select>
+              </>
+            )}
             <select style={styles.select} value={method} onChange={(e) => setMethod(e.target.value as 'wilcoxon' | 't-test')}>
               <option value="wilcoxon">Wilcoxon</option>
               <option value="t-test">t-test</option>
@@ -511,11 +628,37 @@ export default function EnrichmentModal() {
   const summaryLine = result && (
     <div style={{ fontSize: '12px', color: '#aaa', marginBottom: '8px' }}>
       <strong style={{ color: '#eee' }}>{result.label}</strong>
-      {' · '}{result.n_sets_tested.toLocaleString()} of {result.n_sets_input.toLocaleString()} sets tested in a universe of {result.universe_size.toLocaleString()} genes
-      {result.kind === 'ora' && ` · query ${result.query.n_in_universe}/${result.query.n_input} in universe`}
-      {result.kind === 'ora' && result.query.genes_missing.length > 0 && ` (missing: ${result.query.genes_missing.slice(0, 8).join(', ')}${result.query.genes_missing.length > 8 ? '…' : ''})`}
-      {result.kind === 'gsea' && ` · ${result.ranking.n_ranked.toLocaleString()} ranked genes, ${result.n_perm} permutations`}
-      {' · '}{result.n_significant} at padj ≤ 0.05
+      {isBatch(result) ? (
+        <>
+          {' · '}{result.groups.length} groups · {result.n_sets_tested.toLocaleString()} sets tested in a universe of {result.universe_size.toLocaleString()} genes
+          {result.kind === 'gsea_batch' && ` · ${result.n_perm} permutations`}
+          {result.kind === 'ora_batch' && ` · top ${result.top_n} markers per group`}
+          {' · '}{result.n_significant} rows at padj ≤ 0.05 in all
+          {Object.keys(result.skipped).length > 0 && ` · skipped: ${Object.entries(result.skipped).map(([g, why]) => `${g} (${why})`).join('; ')}`}
+        </>
+      ) : (
+        <>
+          {' · '}{result.n_sets_tested.toLocaleString()} of {result.n_sets_input.toLocaleString()} sets tested in a universe of {result.universe_size.toLocaleString()} genes
+          {result.kind === 'ora' && ` · query ${result.query.n_in_universe}/${result.query.n_input} in universe`}
+          {result.kind === 'ora' && result.query.genes_missing.length > 0 && ` (missing: ${result.query.genes_missing.slice(0, 8).join(', ')}${result.query.genes_missing.length > 8 ? '…' : ''})`}
+          {result.kind === 'gsea' && ` · ${result.ranking.n_ranked.toLocaleString()} ranked genes, ${result.n_perm} permutations`}
+          {' · '}{result.n_significant} at padj ≤ 0.05
+        </>
+      )}
+    </div>
+  )
+
+  const groupChips = result && isBatch(result) && (
+    <div style={{ marginBottom: '8px' }}>
+      {batchGroupsSorted(result).map((g) => (
+        <span
+          key={g} style={styles.groupChip(g === selectedGroup)}
+          onClick={() => { setSelectedGroup(g); setExpanded(null) }}
+          title={result.member_results?.[g]?.label}
+        >
+          {g} ({result.member_results?.[g]?.n_significant ?? 0})
+        </span>
+      ))}
     </div>
   )
 
@@ -523,7 +666,7 @@ export default function EnrichmentModal() {
     // Two selected libraries can share a term name; key and expansion are per library.
     const rowKey = `${row.library}\u0000${row.name}`
     const isOpen = expanded === rowKey
-    const isOra = result?.kind === 'ora'
+    const isOra = activeResult?.kind === 'ora'
     const barFrac = isOra
       ? Math.min(1, -Math.log10(Math.max(row.padj, 1e-10)) / 10)
       : Math.min(1, Math.abs((row as GseaRow).nes) / 3)
@@ -551,8 +694,8 @@ export default function EnrichmentModal() {
             <td colSpan={7} style={{ ...styles.td, backgroundColor: '#0f1625' }}>
               {row.description && <div style={{ ...styles.muted, marginBottom: '6px' }}>{row.description}</div>}
               {row.url && <a href={row.url} target="_blank" rel="noreferrer" style={{ fontSize: '11px', color: ACCENT }}>{row.url}</a>}
-              {!isOra && (row as GseaRow).curve && result?.kind === 'gsea' && (
-                <GseaCurve row={row as GseaRow} ranking={result.ranking} svgRef={svgRef} />
+              {!isOra && (row as GseaRow).curve && activeResult?.kind === 'gsea' && (
+                <GseaCurve row={row as GseaRow} ranking={activeResult.ranking} svgRef={svgRef} />
               )}
               <div style={{ marginTop: '6px' }}>
                 <span style={styles.muted}>{isOra ? 'Overlap' : 'Leading edge'} ({genes.length}): </span>
@@ -570,6 +713,9 @@ export default function EnrichmentModal() {
   const resultsView = result && (
     <>
       {summaryLine}
+      {groupChips}
+      {!activeResult && <div style={styles.muted}>No per-group results are stored for this collection.</div>}
+      {activeResult && (<>
       <div style={{ ...styles.row, marginBottom: '8px' }}>
         <label style={styles.checkRow}>
           <input type="checkbox" checked={padjMax !== null} onChange={(e) => setPadjMax(e.target.checked ? Number(padjText) || 0.05 : null)} />
@@ -580,28 +726,29 @@ export default function EnrichmentModal() {
           onChange={(e) => { setPadjText(e.target.value); const v = Number(e.target.value); if (padjMax !== null && Number.isFinite(v) && v > 0) setPadjMax(v) }}
         />
         <input style={{ ...styles.input, width: '180px' }} placeholder="Filter by name or library" value={query} onChange={(e) => setQuery(e.target.value)} />
-        {result.kind === 'ora' && (
+        {activeResult.kind === 'ora' && (
           <label style={styles.checkRow}><input type="checkbox" checked={hideBelow} onChange={(e) => setHideBelow(e.target.checked)} /> hide below min overlap</label>
         )}
-        <span style={styles.muted}>{visibleRows.length} of {result.results.length} shown</span>
+        <span style={styles.muted}>{visibleRows.length} of {activeResult.results.length} shown</span>
       </div>
-      <div style={{ maxHeight: '48vh', overflowY: 'auto', border: '1px solid #0f3460', borderRadius: '4px' }}>
+      <div style={{ maxHeight: '44vh', overflowY: 'auto', border: '1px solid #0f3460', borderRadius: '4px' }}>
         <table style={styles.table}>
           <thead>
             <tr>
               <th style={styles.th}>Set</th>
               <th style={styles.th}>Library</th>
               <th style={{ ...styles.th, textAlign: 'right' }}>Size</th>
-              <th style={{ ...styles.th, textAlign: 'right' }}>{result.kind === 'ora' ? 'Overlap' : 'NES'}</th>
+              <th style={{ ...styles.th, textAlign: 'right' }}>{activeResult.kind === 'ora' ? 'Overlap' : 'NES'}</th>
               <th style={{ ...styles.th, textAlign: 'right' }}>p</th>
               <th style={{ ...styles.th, textAlign: 'right' }}>padj</th>
-              <th style={styles.th}>{result.kind === 'ora' ? '−log10 padj' : '|NES|'}</th>
+              <th style={styles.th}>{activeResult.kind === 'ora' ? '−log10 padj' : '|NES|'}</th>
             </tr>
           </thead>
           <tbody>{visibleRows.map((r) => renderRow(r))}</tbody>
         </table>
         {visibleRows.length === 0 && <div style={{ ...styles.muted, padding: '12px' }}>No sets pass the current filter.</div>}
       </div>
+      </>)}
     </>
   )
 
@@ -615,7 +762,11 @@ export default function EnrichmentModal() {
               <>
                 <select style={styles.select} value={phase === 'results' && result ? result.key : ''} onChange={(e) => openPrevious(e.target.value)} title="Previous runs stored in this dataset">
                   <option value="">Previous runs…</option>
-                  {previous.map((p) => <option key={p.key} value={p.key}>{p.label} ({p.n_significant}/{p.n_sets_tested})</option>)}
+                  {previous.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.label} ({p.n_groups ? `${p.n_groups} groups, ` : ''}{p.n_significant}/{p.n_sets_tested})
+                    </option>
+                  ))}
                 </select>
                 {phase === 'results' && result && (
                   <button style={styles.closeButton} title="Delete this stored result" onClick={() => removePrevious(result.key)}>🗑</button>
@@ -653,14 +804,20 @@ export default function EnrichmentModal() {
           <div style={{ display: 'flex', gap: '8px' }}>
             {phase === 'results' && result && (
               <>
-                <button style={{ ...styles.button, ...styles.secondaryButton }} onClick={copyTsv}>{copied ? 'Copied' : 'Copy TSV'}</button>
-                {result.kind === 'gsea' && expanded && (
+                {isBatch(result) && (
+                  <>
+                    <button style={{ ...styles.button, ...styles.secondaryButton, ...styles.disabledButton }} disabled title="Coming in the Figures update">Heatmap figure…</button>
+                    <button style={{ ...styles.button, ...styles.secondaryButton, ...styles.disabledButton }} disabled title="Coming in the Figures update">Network figure…</button>
+                  </>
+                )}
+                <button style={{ ...styles.button, ...styles.secondaryButton, ...(activeResult ? {} : styles.disabledButton) }} disabled={!activeResult} onClick={copyTsv}>{copied ? 'Copied' : 'Copy TSV'}</button>
+                {activeResult?.kind === 'gsea' && expanded && (
                   <button style={{ ...styles.button, ...styles.secondaryButton }} onClick={downloadSvg}>Download SVG</button>
                 )}
                 <button
-                  style={{ ...styles.button, ...styles.successButton, ...(saved || visibleRows.length === 0 ? styles.disabledButton : {}) }}
-                  disabled={saved || visibleRows.length === 0} onClick={saveSets}
-                  title="One gene set per row passing the padj filter (top 50), in the Enrichment category"
+                  style={{ ...styles.button, ...styles.successButton, ...(saved ? styles.disabledButton : {}) }}
+                  disabled={saved} onClick={saveSets}
+                  title={isBatch(result) ? 'One folder per group, one gene set per row passing the padj filter (top 50)' : 'One gene set per row passing the padj filter (top 50), in the Enrichment category'}
                 >
                   {saved ? 'Added to gene sets' : 'Add to gene sets'}
                 </button>
@@ -672,7 +829,7 @@ export default function EnrichmentModal() {
                 disabled={tab === 'ora' ? !canRunOra : !canRunGsea}
                 onClick={tab === 'ora' ? runOra : runGsea}
               >
-                {tab === 'ora' ? 'Run overlap test' : 'Run GSEA'}
+                {tab === 'ora' ? (querySetId === MARKERS ? 'Run overlap test per group' : 'Run overlap test') : (group === ALL_GROUPS && rankKind === 'diffexp' ? 'Run GSEA per group' : 'Run GSEA')}
               </button>
             )}
           </div>

@@ -62,11 +62,63 @@ export type EnrichmentResult = OraResult | GseaResult
 
 export interface EnrichmentSummary {
   key: string
-  kind: 'ora' | 'gsea'
+  kind: 'ora' | 'gsea' | 'ora_batch' | 'gsea_batch'
   label: string
   n_sets_tested: number
   n_significant: number
   created_at: string
+  n_groups?: number | null
+}
+
+/** One run over every group of a column: per-group results stored under
+ *  their own keys, listed here; `member_results` arrives expanded from a
+ *  single GET so a figure or the batch view needs no second round trip. */
+export interface BatchCollection {
+  key: string
+  kind: 'gsea_batch' | 'ora_batch'
+  label: string
+  created_at: string
+  obs_column: string
+  reference?: string
+  groups: string[]
+  members: Record<string, string>
+  skipped: Record<string, string>
+  markers?: Record<string, string[]>
+  top_n?: number
+  n_perm?: number
+  universe_size: number
+  gene_subset_type: string
+  n_sets_tested: number
+  n_significant: number
+  params: Record<string, unknown>
+  member_results?: Record<string, EnrichmentResult>
+}
+
+export type AnyEnrichmentResult = EnrichmentResult | BatchCollection
+
+export function isBatch(r: AnyEnrichmentResult): r is BatchCollection {
+  return r.kind === 'gsea_batch' || r.kind === 'ora_batch'
+}
+
+/** Groups with the most significant sets first; ties keep the column's order. */
+export function batchGroupsSorted(col: BatchCollection): string[] {
+  const sig = (g: string) => col.member_results?.[g]?.n_significant ?? 0
+  return [...col.groups].sort((a, b) => sig(b) - sig(a))
+}
+
+/** One Gene Panel folder per group, each holding that member's gene sets. */
+export function batchToGeneSets(
+  col: BatchCollection,
+  opts: { padjMax: number | null; topN: number },
+): { folder: string; sets: { name: string; genes: string[] }[] }[] {
+  const out: { folder: string; sets: { name: string; genes: string[] }[] }[] = []
+  for (const g of col.groups) {
+    const member = col.member_results?.[g]
+    if (!member) continue
+    const sets = resultsToGeneSets(member, opts)
+    if (sets.length > 0) out.push({ folder: col.members[g] ?? `${col.key}_${g}`, sets })
+  }
+  return out
 }
 
 export interface CachedLibrary {
@@ -78,7 +130,11 @@ export interface CachedLibrary {
   version?: string | null
 }
 
-export type EnrichmentSource = { kind: 'ora'; name?: string; genes?: string[] } | { kind: 'gsea' }
+/** What opened the modal. `groups: null` on a gsea source means every group;
+ *  a `reference` with one group is the two-group Compare hand-off. */
+export type EnrichmentSource =
+  | { kind: 'ora'; name?: string; genes?: string[]; markersOf?: { obsColumn: string; groups?: string[] | null } }
+  | { kind: 'gsea'; obsColumn?: string; groups?: string[] | null; reference?: string }
 
 /** `0.032`, `1.2e-7`, `1.0`; values at or below `floor` (the permutation
  *  floor) print as `<floor` so a wall of identical minimums reads honestly. */

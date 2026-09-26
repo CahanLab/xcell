@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   formatP, curvePath, hitTicks, filterRows, resultsToGeneSets, libraryGroups, rowsToTsv, metricStripBins, reconcileChoice,
-  type OraResult, type GseaResult,
+  isBatch, batchGroupsSorted, batchToGeneSets,
+  type OraResult, type GseaResult, type BatchCollection,
 } from './enrichment'
 
 const ora = (over: Partial<OraResult> = {}): OraResult => ({
@@ -94,5 +95,30 @@ describe('reconcileChoice', () => {
     expect(reconcileChoice('gone', ['cell_type', 'leiden'], 'cell_type')).toBe('cell_type')
     expect(reconcileChoice('', ['a'], '')).toBe('')            // '' is the "none" sentinel, always valid
     expect(reconcileChoice('x', [], '')).toBe('')
+  })
+})
+
+describe('batch collections', () => {
+  const member = (nSig: number): GseaResult => ({ ...gsea(), n_significant: nSig })
+  const col: BatchCollection = {
+    key: 'gsea_grp_batch', kind: 'gsea_batch', label: 'GSEA: grp (2 groups vs rest)', created_at: 't',
+    obs_column: 'grp', reference: 'rest', groups: ['a', 'b'], members: { a: 'gsea_grp_a_vs_rest', b: 'gsea_grp_b_vs_rest' },
+    skipped: { c: 'fewer than 2 cells in group' }, n_perm: 100, universe_size: 10, gene_subset_type: 'all',
+    n_sets_tested: 2, n_significant: 3, params: {},
+    member_results: { a: member(1), b: member(2) },
+  }
+  it('isBatch distinguishes collections from single results', () => {
+    expect(isBatch(col)).toBe(true)
+    expect(isBatch(gsea())).toBe(false)
+    expect(isBatch(ora())).toBe(false)
+  })
+  it('batchGroupsSorted orders groups by significant hits, most first', () => {
+    expect(batchGroupsSorted(col)).toEqual(['b', 'a'])
+    expect(batchGroupsSorted({ ...col, member_results: undefined })).toEqual(['a', 'b'])
+  })
+  it('batchToGeneSets makes one folder per group from each member', () => {
+    const folders = batchToGeneSets(col, { padjMax: null, topN: 1 })
+    expect(folders.map((f) => f.folder)).toEqual(['gsea_grp_a_vs_rest', 'gsea_grp_b_vs_rest'])
+    expect(folders[0].sets).toEqual([{ name: 'TOP (NES 1.9)', genes: ['g0', 'g1'] }])
   })
 })

@@ -1379,6 +1379,7 @@ export default function ScanpyModal() {
         const group2 = categoryIndices[checkedGroups[1]]
         setComparisonGroup1(group1, checkedGroups[0])
         setComparisonGroup2(group2, checkedGroups[1])
+        setMarkerGenesColumn(compareColumn)   // DiffExpModal's enrichment hand-off needs the column name
         setDiffExpLoading(true)
         setDiffExpModalOpen(true)
         setScanpyModalOpen(false)
@@ -2511,6 +2512,18 @@ export default function ScanpyModal() {
                       ? `Will run marker gene analysis (${compareChecked.size} groups)`
                       : 'Select at least 2 groups'}
                 </div>
+                <button
+                  style={{ ...styles.runButton, ...(compareChecked.size < 2 || !compareColumn ? { opacity: 0.5, cursor: 'not-allowed' } : {}), marginBottom: '8px' }}
+                  disabled={compareChecked.size < 2 || !compareColumn}
+                  title="Preranked GSEA of each checked group vs the rest, against cached gene-set libraries"
+                  onClick={() => {
+                    if (!compareColumn) return
+                    setEnrichmentSource({ kind: 'gsea', obsColumn: compareColumn, groups: [...compareChecked] })
+                    setScanpyModalOpen(false)
+                  }}
+                >
+                  Enrichment for these groups…
+                </button>
               </>
             )}
           </div>

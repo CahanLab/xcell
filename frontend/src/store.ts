@@ -8,6 +8,7 @@ export { pickPreferredEmbedding }
 import { loadedSlots, slotAfterUnload, moveItem, paneGrid, activeSlotFrom } from './lib/datasetSlots'
 import type { Workspace } from './lib/workspaceLayout'
 import type { CellSubsetInfo } from './lib/cellSubsets'
+import type { EnrichmentSource } from './lib/enrichment'
 
 export interface Schema {
   n_cells: number
@@ -109,7 +110,7 @@ export interface GeneSet {
 }
 
 // Category types for organizing gene sets
-export type GeneSetCategoryType = 'manual' | 'gene_clusters' | 'similar_genes' | 'diff_exp' | 'spatial' | 'marker_genes' | 'line_association'
+export type GeneSetCategoryType = 'manual' | 'gene_clusters' | 'similar_genes' | 'diff_exp' | 'spatial' | 'marker_genes' | 'line_association' | 'enrichment'
 
 export interface GeneSetFolder {
   id: string
@@ -176,6 +177,13 @@ export const createDefaultCategories = (): Record<GeneSetCategoryType, GeneSetCa
   line_association: {
     type: 'line_association',
     name: 'Line Association',
+    expanded: true,
+    folders: [],
+    geneSets: [],
+  },
+  enrichment: {
+    type: 'enrichment',
+    name: 'Enrichment',
     expanded: true,
     folders: [],
     geneSets: [],
@@ -838,6 +846,8 @@ interface AppState {
   isDiffExpModalOpen: boolean
   clusterCellsSource: { name: string; genes: string[] } | null
   decomposeSource: { name: string; genes: string[] } | null
+  // null = closed; kind picks the tab, an ORA source can carry a preselected set
+  enrichmentSource: EnrichmentSource | null
   // genes === null: the modal offers a gene-subset picker instead of a fixed list
   geneMapSource: { name: string; genes: string[] | null } | null
   // ⓘ card anchor: the gene and the screen point beside the row's button
@@ -1091,6 +1101,7 @@ interface AppState {
   setDiffExpModalOpen: (open: boolean) => void
   setClusterCellsSource: (src: { name: string; genes: string[] } | null) => void
   setDecomposeSource: (src: { name: string; genes: string[] } | null) => void
+  setEnrichmentSource: (src: EnrichmentSource | null) => void
   setGeneMapSource: (src: { name: string; genes: string[] | null } | null) => void
   setGeneInfoTarget: (t: { gene: string; x: number; y: number } | null) => void
   setClusterModalSourceSet: (src: {
@@ -1399,6 +1410,7 @@ export const useStore = create<AppState>((set, get) => {
     clusterModalSourceSet: null,
     clusterCellsSource: null,
     decomposeSource: null,
+    enrichmentSource: null,
     geneMapSource: null,
     geneInfoTarget: null,
     selectByExpressionSource: null,
@@ -2163,6 +2175,7 @@ export const useStore = create<AppState>((set, get) => {
     setClusterModalSourceSet: (src) => set({ clusterModalSourceSet: src }),
     setClusterCellsSource: (src) => set({ clusterCellsSource: src }),
     setDecomposeSource: (src) => set({ decomposeSource: src }),
+    setEnrichmentSource: (src) => set({ enrichmentSource: src }),
     setGeneMapSource: (src) => set({ geneMapSource: src }),
     setGeneInfoTarget: (t) => set({ geneInfoTarget: t }),
     setSelectByExpressionSource: (src) => set({ selectByExpressionSource: src }),

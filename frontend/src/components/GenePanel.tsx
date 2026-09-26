@@ -23,7 +23,7 @@ const GENE_SET_DRAG_TYPE = 'application/x-gene-set'
 const GENE_SET_FOLDER_DRAG_TYPE = 'application/x-gene-set-folder'
 
 // Category display order and icons
-const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'marker_genes', 'line_association']
+const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'marker_genes', 'line_association', 'enrichment']
 const CATEGORY_ICONS: Record<GeneSetCategoryType, string> = {
   manual: '📁',
   gene_clusters: '🧬',
@@ -32,6 +32,7 @@ const CATEGORY_ICONS: Record<GeneSetCategoryType, string> = {
   spatial: '🗺️',
   marker_genes: '🏷️',
   line_association: '📈',
+  enrichment: '🎯',
 }
 
 // Sort helper: pinned items first (stable), unpinned items after (stable).
@@ -839,6 +840,7 @@ function CategoryGeneSetComponent({
     setClusterCellsSource,
     setDecomposeSource,
     setGeneMapSource,
+    setEnrichmentSource,
   } = useStore()
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
   const setUcellScoreSource = useStore((s) => s.setUcellScoreSource)
@@ -1119,6 +1121,12 @@ function CategoryGeneSetComponent({
               onClick: () => setDecomposeSource({ name: geneSet.name, genes: geneSet.genes }),
               disabled: geneSet.genes.length < 3,
               tooltip: 'PCA or NMF on this set: per-cell program scores and one gene set per program',
+            },
+            {
+              label: 'Enrichment (overlap)…',
+              onClick: () => setEnrichmentSource({ kind: 'ora', name: geneSet.name, genes: geneSet.genes }),
+              disabled: geneSet.genes.length < 2,
+              tooltip: 'Hypergeometric overlap of this set with cached gene-set libraries',
             },
             {
               label: 'Map genes…',
@@ -1793,7 +1801,7 @@ export function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetC
 }
 
 export default function GenePanel() {
-  const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen, setGeneSetLibraryModalOpen, setGeneMapSource } = useStore()
+  const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen, setGeneSetLibraryModalOpen, setGeneMapSource, setEnrichmentSource } = useStore()
   const selectedCellIndices = useStore((s) => s.selectedCellIndices)
   const { colorByGene, colorByGenes, colorByScore, clearExpressionColor, colorByBivariate, clearBivariateColor, addGeneSetHighlight, addCellSetHighlight, removeHighlightLayer, updateHighlightLayer, clearHighlightOverlay } = useDataActions()
   const scoreMatrices = useStore((s) => s.schema?.score_matrices)
@@ -1975,6 +1983,11 @@ export default function GenePanel() {
                 label: 'Gene set library…',
                 onClick: () => setGeneSetLibraryModalOpen(true),
                 tooltip: 'Browse MSigDB, Enrichr and STRING; import sets',
+              },
+              {
+                label: 'Enrichment analysis…',
+                onClick: () => setEnrichmentSource({ kind: 'ora' }),
+                tooltip: 'Overlap (ORA) or preranked GSEA against cached libraries and your own sets',
               },
               {
                 label: 'Fetch gene annotations for all genes…',

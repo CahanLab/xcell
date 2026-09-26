@@ -752,6 +752,37 @@ REGISTRY: dict[str, ActionSpec] = {
             f"{_n(r.get('n_modules'))} modules, {p.get('embedding', 'umap')} layout."
         ),
     ),
+    'enrichment_ora': ActionSpec(
+        label='Overlap enrichment', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('run_overlap_enrichment',
+                     ('genes', 'name', 'libraries', 'sets', 'gene_subset',
+                      'min_set_size', 'max_set_size', 'min_overlap')),
+        summary=lambda p, r: (
+            f"Overlap enrichment of '{p.get('name')}' ({_n(len(p.get('genes') or []))} genes) "
+            f"against {_n(len(p.get('libraries') or []))} librar"
+            f"{'y' if len(p.get('libraries') or []) == 1 else 'ies'}"
+            + (f" and {_n(len(p.get('sets') or []))} own sets" if p.get('sets') else '')
+            + f": {_n(r.get('n_significant'))} of {_n(r.get('n_sets_tested'))} sets at padj ≤ 0.05 "
+            f"→ `.uns['xcell_enrichment']['{r.get('key')}']`."
+        ),
+    ),
+    'enrichment_gsea': ActionSpec(
+        label='Preranked GSEA', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_gsea',
+                        ('ranking', 'libraries', 'sets', 'gene_subset', 'n_perm',
+                         'min_set_size', 'max_set_size', 'weight', 'seed')),
+        summary=lambda p, r: (
+            f"Preranked GSEA ({(p.get('ranking') or {}).get('kind')} ranking, "
+            f"{_n(p.get('n_perm'))} permutations): {_n(r.get('n_significant'))} of "
+            f"{_n(r.get('n_sets_tested'))} sets at padj ≤ 0.05 "
+            f"→ `.uns['xcell_enrichment']['{r.get('key')}']`."
+        ),
+    ),
+    'enrichment_delete': ActionSpec(
+        label='Delete an enrichment result', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('delete_enrichment_result', ('key',)),
+        summary=lambda p, r: f"Deleted enrichment result '{p.get('key')}'.",
+    ),
     'gene_nmf_meta': ActionSpec(
         label='NMF meta-programs', fidelity=XCELL, imports=XCELL_API,
         code=_two_phase('prepare_meta_programs',

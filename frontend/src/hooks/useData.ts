@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
+import type { OraResult, EnrichmentResult, EnrichmentSummary, CachedLibrary } from '../lib/enrichment'
 import { mergePcaSubsetLists } from '../lib/pcaSubsets'
 import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, DrawnLine, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
@@ -2121,6 +2122,43 @@ export async function runMarkerGenes(params: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
   })
+}
+
+// --- Gene-set enrichment ---------------------------------------------------
+
+export async function runOverlapEnrichment(body: Record<string, unknown>, slot?: DatasetSlot): Promise<OraResult> {
+  return fetchJson<OraResult>(appendDataset(`${API_BASE}/enrichment/overlap`, slot), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function startGsea(body: Record<string, unknown>, slot?: DatasetSlot): Promise<{ task_id: string }> {
+  return fetchJson<{ task_id: string }>(appendDataset(`${API_BASE}/enrichment/gsea`, slot), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function fetchEnrichmentResults(slot?: DatasetSlot): Promise<EnrichmentSummary[]> {
+  const r = await fetchJson<{ results: EnrichmentSummary[] }>(appendDataset(`${API_BASE}/enrichment/results`, slot))
+  return r.results
+}
+
+export async function fetchEnrichmentResult(key: string, slot?: DatasetSlot): Promise<EnrichmentResult> {
+  return fetchJson<EnrichmentResult>(appendDataset(`${API_BASE}/enrichment/results/${encodeURIComponent(key)}`, slot))
+}
+
+export async function deleteEnrichmentResult(key: string, slot?: DatasetSlot): Promise<void> {
+  await fetchJson(appendDataset(`${API_BASE}/enrichment/results/${encodeURIComponent(key)}`, slot), { method: 'DELETE' })
+}
+
+/** The libraries already fetched into the gene-set source cache (no network). */
+export async function fetchCachedLibraries(): Promise<CachedLibrary[]> {
+  const a = await fetchJson<{ cached?: CachedLibrary[] }>(`${API_BASE}/gene_set_sources`)
+  return a.cached ?? []
 }
 
 // Create projection embedding API function

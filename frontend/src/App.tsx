@@ -40,6 +40,7 @@ import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import ClusterCellsByGeneSetModal from './components/ClusterCellsByGeneSetModal'
 import DecomposeGeneSetModal from './components/DecomposeGeneSetModal'
+import EnrichmentModal from './components/EnrichmentModal'
 import GeneMapModal from './components/GeneMapModal'
 import SelectByExpressionModal from './components/SelectByExpressionModal'
 import GeneMaskModal from './components/GeneMaskModal'
@@ -2185,6 +2186,7 @@ export default function App() {
       <ClusterGeneSetModal />
       <ClusterCellsByGeneSetModal />
       <DecomposeGeneSetModal />
+      <EnrichmentModal />
       <GeneMapModal />
       <SelectByExpressionModal />
       <GeneMaskModal />

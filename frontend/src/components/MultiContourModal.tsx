@@ -29,7 +29,7 @@ import {
 const API_BASE = '/api'
 const SELECTION_KEY = '__selection__'
 
-const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial', 'marker_genes', 'line_association']
+const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial', 'marker_genes', 'line_association', 'enrichment']
 
 interface Source {
   key: string

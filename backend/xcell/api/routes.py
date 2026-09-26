@@ -2211,6 +2211,128 @@ class GeneSubsetSpec(BaseModel):
     operation: str = 'intersection'  # 'intersection' (AND) or 'union' (OR)
 
 
+# ---------------------------------------------------------------------------
+# Gene-set enrichment (overlap / ORA and preranked GSEA)
+# ---------------------------------------------------------------------------
+
+class EnrichmentLibraryRef(BaseModel):
+    source: str
+    id: str
+    species: str | None = None
+
+
+class EnrichmentInlineSet(BaseModel):
+    name: str
+    genes: list[str]
+    genes_down: list[str] | None = None
+
+
+class OverlapEnrichmentRequest(BaseModel):
+    genes: list[str]
+    name: str | None = None
+    libraries: list[EnrichmentLibraryRef] | None = None
+    sets: list[EnrichmentInlineSet] | None = None
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    min_set_size: int = 5
+    max_set_size: int = 500
+    min_overlap: int = 2
+    key: str | None = None
+
+
+def _gene_subset_arg(spec):
+    return spec.model_dump() if isinstance(spec, GeneSubsetSpec) else spec
+
+
+@router.post("/enrichment/overlap")
+def overlap_enrichment(request: OverlapEnrichmentRequest, dataset: str | None = Query(None)):
+    """Hypergeometric over-representation of a gene list in cached library sets."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.run_overlap_enrichment(
+            request.genes, name=request.name,
+            libraries=[lib.model_dump() for lib in request.libraries] if request.libraries else None,
+            sets=[s.model_dump() for s in request.sets] if request.sets else None,
+            gene_subset=_gene_subset_arg(request.gene_subset),
+            min_set_size=request.min_set_size, max_set_size=request.max_set_size,
+            min_overlap=request.min_overlap, key=request.key)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class GseaRankingSpec(BaseModel):
+    kind: str = 'diffexp'
+    obs_column: str | None = None
+    group: str | None = None
+    reference: str = 'rest'
+    method: str = 'wilcoxon'
+    metric: str = 'score'
+    cell_subset: str | None = None
+    component: int | None = None
+    genes: list[str] | None = None
+    scores: list[float] | None = None
+
+
+class GseaRequest(BaseModel):
+    ranking: GseaRankingSpec
+    libraries: list[EnrichmentLibraryRef] | None = None
+    sets: list[EnrichmentInlineSet] | None = None
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    n_perm: int = 1000
+    min_set_size: int = 15
+    max_set_size: int = 500
+    weight: float = 1.0
+    seed: int = 0
+    key: str | None = None
+
+
+@router.post("/enrichment/gsea", status_code=202)
+def run_gsea(request: GseaRequest, dataset: str | None = Query(None)):
+    """Preranked GSEA as a background task; poll /tasks/{task_id}."""
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_gsea(
+            request.ranking.model_dump(),
+            libraries=[lib.model_dump() for lib in request.libraries] if request.libraries else None,
+            sets=[s.model_dump() for s in request.sets] if request.sets else None,
+            gene_subset=_gene_subset_arg(request.gene_subset),
+            n_perm=request.n_perm, min_set_size=request.min_set_size,
+            max_set_size=request.max_set_size, weight=request.weight, seed=request.seed,
+            key=request.key)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.get("/enrichment/results")
+def list_enrichment_results(dataset: str | None = Query(None)):
+    return {"results": get_adaptor(dataset).get_enrichment_results()}
+
+
+@router.get("/enrichment/results/{key}")
+def get_enrichment_result(key: str, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).get_enrichment_result(key)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/enrichment/results/{key}")
+def delete_enrichment_result(key: str, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).delete_enrichment_result(key)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 class PcaRequest(BaseModel):
     n_comps: int = 50
     svd_solver: str = 'arpack'

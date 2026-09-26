@@ -6065,8 +6065,8 @@ class DataAdaptor:
             r['genes'] = [universe[i] for i in r['genes']]
         label = name or 'gene list'
         params = {
-            'name': label, 'n_query': len(genes or []), 'libraries': list(libraries or []),
-            'n_inline_sets': len(sets or []), 'gene_subset': gene_subset,
+            'genes': list(genes or []), 'name': label, 'libraries': list(libraries or []),
+            'sets': list(sets or []), 'gene_subset': gene_subset,
             'min_set_size': min_set_size, 'max_set_size': max_set_size, 'min_overlap': min_overlap,
         }
         result = {
@@ -6209,7 +6209,7 @@ class DataAdaptor:
             raise ValueError(
                 f'No gene set has between {min_set_size} and {max_set_size} members in the universe')
         params = {
-            'ranking': clean_ranking, 'libraries': list(libraries or []), 'n_inline_sets': len(sets or []),
+            'ranking': clean_ranking, 'libraries': list(libraries or []), 'sets': list(sets or []),
             'gene_subset': gene_subset, 'n_perm': int(n_perm), 'min_set_size': int(min_set_size),
             'max_set_size': int(max_set_size), 'weight': float(weight), 'seed': int(seed),
         }

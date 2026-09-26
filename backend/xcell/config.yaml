@@ -192,6 +192,19 @@ diff_exp:
   max_pval_adj: ''
 
 # ---------------------------------------------------------------------------
+# Gene-set enrichment modal (overlap / ORA and preranked GSEA).
+# ---------------------------------------------------------------------------
+enrichment:
+  min_set_size: 5                   # ORA: drop sets smaller than this in the universe
+  max_set_size: 500
+  min_overlap: 2                    # ORA rows below this are hidden by default
+  gsea_min_set_size: 15
+  gsea_max_set_size: 500
+  n_perm: 1000                      # gene permutations; p floors at about 2/n_perm
+  weight: 1.0                       # running-sum exponent (0 = classic KS)
+  padj_cutoff: 0.05                 # results table default filter
+
+# ---------------------------------------------------------------------------
 # Cluster gene sets modal.
 # ---------------------------------------------------------------------------
 cluster_gene_sets:

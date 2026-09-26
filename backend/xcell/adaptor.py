@@ -6013,8 +6013,11 @@ class DataAdaptor:
                 r = json.loads(raw)
             except (TypeError, ValueError):
                 continue
-            out.append({k: r.get(k) for k in
-                        ('key', 'kind', 'label', 'n_sets_tested', 'n_significant', 'created_at')})
+            summary = {k: r.get(k) for k in
+                       ('key', 'kind', 'label', 'n_sets_tested', 'n_significant', 'created_at')}
+            members = r.get('members')
+            summary['n_groups'] = len(members) if isinstance(members, dict) else None
+            out.append(summary)
         out.sort(key=lambda s: s.get('created_at') or '', reverse=True)
         return out
 
@@ -6022,7 +6025,12 @@ class DataAdaptor:
         store = self._enrichment_store()
         if key not in store:
             raise KeyError(f"No enrichment result named '{key}'")
-        return json.loads(store[key])
+        r = json.loads(store[key])
+        members = r.get('members')
+        if isinstance(members, dict):
+            # A collection carries its per-group results so one GET feeds a figure.
+            r['member_results'] = {g: json.loads(store[k]) for g, k in members.items() if k in store}
+        return r
 
     def delete_enrichment_result(self, key: str) -> dict[str, Any]:
         store = self._enrichment_store()
@@ -6258,6 +6266,160 @@ class DataAdaptor:
                 'key': stored_key, 'n_sets_tested': result['n_sets_tested'],
                 'n_significant': result['n_significant']})
             return result
+
+        return compute_fn, apply_fn
+
+    def prepare_gsea_batch(self, obs_column: str, *, groups: list[str] | None = None,
+                           reference: str = 'rest', libraries=None, sets=None, gene_subset=None,
+                           method: str = 'wilcoxon', metric: str = 'score', cell_subset: str | None = None,
+                           n_perm: int = 1000, min_set_size: int = 15, max_set_size: int = 500,
+                           weight: float = 1.0, seed: int = 0, key: str | None = None):
+        """GSEA for every group of ``obs_column`` (vs rest, or vs one group) in one task.
+
+        One throwaway matrix is snapshotted; each group's ranking is built from
+        it inside the task. Per-group results are stored under the single-run
+        keys so they are ordinary "previous runs"; a collection record lists
+        them for the batch view and for figures. A group with fewer than two
+        cells on either side is skipped and named, not fatal — one tiny cluster
+        should not block the other twenty.
+        """
+        from datetime import datetime, timezone  # noqa: PLC0415
+        from xcell import enrichment as en  # noqa: PLC0415
+        if not 10 <= n_perm <= self.GSEA_MAX_PERMUTATIONS:
+            raise ValueError(f'n_perm must be between 10 and {self.GSEA_MAX_PERMUTATIONS}')
+        if min_set_size < 1 or max_set_size < min_set_size:
+            raise ValueError('Set size range must satisfy 1 <= min <= max')
+        if not (weight >= 0):
+            raise ValueError('weight must be >= 0')
+        if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
+            raise ValueError('seed must be a non-negative integer')
+        if method not in ('wilcoxon', 't-test'):
+            raise ValueError("method must be 'wilcoxon' or 't-test'")
+        if metric not in ('score', 'log2fc'):
+            raise ValueError("metric must be 'score' or 'log2fc'")
+        if obs_column not in self.adata.obs.columns:
+            raise ValueError(f"Column '{obs_column}' not found in .obs")
+        raw_sets = self._enrichment_sets(libraries, sets)
+        mask, subset_type, _meta = self._resolve_gene_mask(gene_subset)
+        universe = [str(g) for g in self.adata.var_names[mask]]
+        cell_mask = self._subset_mask(cell_subset) if cell_subset else np.ones(self.n_cells, dtype=bool)
+        values = self.adata.obs[obs_column].astype(str).values
+        present = sorted(set(values[cell_mask]))
+        if groups is None:
+            wanted = list(present)
+        else:
+            unknown = [g for g in groups if str(g) not in present]
+            if unknown:
+                raise ValueError(f"Unknown group(s) in '{obs_column}': {unknown}")
+            wanted = [str(g) for g in groups]
+        if reference != 'rest':
+            if reference not in present:
+                raise ValueError(f"Reference group '{reference}' not found in column '{obs_column}'")
+            wanted = [g for g in wanted if g != reference]
+        if not wanted:
+            raise ValueError('No groups to test')
+        runnable: list[str] = []
+        skipped: dict[str, str] = {}
+        for g in wanted:
+            in_g = cell_mask & (values == g)
+            in_ref = cell_mask & ((values != g) if reference == 'rest' else (values == reference))
+            if in_g.sum() < 2:
+                skipped[g] = 'fewer than 2 cells in group'
+            elif in_ref.sum() < 2:
+                skipped[g] = 'fewer than 2 reference cells'
+            else:
+                runnable.append(g)
+        if not runnable:
+            raise ValueError(
+                f'No contrast has at least 2 cells on each side (every group skipped): {skipped}')
+        resolved, rmeta = en.resolve_sets(raw_sets, universe, min_size=min_set_size,
+                                          max_size=len(universe), directional='split')
+        if not resolved:
+            raise ValueError(f'No gene set has at least {min_set_size} members in the universe')
+        cells = np.flatnonzero(cell_mask)
+        X = self.adata.X[cells][:, mask]
+        X = X.copy() if hasattr(X, 'copy') else np.array(X)
+        labels = values[cells]
+        params = {
+            'obs_column': obs_column, 'groups': list(wanted), 'reference': reference, 'method': method,
+            'metric': metric, 'cell_subset': cell_subset, 'libraries': list(libraries or []),
+            'sets': list(sets or []), 'gene_subset': gene_subset, 'n_perm': int(n_perm),
+            'min_set_size': int(min_set_size), 'max_set_size': int(max_set_size),
+            'weight': float(weight), 'seed': int(seed),
+        }
+        pos_of = {g: i for i, g in enumerate(universe)}
+
+        def rank_for(group: str) -> np.ndarray:
+            import anndata as _ad  # noqa: PLC0415
+            import scanpy as sc  # noqa: PLC0415
+            keep = (labels == group) | ((labels != group) if reference == 'rest' else (labels == reference))
+            tmp = _ad.AnnData(X=X[keep])
+            tmp.var_names = universe
+            tmp.obs['g'] = pd.Categorical(np.where(labels[keep] == group, 'group', 'reference'),
+                                          categories=['group', 'reference'])
+            sc.tl.rank_genes_groups(tmp, groupby='g', groups=['group'], reference='reference',
+                                    method=method, use_raw=False, key_added='r')
+            r = tmp.uns['r']
+            field = 'scores' if metric == 'score' else 'logfoldchanges'
+            out = np.full(len(universe), np.nan)
+            for g, v in zip([str(x) for x in r['names']['group']], np.asarray(r[field]['group'], dtype=float)):
+                out[pos_of[g]] = v
+            return out
+
+        def compute_fn(report):
+            outs = {}
+            n = len(runnable)
+            for i, g in enumerate(runnable):
+                report(i / n, f'{g} ({i + 1}/{n}): ranking…')
+                scores = rank_for(g)
+                out = en.preranked_gsea(
+                    scores, resolved, n_perm=n_perm, min_size=min_set_size, max_size=max_set_size,
+                    weight=weight, seed=seed,
+                    report=lambda f, m, _i=i, _g=g: report((_i + 0.2 + 0.8 * f) / n, f'{_g}: {m}'))
+                out['scores'] = scores
+                outs[g] = out
+            report(1.0, 'Storing…')
+            return outs
+
+        def apply_fn(outs):
+            now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+            members: dict[str, str] = {}
+            n_sig = 0
+            n_tested = 0
+            for g, out in outs.items():
+                order = np.asarray(out['order'])
+                scores = np.asarray(out['scores'])
+                for r in out['results']:
+                    r['leading_edge'] = [universe[i] for i in r['leading_edge']]
+                label = f'{obs_column}: {g} vs {reference}' + (f' [{cell_subset}]' if cell_subset else '')
+                result = {
+                    'kind': 'gsea', 'label': f'GSEA: {label}', 'created_at': now,
+                    'ranking': {'kind': 'diffexp', 'label': label, 'n_ranked': int(out['n_ranked']),
+                                'genes': [universe[i] for i in order],
+                                'scores': [float(scores[i]) for i in order]},
+                    'universe_size': len(universe), 'gene_subset_type': subset_type,
+                    'n_sets_input': rmeta['n_input'], 'n_sets_tested': int(out['n_sets_tested']),
+                    'n_significant': sum(1 for r in out['results'] if r['padj'] <= 0.05),
+                    'n_perm': int(out['n_perm']), 'results': out['results'],
+                    'params': {**params, 'ranking': {
+                        'kind': 'diffexp', 'obs_column': obs_column, 'group': g, 'reference': reference,
+                        'method': method, 'metric': metric, 'cell_subset': cell_subset}},
+                }
+                members[g] = self._store_enrichment(f'gsea_{obs_column}_{g}_vs_{reference}', result)
+                n_sig += result['n_significant']
+                n_tested = max(n_tested, result['n_sets_tested'])
+            collection = {
+                'kind': 'gsea_batch',
+                'label': f'GSEA: {obs_column} ({len(members)} groups vs {reference})',
+                'created_at': now, 'obs_column': obs_column, 'reference': reference,
+                'groups': list(members), 'members': members, 'skipped': skipped,
+                'n_perm': int(n_perm), 'universe_size': len(universe), 'gene_subset_type': subset_type,
+                'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
+            }
+            stored = self._store_enrichment(key or f'gsea_{obs_column}_batch', collection)
+            self._log_action('enrichment_gsea_batch', params, {
+                'key': stored, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
+            return collection
 
         return compute_fn, apply_fn
 

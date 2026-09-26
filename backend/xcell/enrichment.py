@@ -156,3 +156,120 @@ def overlap_enrichment(query_indices: list[int], resolved_sets: list[ResolvedSet
         r['padj'] = float(a)
     records.sort(key=lambda r: (r['pval'], r['name']))
     return records
+
+
+# --- preranked GSEA ------------------------------------------------------------
+
+def _es_from_positions(pos: np.ndarray, w: np.ndarray, n_ranked: int
+                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Enrichment score for m hit-position vectors at once.
+
+    ``pos`` (m, k) sorted 0-based rank positions; ``w`` (m, k) the weights at
+    those positions. The running sum rises at a hit and falls linearly between
+    hits, so its extrema can only be the post-hit values (maxima) or the
+    pre-hit values (minima) — no need to walk all n_ranked positions.
+    Returns (es, peak_hit_index, pre, post).
+    """
+    m, k = pos.shape
+    n_miss = n_ranked - k
+    wsum = w.sum(axis=1, keepdims=True)
+    ok = wsum[:, 0] > 0
+    p_hit = np.zeros(w.shape, dtype=float)
+    if ok.any():
+        p_hit[ok] = np.cumsum(w[ok], axis=1) / wsum[ok]
+    if n_miss > 0:
+        p_miss = (pos - np.arange(k)) / n_miss
+    else:
+        p_miss = np.zeros(pos.shape, dtype=float)
+    post = p_hit - p_miss
+    pre = np.concatenate([np.zeros((m, 1)), p_hit[:, :-1]], axis=1) - p_miss
+    rows = np.arange(m)
+    i_max = post.argmax(axis=1)
+    i_min = pre.argmin(axis=1)
+    vmax, vmin = post[rows, i_max], pre[rows, i_min]
+    positive = vmax >= -vmin
+    es = np.where(positive, vmax, vmin)
+    peak = np.where(positive, i_max, i_min)
+    es = np.where(ok, es, 0.0)
+    return es, peak, pre, post
+
+
+def preranked_gsea(scores: np.ndarray, resolved_sets: list[ResolvedSet], *, n_perm: int = 1000,
+                   min_size: int = 15, max_size: int = 500, weight: float = 1.0, seed: int = 0,
+                   curve_top_n: int = 50, report: Report = None) -> dict[str, Any]:
+    """Preranked GSEA (Subramanian 2005) with a gene-permutation null.
+
+    The null for size k is the first k entries of each of n_perm random
+    permutations of the ranked list — a uniform random k-subset — so one
+    permutation pool serves every set size and each size class costs one
+    vectorised ES evaluation. p-values are therefore floored at 1/(n_perm+1).
+    """
+    scores = np.asarray(scores, dtype=float)
+    keep = np.flatnonzero(np.isfinite(scores))
+    order = keep[np.argsort(-scores[keep], kind='stable')]   # universe idx, best first
+    n = int(order.size)
+    if n < 2:
+        raise ValueError('Fewer than 2 genes have a finite ranking score')
+    rank_of = np.full(scores.size, -1, dtype=np.int64)
+    rank_of[order] = np.arange(n)
+    ranked_w = np.abs(scores[order]) ** float(weight) if weight != 0 else np.ones(n)
+
+    sets: list[tuple[ResolvedSet, np.ndarray]] = []
+    for s in resolved_sets:
+        pos = rank_of[np.asarray(s['indices'], dtype=np.int64)]
+        pos = np.sort(pos[pos >= 0])
+        if min_size <= pos.size <= max_size:
+            sets.append((s, pos))
+    if not sets:
+        raise ValueError(f'No gene set has between {min_size} and {max_size} ranked members')
+
+    rng = np.random.default_rng(seed)
+    perms = np.argsort(rng.random((int(n_perm), n)), axis=1)
+    null_cache: dict[int, np.ndarray] = {}
+
+    def null_for(k: int) -> np.ndarray:
+        if k not in null_cache:
+            pos = np.sort(perms[:, :k], axis=1)
+            null_cache[k] = _es_from_positions(pos, ranked_w[pos], n)[0]
+        return null_cache[k]
+
+    n_sizes = len({pos.size for _, pos in sets})
+    results: list[dict[str, Any]] = []
+    for i, (s, pos) in enumerate(sets):
+        k = int(pos.size)
+        es_arr, peak, pre, post = _es_from_positions(pos[None, :], ranked_w[pos][None, :], n)
+        es, j = float(es_arr[0]), int(peak[0])
+        null = null_for(k)
+        same = null[null > 0] if es > 0 else null[null < 0] if es < 0 else np.array([])
+        if es == 0 or same.size == 0:
+            nes, p = 0.0, 1.0
+        else:
+            nes = es / float(np.mean(np.abs(same)))
+            p = (1 + int((np.abs(same) >= abs(es)).sum())) / (1 + same.size)
+        lead = pos[: j + 1] if es >= 0 else pos[j:]
+        results.append({
+            'name': s['name'], 'library': s['library'], 'description': s['description'],
+            'url': s['url'], 'n_set': k, 'es': es, 'nes': float(nes), 'pval': float(p),
+            'leading_edge': [int(order[q]) for q in lead], 'n_leading_edge': int(lead.size),
+            '_pre': pre[0], '_post': post[0], '_pos': pos,
+        })
+        if report is not None:
+            report((i + 1) / len(sets), f'Testing gene sets ({i + 1}/{len(sets)}, {n_sizes} size classes)')
+
+    adj = bh_adjust(np.asarray([r['pval'] for r in results]))
+    for r, a in zip(results, adj):
+        r['padj'] = float(a)
+    results.sort(key=lambda r: (r['pval'], -abs(r['nes']), r['name']))
+    for rank, r in enumerate(results):
+        pre, post, pos = r.pop('_pre'), r.pop('_post'), r.pop('_pos')
+        if rank < curve_top_n:
+            curve: list[list[float]] = [[0, 0.0]]
+            for q in range(pos.size):
+                curve.append([int(pos[q]), float(pre[q])])
+                curve.append([int(pos[q]), float(post[q])])
+            curve.append([n - 1, 0.0])
+            r['curve'] = curve
+        else:
+            r['curve'] = None
+    return {'n_ranked': n, 'n_perm': int(n_perm), 'n_sets_tested': len(results),
+            'order': order, 'results': results}

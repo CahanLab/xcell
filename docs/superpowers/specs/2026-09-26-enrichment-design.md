@@ -27,7 +27,7 @@ to the analysis record, and can be turned into Gene Panel sets.
 
 - No `gseapy` / `fgsea` dependency. scipy + numpy implement everything; the
   multilevel exact p-value refinement of fgsea is out of scope — the empirical
-  p is floored at `1/(n_perm+1)` and the UI says so.
+  p is floored at `1/(1 + n_same_sign_nulls)`, about `2/n_perm`, and the UI says so.
 - No new library downloads from this feature. It runs only against libraries
   already in `~/.cache/xcell/gene_set_sources/` (the Library modal fetches
   them). An uncached library is a 400 with a hint.
@@ -100,7 +100,8 @@ permutation pool and each size class is computed once and cached.
 
 `NES = ES / mean(|null ES| of the same sign)`; `pval = (1 + #{null of same
 sign with |null| ≥ |ES|}) / (1 + #{null of same sign})`; `padj = bh_adjust`
-across all tested sets. Leading edge: hits at positions `≤ argmax` for
+across all tested sets. Because the null is split by sign, the smallest
+attainable p is about `2/n_perm`, not `1/(n_perm+1)`. Leading edge: hits at positions `≤ argmax` for
 `ES > 0`, `≥ argmin` for `ES < 0`. For the `curve_top_n` sets with smallest
 `pval` the record carries `curve: [[x, y], …]` — vertices `(0,0)`, then per
 hit `(p_j, pre)`, `(p_j, post)`, then `(N−1, 0)` — for the others `curve` is

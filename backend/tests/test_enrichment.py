@@ -61,3 +61,94 @@ def test_overlap_enrichment_matches_scipy_and_is_finite():
     assert np.isfinite(miss['odds_ratio']) and miss['pval'] == 1.0
     assert all(np.isfinite(r['padj']) for r in res)
     assert hit['padj'] <= miss['padj']
+
+
+# --- preranked GSEA ------------------------------------------------------------
+
+def _naive_es(positions, weights, n_ranked):
+    """Running-sum loop straight from Subramanian 2005, for cross-checking."""
+    hits = dict(zip(positions, weights))
+    wsum = sum(weights)
+    n_miss = n_ranked - len(positions)
+    run, best = 0.0, 0.0
+    for i in range(n_ranked):
+        run += hits[i] / wsum if i in hits else -1.0 / n_miss
+        if abs(run) > abs(best):
+            best = run
+    return best
+
+
+def _rset(name, indices):
+    return {'name': name, 'library': 'L', 'description': '', 'url': '', 'n_input': len(indices),
+            'indices': np.asarray(indices)}
+
+
+def test_es_vectorised_equals_naive_loop():
+    rng = np.random.default_rng(1)
+    n = 40
+    scores = np.sort(rng.normal(size=n))[::-1]
+    for _ in range(20):
+        pos = np.sort(rng.choice(n, size=6, replace=False))
+        w = np.abs(scores[pos])
+        es, _, _, _ = en._es_from_positions(pos[None, :], w[None, :], n)
+        assert es[0] == pytest.approx(_naive_es(pos.tolist(), w.tolist(), n))
+
+
+def test_gsea_planted_top_bottom_and_random():
+    rng = np.random.default_rng(0)
+    n = 2000
+    scores = rng.normal(size=n)
+    order = np.argsort(-scores)
+    top = order[:30]
+    bottom = order[-30:]
+    rand = rng.choice(n, size=30, replace=False)
+    sets = [_rset('top', top), _rset('bottom', bottom), _rset('rand', rand)]
+    out = en.preranked_gsea(scores, sets, n_perm=200, min_size=10, max_size=500, seed=0)
+    by = {r['name']: r for r in out['results']}
+    assert by['top']['es'] > 0.9 and by['top']['nes'] > 1
+    # The null is split by sign (Subramanian 2005), so the floor is 1/(1 + n_same_sign),
+    # about 2/n_perm — not 1/(n_perm + 1).
+    assert 1 / 201 <= by['top']['pval'] <= 1 / 60
+    assert set(by['top']['leading_edge']) == set(top.tolist())
+    assert by['bottom']['es'] < -0.9 and set(by['bottom']['leading_edge']) == set(bottom.tolist())
+    assert by['rand']['pval'] > 0.05 and abs(by['rand']['nes']) < 1.6
+    assert out['n_ranked'] == n and out['n_sets_tested'] == 3
+    assert out['results'][0]['name'] in ('top', 'bottom')
+    assert all(np.isfinite([r['es'], r['nes'], r['pval'], r['padj']]).all() for r in out['results'])
+
+
+def test_gsea_is_deterministic_and_curve_only_for_top_n():
+    rng = np.random.default_rng(2)
+    scores = rng.normal(size=500)
+    sets = [_rset(f's{i}', rng.choice(500, size=20, replace=False)) for i in range(5)]
+    a = en.preranked_gsea(scores, sets, n_perm=50, min_size=5, seed=3, curve_top_n=2)
+    b = en.preranked_gsea(scores, sets, n_perm=50, min_size=5, seed=3, curve_top_n=2)
+    assert [r['pval'] for r in a['results']] == [r['pval'] for r in b['results']]
+    curves = [r['curve'] is not None for r in a['results']]
+    assert curves == [True, True, False, False, False]
+    c = a['results'][0]['curve']
+    assert c[0] == [0, 0.0] and c[-1] == [499, 0.0] and len(c) == 2 + 2 * 20
+
+
+def test_gsea_edge_cases_nan_scores_zero_weights_full_set_and_weight_zero():
+    scores = np.array([3.0, 2.0, 1.0, 0.0, 0.0, np.nan, -1.0, -2.0])
+    # 'zero' has only zero-score members; 'all' is every finite gene.
+    sets = [_rset('zero', [3, 4]), _rset('all', [0, 1, 2, 3, 4, 6, 7]), _rset('nan_only', [5, 0])]
+    out = en.preranked_gsea(scores, sets, n_perm=20, min_size=1, max_size=10, seed=0)
+    by = {r['name']: r for r in out['results']}
+    assert out['n_ranked'] == 7
+    assert by['zero']['es'] == 0.0 and by['zero']['nes'] == 0.0 and by['zero']['pval'] == 1.0
+    assert by['all']['es'] == pytest.approx(1.0)
+    assert by['nan_only']['n_set'] == 1          # the NaN gene dropped out
+    # weight 0 -> classic KS: planted top set of 2 in 7 genes
+    ks = en.preranked_gsea(scores, [_rset('top2', [0, 1])], n_perm=10, min_size=1, weight=0.0, seed=0)
+    assert ks['results'][0]['es'] == pytest.approx(1.0)
+
+
+def test_gsea_report_called():
+    calls = []
+    rng = np.random.default_rng(0)
+    scores = rng.normal(size=100)
+    sets = [_rset('a', rng.choice(100, 10, replace=False)), _rset('b', rng.choice(100, 12, replace=False))]
+    en.preranked_gsea(scores, sets, n_perm=10, min_size=5, report=lambda f, m: calls.append((f, m)))
+    assert calls and 0.0 <= calls[0][0] <= 1.0 and calls[-1][0] == pytest.approx(1.0)

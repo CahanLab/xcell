@@ -25,6 +25,7 @@ const CATEGORY_NAMES: Record<GeneSetCategoryType, string> = {
   spatial: 'Spatial',
   marker_genes: 'Marker Genes',
   line_association: 'Line Association',
+  enrichment: 'Enrichment',
 }
 
 interface FlatGeneSet {

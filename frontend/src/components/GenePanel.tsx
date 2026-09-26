@@ -23,7 +23,7 @@ const GENE_SET_DRAG_TYPE = 'application/x-gene-set'
 const GENE_SET_FOLDER_DRAG_TYPE = 'application/x-gene-set-folder'
 
 // Category display order and icons
-const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'marker_genes', 'line_association']
+const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'marker_genes', 'line_association', 'enrichment']
 const CATEGORY_ICONS: Record<GeneSetCategoryType, string> = {
   manual: '📁',
   gene_clusters: '🧬',
@@ -32,6 +32,7 @@ const CATEGORY_ICONS: Record<GeneSetCategoryType, string> = {
   spatial: '🗺️',
   marker_genes: '🏷️',
   line_association: '📈',
+  enrichment: '🎯',
 }
 
 // Sort helper: pinned items first (stable), unpinned items after (stable).

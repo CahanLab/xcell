@@ -802,6 +802,30 @@ REGISTRY: dict[str, ActionSpec] = {
             f"{_n(r.get('n_significant'))} significant rows → `.uns['xcell_enrichment']['{r.get('key')}']`."
         ),
     ),
+    'figure_create': ActionSpec(
+        label='Create a figure', fidelity=XCELL, imports=XCELL_API,
+        code=lambda s: [
+            _xcall('create_figure', s.params, ('kind', 'title', 'caption', 'inputs', 'params')),
+            f"{ADAPTOR}.figure_data({_lit((s.result or {}).get('id'))})",
+        ],
+        summary=lambda p, r: (
+            f"Figure `{r.get('id')}` ({p.get('kind')}): '{p.get('title')}' from "
+            f"{_lit(p.get('inputs'))} — regenerate with `xa.figure_data({_lit(r.get('id'))})`."
+        ),
+    ),
+    'figure_update': ActionSpec(
+        label='Edit a figure', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('update_figure', ('id', 'title', 'caption', 'params')),
+        summary=lambda p, r: (
+            f"Figure `{p.get('id')}` changed: "
+            + ', '.join(k for k in ('title', 'caption', 'params') if k in p) + '.'
+        ),
+    ),
+    'figure_delete': ActionSpec(
+        label='Delete a figure', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('delete_figure', ('id',)),
+        summary=lambda p, r: f"Deleted figure `{p.get('id')}`.",
+    ),
     'enrichment_delete': ActionSpec(
         label='Delete an enrichment result', fidelity=XCELL, imports=XCELL_API,
         code=_direct('delete_enrichment_result', ('key',)),

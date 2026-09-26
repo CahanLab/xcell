@@ -792,6 +792,10 @@ def _umap_call(adata, *, min_dist, spread, n_components, meta, key_added):
         adata.uns.pop(_GRAPH_META_KEY, None)
 
 
+class FigureInputMissing(ValueError):
+    """A stored figure references a result that no longer exists (routes: 409)."""
+
+
 class DataAdaptor:
     """Wraps an AnnData object and provides accessor methods.
 
@@ -6545,6 +6549,272 @@ class DataAdaptor:
             return self.get_enrichment_result(collection_key)
 
         return compute_fn, apply_fn
+
+    # ------------------------------------------------------------------
+    # Figures: declarative, persisted, reproducible plots
+    # ------------------------------------------------------------------
+    FIGURES_UNS_KEY = 'xcell_figures'
+    FIGURES_SEQ_KEY = 'xcell_figures_seq'
+    FIGURE_KINDS = ('enrichment_heatmap', 'enrichment_network', 'composition_barplot', 'expression_heatmap')
+    _FIGURE_PARAM_KEYS = {
+        'enrichment_heatmap': ('value', 'padj_max', 'top_n', 'direction', 'collapse_jaccard', 'row_order',
+                               'col_order', 'colormap', 'vmax', 'show_values', 'label_max_chars', 'cell_size'),
+        'enrichment_network': ('value', 'padj_max', 'top_n', 'direction', 'set_edge_jaccard', 'layout', 'seed',
+                               'node_size_by', 'edge_width_by', 'label_max_chars', 'colormap'),
+        'composition_barplot': ('order', 'share_of', 'normalize', 'min_cells', 'show_values'),
+        'expression_heatmap': ('cell_ordering', 'gene_ordering', 'aggregate_gene_sets', 'n_bins'),
+    }
+
+    def _figure_store(self) -> dict[str, str]:
+        raw = self.adata.uns.get(self.FIGURES_UNS_KEY)
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def _put_figure(self, record: dict[str, Any]) -> None:
+        store = self._figure_store()
+        store[record['id']] = json.dumps(record)
+        self.adata.uns[self.FIGURES_UNS_KEY] = store
+
+    def _next_figure_id(self) -> str:
+        """Ids come from a counter that survives deletion, so a notebook's
+        `fig_3` never silently means a different figure later."""
+        n = int(self.adata.uns.get(self.FIGURES_SEQ_KEY, 0)) + 1
+        self.adata.uns[self.FIGURES_SEQ_KEY] = n
+        return f'fig_{n}'
+
+    def _figure_defaults(self, kind: str) -> dict[str, Any]:
+        from xcell import config as user_config  # noqa: PLC0415
+        cfg = user_config.get_user_config().get('figures')
+        d = cfg.get(kind) if isinstance(cfg, dict) else None
+        return dict(d) if isinstance(d, dict) else {}
+
+    def _validate_figure_inputs(self, kind: str, inputs: dict[str, Any]) -> dict[str, Any]:
+        inputs = dict(inputs or {})
+        if kind in ('enrichment_heatmap', 'enrichment_network'):
+            keys = inputs.get('enrichment_keys')
+            if not isinstance(keys, list) or not keys:
+                raise ValueError("inputs.enrichment_keys must be a non-empty list of stored enrichment result keys")
+            store = self._enrichment_store()
+            missing = [k for k in keys if k not in store]
+            if missing:
+                raise ValueError(f'No stored enrichment result named {missing}')
+            return {'enrichment_keys': [str(k) for k in keys]}
+        if kind == 'composition_barplot':
+            for f in ('column_a', 'column_b'):
+                col = inputs.get(f)
+                if not col or col not in self.adata.obs.columns:
+                    raise ValueError(f"inputs.{f} must name an .obs column (got {col!r})")
+            if inputs.get('cell_subset'):
+                self._subset_mask(inputs['cell_subset'])
+            return {'column_a': inputs['column_a'], 'column_b': inputs['column_b'],
+                    'cell_subset': inputs.get('cell_subset') or None}
+        if kind == 'expression_heatmap':
+            sets = inputs.get('gene_sets')
+            if not isinstance(sets, list) or not sets or not all(isinstance(s, dict) and s.get('genes') for s in sets):
+                raise ValueError('inputs.gene_sets must be a non-empty list of {name, genes}')
+            return {'gene_sets': [{'name': str(s.get('name', '')), 'genes': [str(g) for g in s['genes']]} for s in sets],
+                    'obs_column': inputs.get('obs_column') or None, 'line_name': inputs.get('line_name') or None,
+                    'cell_subset': inputs.get('cell_subset') or None}
+        raise ValueError(f"Unknown figure kind '{kind}'; expected one of {', '.join(self.FIGURE_KINDS)}")
+
+    def _figure_provenance_steps(self, kind: str, inputs: dict[str, Any]) -> list[int]:
+        """Record steps that produced the inputs — best effort by key match."""
+        keys = set(inputs.get('enrichment_keys') or [])
+        # a member key also belongs to the batch step that made it
+        store = self._enrichment_store()
+        for k in list(keys):
+            if k in store:
+                try:
+                    parent = json.loads(store[k]).get('collection')
+                except (TypeError, ValueError):
+                    parent = None
+                if parent:
+                    keys.add(parent)
+        columns = {inputs.get('column_a'), inputs.get('column_b'), inputs.get('obs_column')} - {None}
+        out: list[int] = []
+        for step in self.analysis_record.steps:
+            r = step.result or {}
+            p = step.params or {}
+            hit = False
+            if keys:
+                if r.get('key') in keys or (isinstance(r.get('members'), dict) and keys & set(r['members'].values())):
+                    hit = True
+            if columns and (p.get('key_added') in columns or r.get('obs_column') in columns or r.get('column') in columns):
+                hit = True
+            if hit:
+                out.append(step.index)
+        return out
+
+    def _default_figure_title(self, kind: str, inputs: dict[str, Any]) -> str:
+        if kind in ('enrichment_heatmap', 'enrichment_network'):
+            keys = inputs['enrichment_keys']
+            store = self._enrichment_store()
+            labels = []
+            for k in keys:
+                try:
+                    labels.append(json.loads(store[k]).get('label') or k)
+                except (KeyError, TypeError, ValueError):
+                    labels.append(k)
+            what = 'heatmap' if kind == 'enrichment_heatmap' else 'network'
+            return f"Enrichment {what}: {'; '.join(labels)}"
+        if kind == 'composition_barplot':
+            return f"Composition of {inputs['column_a']} by {inputs['column_b']}"
+        return f"Expression heatmap: {', '.join(s['name'] for s in inputs['gene_sets'][:3])}"
+
+    def create_figure(self, kind: str, *, title: str | None = None, caption: str = '',
+                      inputs: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Register a figure: kind + inputs + params. Nothing is rendered here."""
+        from datetime import datetime, timezone  # noqa: PLC0415
+        if kind not in self.FIGURE_KINDS:
+            raise ValueError(f"Unknown figure kind '{kind}'; expected one of {', '.join(self.FIGURE_KINDS)}")
+        clean_inputs = self._validate_figure_inputs(kind, inputs)
+        merged = self._figure_defaults(kind)
+        if kind in ('enrichment_heatmap', 'enrichment_network') and not (params or {}).get('value'):
+            # ORA results have no NES; a signed −log10 padj is the honest default
+            first = json.loads(self._enrichment_store()[clean_inputs['enrichment_keys'][0]])
+            if str(first.get('kind', '')).startswith('ora'):
+                merged['value'] = 'signed_logp'
+        unknown = sorted(set(params or {}) - set(self._FIGURE_PARAM_KEYS[kind]))
+        if unknown:
+            raise ValueError(f'unknown params for {kind}: {unknown}')
+        merged.update(params or {})
+        now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        record = {
+            'id': self._next_figure_id(), 'kind': kind,
+            'title': title or self._default_figure_title(kind, clean_inputs), 'caption': caption or '',
+            'created_at': now, 'updated_at': now, 'inputs': clean_inputs, 'params': merged,
+            'provenance': {'steps': self._figure_provenance_steps(kind, clean_inputs), 'created_step': None,
+                           'source': str(self.file_path) if getattr(self, 'file_path', None) else ''},
+        }
+        self._put_figure(record)
+        self._log_action('figure_create', {'kind': kind, 'title': record['title'], 'caption': record['caption'],
+                                           'inputs': clean_inputs, 'params': merged}, {'id': record['id']})
+        record['provenance']['created_step'] = self.analysis_record.steps[-1].index
+        self._put_figure(record)
+        return record
+
+    def list_figures(self) -> list[dict[str, Any]]:
+        out = []
+        for raw in self._figure_store().values():
+            try:
+                r = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            out.append({k: r.get(k) for k in ('id', 'kind', 'title', 'created_at', 'updated_at', 'inputs')}
+                       | {'n_provenance_steps': len((r.get('provenance') or {}).get('steps') or [])})
+        # created_at has second resolution; the id counter breaks ties
+        out.sort(key=lambda s: (s.get('created_at') or '', int(str(s['id']).rsplit('_', 1)[-1] or 0)), reverse=True)
+        return out
+
+    def get_figure(self, figure_id: str) -> dict[str, Any]:
+        store = self._figure_store()
+        if figure_id not in store:
+            raise KeyError(f"No figure named '{figure_id}'")
+        return json.loads(store[figure_id])
+
+    def update_figure(self, figure_id: str, *, title: str | None = None, caption: str | None = None,
+                      params: dict[str, Any] | None = None) -> dict[str, Any]:
+        from datetime import datetime, timezone  # noqa: PLC0415
+        record = self.get_figure(figure_id)
+        changes: dict[str, Any] = {'id': figure_id}
+        if title is not None and title != record['title']:
+            record['title'] = title
+            changes['title'] = title
+        if caption is not None and caption != record.get('caption', ''):
+            record['caption'] = caption
+            changes['caption'] = caption
+        if params:
+            unknown = sorted(set(params) - set(self._FIGURE_PARAM_KEYS[record['kind']]))
+            if unknown:
+                raise ValueError(f"unknown params for {record['kind']}: {unknown}")
+            delta = {k: v for k, v in params.items() if record['params'].get(k) != v}
+            if delta:
+                record['params'].update(delta)
+                changes['params'] = delta
+        if len(changes) > 1:
+            record['updated_at'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+            self._put_figure(record)
+            self._log_action('figure_update', changes, {'id': figure_id})
+        return record
+
+    def delete_figure(self, figure_id: str) -> dict[str, Any]:
+        store = self._figure_store()
+        if figure_id not in store:
+            raise KeyError(f"No figure named '{figure_id}'")
+        del store[figure_id]
+        self.adata.uns[self.FIGURES_UNS_KEY] = store
+        self._log_action('figure_delete', {'id': figure_id}, {'deleted': figure_id})
+        return {'deleted': figure_id}
+
+    def _enrichment_columns(self, keys: list[str]) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]] | None]:
+        """Expand figure inputs into {column label: single result} plus member
+        gene sets (for collapse / overlap edges) when the libraries are cached."""
+        from xcell import enrichment as en  # noqa: PLC0415
+        store = self._enrichment_store()
+        cols: dict[str, dict[str, Any]] = {}
+        first: dict[str, Any] | None = None
+        for k in keys:
+            if k not in store:
+                raise FigureInputMissing(f"Enrichment result '{k}' no longer exists; the figure cannot be drawn")
+            r = self.get_enrichment_result(k)
+            if isinstance(r.get('members'), dict):
+                for g, m in (r.get('member_results') or {}).items():
+                    cols[g] = m
+                    first = first or m
+            else:
+                label = (r.get('ranking') or {}).get('label') or (r.get('query') or {}).get('name') or k
+                cols[label] = r
+                first = first or r
+        if not cols:
+            raise FigureInputMissing('The figure inputs hold no per-contrast results')
+        members: dict[str, set[str]] | None = None
+        params = (first or {}).get('params') or {}
+        try:
+            raw_sets = self._enrichment_sets(params.get('libraries') or None, params.get('sets') or None)
+            mask, _t, _m = self._resolve_gene_mask(params.get('gene_subset'))
+            universe = [str(g) for g in self.adata.var_names[mask]]
+            directional = 'split' if str(first.get('kind', '')).startswith('gsea') else 'union'
+            resolved, _ = en.resolve_sets(raw_sets, universe, min_size=1, max_size=len(universe) + 1,
+                                          directional=directional)
+            members = {s['name']: {universe[i] for i in s['indices']} for s in resolved}
+        except (ValueError, KeyError):
+            members = None
+        return cols, members
+
+    def figure_data(self, figure_id: str, params_override: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The plotted table/graph for a figure, from its stored inputs and params.
+
+        ``params_override`` previews a change without persisting or logging.
+        """
+        from xcell import enrichment_figures as ef  # noqa: PLC0415
+        record = self.get_figure(figure_id)
+        kind = record['kind']
+        params = {**record['params'], **(params_override or {})}
+        allowed = set(self._FIGURE_PARAM_KEYS[kind])
+        unknown = sorted(set(params_override or {}) - allowed)
+        if unknown:
+            raise ValueError(f'unknown params for {kind}: {unknown}')
+        if kind == 'enrichment_heatmap':
+            cols, members = self._enrichment_columns(record['inputs']['enrichment_keys'])
+            return ef.assemble_matrix(
+                cols, value=params['value'], padj_max=float(params['padj_max']), top_n=int(params['top_n']),
+                direction=params['direction'], collapse_jaccard=params.get('collapse_jaccard'),
+                row_order=params['row_order'], col_order=params['col_order'], members=members)
+        if kind == 'enrichment_network':
+            cols, members = self._enrichment_columns(record['inputs']['enrichment_keys'])
+            return ef.assemble_network(
+                cols, value=params['value'], padj_max=float(params['padj_max']), top_n=int(params['top_n']),
+                direction=params['direction'], set_edge_jaccard=params.get('set_edge_jaccard'),
+                layout=params['layout'], seed=int(params['seed']), members=members)
+        raise ValueError(f"figure kind '{kind}' is not renderable yet")
+
+    def attach_figure_to_record(self, figure_id: str, png_b64: str, caption: str | None = None) -> dict[str, Any]:
+        record = self.get_figure(figure_id)
+        step = (record.get('provenance') or {}).get('created_step')
+        if step is not None and not (0 <= step < len(self.analysis_record.steps)):
+            step = None
+        fig = self.analysis_record.add_figure(png_b64, caption=caption or record['title'], step_index=step)
+        fig.figure_id = figure_id
+        return {'record_figure_id': fig.id, 'step_index': fig.step_index}
 
     def guess_species(self) -> dict[str, Any]:
         """Species guess from the current var index (Ensembl prefix, else symbol case)."""

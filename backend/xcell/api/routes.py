@@ -4599,7 +4599,7 @@ def _record_payload(adaptor: DataAdaptor) -> dict[str, Any]:
         "steps": steps,
         "figures": [
             {"id": f.id, "caption": f.caption, "step_index": f.step_index,
-             "timestamp": f.timestamp}
+             "timestamp": f.timestamp, "figure_id": f.figure_id}
             for f in record.figures.values()
         ],
         "counts": report_counts(record),

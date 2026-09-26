@@ -2312,6 +2312,83 @@ def run_gsea(request: GseaRequest, dataset: str | None = Query(None)):
     return {"task_id": task_id, "status": "running"}
 
 
+class GseaBatchRequest(BaseModel):
+    obs_column: str
+    groups: list[str] | None = None
+    reference: str = 'rest'
+    method: str = 'wilcoxon'
+    metric: str = 'score'
+    cell_subset: str | None = None
+    libraries: list[EnrichmentLibraryRef] | None = None
+    sets: list[EnrichmentInlineSet] | None = None
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    n_perm: int = 1000
+    min_set_size: int = 15
+    max_set_size: int = 500
+    weight: float = 1.0
+    seed: int = 0
+    key: str | None = None
+
+
+@router.post("/enrichment/gsea_batch", status_code=202)
+def run_gsea_batch(request: GseaBatchRequest, dataset: str | None = Query(None)):
+    """Preranked GSEA for every group of a column, as one background task."""
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_gsea_batch(
+            request.obs_column, groups=request.groups, reference=request.reference,
+            libraries=[lib.model_dump() for lib in request.libraries] if request.libraries else None,
+            sets=[s.model_dump() for s in request.sets] if request.sets else None,
+            gene_subset=_gene_subset_arg(request.gene_subset), method=request.method, metric=request.metric,
+            cell_subset=request.cell_subset, n_perm=request.n_perm, min_set_size=request.min_set_size,
+            max_set_size=request.max_set_size, weight=request.weight, seed=request.seed, key=request.key)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+class OraBatchRequest(BaseModel):
+    obs_column: str
+    groups: list[str] | None = None
+    top_n: int = 100
+    min_in_group_fraction: float | None = None
+    max_out_group_fraction: float | None = None
+    min_fold_change: float | None = None
+    libraries: list[EnrichmentLibraryRef] | None = None
+    sets: list[EnrichmentInlineSet] | None = None
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    min_set_size: int = 5
+    max_set_size: int = 500
+    min_overlap: int = 2
+    key: str | None = None
+
+
+@router.post("/enrichment/ora_batch")
+def run_ora_batch(request: OraBatchRequest, dataset: str | None = Query(None)):
+    """Marker genes of every group, then overlap enrichment of each list."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.run_overlap_enrichment_batch(
+            request.obs_column, groups=request.groups, top_n=request.top_n,
+            min_in_group_fraction=request.min_in_group_fraction,
+            max_out_group_fraction=request.max_out_group_fraction, min_fold_change=request.min_fold_change,
+            libraries=[lib.model_dump() for lib in request.libraries] if request.libraries else None,
+            sets=[s.model_dump() for s in request.sets] if request.sets else None,
+            gene_subset=_gene_subset_arg(request.gene_subset), min_set_size=request.min_set_size,
+            max_set_size=request.max_set_size, min_overlap=request.min_overlap, key=request.key)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/enrichment/results")
 def list_enrichment_results(dataset: str | None = Query(None)):
     return {"results": get_adaptor(dataset).get_enrichment_results()}

@@ -778,6 +778,30 @@ REGISTRY: dict[str, ActionSpec] = {
             f"→ `.uns['xcell_enrichment']['{r.get('key')}']`."
         ),
     ),
+    'enrichment_gsea_batch': ActionSpec(
+        label='Preranked GSEA for every group', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_gsea_batch',
+                        ('obs_column', 'groups', 'reference', 'method', 'metric', 'cell_subset',
+                         'libraries', 'sets', 'gene_subset', 'n_perm', 'min_set_size', 'max_set_size',
+                         'weight', 'seed')),
+        summary=lambda p, r: (
+            f"GSEA of every group in '{p.get('obs_column')}' vs {p.get('reference')} "
+            f"({_n(len(r.get('members') or {}))} groups, {_n(p.get('n_perm'))} permutations): "
+            f"{_n(r.get('n_significant'))} significant rows → `.uns['xcell_enrichment']['{r.get('key')}']`"
+            + (f"; skipped {', '.join(r.get('skipped') or {})}." if r.get('skipped') else '.')
+        ),
+    ),
+    'enrichment_ora_batch': ActionSpec(
+        label='Marker-gene overlap enrichment for every group', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('run_overlap_enrichment_batch',
+                     ('obs_column', 'groups', 'top_n', 'min_in_group_fraction', 'max_out_group_fraction',
+                      'min_fold_change', 'libraries', 'sets', 'gene_subset', 'min_set_size', 'max_set_size',
+                      'min_overlap')),
+        summary=lambda p, r: (
+            f"Top {_n(p.get('top_n'))} markers of every group in '{p.get('obs_column')}' tested for overlap: "
+            f"{_n(r.get('n_significant'))} significant rows → `.uns['xcell_enrichment']['{r.get('key')}']`."
+        ),
+    ),
     'enrichment_delete': ActionSpec(
         label='Delete an enrichment result', fidelity=XCELL, imports=XCELL_API,
         code=_direct('delete_enrichment_result', ('key',)),

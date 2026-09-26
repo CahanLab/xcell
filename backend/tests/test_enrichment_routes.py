@@ -98,3 +98,32 @@ def test_gsea_route_runs_as_task():
     assert c.post('/api/enrichment/gsea', json=bad).status_code == 400
     ghost = dict(body, ranking={'kind': 'diffexp', 'obs_column': 'grp', 'group': 'a', 'cell_subset': 'ghost'})
     assert c.post('/api/enrichment/gsea', json=ghost).status_code == 404
+
+
+def test_gsea_batch_route_and_collection_get():
+    _install()
+    c = TestClient(app)
+    body = {'obs_column': 'grp', 'libraries': [{'source': 'msigdb', 'id': 'toy'}], 'n_perm': 40, 'min_set_size': 2}
+    r = c.post('/api/enrichment/gsea_batch', json=body)
+    assert r.status_code == 202, r.text
+    s = _poll(c, r.json()['task_id'])
+    assert s['status'] == 'completed', s
+    col = s['result']
+    assert col['kind'] == 'gsea_batch' and set(col['members']) == {'a', 'b'}
+    full = c.get(f"/api/enrichment/results/{col['key']}").json()
+    assert set(full['member_results']) == {'a', 'b'}
+    listed = [x for x in c.get('/api/enrichment/results').json()['results'] if x['key'] == col['key']]
+    assert listed[0]['n_groups'] == 2
+    assert c.post('/api/enrichment/gsea_batch', json=dict(body, obs_column='nope')).status_code == 400
+
+
+def test_ora_batch_route():
+    _install()
+    c = TestClient(app)
+    r = c.post('/api/enrichment/ora_batch', json={
+        'obs_column': 'grp', 'top_n': 5, 'min_overlap': 1, 'min_set_size': 2,
+        'libraries': [{'source': 'msigdb', 'id': 'toy'}],
+        'gene_subset': {'columns': ['panel'], 'operation': 'union'}})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d['kind'] == 'ora_batch' and 'a' in d['markers'] and d['members']['a'].startswith('ora_grp_a')

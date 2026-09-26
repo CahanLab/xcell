@@ -26,7 +26,6 @@ export default function HeatmapView() {
   const setHeatmapConfig = useStore((s) => s.setHeatmapConfig)
   const drawnLines = useStore((s) => s.drawnLines)
   const displayPreferences = useStore((s) => s.displayPreferences)
-  const activeSubsetName = useStore((s) => s.activeSubsetName)
   const activeSlot = useStore((s) => s.activeSlot)
   const refreshFigures = useStore((s) => s.refreshFigures)
   const setActiveFigureId = useStore((s) => s.setActiveFigureId)
@@ -34,12 +33,14 @@ export default function HeatmapView() {
   const saveAsFigure = useCallback(async () => {
     if (!heatmapConfig) return
     try {
-      const rec = await createFigure(heatmapFigureFromConfig(heatmapConfig, heatmapConfig.cellIndices?.length ? null : (activeSubsetName ?? null)), activeSlot)
+      // What the tab drew: only config.cellIndices scope it (never the active subset), under the display transform.
+      const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' as const : null
+      const rec = await createFigure(heatmapFigureFromConfig(heatmapConfig, null, transform), activeSlot)
       refreshFigures(); setActiveFigureId(rec.id); setCenterPanelView('figures')
     } catch (e) {
       setError((e as Error).message)
     }
-  }, [heatmapConfig, activeSubsetName, activeSlot, refreshFigures, setActiveFigureId, setCenterPanelView])
+  }, [heatmapConfig, displayPreferences.expressionTransform, activeSlot, refreshFigures, setActiveFigureId, setCenterPanelView])
   const { colorByGene } = useDataActions()
 
   const [configOpen, setConfigOpen] = useState(!heatmapConfig)

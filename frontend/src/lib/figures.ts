@@ -41,7 +41,7 @@ export interface FigureSummary {
 
 export interface EnrichmentHeatmapData {
   rows: { name: string; library: string; members: string[]; n_set: number }[]
-  cols: { label: string }[]
+  cols: { label: string; key?: string }[]
   values: number[][]
   padj: number[][]
   value_label: string
@@ -124,12 +124,15 @@ export function barplotFigureFromConfig(cfg: BarplotConfigLike, cellSubset: stri
   }
 }
 
-export function heatmapFigureFromConfig(cfg: HeatmapConfigLike, cellSubset: string | null) {
+/** The Heatmap tab draws only the cells in `config.cellIndices` (never the
+ *  active subset or mask), so callers pass `null` for the subset; `transform`
+ *  is the display transform the tab drew with, part of what the figure is. */
+export function heatmapFigureFromConfig(cfg: HeatmapConfigLike, cellSubset: string | null, transform: 'log1p' | null = null) {
   return {
     kind: 'expression_heatmap' as const,
     inputs: {
       gene_sets: cfg.selectedGeneSets.map((g) => ({ name: g.name, genes: g.genes })),
-      obs_column: cfg.obsColumn, line_name: cfg.lineName,
+      obs_column: cfg.obsColumn, line_name: cfg.lineName, transform,
       ...cellInputs(cellSubset, cfg.cellIndices ?? null),
     },
     params: { cell_ordering: cfg.cellOrdering, gene_ordering: cfg.geneOrdering, aggregate_gene_sets: cfg.aggregateGeneSets, n_bins: cfg.nBins },
@@ -147,9 +150,55 @@ export function paramsToBarplotConfig(params: Record<string, unknown>): Omit<Bar
   }
 }
 
-export function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+export interface CanvasLegend {
+  /** Gradient stops, left to right, as CSS colours. */
+  gradient: string[]
+  gradientLabel: string
+  groups: { name: string; color: string }[]
+}
+
+/** Compose a canvas figure into a PNG at `scale`× with a title and legend
+ *  drawn in, so the file stands on its own like the SVG exports do. The
+ *  source canvas is a DPR-scaled backing store; it is drawn at its CSS size. */
+export function canvasToPngBlob(canvas: HTMLCanvasElement, opts: { scale?: number; title?: string; legend?: CanvasLegend; background?: string } = {}): Promise<Blob> {
+  const scale = Math.max(1, opts.scale ?? 1)
+  const cssW = canvas.clientWidth || canvas.width
+  const cssH = canvas.clientHeight || canvas.height
+  const titleH = opts.title ? 22 : 0
+  const legendH = opts.legend ? 18 + 14 * Math.max(1, opts.legend.groups.length) : 0
+  const out = document.createElement('canvas')
+  out.width = Math.round(cssW * scale)
+  out.height = Math.round((cssH + titleH + legendH + 8) * scale)
+  const ctx = out.getContext('2d')
+  if (!ctx) return Promise.reject(new Error('No 2D canvas context'))
+  ctx.scale(scale, scale)
+  ctx.fillStyle = opts.background ?? '#1a1a2e'
+  ctx.fillRect(0, 0, cssW, cssH + titleH + legendH + 8)
+  if (opts.title) {
+    ctx.fillStyle = '#eee'
+    ctx.font = '600 13px sans-serif'
+    ctx.fillText(opts.title, 8, 15)
+  }
+  ctx.drawImage(canvas, 0, titleH, cssW, cssH)
+  if (opts.legend) {
+    const y0 = titleH + cssH + 8
+    const g = ctx.createLinearGradient(8, 0, 108, 0)
+    opts.legend.gradient.forEach((c, i) => g.addColorStop(i / Math.max(1, opts.legend!.gradient.length - 1), c))
+    ctx.fillStyle = g
+    ctx.fillRect(8, y0, 100, 10)
+    ctx.fillStyle = '#aaa'
+    ctx.font = '10px sans-serif'
+    ctx.fillText(`${opts.legend.gradientLabel}  0 … 1`, 114, y0 + 9)
+    opts.legend.groups.forEach((grp, i) => {
+      const y = y0 + 16 + i * 14
+      ctx.fillStyle = grp.color
+      ctx.fillRect(8, y, 10, 10)
+      ctx.fillStyle = '#aaa'
+      ctx.fillText(grp.name, 22, y + 9)
+    })
+  }
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('PNG encoding failed'))), 'image/png')
+    out.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('PNG encoding failed (too large for this browser?)'))), 'image/png')
   })
 }
 

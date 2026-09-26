@@ -142,6 +142,24 @@ def _xcall(method: str, params: dict, only: tuple[str, ...] | None = None) -> st
     return f'{ADAPTOR}.{method}({_splat(params, only)})'
 
 
+#: Notebook-side helpers the figure steps rely on (the export's prelude
+#: includes them). A figure created in the replay is registered under the id
+#: it had in the recorded session; a step for an id no create step produced
+#: falls back to the literal, so a cleared record still replays.
+FIGURE_HELPERS = (
+    '_xcell_figs = {}',
+    '',
+    '',
+    'def _xcell_fig(recorded_id):',
+    '    # the figure a recorded id refers to in this replay (or the id itself)',
+    "    return _xcell_figs.get(recorded_id, {'id': recorded_id})",
+)
+
+
+def notebook_preamble() -> list[str]:
+    return list(FIGURE_HELPERS)
+
+
 def _n(value: Any) -> str:
     """Format a recorded number for prose, tolerating a missing value.
 
@@ -804,11 +822,12 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'figure_create': ActionSpec(
         label='Create a figure', fidelity=XCELL, imports=XCELL_API,
-        # Bind the record so the replay uses whatever id it was given, not the
-        # id this session happened to allocate.
+        # The replay may allocate a different id than this session did, so the
+        # record is bound under the *recorded* id and later steps look it up.
         code=lambda s: [
-            f"fig = {_xcall('create_figure', s.params, ('kind', 'title', 'caption', 'inputs', 'params'))}",
-            f"fig_data = {ADAPTOR}.figure_data(fig['id'])",
+            f"_xcell_figs[{_lit((s.result or {}).get('id'))}] = "
+            f"{_xcall('create_figure', s.params, ('kind', 'title', 'caption', 'inputs', 'params'))}",
+            f"fig_data = {ADAPTOR}.figure_data(_xcell_fig({_lit((s.result or {}).get('id'))})['id'])",
         ],
         summary=lambda p, r: (
             f"Figure `{r.get('id')}` ({p.get('kind')}): '{p.get('title')}' from "
@@ -817,7 +836,7 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'figure_update': ActionSpec(
         label='Edit a figure', fidelity=XCELL, imports=XCELL_API,
-        code=lambda s: [f"{ADAPTOR}.update_figure({_lit(s.params.get('id'))}, {_splat(s.params, ('title', 'caption', 'params'))})"],
+        code=lambda s: [f"{ADAPTOR}.update_figure(_xcell_fig({_lit(s.params.get('id'))})['id'], {_splat(s.params, ('title', 'caption', 'params'))})"],
         summary=lambda p, r: (
             f"Figure `{p.get('id')}` changed: "
             + ', '.join(k for k in ('title', 'caption', 'params') if k in p) + '.'
@@ -825,7 +844,7 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'figure_delete': ActionSpec(
         label='Delete a figure', fidelity=XCELL, imports=XCELL_API,
-        code=lambda s: [f"{ADAPTOR}.delete_figure({_lit(s.params.get('id'))})"],
+        code=lambda s: [f"{ADAPTOR}.delete_figure(_xcell_fig({_lit(s.params.get('id'))})['id'])"],
         summary=lambda p, r: f"Deleted figure `{p.get('id')}`.",
     ),
     'enrichment_delete': ActionSpec(

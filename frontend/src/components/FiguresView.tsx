@@ -13,7 +13,7 @@ import { standaloneSvg, downloadText } from '../lib/svgExport'
 import EnrichmentHeatmapFigure from './figures/EnrichmentHeatmapFigure'
 import EnrichmentNetworkFigure from './figures/EnrichmentNetworkFigure'
 import CompositionBarplotFigure from './figures/CompositionBarplotFigure'
-import ExpressionHeatmapFigure from './figures/ExpressionHeatmapFigure'
+import ExpressionHeatmapFigure, { heatmapLegendFor } from './figures/ExpressionHeatmapFigure'
 import NewFigureModal from './figures/NewFigureModal'
 
 /** The Figures tab: a gallery of saved figure records (uns['xcell_figures']),
@@ -230,12 +230,12 @@ export default function FiguresView() {
   // The heatmap is a canvas (a genes × bins matrix is too many cells for SVG), so it exports as PNG only.
   const renderPng = useCallback(async (scale: number): Promise<Blob> => {
     if (isCanvasKind) {
-      if (!canvasRef.current) throw new Error('The figure has not drawn yet')
-      return canvasToPngBlob(canvasRef.current)
+      if (!canvasRef.current || !data) throw new Error('The figure has not drawn yet')
+      return canvasToPngBlob(canvasRef.current, { scale, title, legend: heatmapLegendFor(data as ExpressionHeatmapData), background: BG })
     }
     if (!svgRef.current) throw new Error('The figure has not drawn yet')
     return svgToPngBlob(svgRef.current, scale, BG)
-  }, [isCanvasKind])
+  }, [isCanvasKind, data, title])
 
   const exportSvg = useCallback(() => {
     if (!svgRef.current || !record || isCanvasKind) return

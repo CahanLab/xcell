@@ -201,6 +201,7 @@ def test_codegen_replays_figure_create_update_delete_against_a_real_adaptor():
     assert [s.action for s in steps] == ['figure_create', 'figure_update', 'figure_delete']
     b, col2 = _with_batch()                      # a fresh session replays the notebook lines
     ns = {'xa': b, 'adata': b.adata}
+    exec('\n'.join(codegen.notebook_preamble()), ns)
     for s in steps:
         t = codegen.translate(s)
         assert t.fidelity == 'xcell'
@@ -258,3 +259,88 @@ def test_barplot_provenance_does_not_link_every_analysis_on_its_column():
     a, col = _with_batch()                        # an enrichment step with obs_column 'grp'
     f = a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch'})
     assert f['provenance']['steps'] == []
+
+
+# --- second review fix pass ----------------------------------------------------
+
+def test_heatmap_figure_refuses_to_draw_when_its_line_column_or_subset_is_gone():
+    ad = _adata_c()
+    a = DataAdaptor('x.h5ad', adata=ad)
+    a.set_lines([{'name': 'L1', 'embedding': 'X', 'points': [[0, 0], [1, 1]], 'draw_type': 'line', 'closed': False}])
+    sets = [{'name': 'collagen', 'genes': ['Col1a1', 'Col1a2', 'Col3a1']}]
+    f = a.create_figure('expression_heatmap', inputs={'gene_sets': sets, 'obs_column': 'grp', 'line_name': 'L1'},
+                        params={'cell_ordering': 'category'})
+    a.set_lines([])
+    with pytest.raises(FigureInputMissing, match='L1'):
+        a.figure_data(f['id'])
+    g = a.create_figure('expression_heatmap', inputs={'gene_sets': sets, 'obs_column': 'batch'})
+    del a.adata.obs['batch']
+    with pytest.raises(FigureInputMissing, match='batch'):
+        a.figure_data(g['id'])
+    h = a.create_figure('expression_heatmap', inputs={'gene_sets': sets, 'cell_subset': 'half'})
+    a.adata.uns['xcell_cell_subsets'] = {}
+    with pytest.raises(FigureInputMissing, match='half'):
+        a.figure_data(h['id'])
+    # an ordering that needs a line the inputs do not carry is a 400, on create and on preview
+    with pytest.raises(ValueError, match='line'):
+        a.create_figure('expression_heatmap', inputs={'gene_sets': sets}, params={'cell_ordering': 'line_position'})
+    k = a.create_figure('expression_heatmap', inputs={'gene_sets': sets})
+    with pytest.raises(ValueError, match='line'):
+        a.figure_data(k['id'], params_override={'cell_ordering': 'line_distance'})
+    with pytest.raises(ValueError, match='column'):
+        a.figure_data(k['id'], params_override={'cell_ordering': 'category'})
+
+
+def test_heatmap_figure_records_the_transform_the_tab_drew_with():
+    a = DataAdaptor('x.h5ad', adata=_adata_c())
+    sets = [{'name': 'collagen', 'genes': ['Col1a1', 'Col1a2', 'Col3a1']}]
+    f = a.create_figure('expression_heatmap', inputs={'gene_sets': sets, 'transform': 'log1p'})
+    assert f['inputs']['transform'] == 'log1p'
+    raw = a.figure_data(a.create_figure('expression_heatmap', inputs={'gene_sets': sets})['id'])
+    logged = a.figure_data(f['id'])
+    assert raw['matrix'] != logged['matrix']
+    with pytest.raises(ValueError, match='transform'):
+        a.create_figure('expression_heatmap', inputs={'gene_sets': sets, 'transform': 'sqrt'})
+
+
+def test_cell_indices_are_deduplicated_integers_and_capped_in_the_record():
+    from xcell.analysis_record import SELECTION_CAP
+    a = DataAdaptor('x.h5ad', adata=_adata_c())
+    f = a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch', 'cell_indices': [3, 3, 4, 3]})
+    assert f['inputs']['cell_indices'] == [3, 4] and a.figure_data(f['id'])['n_cells'] == 2
+    with pytest.raises(ValueError, match='integer'):
+        a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch', 'cell_indices': [1.7, 2]})
+    summary = [s for s in a.list_figures() if s['id'] == f['id']][0]
+    assert 'cell_indices' not in summary['inputs'] and summary['inputs']['n_cell_indices'] == 2
+    big = list(range(a.n_cells)) * 1                                # small dataset: simulate the cap
+    a.SELECTION_CAP_FOR_TESTS = 5
+    import xcell.adaptor as mod
+    orig = mod.SELECTION_CAP
+    mod.SELECTION_CAP = 5
+    try:
+        g = a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch', 'cell_indices': list(range(10))})
+    finally:
+        mod.SELECTION_CAP = orig
+    step = a.analysis_record.steps[-1]
+    assert step.action == 'figure_create' and 'cell_indices' not in step.params['inputs']
+    assert step.params['inputs']['n_cell_indices'] == 10 and step.params['inputs']['cell_indices_omitted'] is True
+    assert a.get_figure(g['id'])['inputs']['cell_indices'] == list(range(10))   # the figure itself keeps them
+    assert SELECTION_CAP >= 10
+
+
+def test_codegen_replay_binds_figures_by_id_even_when_ids_differ():
+    from xcell import codegen
+    a, col = _with_batch()
+    f = a.create_figure('enrichment_heatmap', inputs={'enrichment_keys': [col['key']]})
+    a.update_figure(f['id'], title='T')
+    a.delete_figure(f['id'])
+    steps = [s for s in a.analysis_record.steps if s.action.startswith('figure_')]
+    b, col2 = _with_batch()
+    pre = b.create_figure('enrichment_network', inputs={'enrichment_keys': [col2['key']]})   # already holds fig_1
+    ns = {'xa': b, 'adata': b.adata}
+    exec('\n'.join(codegen.notebook_preamble()), ns)
+    for s in steps:
+        for line in codegen.translate(s).code:
+            exec(line, ns)
+    assert b.get_figure(pre['id'])['title'] != 'T'            # the pre-existing figure was left alone
+    assert [x['id'] for x in b.list_figures()] == [pre['id']]  # the replayed one was created, edited, deleted

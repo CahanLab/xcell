@@ -9,6 +9,15 @@ import { FloatingPanel } from '../PlotLegends'
 import { fitRotatedLabel, rotatedLabelFits } from '../../lib/stackedBars'
 import type { ExpressionHeatmapData } from '../../lib/figures'
 
+export const HEATMAP_LEGEND_GRADIENT = ['rgb(68,1,84)', 'rgb(59,82,139)', 'rgb(33,145,140)', 'rgb(94,201,98)', 'rgb(253,231,37)']
+
+/** The legend a PNG export should carry for this data. */
+export function heatmapLegendFor(data: ExpressionHeatmapData): { gradient: string[]; gradientLabel: string; groups: { name: string; color: string }[] } {
+  const groups: string[] = []
+  for (const g of data.row_groups) if (g && !groups.includes(g)) groups.push(g)
+  return { gradient: HEATMAP_LEGEND_GRADIENT, gradientLabel: 'Normalized expression', groups: groups.map((name, i) => ({ name, color: GROUP_COLORS[i % GROUP_COLORS.length] })) }
+}
+
 const hmStyles = {
   canvasContainer: {
     flex: 1,
@@ -99,6 +108,17 @@ export const ExpressionHeatmapFigure = forwardRef<HTMLCanvasElement, ExpressionH
     else if (ref) (ref as React.MutableRefObject<HTMLCanvasElement | null>).current = el
   }, [ref])
   const containerRef = useRef<HTMLDivElement>(null)
+  // Measured, not read during render: on mount the ref is null and a render-time
+  // read would size the canvas at a fallback until something re-rendered it.
+  const [containerWidth, setContainerWidth] = useState(800)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setContainerWidth(el.clientWidth || 800))
+    ro.observe(el)
+    setContainerWidth(el.clientWidth || 800)
+    return () => ro.disconnect()
+  }, [])
   const [hoveredRow, setHoveredRow] = useState<number | null>(null)
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null)
 
@@ -118,7 +138,6 @@ export const ExpressionHeatmapFigure = forwardRef<HTMLCanvasElement, ExpressionH
   const groupBarOffset = LABEL_WIDTH + (hasGroups ? GROUP_BAR_WIDTH + 2 : 0)
 
   // Canvas sizing
-  const containerWidth = containerRef.current?.clientWidth || 800
   const availableWidth = containerWidth - groupBarOffset - 20
   const cellWidth = Math.max(MIN_CELL_WIDTH, Math.min(MAX_CELL_WIDTH, availableWidth / nCols))
   const heatmapWidth = cellWidth * nCols

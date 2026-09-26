@@ -17,7 +17,7 @@ import datetime
 from typing import Any
 
 from xcell.analysis_record import AnalysisRecord, Figure, Step
-from xcell.codegen import EXACT, MANUAL, XCELL, TranslatedStep, translate
+from xcell.codegen import EXACT, MANUAL, XCELL, FIGURE_HELPERS, TranslatedStep, translate
 
 SELECTIONS_SUFFIX = '_selections.json'
 
@@ -37,6 +37,9 @@ _XCELL_PRELUDE = [
     '    # A compute_fn taking one argument is opting into progress reporting.',
     '    needs_report = bool(inspect.signature(compute).parameters)',
     '    return apply(compute(lambda *a, **k: None) if needs_report else compute())',
+    '',
+    '',
+    *FIGURE_HELPERS,
 ]
 
 

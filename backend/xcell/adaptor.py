@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 
-from .analysis_record import AnalysisRecord
+from .analysis_record import AnalysisRecord, SELECTION_CAP
 from .diffexp import compute_diffexp
 
 
@@ -6638,8 +6638,12 @@ class DataAdaptor:
             line_name = inputs.get('line_name') or None
             if line_name and line_name not in {l.get('name') for l in self.get_lines()}:
                 raise ValueError(f"inputs.line_name '{line_name}' is not a drawn line")
+            transform = inputs.get('transform') or None
+            if transform not in (None, 'log1p'):
+                raise ValueError("inputs.transform must be null or 'log1p'")
             return {'gene_sets': [{'name': str(s.get('name', '')), 'genes': [str(g) for g in s['genes']]} for s in sets],
-                    'obs_column': obs_column, 'line_name': line_name, **self._figure_cell_inputs(inputs)}
+                    'obs_column': obs_column, 'line_name': line_name, 'transform': transform,
+                    **self._figure_cell_inputs(inputs)}
         raise ValueError(f"Unknown figure kind '{kind}'; expected one of {', '.join(self.FIGURE_KINDS)}")
 
     def _figure_cell_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
@@ -6655,15 +6659,44 @@ class DataAdaptor:
         if idx is not None:
             if not isinstance(idx, list) or not idx:
                 raise ValueError('inputs.cell_indices must be a non-empty list of cell indices')
-            arr = np.asarray(idx, dtype=np.int64)
-            if arr.min() < 0 or arr.max() >= self.n_cells:
+            if not all(isinstance(i, (int, np.integer)) and not isinstance(i, bool) for i in idx):
+                raise ValueError('inputs.cell_indices must be integer cell indices')
+            seen: set[int] = set()
+            clean = [int(i) for i in idx if not (int(i) in seen or seen.add(int(i)))]
+            if min(clean) < 0 or max(clean) >= self.n_cells:
                 raise ValueError('inputs.cell_indices out of range')
-            return {'cell_subset': None, 'cell_indices': [int(i) for i in arr]}
+            return {'cell_subset': None, 'cell_indices': clean}
         return {'cell_subset': None, 'cell_indices': None}
 
+    @staticmethod
+    def _compatible_ordering(inputs: dict[str, Any], ordering: str) -> str:
+        has_line, has_col = bool(inputs.get('line_name')), bool(inputs.get('obs_column'))
+        if ordering == 'category_then_position':
+            return ordering if (has_line and has_col) else ('category' if has_col else ('line_position' if has_line else 'none'))
+        if ordering in ('line_position', 'line_distance') and not has_line:
+            return 'category' if has_col else 'none'
+        if ordering == 'category' and not has_col:
+            return 'none'
+        return ordering
+
+    def _check_heatmap_params(self, inputs: dict[str, Any], params: dict[str, Any]) -> None:
+        """An ordering that needs a line or column the inputs do not carry is a
+        request that cannot mean anything — refuse it rather than fall back."""
+        ordering = str(params.get('cell_ordering', 'none'))
+        if ordering in ('line_position', 'line_distance', 'category_then_position') and not inputs.get('line_name'):
+            raise ValueError(f"cell_ordering '{ordering}' needs a drawn line, and this figure has none")
+        if ordering in ('category', 'category_then_position') and not inputs.get('obs_column'):
+            raise ValueError(f"cell_ordering '{ordering}' needs an .obs column, and this figure has none")
+
     def _figure_cells(self, inputs: dict[str, Any]) -> list[int] | None:
+        """Resolve at draw time; a subset that has since been deleted is a
+        missing input, like a deleted enrichment result."""
         if inputs.get('cell_subset'):
-            return self.get_cell_subset_indices(inputs['cell_subset'])
+            try:
+                return self.get_cell_subset_indices(inputs['cell_subset'])
+            except KeyError as e:
+                raise FigureInputMissing(
+                    f"Cell subset '{inputs['cell_subset']}' no longer exists; the figure cannot be drawn") from e
         return inputs.get('cell_indices') or None
 
     def _figure_provenance_steps(self, kind: str, inputs: dict[str, Any]) -> list[int]:
@@ -6728,6 +6761,12 @@ class DataAdaptor:
         if unknown:
             raise ValueError(f'unknown params for {kind}: {unknown}')
         merged.update(params or {})
+        if kind == 'expression_heatmap':
+            # A defaulted ordering the inputs cannot support degrades quietly
+            # (config defaults must suit any inputs); an explicit one is an error.
+            if 'cell_ordering' not in (params or {}):
+                merged['cell_ordering'] = self._compatible_ordering(clean_inputs, str(merged.get('cell_ordering', 'none')))
+            self._check_heatmap_params(clean_inputs, merged)
         now = datetime.now(timezone.utc).isoformat(timespec='seconds')
         store = self._enrichment_store()
         input_ids = {}
@@ -6745,10 +6784,35 @@ class DataAdaptor:
         }
         self._put_figure(record)
         self._log_action('figure_create', {'kind': kind, 'title': record['title'], 'caption': record['caption'],
-                                           'inputs': clean_inputs, 'params': merged}, {'id': record['id']})
+                                           'inputs': self._loggable_inputs(clean_inputs), 'params': merged},
+                         {'id': record['id']})
         record['provenance']['created_step'] = self.analysis_record.steps[-1].index
         self._put_figure(record)
         return record
+
+    @staticmethod
+    def _loggable_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+        """Inputs as they go into the record: an index list beyond the record's
+        selection cap is replaced by its size (the figure itself keeps it)."""
+        idx = inputs.get('cell_indices')
+        if not idx:
+            return dict(inputs)
+        out = {k: v for k, v in inputs.items() if k != 'cell_indices'}
+        out['n_cell_indices'] = len(idx)
+        if len(idx) <= SELECTION_CAP:
+            out['cell_indices'] = list(idx)
+        else:
+            out['cell_indices_omitted'] = True
+        return out
+
+    @staticmethod
+    def _summary_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+        idx = inputs.get('cell_indices')
+        if not idx:
+            return dict(inputs)
+        out = {k: v for k, v in inputs.items() if k != 'cell_indices'}
+        out['n_cell_indices'] = len(idx)
+        return out
 
     def list_figures(self) -> list[dict[str, Any]]:
         out = []
@@ -6757,8 +6821,9 @@ class DataAdaptor:
                 r = json.loads(raw)
             except (TypeError, ValueError):
                 continue
-            out.append({k: r.get(k) for k in ('id', 'kind', 'title', 'created_at', 'updated_at', 'inputs')}
-                       | {'n_provenance_steps': len((r.get('provenance') or {}).get('steps') or [])})
+            out.append({k: r.get(k) for k in ('id', 'kind', 'title', 'created_at', 'updated_at')}
+                       | {'inputs': self._summary_inputs(r.get('inputs') or {}),
+                          'n_provenance_steps': len((r.get('provenance') or {}).get('steps') or [])})
         # created_at has second resolution; the id counter breaks ties
         out.sort(key=lambda s: (s.get('created_at') or '', int(str(s['id']).rsplit('_', 1)[-1] or 0)), reverse=True)
         return out
@@ -6786,6 +6851,8 @@ class DataAdaptor:
                 raise ValueError(f"unknown params for {record['kind']}: {unknown}")
             delta = {k: v for k, v in params.items() if record['params'].get(k) != v}
             if delta:
+                if record['kind'] == 'expression_heatmap':
+                    self._check_heatmap_params(record['inputs'], {**record['params'], **delta})
                 record['params'].update(delta)
                 changes['params'] = delta
         if len(changes) > 1:
@@ -6894,6 +6961,14 @@ class DataAdaptor:
         if kind == 'expression_heatmap':
             from xcell.heatmap import compute_heatmap_data  # noqa: PLC0415
             inp = record['inputs']
+            # Everything named by the inputs must still exist: the heatmap code
+            # falls back silently otherwise, and a wrong figure under the same
+            # title is worse than none.
+            if inp.get('line_name') and inp['line_name'] not in {l.get('name') for l in self.get_lines()}:
+                raise FigureInputMissing(f"Drawn line '{inp['line_name']}' no longer exists; the figure cannot be drawn")
+            if inp.get('obs_column') and inp['obs_column'] not in self.adata.obs.columns:
+                raise FigureInputMissing(f"Column '{inp['obs_column']}' no longer exists; the figure cannot be drawn")
+            self._check_heatmap_params(inp, params)
             genes: list[str] = []
             seen: set[str] = set()
             for s_ in inp['gene_sets']:
@@ -6906,7 +6981,7 @@ class DataAdaptor:
                 aggregate_gene_sets=bool(params.get('aggregate_gene_sets')), cell_ordering=str(params.get('cell_ordering', 'category')),
                 obs_column=inp.get('obs_column'), line_name=inp.get('line_name'),
                 gene_ordering=str(params.get('gene_ordering', 'as_provided')), n_bins=int(params.get('n_bins', 0)),
-                transform=None, cell_indices=self._figure_cells(inp))
+                transform=inp.get('transform'), cell_indices=self._figure_cells(inp))
             out['figure_id'] = figure_id
             out['kind'] = kind
             return out

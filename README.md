@@ -509,6 +509,12 @@ gives one column per cluster):
   by enrichment edges coloured by sign, with optional dashed edges between
   overlapping sets; force-directed or two-column layout.
 
+The composition barplot and the expression heatmap are figure kinds as
+well: press **Save as figure** in either tab and the plot joins the gallery
+with the cells it was drawn on recorded (the active named subset, or the
+frozen selection), editable through the same form. The heatmap is a canvas
+and exports as PNG; everything else exports as SVG or PNG.
+
 From a batch result in the Enrichment tool click **Heatmap figure…** or
 **Network figure…**, or use *New figure…* in the tab. Edit parameters on the
 right with a live preview and press **Save** (each save is a recorded

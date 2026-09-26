@@ -100,3 +100,17 @@ def test_ora_batch_runs_markers_then_overlap_and_stores_markers():
     assert acts[-1] == 'enrichment_ora_batch' and 'marker_genes' not in acts and 'enrichment_ora' not in acts
     full = a.get_enrichment_result('ora_grp_batch')
     assert full['member_results']['b']['results'][0]['name'] == 'IMMUNE'
+
+
+def test_batch_return_values_carry_member_results_like_the_get():
+    """The modal renders the task's return value directly, so it must be as
+    complete as GET /enrichment/results/{key}."""
+    a = DataAdaptor('x.h5ad', adata=_adata((30, 30, 30, 5)))
+    col = _run(a)
+    assert set(col['member_results']) == set(col['groups'])
+    assert col['member_results']['a']['kind'] == 'gsea'
+    col2 = a.run_overlap_enrichment_batch('grp', top_n=6, libraries=LIB, min_set_size=2, min_overlap=1)
+    assert set(col2['member_results']) == set(col2['groups'])
+    # the stored JSON stays lean: members by key only
+    stored = json.loads(a.adata.uns['xcell_enrichment'][col['key']])
+    assert 'member_results' not in stored

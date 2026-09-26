@@ -6148,7 +6148,7 @@ class DataAdaptor:
         stored = self._store_enrichment(key or f'ora_{obs_column}_batch', collection)
         self._log_action('enrichment_ora_batch', params, {
             'key': stored, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
-        return collection
+        return self.get_enrichment_result(stored)
 
     def _gsea_ranking_snapshot(self, ranking: dict[str, Any], universe: list[str],
                                universe_mask: np.ndarray
@@ -6476,7 +6476,8 @@ class DataAdaptor:
             stored = self._store_enrichment(key or f'gsea_{obs_column}_batch', collection)
             self._log_action('enrichment_gsea_batch', params, {
                 'key': stored, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
-            return collection
+            # The caller renders this directly, so hand back what the GET would.
+            return self.get_enrichment_result(stored)
 
         return compute_fn, apply_fn
 

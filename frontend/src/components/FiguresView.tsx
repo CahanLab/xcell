@@ -4,13 +4,16 @@ import {
   appendDataset, fetchFigures, fetchFigure, fetchFigureData, updateFigure, deleteFigure, createFigure, attachFigureToRecord,
 } from '../hooks/useData'
 import {
-  FIGURE_KIND_LABELS, figureFilename, svgToPngBlob, blobToBase64, downloadBlob,
-  type FigureRecord, type FigureSummary, type EnrichmentHeatmapData, type EnrichmentNetworkData,
+  FIGURE_KIND_LABELS, figureFilename, svgToPngBlob, canvasToPngBlob, blobToBase64, downloadBlob, paramsToBarplotConfig,
+  type FigureRecord, type FigureSummary, type FigureData, type EnrichmentHeatmapData, type EnrichmentNetworkData,
+  type CrosstabData, type ExpressionHeatmapData,
 } from '../lib/figures'
 import { FIGURE_SCHEMAS, coerceParams, type ParamField } from '../lib/figureSchemas'
 import { standaloneSvg, downloadText } from '../lib/svgExport'
 import EnrichmentHeatmapFigure from './figures/EnrichmentHeatmapFigure'
 import EnrichmentNetworkFigure from './figures/EnrichmentNetworkFigure'
+import CompositionBarplotFigure from './figures/CompositionBarplotFigure'
+import ExpressionHeatmapFigure from './figures/ExpressionHeatmapFigure'
 import NewFigureModal from './figures/NewFigureModal'
 
 /** The Figures tab: a gallery of saved figure records (uns['xcell_figures']),
@@ -64,7 +67,7 @@ class RendererBoundary extends Component<{ children: ReactNode }, { error: strin
   }
 }
 
-function ParamInput({ field, value, onChange }: { field: ParamField; value: unknown; onChange: (v: unknown) => void }) {
+function ParamInput({ field, value, onChange, dynamicOptions }: { field: ParamField; value: unknown; onChange: (v: unknown) => void; dynamicOptions?: string[] }) {
   if (field.type === 'bool') {
     return (
       <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#ccc', margin: '8px 0 3px' }}>
@@ -73,11 +76,14 @@ function ParamInput({ field, value, onChange }: { field: ParamField; value: unkn
     )
   }
   if (field.type === 'select') {
+    const options = field.optionsFrom
+      ? [{ value: '', label: '— none —' }, ...(dynamicOptions ?? []).map((v) => ({ value: v, label: v }))]
+      : field.options!
     return (
       <>
         <label style={styles.label} title={field.help}>{field.label}</label>
-        <select style={styles.select} value={value == null ? '' : String(value)} onChange={(e) => onChange(e.target.value)}>
-          {field.options!.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        <select style={styles.select} value={value == null ? '' : String(value)} onChange={(e) => onChange(field.optionsFrom && e.target.value === '' ? null : e.target.value)}>
+          {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </>
     )
@@ -107,7 +113,7 @@ export default function FiguresView() {
   const [form, setForm] = useState<Record<string, unknown>>({})
   const [title, setTitle] = useState('')
   const [caption, setCaption] = useState('')
-  const [data, setData] = useState<EnrichmentHeatmapData | EnrichmentNetworkData | null>(null)
+  const [data, setData] = useState<FigureData | null>(null)
   const [dataError, setDataError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -116,6 +122,7 @@ export default function FiguresView() {
   const [showNew, setShowNew] = useState(false)
   const [steps, setSteps] = useState<RecordStepLite[]>([])
   const svgRef = useRef<SVGSVGElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const plotRef = useRef<HTMLDivElement>(null)
   const [plotWidth, setPlotWidth] = useState(800)
   // A preview for figure A must never land on figure B: every fetch carries
@@ -181,7 +188,7 @@ export default function FiguresView() {
     for (const k of Object.keys(coerced)) if (JSON.stringify(coerced[k]) !== JSON.stringify(record.params[k])) override[k] = coerced[k]
     const t = setTimeout(() => {
       fetchFigureData(id, Object.keys(override).length ? override : null, activeSlot)
-        .then((d) => { if (previewFor.current === id) { setData(d as EnrichmentHeatmapData | EnrichmentNetworkData); setDataError(null) } })
+        .then((d) => { if (previewFor.current === id) { setData(d); setDataError(null) } })
         .catch((e) => { if (previewFor.current === id) { setData(null); setDataError((e as Error).message) } })
     }, 300)
     return () => clearTimeout(t)
@@ -213,25 +220,37 @@ export default function FiguresView() {
     setForm({ ...record.params }); setTitle(record.title); setCaption(record.caption ?? '')
   }, [record])
 
+  const isCanvasKind = record?.kind === 'expression_heatmap'
+
+  // The heatmap is a canvas (a genes × bins matrix is too many cells for SVG), so it exports as PNG only.
+  const renderPng = useCallback(async (scale: number): Promise<Blob> => {
+    if (isCanvasKind) {
+      if (!canvasRef.current) throw new Error('The figure has not drawn yet')
+      return canvasToPngBlob(canvasRef.current)
+    }
+    if (!svgRef.current) throw new Error('The figure has not drawn yet')
+    return svgToPngBlob(svgRef.current, scale, BG)
+  }, [isCanvasKind])
+
   const exportSvg = useCallback(() => {
-    if (!svgRef.current || !record) return
+    if (!svgRef.current || !record || isCanvasKind) return
     downloadText(figureFilename(record, 'svg'), standaloneSvg(svgRef.current.outerHTML, { background: BG }), 'image/svg+xml')
-  }, [record])
+  }, [record, isCanvasKind])
 
   const exportPng = useCallback(async () => {
-    if (!svgRef.current || !record) return
+    if (!record) return
     try {
-      downloadBlob(figureFilename(record, 'png'), await svgToPngBlob(svgRef.current, pngScale, BG))
+      downloadBlob(figureFilename(record, 'png'), await renderPng(pngScale))
     } catch (e) {
       setError((e as Error).message)
     }
-  }, [record, pngScale])
+  }, [record, pngScale, renderPng])
 
   const attach = useCallback(async () => {
-    if (!svgRef.current || !record) return
+    if (!record) return
     setBusy(true); setError(null)
     try {
-      const b64 = await blobToBase64(await svgToPngBlob(svgRef.current, 2, BG))
+      const b64 = await blobToBase64(await renderPng(2))
       const out = await attachFigureToRecord(record.id, b64, caption || title, activeSlot)
       setToast(out.step_index != null ? `Attached to record step ${out.step_index}` : 'Attached to the record')
     } catch (e) {
@@ -239,7 +258,7 @@ export default function FiguresView() {
     } finally {
       setBusy(false)
     }
-  }, [record, caption, title, activeSlot])
+  }, [record, caption, title, activeSlot, renderPng])
 
   const duplicate = useCallback(async () => {
     if (!record) return
@@ -274,14 +293,22 @@ export default function FiguresView() {
 
   const dataMatchesKind = data && (
     (record?.kind === 'enrichment_heatmap' && 'rows' in data) ||
-    (record?.kind === 'enrichment_network' && 'nodes' in data))
+    (record?.kind === 'enrichment_network' && 'nodes' in data) ||
+    (record?.kind === 'composition_barplot' && 'counts' in data) ||
+    (record?.kind === 'expression_heatmap' && 'matrix' in data))
+  const dynamicOptions = data && 'b_categories' in data ? (data as CrosstabData).b_categories : undefined
   const renderer = record && data && dataMatchesKind ? (
     record.kind === 'enrichment_heatmap' ? (
       <EnrichmentHeatmapFigure ref={svgRef} data={data as EnrichmentHeatmapData} params={coerced} title={title} width={plotWidth} background={BG} />
     ) : record.kind === 'enrichment_network' ? (
       <EnrichmentNetworkFigure ref={svgRef} data={data as EnrichmentNetworkData} params={coerced} title={title} width={plotWidth} height={Math.max(360, Math.round(plotWidth * 0.66))} background={BG} />
+    ) : record.kind === 'composition_barplot' ? (
+      <CompositionBarplotFigure ref={svgRef} data={data as CrosstabData} config={paramsToBarplotConfig(coerced)} width={plotWidth} height={Math.max(360, Math.round(plotWidth * 0.6))} title={title} legend="inline" background={BG} />
     ) : (
-      <div style={styles.muted}>This figure kind is not renderable yet.</div>
+      <div>
+        <div style={{ fontSize: '13px', color: '#eee', fontWeight: 600, marginBottom: '6px' }}>{title}</div>
+        <ExpressionHeatmapFigure ref={canvasRef} data={data as ExpressionHeatmapData} legends="inline" />
+      </div>
     )
   ) : null
 
@@ -309,7 +336,7 @@ export default function FiguresView() {
 
       <div style={styles.canvas}>
         <div style={styles.toolbar}>
-          <button style={{ ...styles.button, ...(!record || !data ? styles.disabled : {}) }} disabled={!record || !data} onClick={exportSvg}>Export SVG</button>
+          <button style={{ ...styles.button, ...(!record || !data || isCanvasKind ? styles.disabled : {}) }} disabled={!record || !data || isCanvasKind} onClick={exportSvg} title={isCanvasKind ? 'The expression heatmap is a canvas: PNG only' : 'Vector export'}>Export SVG</button>
           <button style={{ ...styles.button, ...(!record || !data ? styles.disabled : {}) }} disabled={!record || !data} onClick={exportPng}>Export PNG</button>
           <select style={{ ...styles.select, width: '64px' }} value={pngScale} onChange={(e) => setPngScale(Number(e.target.value))} title="PNG scale">
             {[1, 2, 3, 4].map((s) => <option key={s} value={s}>{s}×</option>)}
@@ -343,7 +370,7 @@ export default function FiguresView() {
             <textarea style={{ ...styles.input, minHeight: '48px', resize: 'vertical' as const }} value={caption} onChange={(e) => setCaption(e.target.value)} />
             <div style={styles.section}>Parameters</div>
             {fields.map((f) => (
-              <ParamInput key={f.name} field={f} value={form[f.name]} onChange={(v) => setForm((prev) => ({ ...prev, [f.name]: v }))} />
+              <ParamInput key={f.name} field={f} value={form[f.name]} dynamicOptions={dynamicOptions} onChange={(v) => setForm((prev) => ({ ...prev, [f.name]: v }))} />
             ))}
             <div style={{ display: 'flex', gap: '6px', marginTop: '12px' }}>
               <button style={{ ...styles.button, ...styles.success, ...(!dirty || busy ? styles.disabled : {}) }} disabled={!dirty || busy} onClick={save}>Save</button>

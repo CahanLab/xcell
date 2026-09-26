@@ -10,7 +10,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { appendDataset } from '../hooks/useData'
+import { appendDataset, createFigure } from '../hooks/useData'
+import { barplotFigureFromConfig } from '../lib/figures'
 import { resolveCategoryPalette } from '../lib/cellColors'
 import { standaloneSvg, downloadText } from '../lib/svgExport'
 import { orderBars, type Crosstab } from '../lib/stackedBars'
@@ -28,6 +29,10 @@ export default function BarplotView() {
   // A composition drawn under a mask describes the cells on screen, so the
   // count is restricted to them.
   const activeCellMask = useStore((s) => s.activeCellMask)
+  const activeSubsetName = useStore((s) => s.activeSubsetName)
+  const refreshFigures = useStore((s) => s.refreshFigures)
+  const setActiveFigureId = useStore((s) => s.setActiveFigureId)
+  const setCenterPanelView = useStore((s) => s.setCenterPanelView)
 
   const [data, setData] = useState<Crosstab | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -95,6 +100,18 @@ export default function BarplotView() {
     })
   }, [data, config])
 
+  // A saved figure records which cells were counted: the active named
+  // subset, else the frozen mask indices, else every cell.
+  const saveAsFigure = useCallback(async () => {
+    if (!config) return
+    try {
+      const rec = await createFigure(barplotFigureFromConfig(config, activeSubsetName ?? null, activeCellMask ? indicesFromMask(activeCellMask) : null), activeSlot)
+      refreshFigures(); setActiveFigureId(rec.id); setCenterPanelView('figures')
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }, [config, activeSubsetName, activeCellMask, activeSlot, refreshFigures, setActiveFigureId, setCenterPanelView])
+
   const exportSvg = useCallback(() => {
     const svg = svgRef.current
     if (!svg) return
@@ -144,6 +161,7 @@ export default function BarplotView() {
         <div style={{ flex: 1 }} />
         <button style={styles.btn} onClick={() => setConfigOpen(true)}>Columns…</button>
         <button style={styles.btn} onClick={exportSvg} disabled={!data}>Export SVG</button>
+        <button style={styles.btn} onClick={saveAsFigure} disabled={!data} title="Keep this plot as a figure record (Figures tab): editable, exportable, with provenance">Save as figure</button>
       </div>
 
       <div ref={boxRef} style={styles.canvasBox}>

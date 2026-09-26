@@ -11,7 +11,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useStore, HeatmapConfig } from '../store'
-import { useDataActions, appendDataset } from '../hooks/useData'
+import { useDataActions, appendDataset, createFigure } from '../hooks/useData'
+import { heatmapFigureFromConfig } from '../lib/figures'
 import HeatmapConfigModal from './HeatmapConfigModal'
 import ExpressionHeatmapFigure from './figures/ExpressionHeatmapFigure'
 import type { ExpressionHeatmapData as HeatmapData } from '../lib/figures'
@@ -25,6 +26,20 @@ export default function HeatmapView() {
   const setHeatmapConfig = useStore((s) => s.setHeatmapConfig)
   const drawnLines = useStore((s) => s.drawnLines)
   const displayPreferences = useStore((s) => s.displayPreferences)
+  const activeSubsetName = useStore((s) => s.activeSubsetName)
+  const activeSlot = useStore((s) => s.activeSlot)
+  const refreshFigures = useStore((s) => s.refreshFigures)
+  const setActiveFigureId = useStore((s) => s.setActiveFigureId)
+  const setCenterPanelView = useStore((s) => s.setCenterPanelView)
+  const saveAsFigure = useCallback(async () => {
+    if (!heatmapConfig) return
+    try {
+      const rec = await createFigure(heatmapFigureFromConfig(heatmapConfig, heatmapConfig.cellIndices?.length ? null : (activeSubsetName ?? null)), activeSlot)
+      refreshFigures(); setActiveFigureId(rec.id); setCenterPanelView('figures')
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }, [heatmapConfig, activeSubsetName, activeSlot, refreshFigures, setActiveFigureId, setCenterPanelView])
   const { colorByGene } = useDataActions()
 
   const [configOpen, setConfigOpen] = useState(!heatmapConfig)
@@ -165,6 +180,9 @@ export default function HeatmapView() {
       <div style={hmStyles.toolbar}>
         <button style={hmStyles.settingsButton} onClick={() => setConfigOpen(true)}>
           Settings
+        </button>
+        <button style={hmStyles.settingsButton} onClick={saveAsFigure} title="Keep this heatmap as a figure record (Figures tab): editable, exportable as PNG, with provenance">
+          Save as figure
         </button>
         <span style={hmStyles.info}>
           {data.row_labels.length} genes &times; {data.n_bins} {data.n_bins < data.n_cells ? 'bins' : 'cells'}

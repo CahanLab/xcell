@@ -14,6 +14,8 @@ export interface ParamField {
   max?: number
   step?: number
   options?: ParamOption[]
+  /** Options that only the live data knows (the crosstab's column-B categories). */
+  optionsFrom?: 'b_categories'
   help?: string
 }
 
@@ -61,7 +63,7 @@ export const FIGURE_SCHEMAS: Record<FigureKind, ParamField[]> = {
   ],
   composition_barplot: [
     { name: 'order', label: 'Bar order', type: 'select', options: [{ value: 'category', label: 'category order' }, { value: 'alphabetical', label: 'alphabetical' }, { value: 'total', label: 'by total cells' }, { value: 'share', label: 'by share of…' }] },
-    { name: 'share_of', label: 'Share of', type: 'select', options: [] },
+    { name: 'share_of', label: 'Share of', type: 'select', options: [], optionsFrom: 'b_categories', help: 'Which column-B category sorts the bars when the order is "by share of…".' },
     { name: 'normalize', label: 'Normalise to 100%', type: 'bool' },
     { name: 'min_cells', label: 'Min cells per bar', type: 'int', min: 0 },
     { name: 'show_values', label: 'Show values', type: 'bool' },

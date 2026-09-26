@@ -36,6 +36,7 @@ import CoverageNotice from './components/CoverageNotice'
 import HeatmapView from './components/HeatmapView'
 import BarplotView from './components/BarplotView'
 import FigureBuilder from './components/FigureBuilder'
+import FiguresView from './components/FiguresView'
 import MarkerGenesModal from './components/MarkerGenesModal'
 import ClusterGeneSetModal from './components/ClusterGeneSetModal'
 import ClusterCellsByGeneSetModal from './components/ClusterCellsByGeneSetModal'
@@ -1812,11 +1813,18 @@ export default function App() {
               Barplot
             </button>
             <button
+              style={{ ...styles.tab, ...(centerPanelView === 'figures' ? styles.tabActive : {}) }}
+              onClick={() => setCenterPanelView('figures')}
+              title="Saved figures: enrichment heatmaps and networks, rendered from stored results with their provenance"
+            >
+              Figures
+            </button>
+            <button
               style={{ ...styles.tab, ...(centerPanelView === 'figure' ? styles.tabActive : {}) }}
               onClick={() => setCenterPanelView('figure')}
-              title="Multi-panel publication figure builder"
+              title="Multi-panel embedding compositor (unsaved)"
             >
-              Figure
+              Panels
             </button>
           </div>
 
@@ -2106,6 +2114,10 @@ export default function App() {
 
             {centerPanelView === 'figure' && (
               <FigureBuilder />
+            )}
+
+            {centerPanelView === 'figures' && (
+              <FiguresView />
             )}
           </div>
         </main>

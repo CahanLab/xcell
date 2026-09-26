@@ -3,7 +3,7 @@ import { useStore, cfgDefault, GeneSet } from '../store'
 import {
   useObsSummaries, appendDataset, pollTask,
   runOverlapEnrichment, startGsea, startGseaBatch, runOraBatch,
-  fetchEnrichmentResults, fetchEnrichmentResult, deleteEnrichmentResult, fetchCachedLibraries,
+  fetchEnrichmentResults, fetchEnrichmentResult, deleteEnrichmentResult, fetchCachedLibraries, createFigure,
 } from '../hooks/useData'
 import {
   formatP, curvePath, hitTicks, filterRows, resultsToGeneSets, libraryGroups, rowsToTsv, metricStripBins, reconcileChoice,
@@ -155,6 +155,9 @@ export default function EnrichmentModal() {
   const addFolderToCategory = useStore((s) => s.addFolderToCategory)
   const addScanpyAction = useStore((s) => s.addScanpyAction)
   const setSelectedGenes = useStore((s) => s.setSelectedGenes)
+  const setActiveFigureId = useStore((s) => s.setActiveFigureId)
+  const refreshFigures = useStore((s) => s.refreshFigures)
+  const setCenterPanelView = useStore((s) => s.setCenterPanelView)
   const { summaries } = useObsSummaries()
 
   const [tab, setTab] = useState<Tab>('ora')
@@ -449,6 +452,18 @@ export default function EnrichmentModal() {
     if (!activeResult) return
     navigator.clipboard?.writeText(rowsToTsv(activeResult)).then(() => setCopied(true)).catch(() => setCopied(false))
   }, [activeResult])
+
+  // A figure is a spec over this stored result; the Figures tab renders it.
+  const makeFigure = useCallback(async (kind: 'enrichment_heatmap' | 'enrichment_network') => {
+    if (!result) return
+    setError(null)
+    try {
+      const rec = await createFigure({ kind, inputs: { enrichment_keys: [result.key] } }, activeSlot)
+      refreshFigures(); setActiveFigureId(rec.id); setCenterPanelView('figures'); setSource(null)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }, [result, activeSlot, refreshFigures, setActiveFigureId, setCenterPanelView, setSource])
 
   const downloadSvg = useCallback(() => {
     if (!svgRef.current || !activeResult || !expanded) return
@@ -809,12 +824,8 @@ export default function EnrichmentModal() {
           <div style={{ display: 'flex', gap: '8px' }}>
             {phase === 'results' && result && (
               <>
-                {isBatch(result) && (
-                  <>
-                    <button style={{ ...styles.button, ...styles.secondaryButton, ...styles.disabledButton }} disabled title="Coming in the Figures update">Heatmap figure…</button>
-                    <button style={{ ...styles.button, ...styles.secondaryButton, ...styles.disabledButton }} disabled title="Coming in the Figures update">Network figure…</button>
-                  </>
-                )}
+                <button style={{ ...styles.button, ...styles.secondaryButton }} onClick={() => makeFigure('enrichment_heatmap')} title="Gene sets × groups heatmap in the Figures tab (one column per contrast)">Heatmap figure…</button>
+                <button style={{ ...styles.button, ...styles.secondaryButton }} onClick={() => makeFigure('enrichment_network')} title="Groups and gene sets as a network in the Figures tab">Network figure…</button>
                 <button style={{ ...styles.button, ...styles.secondaryButton, ...(activeResult ? {} : styles.disabledButton) }} disabled={!activeResult} onClick={copyTsv}>{copied ? 'Copied' : 'Copy TSV'}</button>
                 {activeResult?.kind === 'gsea' && expanded && (
                   <button style={{ ...styles.button, ...styles.secondaryButton }} onClick={downloadSvg}>Download SVG</button>

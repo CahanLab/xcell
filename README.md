@@ -487,6 +487,35 @@ the Enrichment category; **Copy TSV** and **Download SVG** take the table
 and the curve out. Defaults (set sizes, permutations, padj cutoff) live under
 `enrichment:` in `config.yaml`.
 
+### Figures: saved, reproducible plots
+
+The **Figures** tab holds figures as *records*: a kind, the stored results
+they are built from, the display parameters, and provenance — which
+analysis-record steps produced the inputs and which step created the
+figure. Nothing is stored as pixels: the plotted table is a backend function
+of the record (`xa.figure_data("fig_3")` in the exported notebook), the
+browser draws it as SVG, and an exported h5ad carries the records, so
+opening the file later re-renders every figure.
+
+Two kinds so far, both built from an enrichment run (a whole-column batch
+gives one column per cluster):
+
+- **Enrichment heatmap** — gene sets × groups. Cells above the padj
+  threshold are 0; rows are the union of each group's top-N positive and
+  negative sets; the value is NES or a signed −log10 padj. Redundant rows
+  can be collapsed by member-gene overlap (the absorbed sets are listed in
+  the row tooltip); rows order by their peak column or hierarchically.
+- **Enrichment network** — groups (squares) and gene sets (circles) linked
+  by enrichment edges coloured by sign, with optional dashed edges between
+  overlapping sets; force-directed or two-column layout.
+
+From a batch result in the Enrichment tool click **Heatmap figure…** or
+**Network figure…**, or use *New figure…* in the tab. Edit parameters on the
+right with a live preview and press **Save** (each save is a recorded
+step); **Export SVG / PNG**; **Attach to record** puts a PNG in the analysis
+record linked to the figure's step, and the record panel links back with
+*open*. Defaults live under `figures:` in `config.yaml`.
+
 ### Selecting cells by expression threshold
 
 You can select cells based on a gene's expression or a gene set score without needing to eyeball the scatter plot:

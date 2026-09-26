@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useStore } from '../store'
 import {
   appendDataset, fetchFigures, fetchFigure, fetchFigureData, updateFigure, deleteFigure, createFigure, attachFigureToRecord,
@@ -51,6 +51,18 @@ const styles = {
 }
 
 interface RecordStepLite { index: number; action: string; title: string }
+
+/** A renderer bug must show a message in the plot area, never blank the app
+ *  (there is no error boundary above the centre panel). Keyed on the figure
+ *  id + data so a fresh figure retries. */
+class RendererBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null }
+  static getDerivedStateFromError(e: Error) { return { error: e.message } }
+  render() {
+    if (this.state.error) return <div style={styles.error}>The figure could not be drawn: {this.state.error}</div>
+    return this.props.children
+  }
+}
 
 function ParamInput({ field, value, onChange }: { field: ParamField; value: unknown; onChange: (v: unknown) => void }) {
   if (field.type === 'bool') {
@@ -110,14 +122,18 @@ export default function FiguresView() {
   // the id it was made for and is dropped if the active figure changed.
   const previewFor = useRef<string | null>(null)
 
+  // Reconcile the active id against the *fetched* list, never the stale one:
+  // a just-created figure is set active before its refetch lands, and a guard
+  // on the old list would bounce it back to the first figure.
   useEffect(() => {
-    fetchFigures(activeSlot).then(setFigures).catch((e) => setError((e as Error).message))
-  }, [activeSlot, figuresVersion, setFigures])
-
-  useEffect(() => {
-    if (!activeFigureId && figures.length > 0) setActiveFigureId(figures[0].id)
-    if (activeFigureId && figures.length > 0 && !figures.some((f) => f.id === activeFigureId)) setActiveFigureId(figures[0].id)
-  }, [figures, activeFigureId, setActiveFigureId])
+    fetchFigures(activeSlot)
+      .then((list) => {
+        setFigures(list)
+        const cur = useStore.getState().activeFigureId
+        if (!cur || !list.some((f) => f.id === cur)) setActiveFigureId(list[0]?.id ?? null)
+      })
+      .catch((e) => setError((e as Error).message))
+  }, [activeSlot, figuresVersion, setFigures, setActiveFigureId])
 
   useEffect(() => {
     const el = plotRef.current
@@ -131,7 +147,8 @@ export default function FiguresView() {
   useEffect(() => {
     if (!activeFigureId) { setRecord(null); setData(null); return }
     let cancelled = false
-    setError(null); setDataError(null); setToast(null)
+    // The previous figure's data must not reach the new figure's renderer.
+    setData(null); setError(null); setDataError(null); setToast(null)
     fetchFigure(activeFigureId, activeSlot)
       .then((r) => {
         if (cancelled) return
@@ -255,7 +272,10 @@ export default function FiguresView() {
   const provenanceSteps = record ? steps.filter((s) => record.provenance.steps.includes(s.index)) : []
   const createdStep = record?.provenance.created_step != null ? steps.find((s) => s.index === record.provenance.created_step) : undefined
 
-  const renderer = record && data ? (
+  const dataMatchesKind = data && (
+    (record?.kind === 'enrichment_heatmap' && 'rows' in data) ||
+    (record?.kind === 'enrichment_network' && 'nodes' in data))
+  const renderer = record && data && dataMatchesKind ? (
     record.kind === 'enrichment_heatmap' ? (
       <EnrichmentHeatmapFigure ref={svgRef} data={data as EnrichmentHeatmapData} params={coerced} title={title} width={plotWidth} background={BG} />
     ) : record.kind === 'enrichment_network' ? (
@@ -308,8 +328,8 @@ export default function FiguresView() {
               <div style={{ ...styles.muted, marginTop: '6px' }}>The figure spec is kept so its provenance is not lost; re-run the analysis it points at to draw it again.</div>
             </div>
           )}
-          {record && !data && !dataError && <div style={styles.muted}>Loading…</div>}
-          {renderer}
+          {record && (!data || !dataMatchesKind) && !dataError && <div style={styles.muted}>Loading…</div>}
+          <RendererBoundary key={`${record?.id ?? ''}:${data ? 'd' : 'n'}`}>{renderer}</RendererBoundary>
         </div>
       </div>
 

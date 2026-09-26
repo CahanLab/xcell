@@ -26,7 +26,7 @@ export const EnrichmentNetworkFigure = forwardRef<SVGSVGElement, EnrichmentNetwo
   const widthBy = String(params.edge_width_by ?? 'value')
   const titleH = title ? 24 : 0
   const pad = 70
-  const W = Math.max(320, width), H = Math.max(240, height)
+  const W = Math.max(320, width, title ? 24 + title.length * 7 : 0), H = Math.max(240, height)
 
   const { vmax, maxSize } = useMemo(() => {
     let vm = 0, ms = 0

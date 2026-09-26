@@ -43,7 +43,8 @@ export const EnrichmentHeatmapFigure = forwardRef<SVGSVGElement, EnrichmentHeatm
   const gridH = data.rows.length * cell
   const left = rowLabelW + 8
   const top = titleH + colLabelH + 8
-  const svgW = Math.max(width ?? 0, left + gridW + 24)
+  // wide enough for the grid, the container and the title (7 px per glyph at 13 px)
+  const svgW = Math.max(width ?? 0, left + gridW + 24, title ? 24 + title.length * 7 : 0)
   const svgH = top + gridH + legendH + 16
 
   if (data.rows.length === 0) {

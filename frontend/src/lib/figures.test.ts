@@ -38,3 +38,30 @@ describe('truncate + figureFilename', () => {
     expect(figureFilename(rec({ title: '  a/b:c  ' }), 'png')).toBe('fig_3_a_b_c.png')
   })
 })
+
+describe('tab configs become figure records', () => {
+  it('maps a barplot config, preferring a named subset over indices', async () => {
+    const { barplotFigureFromConfig } = await import('./figures')
+    const cfg = { columnA: 'leiden', columnB: 'sample', order: 'share' as const, shareOf: 'A', normalize: false, minCells: 5, showValues: true }
+    expect(barplotFigureFromConfig(cfg, 'chondro', [1, 2])).toEqual({
+      kind: 'composition_barplot',
+      inputs: { column_a: 'leiden', column_b: 'sample', cell_subset: 'chondro', cell_indices: null },
+      params: { order: 'share', share_of: 'A', normalize: false, min_cells: 5, show_values: true },
+    })
+    expect(barplotFigureFromConfig({ ...cfg, shareOf: null }, null, [1, 2]).inputs).toEqual({ column_a: 'leiden', column_b: 'sample', cell_subset: null, cell_indices: [1, 2] })
+    expect(barplotFigureFromConfig(cfg, null, null).params.share_of).toBe('A')
+  })
+  it('maps a heatmap config to gene sets {name, genes} and display params', async () => {
+    const { heatmapFigureFromConfig } = await import('./figures')
+    const cfg = {
+      selectedGeneSets: [{ id: 'x', name: 'collagen', genes: ['Col1a1', 'Col1a2'] }], cellOrdering: 'line_position' as const,
+      obsColumn: 'leiden', lineName: 'L1', geneOrdering: 'peak_position' as const, aggregateGeneSets: true, nBins: 20, cellIndices: [3, 4],
+    }
+    expect(heatmapFigureFromConfig(cfg, null)).toEqual({
+      kind: 'expression_heatmap',
+      inputs: { gene_sets: [{ name: 'collagen', genes: ['Col1a1', 'Col1a2'] }], obs_column: 'leiden', line_name: 'L1', cell_subset: null, cell_indices: [3, 4] },
+      params: { cell_ordering: 'line_position', gene_ordering: 'peak_position', aggregate_gene_sets: true, n_bins: 20 },
+    })
+    expect(heatmapFigureFromConfig({ ...cfg, cellIndices: null }, 'chondro').inputs.cell_subset).toBe('chondro')
+  })
+})

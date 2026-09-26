@@ -57,7 +57,97 @@ export interface EnrichmentNetworkData {
   note: string | null
 }
 
-export type FigureData = EnrichmentHeatmapData | EnrichmentNetworkData | Record<string, unknown>
+/** `/api/obs/crosstab` plus the params echoed back (composition_barplot). */
+export interface CrosstabData {
+  a: string
+  b: string
+  a_categories: string[]
+  b_categories: string[]
+  a_colors: (string | null)[] | null
+  b_colors: (string | null)[] | null
+  counts: number[][]
+  n_cells: number
+  n_total?: number
+  params?: Record<string, unknown>
+}
+
+/** `/api/heatmap/data` (expression_heatmap). */
+export interface ExpressionHeatmapData {
+  matrix: number[][]
+  row_labels: string[]
+  row_groups: (string | null)[]
+  column_groups: { name: string; start: number; size: number }[]
+  n_bins: number
+  n_cells: number
+  n_genes_hidden?: number
+}
+
+export type FigureData = EnrichmentHeatmapData | EnrichmentNetworkData | CrosstabData | ExpressionHeatmapData
+
+export interface BarplotConfigLike {
+  columnA: string
+  columnB: string
+  order: 'category' | 'alphabetical' | 'total' | 'share'
+  shareOf: string | null
+  normalize: boolean
+  minCells: number
+  showValues: boolean
+}
+
+export interface HeatmapConfigLike {
+  selectedGeneSets: { id?: string; name: string; genes: string[] }[]
+  cellOrdering: string
+  obsColumn: string | null
+  lineName: string | null
+  geneOrdering: string
+  aggregateGeneSets: boolean
+  nBins: number
+  cellIndices?: number[] | null
+}
+
+/** The cells a tab is showing, as figure inputs: a named subset when one is
+ *  active (it follows edits), else the frozen selection, else every cell. */
+function cellInputs(cellSubset: string | null, cellIndices: number[] | null | undefined) {
+  if (cellSubset) return { cell_subset: cellSubset, cell_indices: null }
+  return { cell_subset: null, cell_indices: cellIndices && cellIndices.length ? cellIndices : null }
+}
+
+export function barplotFigureFromConfig(cfg: BarplotConfigLike, cellSubset: string | null, cellIndices: number[] | null) {
+  return {
+    kind: 'composition_barplot' as const,
+    inputs: { column_a: cfg.columnA, column_b: cfg.columnB, ...cellInputs(cellSubset, cellIndices) },
+    params: { order: cfg.order, share_of: cfg.shareOf, normalize: cfg.normalize, min_cells: cfg.minCells, show_values: cfg.showValues },
+  }
+}
+
+export function heatmapFigureFromConfig(cfg: HeatmapConfigLike, cellSubset: string | null) {
+  return {
+    kind: 'expression_heatmap' as const,
+    inputs: {
+      gene_sets: cfg.selectedGeneSets.map((g) => ({ name: g.name, genes: g.genes })),
+      obs_column: cfg.obsColumn, line_name: cfg.lineName,
+      ...cellInputs(cellSubset, cfg.cellIndices ?? null),
+    },
+    params: { cell_ordering: cfg.cellOrdering, gene_ordering: cfg.geneOrdering, aggregate_gene_sets: cfg.aggregateGeneSets, n_bins: cfg.nBins },
+  }
+}
+
+/** Params → the BarplotView config shape the shared renderer draws from. */
+export function paramsToBarplotConfig(params: Record<string, unknown>): Omit<BarplotConfigLike, 'columnA' | 'columnB'> {
+  return {
+    order: (params.order as BarplotConfigLike['order']) ?? 'category',
+    shareOf: (params.share_of as string | null) ?? null,
+    normalize: params.normalize !== false,
+    minCells: Number(params.min_cells ?? 0),
+    showValues: Boolean(params.show_values),
+  }
+}
+
+export function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('PNG encoding failed'))), 'image/png')
+  })
+}
 
 export function defaultTitle(kind: FigureKind, inputs: Record<string, unknown>, labelsByKey: Record<string, string>): string {
   if (kind === 'enrichment_heatmap' || kind === 'enrichment_network') {

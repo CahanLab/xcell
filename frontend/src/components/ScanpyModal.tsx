@@ -442,6 +442,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         custom: true,
         params: [],
       },
+      enrichment: {
+        label: 'Gene-set Enrichment',
+        description: 'Overlap (hypergeometric) enrichment of a gene list, or preranked GSEA of a group-vs-rest / group-vs-group contrast or a PCA loading, against the gene-set libraries cached by the Gene set library (MSigDB, GO, Enrichr, OmniPath, MGI) and your own sets. Opens the Enrichment tool.',
+        prerequisites: [],
+        custom: true,
+        params: [],
+      },
       gene_nmf_meta: {
         label: 'NMF Meta-Programs',
         description: 'Find gene programs that recur across samples. Factorizes each sample (or section, or donor) separately at several ranks, then clusters every resulting program into consensus meta-programs, scored by how many samples they turn up in. A program found once can be a batch effect; one found independently across samples cannot. Opens the Meta-Programs tool.',
@@ -843,7 +850,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, activeSubsetName, setActiveSubsetName, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setEnrichmentSource, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, activeSubsetName, setActiveSubsetName, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2884,6 +2891,13 @@ export default function ScanpyModal() {
               onClick={() => { setMetaProgramsModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Meta-Programs tool…
+            </button>
+          ) : selectedFunction === 'enrichment' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setEnrichmentSource({ kind: 'gsea' }); setScanpyModalOpen(false) }}
+            >
+              Open Enrichment tool…
             </button>
           ) : selectedFunction === 'localize' ? (
             <button

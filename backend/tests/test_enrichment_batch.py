@@ -85,3 +85,18 @@ def test_gsea_batch_validation():
         a.prepare_gsea_batch('nope', libraries=LIB, min_set_size=2)
     with pytest.raises(ValueError, match='Unknown group'):
         a.prepare_gsea_batch('grp', libraries=LIB, min_set_size=2, groups=['zzz'])
+
+
+def test_ora_batch_runs_markers_then_overlap_and_stores_markers():
+    a = DataAdaptor('x.h5ad', adata=_adata((30, 30, 30, 5)))
+    col = a.run_overlap_enrichment_batch('grp', top_n=6, libraries=LIB, min_set_size=2, min_overlap=1)
+    assert col['kind'] == 'ora_batch' and col['key'] == 'ora_grp_batch'
+    assert set(col['groups']) == {'a', 'b', 'c', 'd'} and col['skipped'] == {}
+    assert set(col['markers']['a']) >= {'Col1a1', 'Col1a2', 'Col3a1'} and len(col['markers']['a']) <= 6
+    ra = a.get_enrichment_result(col['members']['a'])
+    assert ra['kind'] == 'ora' and ra['results'][0]['name'] == 'COLLAGEN'
+    assert ra['query']['name'] == 'a markers'
+    acts = [h['action'] for h in a._action_history]
+    assert acts[-1] == 'enrichment_ora_batch' and 'marker_genes' not in acts and 'enrichment_ora' not in acts
+    full = a.get_enrichment_result('ora_grp_batch')
+    assert full['member_results']['b']['results'][0]['name'] == 'IMMUNE'

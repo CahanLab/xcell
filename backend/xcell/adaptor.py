@@ -6046,7 +6046,7 @@ class DataAdaptor:
                                sets: list[dict[str, Any]] | None = None,
                                gene_subset: Any = None, min_set_size: int = 5,
                                max_set_size: int = 500, min_overlap: int = 2,
-                               key: str | None = None) -> dict[str, Any]:
+                               key: str | None = None, _log: bool = True) -> dict[str, Any]:
         """Hypergeometric over-representation of ``genes`` in each library set.
 
         The universe is the dataset's genes after the session gene mask and
@@ -6089,9 +6089,66 @@ class DataAdaptor:
             'results': records, 'params': params,
         }
         stored_key = self._store_enrichment(key or f'ora_{label}', result)
-        self._log_action('enrichment_ora', params, {
-            'key': stored_key, 'n_sets_tested': len(records), 'n_significant': result['n_significant']})
+        if _log:   # a batch logs one step for the whole run instead
+            self._log_action('enrichment_ora', params, {
+                'key': stored_key, 'n_sets_tested': len(records), 'n_significant': result['n_significant']})
         return result
+
+    def run_overlap_enrichment_batch(self, obs_column: str, *, groups=None, top_n: int = 100,
+                                     min_in_group_fraction=None, max_out_group_fraction=None,
+                                     min_fold_change=None, libraries=None, sets=None, gene_subset=None,
+                                     min_set_size: int = 5, max_set_size: int = 500, min_overlap: int = 2,
+                                     key: str | None = None) -> dict[str, Any]:
+        """Marker genes (one-vs-rest, top N) for every group, then ORA of each list.
+
+        The marker lists are stored in the collection so a figure built on it
+        stays self-contained after the marker modal's state is gone.
+        """
+        from datetime import datetime, timezone  # noqa: PLC0415
+        self._enrichment_sets(libraries, sets)   # an uncached library fails before the marker run
+        markers = self.run_marker_genes(obs_column, groups=groups, top_n=top_n,
+                                        min_in_group_fraction=min_in_group_fraction,
+                                        max_out_group_fraction=max_out_group_fraction,
+                                        min_fold_change=min_fold_change, gene_subset=gene_subset, _log=False)
+        lists = {r['group']: [g['gene'] for g in r['genes']] for r in markers['results']}
+        params = {
+            'obs_column': obs_column, 'groups': list(lists), 'top_n': int(top_n),
+            'min_in_group_fraction': min_in_group_fraction, 'max_out_group_fraction': max_out_group_fraction,
+            'min_fold_change': min_fold_change, 'libraries': list(libraries or []), 'sets': list(sets or []),
+            'gene_subset': gene_subset, 'min_set_size': int(min_set_size), 'max_set_size': int(max_set_size),
+            'min_overlap': int(min_overlap),
+        }
+        members: dict[str, str] = {}
+        skipped: dict[str, str] = {}
+        n_sig = n_tested = universe_size = 0
+        subset_type = 'all'
+        for g, genes in lists.items():
+            if len(genes) < 2:
+                skipped[g] = f'only {len(genes)} marker gene(s)'
+                continue
+            res = self.run_overlap_enrichment(genes, name=f'{g} markers', libraries=libraries, sets=sets,
+                                              gene_subset=gene_subset, min_set_size=min_set_size,
+                                              max_set_size=max_set_size, min_overlap=min_overlap,
+                                              key=f'ora_{obs_column}_{g}_markers', _log=False)
+            members[g] = res['key']
+            n_sig += res['n_significant']
+            n_tested = max(n_tested, res['n_sets_tested'])
+            universe_size = res['universe_size']
+            subset_type = res['gene_subset_type']
+        if not members:
+            raise ValueError(f'No group had at least 2 marker genes: {skipped}')
+        collection = {
+            'kind': 'ora_batch', 'label': f'Overlap: {obs_column} markers ({len(members)} groups)',
+            'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            'obs_column': obs_column, 'groups': list(members), 'members': members, 'skipped': skipped,
+            'markers': {g: lists[g] for g in members}, 'top_n': int(top_n),
+            'universe_size': universe_size, 'gene_subset_type': subset_type,
+            'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
+        }
+        stored = self._store_enrichment(key or f'ora_{obs_column}_batch', collection)
+        self._log_action('enrichment_ora_batch', params, {
+            'key': stored, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
+        return collection
 
     def _gsea_ranking_snapshot(self, ranking: dict[str, Any], universe: list[str],
                                universe_mask: np.ndarray
@@ -12835,6 +12892,7 @@ class DataAdaptor:
         max_out_group_fraction: float | None = None,
         min_fold_change: float | None = None,
         gene_subset: str | list[str] | dict[str, Any] | None = None,
+        _log: bool = True,
     ) -> dict[str, Any]:
         """Run one-vs-rest marker gene analysis using scanpy.
 
@@ -12954,18 +13012,19 @@ class DataAdaptor:
                     'genes': [],
                 })
 
-        self._log_action('marker_genes', {
-            'obs_column': obs_column,
-            'groups': groups,
-            'top_n': top_n,
-            'min_in_group_fraction': min_in_group_fraction,
-            'max_out_group_fraction': max_out_group_fraction,
-            'min_fold_change': min_fold_change,
-            'gene_subset': gene_subset,
-        }, {
-            'n_groups': len(result_groups),
-            'total_genes': sum(len(g['genes']) for g in result_groups),
-        })
+        if _log:
+            self._log_action('marker_genes', {
+                'obs_column': obs_column,
+                'groups': groups,
+                'top_n': top_n,
+                'min_in_group_fraction': min_in_group_fraction,
+                'max_out_group_fraction': max_out_group_fraction,
+                'min_fold_change': min_fold_change,
+                'gene_subset': gene_subset,
+            }, {
+                'n_groups': len(result_groups),
+                'total_genes': sum(len(g['genes']) for g in result_groups),
+            })
 
         return {
             'obs_column': obs_column,

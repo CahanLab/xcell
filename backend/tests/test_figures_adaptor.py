@@ -187,3 +187,74 @@ def test_expression_heatmap_figure_data_and_validation():
         a.create_figure('expression_heatmap', inputs={'gene_sets': []})
     with pytest.raises(ValueError, match='nope'):
         a.create_figure('expression_heatmap', inputs={'gene_sets': sets, 'line_name': 'nope'})
+
+
+# --- review fix pass -----------------------------------------------------------
+
+def test_codegen_replays_figure_create_update_delete_against_a_real_adaptor():
+    from xcell import codegen
+    a, col = _with_batch()
+    f = a.create_figure('enrichment_heatmap', inputs={'enrichment_keys': [col['key']]})
+    a.update_figure(f['id'], title='T', params={'top_n': 2})
+    a.delete_figure(f['id'])
+    steps = [s for s in a.analysis_record.steps if s.action.startswith('figure_')]
+    assert [s.action for s in steps] == ['figure_create', 'figure_update', 'figure_delete']
+    b, col2 = _with_batch()                      # a fresh session replays the notebook lines
+    ns = {'xa': b, 'adata': b.adata}
+    for s in steps:
+        t = codegen.translate(s)
+        assert t.fidelity == 'xcell'
+        for line in t.code:
+            exec(line, ns)                       # a wrong kwarg name raises TypeError here
+    assert b.get_enrichment_results() and 'fig_1' not in b._figure_store()
+
+
+def test_figure_data_rejects_an_input_key_reused_by_another_run():
+    a, col = _with_batch()
+    f = a.create_figure('enrichment_heatmap', inputs={'enrichment_keys': [col['key']]})
+    assert f['inputs']['enrichment_keys'] == [col['key']] and f['input_ids'][col['key']]
+    a.delete_enrichment_result(col['key'])
+    compute_fn, apply_fn = a.prepare_gsea_batch('grp', groups=['a', 'c'], libraries=LIB, min_set_size=2, n_perm=60)
+    again = apply_fn(compute_fn(lambda f, m: None))
+    assert again['key'] == col['key']            # the key came back around
+    with pytest.raises(FigureInputMissing, match='replaced'):
+        a.figure_data(f['id'])
+    assert [x['id'] for x in a.list_figures()] == [f['id']]
+
+
+def test_columns_are_keyed_by_input_and_group_so_labels_never_collide():
+    a, col = _with_batch()
+    compute_fn, apply_fn = a.prepare_gsea_batch('grp', libraries=LIB, min_set_size=2, n_perm=60, seed=1)
+    col2 = apply_fn(compute_fn(lambda f, m: None))
+    f = a.create_figure('enrichment_heatmap', inputs={'enrichment_keys': [col['key'], col2['key']]}, params={'padj_max': 1.0})
+    d = a.figure_data(f['id'])
+    assert len(d['cols']) == 6
+    assert [c['key'] for c in d['cols']] == [f"{col['key']}:{g}" for g in 'abc'] + [f"{col2['key']}:{g}" for g in 'abc']
+    assert len({c['label'] for c in d['cols']}) == 6         # disambiguated for display
+
+
+def test_attach_finds_its_create_step_or_stays_standalone():
+    a, col = _with_batch()
+    f = a.create_figure('enrichment_heatmap', inputs={'enrichment_keys': [col['key']]})
+    a._log_action('noop', {}, {})
+    out = a.attach_figure_to_record(f['id'], 'iVBORw0KGgo=')
+    assert a.analysis_record.steps[out['step_index']].action == 'figure_create'
+    a.analysis_record.clear()
+    a._log_action('noop', {}, {})
+    out2 = a.attach_figure_to_record(f['id'], 'iVBORw0KGgo=')
+    assert out2['step_index'] is None
+    assert a.analysis_record.figures[out2['record_figure_id']].step_index is None
+
+
+def test_failed_batch_leaves_no_reserved_record():
+    a = DataAdaptor('x.h5ad', adata=_adata())
+    with pytest.raises(ValueError):
+        a.run_overlap_enrichment_batch('grp', top_n=6, libraries=LIB, min_set_size=50, min_overlap=1)
+    assert a.get_enrichment_results() == []
+    assert 'ora_grp_batch' not in a._enrichment_store()
+
+
+def test_barplot_provenance_does_not_link_every_analysis_on_its_column():
+    a, col = _with_batch()                        # an enrichment step with obs_column 'grp'
+    f = a.create_figure('composition_barplot', inputs={'column_a': 'grp', 'column_b': 'batch'})
+    assert f['provenance']['steps'] == []

@@ -5999,6 +5999,7 @@ class DataAdaptor:
         h5ad cannot write an object array of dicts (same reason drawn lines
         and territories are stored this way).
         """
+        import uuid  # noqa: PLC0415
         base = self._sanitize_subset_name(key_hint)
         store = self._enrichment_store()
         key, n = base, 1
@@ -6006,6 +6007,9 @@ class DataAdaptor:
             n += 1
             key = f'{base}_{n}'
         result['key'] = key
+        # Keys are freed on delete and come back around; a figure holds the
+        # uid so a re-run under the same key cannot pass for its input.
+        result.setdefault('uid', uuid.uuid4().hex[:12])
         store[key] = json.dumps(result)
         self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
         return key
@@ -6016,6 +6020,8 @@ class DataAdaptor:
             try:
                 r = json.loads(raw)
             except (TypeError, ValueError):
+                continue
+            if r.get('kind') == 'reserved':
                 continue
             summary = {k: r.get(k) for k in
                        ('key', 'kind', 'label', 'n_sets_tested', 'n_significant', 'created_at')}
@@ -6150,40 +6156,41 @@ class DataAdaptor:
             'min_overlap': int(min_overlap),
         }
         collection_key = self._reserve_enrichment_key(key or f'ora_{obs_column}_batch')
-        members: dict[str, str] = {}
-        n_sig = n_tested = universe_size = 0
-        subset_type = 'all'
-        for g, genes in lists.items():
-            if len(genes) < 2:
-                skipped[g] = f'only {len(genes)} marker gene(s)'
-                continue
-            res = self.run_overlap_enrichment(genes, name=f'{g} markers', libraries=libraries, sets=sets,
-                                              gene_subset=gene_subset, min_set_size=min_set_size,
-                                              max_set_size=max_set_size, min_overlap=min_overlap,
-                                              key=f'ora_{obs_column}_{g}_markers', _log=False,
-                                              _collection=collection_key)
-            members[g] = res['key']
-            n_sig += res['n_significant']
-            n_tested = max(n_tested, res['n_sets_tested'])
-            universe_size = res['universe_size']
-            subset_type = res['gene_subset_type']
-        if not members:
-            store = self._enrichment_store()
-            store.pop(collection_key, None)
-            self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
-            raise ValueError(f'No group had at least 2 marker genes: {skipped}')
-        collection = {
-            'kind': 'ora_batch', 'label': f'Overlap: {obs_column} markers ({len(members)} groups)',
-            'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-            'obs_column': obs_column, 'rest_of': rest_of, 'groups': list(members), 'members': members,
-            'skipped': skipped, 'markers': {g: lists[g] for g in members}, 'top_n': int(top_n),
-            'universe_size': universe_size, 'gene_subset_type': subset_type,
-            'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
-        }
-        self._put_enrichment(collection_key, collection)
-        self._log_action('enrichment_ora_batch', params, {
-            'key': collection_key, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
-        return self.get_enrichment_result(collection_key)
+        try:
+            members: dict[str, str] = {}
+            n_sig = n_tested = universe_size = 0
+            subset_type = 'all'
+            for g, genes in lists.items():
+                if len(genes) < 2:
+                    skipped[g] = f'only {len(genes)} marker gene(s)'
+                    continue
+                res = self.run_overlap_enrichment(genes, name=f'{g} markers', libraries=libraries, sets=sets,
+                                                  gene_subset=gene_subset, min_set_size=min_set_size,
+                                                  max_set_size=max_set_size, min_overlap=min_overlap,
+                                                  key=f'ora_{obs_column}_{g}_markers', _log=False,
+                                                  _collection=collection_key)
+                members[g] = res['key']
+                n_sig += res['n_significant']
+                n_tested = max(n_tested, res['n_sets_tested'])
+                universe_size = res['universe_size']
+                subset_type = res['gene_subset_type']
+            if not members:
+                raise ValueError(f'No group had at least 2 marker genes: {skipped}')
+            collection = {
+                'kind': 'ora_batch', 'label': f'Overlap: {obs_column} markers ({len(members)} groups)',
+                'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'obs_column': obs_column, 'rest_of': rest_of, 'groups': list(members), 'members': members,
+                'skipped': skipped, 'markers': {g: lists[g] for g in members}, 'top_n': int(top_n),
+                'universe_size': universe_size, 'gene_subset_type': subset_type,
+                'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
+            }
+            self._put_enrichment(collection_key, collection)
+            self._log_action('enrichment_ora_batch', params, {
+                'key': collection_key, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
+            return self.get_enrichment_result(collection_key)
+        except Exception:
+            self._drop_enrichment_key(collection_key)
+            raise
 
     def _gsea_ranking_snapshot(self, ranking: dict[str, Any], universe: list[str],
                                universe_mask: np.ndarray
@@ -6368,10 +6375,22 @@ class DataAdaptor:
         return self._store_enrichment(key_hint, {'kind': 'reserved'})
 
     def _put_enrichment(self, key: str, result: dict[str, Any]) -> None:
+        """Replace a reserved placeholder with the real record, keeping its uid."""
         store = self._enrichment_store()
         result['key'] = key
+        if key in store:
+            try:
+                result.setdefault('uid', json.loads(store[key]).get('uid'))
+            except (TypeError, ValueError):
+                pass
         store[key] = json.dumps(result)
         self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
+
+    def _drop_enrichment_key(self, key: str) -> None:
+        store = self._enrichment_store()
+        if key in store:
+            del store[key]
+            self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
 
     def _batch_groups(self, obs_column: str, groups, cell_subset: str | None, reference: str):
         """Shared validation for both batch modes: the column, the chosen groups
@@ -6509,44 +6528,48 @@ class DataAdaptor:
         def apply_fn(outs):
             now = datetime.now(timezone.utc).isoformat(timespec='seconds')
             collection_key = self._reserve_enrichment_key(key or f'gsea_{obs_column}_batch')
-            members: dict[str, str] = {}
-            n_sig = 0
-            n_tested = 0
-            for g, out in outs.items():
-                order = np.asarray(out['order'])
-                scores = np.asarray(out['scores'])
-                for r in out['results']:
-                    r['leading_edge'] = [universe[i] for i in r['leading_edge']]
-                label = f'{obs_column}: {g} vs {reference}' + (f' [{cell_subset}]' if cell_subset else '')
-                result = {
-                    'kind': 'gsea', 'label': f'GSEA: {label}', 'created_at': now, 'collection': collection_key,
-                    'ranking': {'kind': 'diffexp', 'label': label, 'n_ranked': int(out['n_ranked']),
-                                'genes': [universe[i] for i in order],
-                                'scores': [float(scores[i]) for i in order]},
-                    'universe_size': len(universe), 'gene_subset_type': subset_type,
-                    'n_sets_input': rmeta['n_input'], 'n_sets_tested': int(out['n_sets_tested']),
-                    'n_significant': sum(1 for r in out['results'] if r['padj'] <= 0.05),
-                    'n_perm': int(out['n_perm']), 'results': out['results'],
-                    'params': {**params, 'ranking': {
-                        'kind': 'diffexp', 'obs_column': obs_column, 'group': g, 'reference': reference,
-                        'method': method, 'metric': metric, 'cell_subset': cell_subset, 'rest_of': rest_of}},
+            try:
+                members: dict[str, str] = {}
+                n_sig = 0
+                n_tested = 0
+                for g, out in outs.items():
+                    order = np.asarray(out['order'])
+                    scores = np.asarray(out['scores'])
+                    for r in out['results']:
+                        r['leading_edge'] = [universe[i] for i in r['leading_edge']]
+                    label = f'{obs_column}: {g} vs {reference}' + (f' [{cell_subset}]' if cell_subset else '')
+                    result = {
+                        'kind': 'gsea', 'label': f'GSEA: {label}', 'created_at': now, 'collection': collection_key,
+                        'ranking': {'kind': 'diffexp', 'label': label, 'n_ranked': int(out['n_ranked']),
+                                    'genes': [universe[i] for i in order],
+                                    'scores': [float(scores[i]) for i in order]},
+                        'universe_size': len(universe), 'gene_subset_type': subset_type,
+                        'n_sets_input': rmeta['n_input'], 'n_sets_tested': int(out['n_sets_tested']),
+                        'n_significant': sum(1 for r in out['results'] if r['padj'] <= 0.05),
+                        'n_perm': int(out['n_perm']), 'results': out['results'],
+                        'params': {**params, 'ranking': {
+                            'kind': 'diffexp', 'obs_column': obs_column, 'group': g, 'reference': reference,
+                            'method': method, 'metric': metric, 'cell_subset': cell_subset, 'rest_of': rest_of}},
+                    }
+                    members[g] = self._store_enrichment(f'gsea_{obs_column}_{g}_vs_{reference}', result)
+                    n_sig += result['n_significant']
+                    n_tested = max(n_tested, result['n_sets_tested'])
+                collection = {
+                    'kind': 'gsea_batch',
+                    'label': f'GSEA: {obs_column} ({len(members)} groups vs {reference})',
+                    'created_at': now, 'obs_column': obs_column, 'reference': reference, 'rest_of': rest_of,
+                    'groups': list(members), 'members': members, 'skipped': skipped,
+                    'n_perm': int(n_perm), 'universe_size': len(universe), 'gene_subset_type': subset_type,
+                    'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
                 }
-                members[g] = self._store_enrichment(f'gsea_{obs_column}_{g}_vs_{reference}', result)
-                n_sig += result['n_significant']
-                n_tested = max(n_tested, result['n_sets_tested'])
-            collection = {
-                'kind': 'gsea_batch',
-                'label': f'GSEA: {obs_column} ({len(members)} groups vs {reference})',
-                'created_at': now, 'obs_column': obs_column, 'reference': reference, 'rest_of': rest_of,
-                'groups': list(members), 'members': members, 'skipped': skipped,
-                'n_perm': int(n_perm), 'universe_size': len(universe), 'gene_subset_type': subset_type,
-                'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
-            }
-            self._put_enrichment(collection_key, collection)
-            self._log_action('enrichment_gsea_batch', params, {
-                'key': collection_key, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
-            # The caller renders this directly, so hand back what the GET would.
-            return self.get_enrichment_result(collection_key)
+                self._put_enrichment(collection_key, collection)
+                self._log_action('enrichment_gsea_batch', params, {
+                    'key': collection_key, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
+                # The caller renders this directly, so hand back what the GET would.
+                return self.get_enrichment_result(collection_key)
+            except Exception:
+                self._drop_enrichment_key(collection_key)
+                raise
 
         return compute_fn, apply_fn
 
@@ -6665,7 +6688,8 @@ class DataAdaptor:
             if keys:
                 if r.get('key') in keys or (isinstance(r.get('members'), dict) and keys & set(r['members'].values())):
                     hit = True
-            if columns and (p.get('key_added') in columns or r.get('obs_column') in columns or r.get('column') in columns):
+            # only the step that *created* a column counts; every analysis run on it does not
+            if columns and p.get('key_added') in columns:
                 hit = True
             if hit:
                 out.append(step.index)
@@ -6705,10 +6729,17 @@ class DataAdaptor:
             raise ValueError(f'unknown params for {kind}: {unknown}')
         merged.update(params or {})
         now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        store = self._enrichment_store()
+        input_ids = {}
+        for k in clean_inputs.get('enrichment_keys') or []:
+            try:
+                input_ids[k] = json.loads(store[k]).get('uid')
+            except (KeyError, TypeError, ValueError):
+                input_ids[k] = None
         record = {
             'id': self._next_figure_id(), 'kind': kind,
             'title': title or self._default_figure_title(kind, clean_inputs), 'caption': caption or '',
-            'created_at': now, 'updated_at': now, 'inputs': clean_inputs, 'params': merged,
+            'created_at': now, 'updated_at': now, 'inputs': clean_inputs, 'input_ids': input_ids, 'params': merged,
             'provenance': {'steps': self._figure_provenance_steps(kind, clean_inputs), 'created_step': None,
                            'source': str(self.file_path) if getattr(self, 'file_path', None) else ''},
         }
@@ -6772,24 +6803,40 @@ class DataAdaptor:
         self._log_action('figure_delete', {'id': figure_id}, {'deleted': figure_id})
         return {'deleted': figure_id}
 
-    def _enrichment_columns(self, keys: list[str]) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]] | None]:
-        """Expand figure inputs into {column label: single result} plus member
-        gene sets (for collapse / overlap edges) when the libraries are cached."""
+    def _enrichment_columns(self, record: dict[str, Any]
+                            ) -> tuple[dict[str, dict[str, Any]], dict[str, str], dict[str, set[str]] | None, list[str]]:
+        """Expand figure inputs into {column key: single result}, display labels,
+        member gene sets (for collapse / overlap edges) when the libraries are
+        cached, and notes. Column keys are ``<input key>:<group>`` so two
+        collections on the same column never collapse into one."""
         from xcell import enrichment as en  # noqa: PLC0415
         store = self._enrichment_store()
+        keys = record['inputs']['enrichment_keys']
+        input_ids = record.get('input_ids') or {}
         cols: dict[str, dict[str, Any]] = {}
+        labels: dict[str, str] = {}
+        notes: list[str] = []
         first: dict[str, Any] | None = None
         for k in keys:
             if k not in store:
                 raise FigureInputMissing(f"Enrichment result '{k}' no longer exists; the figure cannot be drawn")
             r = self.get_enrichment_result(k)
+            expected = input_ids.get(k)
+            if expected and r.get('uid') != expected:
+                raise FigureInputMissing(
+                    f"Enrichment result '{k}' was replaced by a later run since this figure was made; "
+                    "the figure cannot be drawn from it")
             if isinstance(r.get('members'), dict):
                 for g, m in (r.get('member_results') or {}).items():
-                    cols[g] = m
+                    cols[f'{k}:{g}'] = m
+                    labels[f'{k}:{g}'] = str(g)
                     first = first or m
+                missing = r.get('missing_members') or {}
+                if missing:
+                    notes.append(f"{k}: members missing for {', '.join(sorted(missing))}")
             else:
-                label = (r.get('ranking') or {}).get('label') or (r.get('query') or {}).get('name') or k
-                cols[label] = r
+                cols[k] = r
+                labels[k] = (r.get('ranking') or {}).get('label') or (r.get('query') or {}).get('name') or k
                 first = first or r
         if not cols:
             raise FigureInputMissing('The figure inputs hold no per-contrast results')
@@ -6805,7 +6852,7 @@ class DataAdaptor:
             members = {s['name']: {universe[i] for i in s['indices']} for s in resolved}
         except (ValueError, KeyError):
             members = None
-        return cols, members
+        return cols, labels, members, notes
 
     def figure_data(self, figure_id: str, params_override: dict[str, Any] | None = None) -> dict[str, Any]:
         """The plotted table/graph for a figure, from its stored inputs and params.
@@ -6820,22 +6867,29 @@ class DataAdaptor:
         unknown = sorted(set(params_override or {}) - allowed)
         if unknown:
             raise ValueError(f'unknown params for {kind}: {unknown}')
-        if kind == 'enrichment_heatmap':
-            cols, members = self._enrichment_columns(record['inputs']['enrichment_keys'])
-            return ef.assemble_matrix(
-                cols, value=params['value'], padj_max=float(params['padj_max']), top_n=int(params['top_n']),
-                direction=params['direction'], collapse_jaccard=params.get('collapse_jaccard'),
-                row_order=params['row_order'], col_order=params['col_order'], members=members)
-        if kind == 'enrichment_network':
-            cols, members = self._enrichment_columns(record['inputs']['enrichment_keys'])
-            return ef.assemble_network(
-                cols, value=params['value'], padj_max=float(params['padj_max']), top_n=int(params['top_n']),
-                direction=params['direction'], set_edge_jaccard=params.get('set_edge_jaccard'),
-                layout=params['layout'], seed=int(params['seed']), members=members)
+        if kind in ('enrichment_heatmap', 'enrichment_network'):
+            cols, labels, members, notes = self._enrichment_columns(record)
+            if kind == 'enrichment_heatmap':
+                out = ef.assemble_matrix(
+                    cols, value=params['value'], padj_max=float(params['padj_max']), top_n=int(params['top_n']),
+                    direction=params['direction'], collapse_jaccard=params.get('collapse_jaccard'),
+                    row_order=params['row_order'], col_order=params['col_order'], members=members, labels=labels)
+            else:
+                out = ef.assemble_network(
+                    cols, value=params['value'], padj_max=float(params['padj_max']), top_n=int(params['top_n']),
+                    direction=params['direction'], set_edge_jaccard=params.get('set_edge_jaccard'),
+                    layout=params['layout'], seed=int(params['seed']), members=members, labels=labels)
+            if notes:
+                out['note'] = '; '.join(([out['note']] if out.get('note') else []) + notes)
+            out['figure_id'] = figure_id
+            out['kind'] = kind
+            return out
         if kind == 'composition_barplot':
             inp = record['inputs']
             out = self.crosstab(inp['column_a'], inp['column_b'], active_cell_indices=self._figure_cells(inp))
             out['params'] = params
+            out['figure_id'] = figure_id
+            out['kind'] = kind
             return out
         if kind == 'expression_heatmap':
             from xcell.heatmap import compute_heatmap_data  # noqa: PLC0415
@@ -6847,20 +6901,28 @@ class DataAdaptor:
                     if g not in seen:
                         seen.add(g)
                         genes.append(g)
-            return compute_heatmap_data(
+            out = compute_heatmap_data(
                 self, genes, gene_set_groups=[{'name': s_['name'], 'genes': list(s_['genes'])} for s_ in inp['gene_sets']],
                 aggregate_gene_sets=bool(params.get('aggregate_gene_sets')), cell_ordering=str(params.get('cell_ordering', 'category')),
                 obs_column=inp.get('obs_column'), line_name=inp.get('line_name'),
                 gene_ordering=str(params.get('gene_ordering', 'as_provided')), n_bins=int(params.get('n_bins', 0)),
                 transform=None, cell_indices=self._figure_cells(inp))
+            out['figure_id'] = figure_id
+            out['kind'] = kind
+            return out
         raise ValueError(f"figure kind '{kind}' is not renderable yet")
 
     def attach_figure_to_record(self, figure_id: str, png_b64: str, caption: str | None = None) -> dict[str, Any]:
         record = self.get_figure(figure_id)
-        step = (record.get('provenance') or {}).get('created_step')
-        if step is not None and not (0 <= step < len(self.analysis_record.steps)):
-            step = None
-        fig = self.analysis_record.add_figure(png_b64, caption=caption or record['title'], step_index=step)
+        # The record can be cleared and renumbered, so find the figure's own
+        # create step by content; with none, the PNG stands alone.
+        step = None
+        for st in self.analysis_record.steps:
+            if st.action == 'figure_create' and (st.result or {}).get('id') == figure_id:
+                step = st.index
+                break
+        fig = self.analysis_record.add_figure(png_b64, caption=caption or record['title'], step_index=step,
+                                              standalone=step is None)
         fig.figure_id = figure_id
         return {'record_figure_id': fig.id, 'step_index': fig.step_index}
 

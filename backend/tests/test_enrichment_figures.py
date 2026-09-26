@@ -104,3 +104,14 @@ def test_network_nodes_edges_overlap_and_layouts():
 def test_force_layout_handles_isolated_nodes():
     xy = ef.force_layout(4, [(0, 1)], weights=[1.0], seed=0, iterations=50)
     assert xy.shape == (4, 2) and np.isfinite(xy).all()
+
+
+def test_peak_row_order_follows_the_displayed_column_order():
+    # Three columns whose cluster order will differ from the input order.
+    a = _gsea([_row('S1', 3.0, 0.001), _row('S2', 0.2, 0.001), _row('S3', 0.1, 0.001)])
+    b = _gsea([_row('S1', 0.1, 0.001), _row('S2', 0.2, 0.001), _row('S3', 3.0, 0.001)])
+    c = _gsea([_row('S1', 0.2, 0.001), _row('S2', 3.0, 0.001), _row('S3', 0.1, 0.001)])
+    m = ef.assemble_matrix({'a': a, 'b': b, 'c': c}, value='nes', padj_max=0.05, top_n=5, direction='both',
+                           collapse_jaccard=None, row_order='peak', col_order='cluster', members=None)
+    peaks = [int(np.argmax(np.abs(row))) for row in m['values']]
+    assert peaks == sorted(peaks)                # a diagonal in the order the columns are drawn

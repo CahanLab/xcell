@@ -804,9 +804,11 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'figure_create': ActionSpec(
         label='Create a figure', fidelity=XCELL, imports=XCELL_API,
+        # Bind the record so the replay uses whatever id it was given, not the
+        # id this session happened to allocate.
         code=lambda s: [
-            _xcall('create_figure', s.params, ('kind', 'title', 'caption', 'inputs', 'params')),
-            f"{ADAPTOR}.figure_data({_lit((s.result or {}).get('id'))})",
+            f"fig = {_xcall('create_figure', s.params, ('kind', 'title', 'caption', 'inputs', 'params'))}",
+            f"fig_data = {ADAPTOR}.figure_data(fig['id'])",
         ],
         summary=lambda p, r: (
             f"Figure `{r.get('id')}` ({p.get('kind')}): '{p.get('title')}' from "
@@ -815,7 +817,7 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'figure_update': ActionSpec(
         label='Edit a figure', fidelity=XCELL, imports=XCELL_API,
-        code=_direct('update_figure', ('id', 'title', 'caption', 'params')),
+        code=lambda s: [f"{ADAPTOR}.update_figure({_lit(s.params.get('id'))}, {_splat(s.params, ('title', 'caption', 'params'))})"],
         summary=lambda p, r: (
             f"Figure `{p.get('id')}` changed: "
             + ', '.join(k for k in ('title', 'caption', 'params') if k in p) + '.'
@@ -823,7 +825,7 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'figure_delete': ActionSpec(
         label='Delete a figure', fidelity=XCELL, imports=XCELL_API,
-        code=_direct('delete_figure', ('id',)),
+        code=lambda s: [f"{ADAPTOR}.delete_figure({_lit(s.params.get('id'))})"],
         summary=lambda p, r: f"Deleted figure `{p.get('id')}`.",
     ),
     'enrichment_delete': ActionSpec(

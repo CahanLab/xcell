@@ -202,10 +202,12 @@ class AnalysisRecord:
         *,
         caption: str = '',
         step_index: int | None = None,
+        standalone: bool = False,
     ) -> Figure:
         """Attach a captured PNG. Defaults to the most recent step; with no
-        steps yet it stands alone and renders at the end of the report."""
-        if step_index is None and self.steps:
+        steps yet, or when ``standalone`` is asked for, it stands alone and
+        renders at the end of the report."""
+        if step_index is None and self.steps and not standalone:
             step_index = len(self.steps) - 1
         if step_index is not None and not (0 <= step_index < len(self.steps)):
             raise IndexError(f"No step at index {step_index}")

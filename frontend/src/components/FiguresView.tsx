@@ -125,9 +125,12 @@ export default function FiguresView() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const plotRef = useRef<HTMLDivElement>(null)
   const [plotWidth, setPlotWidth] = useState(800)
-  // A preview for figure A must never land on figure B: every fetch carries
-  // the id it was made for and is dropped if the active figure changed.
-  const previewFor = useRef<string | null>(null)
+  // Every preview request gets a sequence number; only the latest response
+  // may land, so a slow older request can never overwrite a newer one, and a
+  // request made for figure A is dropped once B is active. The payload also
+  // names its figure, and the view only draws data tagged for the current one.
+  const reqSeq = useRef(0)
+  const [dataVersion, setDataVersion] = useState(0)
 
   // Reconcile the active id against the *fetched* list, never the stale one:
   // a just-created figure is set active before its refetch lands, and a guard
@@ -154,7 +157,9 @@ export default function FiguresView() {
   useEffect(() => {
     if (!activeFigureId) { setRecord(null); setData(null); return }
     let cancelled = false
-    // The previous figure's data must not reach the new figure's renderer.
+    // The previous figure's data must not reach the new figure's renderer,
+    // and any preview still in flight for it is now stale.
+    reqSeq.current += 1
     setData(null); setError(null); setDataError(null); setToast(null)
     fetchFigure(activeFigureId, activeSlot)
       .then((r) => {
@@ -183,13 +188,13 @@ export default function FiguresView() {
   useEffect(() => {
     if (!record) return
     const id = record.id
-    previewFor.current = id
     const override: Record<string, unknown> = {}
     for (const k of Object.keys(coerced)) if (JSON.stringify(coerced[k]) !== JSON.stringify(record.params[k])) override[k] = coerced[k]
     const t = setTimeout(() => {
+      const seq = ++reqSeq.current
       fetchFigureData(id, Object.keys(override).length ? override : null, activeSlot)
-        .then((d) => { if (previewFor.current === id) { setData(d); setDataError(null) } })
-        .catch((e) => { if (previewFor.current === id) { setData(null); setDataError((e as Error).message) } })
+        .then((d) => { if (seq === reqSeq.current) { setData(d); setDataError(null); setDataVersion((v) => v + 1) } })
+        .catch((e) => { if (seq === reqSeq.current) { setData(null); setDataError((e as Error).message) } })
     }, 300)
     return () => clearTimeout(t)
   }, [record, coerced, activeSlot])
@@ -291,11 +296,8 @@ export default function FiguresView() {
   const provenanceSteps = record ? steps.filter((s) => record.provenance.steps.includes(s.index)) : []
   const createdStep = record?.provenance.created_step != null ? steps.find((s) => s.index === record.provenance.created_step) : undefined
 
-  const dataMatchesKind = data && (
-    (record?.kind === 'enrichment_heatmap' && 'rows' in data) ||
-    (record?.kind === 'enrichment_network' && 'nodes' in data) ||
-    (record?.kind === 'composition_barplot' && 'counts' in data) ||
-    (record?.kind === 'expression_heatmap' && 'matrix' in data))
+  // The payload names its figure and kind; anything else is stale and not drawn.
+  const dataMatchesKind = Boolean(data && record && data.figure_id === record.id && data.kind === record.kind)
   const dynamicOptions = data && 'b_categories' in data ? (data as CrosstabData).b_categories : undefined
   const renderer = record && data && dataMatchesKind ? (
     record.kind === 'enrichment_heatmap' ? (
@@ -341,7 +343,7 @@ export default function FiguresView() {
           <select style={{ ...styles.select, width: '64px' }} value={pngScale} onChange={(e) => setPngScale(Number(e.target.value))} title="PNG scale">
             {[1, 2, 3, 4].map((s) => <option key={s} value={s}>{s}×</option>)}
           </select>
-          <button style={{ ...styles.button, ...(!record || !data || busy ? styles.disabled : {}) }} disabled={!record || !data || busy} onClick={attach} title="Rasterise and attach to the analysis record, linked to this figure's step">Attach to record</button>
+          <button style={{ ...styles.button, ...(!record || !data || busy || dirty ? styles.disabled : {}) }} disabled={!record || !data || busy || dirty} onClick={attach} title={dirty ? 'Save the figure first: the record must be able to reproduce what it shows' : "Rasterise and attach to the analysis record, linked to this figure's step"}>Attach to record</button>
           <button style={{ ...styles.button, ...(!record || busy ? styles.disabled : {}) }} disabled={!record || busy} onClick={duplicate}>Duplicate</button>
           <button style={{ ...styles.button, ...(!record || busy ? styles.disabled : {}) }} disabled={!record || busy} onClick={remove}>Delete</button>
           {toast && <span style={styles.toast}>{toast}</span>}
@@ -356,7 +358,7 @@ export default function FiguresView() {
             </div>
           )}
           {record && (!data || !dataMatchesKind) && !dataError && <div style={styles.muted}>Loading…</div>}
-          <RendererBoundary key={`${record?.id ?? ''}:${data ? 'd' : 'n'}`}>{renderer}</RendererBoundary>
+          <RendererBoundary key={`${record?.id ?? ''}:${dataVersion}`}>{renderer}</RendererBoundary>
         </div>
       </div>
 

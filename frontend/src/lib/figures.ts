@@ -82,7 +82,11 @@ export interface ExpressionHeatmapData {
   n_genes_hidden?: number
 }
 
-export type FigureData = EnrichmentHeatmapData | EnrichmentNetworkData | CrosstabData | ExpressionHeatmapData
+/** Every data payload names the figure and kind it was computed for, so the
+ *  view never has to guess what it is drawing. */
+export interface FigureDataTag { figure_id?: string; kind?: FigureKind }
+
+export type FigureData = (EnrichmentHeatmapData | EnrichmentNetworkData | CrosstabData | ExpressionHeatmapData) & FigureDataTag
 
 export interface BarplotConfigLike {
   columnA: string

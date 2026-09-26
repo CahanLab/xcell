@@ -125,9 +125,18 @@ def _order_cols(cols: list[str], values: list[list[float]], *, col_order: str) -
     return [int(i) for i in leaves_list(linkage(arr, method='average', metric='euclidean'))]
 
 
+def _labels_for(results_by_col: dict[str, dict[str, Any]], labels: dict[str, str] | None) -> dict[str, str]:
+    """Display labels per column key; a duplicated label gets its key appended."""
+    raw = {k: (labels or {}).get(k, k) for k in results_by_col}
+    counts: dict[str, int] = {}
+    for lab in raw.values():
+        counts[lab] = counts.get(lab, 0) + 1
+    return {k: (lab if counts[lab] == 1 else f'{lab} ({k})') for k, lab in raw.items()}
+
+
 def assemble_matrix(results_by_col: dict[str, dict[str, Any]], *, value: str, padj_max: float, top_n: int,
                     direction: str, collapse_jaccard: float | None, row_order: str, col_order: str,
-                    members: dict[str, set[str]] | None) -> dict[str, Any]:
+                    members: dict[str, set[str]] | None, labels: dict[str, str] | None = None) -> dict[str, Any]:
     if direction not in ('both', 'up', 'down'):
         raise ValueError("direction must be 'both', 'up' or 'down'")
     per_col, chosen, meta = _select(results_by_col, value=value, padj_max=padj_max, top_n=top_n, direction=direction)
@@ -145,18 +154,21 @@ def assemble_matrix(results_by_col: dict[str, dict[str, Any]], *, value: str, pa
             absorbed = reps
             chosen = [n for n in chosen if n in reps]
             n_collapsed = sum(len(v) for v in reps.values())
+    shown = _labels_for(results_by_col, labels)
     if not chosen:
-        return {'rows': [], 'cols': [{'label': c} for c in cols], 'values': [], 'padj': [],
+        return {'rows': [], 'cols': [{'label': shown[c], 'key': c} for c in cols], 'values': [], 'padj': [],
                 'value_label': VALUE_LABELS[value], 'n_rows_total': n_total, 'n_collapsed': 0,
                 'note': note or f'No gene set passes padj ≤ {padj_max} in any column'}
     values = [[per_col[c].get(n, (0.0, 1.0))[0] for c in cols] for n in chosen]
     padj = [[per_col[c].get(n, (0.0, 1.0))[1] for c in cols] for n in chosen]
-    ri = _order_rows(chosen, values, row_order=row_order)
+    # Columns first: the peak rule must see the columns in the order they are drawn.
     ci = _order_cols(cols, values, col_order=col_order)
+    permuted = [[row[j] for j in ci] for row in values]
+    ri = _order_rows(chosen, permuted, row_order=row_order)
     rows = [{'name': chosen[i], 'library': meta[chosen[i]]['library'], 'members': absorbed.get(chosen[i], []),
              'n_set': meta[chosen[i]]['n_set']} for i in ri]
     return {
-        'rows': rows, 'cols': [{'label': cols[j]} for j in ci],
+        'rows': rows, 'cols': [{'label': shown[cols[j]], 'key': cols[j]} for j in ci],
         'values': [[float(values[i][j]) for j in ci] for i in ri],
         'padj': [[float(padj[i][j]) for j in ci] for i in ri],
         'value_label': VALUE_LABELS[value], 'n_rows_total': n_total, 'n_collapsed': n_collapsed, 'note': note,
@@ -223,13 +235,14 @@ def bipartite_layout(groups: list[int], sets: list[int], edges: list[tuple[int, 
 
 def assemble_network(results_by_col: dict[str, dict[str, Any]], *, value: str, padj_max: float, top_n: int,
                      direction: str, set_edge_jaccard: float | None, layout: str, seed: int,
-                     members: dict[str, set[str]] | None) -> dict[str, Any]:
+                     members: dict[str, set[str]] | None, labels: dict[str, str] | None = None) -> dict[str, Any]:
     if direction not in ('both', 'up', 'down'):
         raise ValueError("direction must be 'both', 'up' or 'down'")
     if layout not in ('force', 'bipartite'):
         raise ValueError("layout must be 'force' or 'bipartite'")
     per_col, chosen, meta = _select(results_by_col, value=value, padj_max=padj_max, top_n=top_n, direction=direction)
     cols = list(results_by_col)
+    shown = _labels_for(results_by_col, labels)
     note: str | None = None
     ids: list[str] = [f'group:{c}' for c in cols] + [f'set:{n}' for n in chosen]
     index = {i: k for k, i in enumerate(ids)}
@@ -270,7 +283,8 @@ def assemble_network(results_by_col: dict[str, dict[str, Any]], *, value: str, p
         kind = 'group' if k < len(cols) else 'set'
         name = i.split(':', 1)[1]
         nodes.append({
-            'id': i, 'kind': kind, 'label': name, 'x': float(pos[k, 0]), 'y': float(pos[k, 1]),
+            'id': i, 'kind': kind, 'label': shown[name] if kind == 'group' else name,
+            'x': float(pos[k, 0]), 'y': float(pos[k, 1]),
             'size': float(meta.get(name, {}).get('n_set', 0)) if kind == 'set' else 0.0,
             'degree': degree[i], 'library': meta.get(name, {}).get('library') if kind == 'set' else None,
         })

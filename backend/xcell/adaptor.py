@@ -6084,6 +6084,171 @@ class DataAdaptor:
             'key': stored_key, 'n_sets_tested': len(records), 'n_significant': result['n_significant']})
         return result
 
+    def _gsea_ranking_snapshot(self, ranking: dict[str, Any], universe: list[str],
+                               universe_mask: np.ndarray
+                               ) -> tuple[dict[str, Any], Callable[[], np.ndarray], str, str]:
+        """Validate a ranking spec now; return (clean spec, builder, label, key hint).
+
+        The builder runs inside the background task and returns one score per
+        universe gene (NaN = unranked). Everything it needs is snapshotted here
+        so a later mutation of the live AnnData cannot leak in.
+        """
+        from xcell import enrichment as en  # noqa: PLC0415
+        kind = str(ranking.get('kind') or '')
+        cell_subset = ranking.get('cell_subset') or None
+        cell_mask = self._subset_mask(cell_subset) if cell_subset else None   # KeyError if unknown
+        suffix = f' [{cell_subset}]' if cell_subset else ''
+        excluded = '\x00excluded'
+
+        if kind == 'diffexp':
+            col = str(ranking.get('obs_column') or '')
+            if col not in self.adata.obs.columns:
+                raise ValueError(f"Column '{col}' not found in .obs")
+            values = self.adata.obs[col].astype(str).values
+            if cell_mask is not None:
+                values = np.where(cell_mask, values, excluded)
+            group = str(ranking.get('group') or '')
+            reference = str(ranking.get('reference') or 'rest')
+            method = str(ranking.get('method') or 'wilcoxon')
+            metric = str(ranking.get('metric') or 'score')
+            present = set(values[values != excluded])
+            if group not in present:
+                raise ValueError(f"Group '{group}' not found in column '{col}'" + (f" within subset '{cell_subset}'" if cell_subset else ''))
+            if reference == group:
+                raise ValueError('reference must differ from group')
+            if reference != 'rest' and reference not in present:
+                raise ValueError(f"Reference group '{reference}' not found in column '{col}'")
+            if method not in ('wilcoxon', 't-test'):
+                raise ValueError("method must be 'wilcoxon' or 't-test'")
+            if metric not in ('score', 'log2fc'):
+                raise ValueError("metric must be 'score' or 'log2fc'")
+            in_group = values == group
+            in_ref = (values != group) & (values != excluded) if reference == 'rest' else values == reference
+            if in_group.sum() < 2 or in_ref.sum() < 2:
+                raise ValueError('Each side of the contrast needs at least 2 cells')
+            cells = np.flatnonzero(in_group | in_ref)
+            labels = np.where(in_group[cells], 'group', 'reference')
+            X = self.adata.X[cells][:, universe_mask]
+            X = X.copy() if hasattr(X, 'copy') else np.array(X)
+
+            def build() -> np.ndarray:
+                import anndata as _ad  # noqa: PLC0415
+                import scanpy as sc  # noqa: PLC0415
+                tmp = _ad.AnnData(X=X)
+                tmp.var_names = universe
+                tmp.obs['g'] = pd.Categorical(labels, categories=['group', 'reference'])
+                sc.tl.rank_genes_groups(tmp, groupby='g', groups=['group'], reference='reference',
+                                        method=method, use_raw=False, key_added='r')
+                r = tmp.uns['r']
+                names = [str(g) for g in r['names']['group']]
+                field = 'scores' if metric == 'score' else 'logfoldchanges'
+                vals = np.asarray(r[field]['group'], dtype=float)
+                pos = {g: i for i, g in enumerate(universe)}
+                out = np.full(len(universe), np.nan)
+                for g, v in zip(names, vals):
+                    out[pos[g]] = v
+                return out
+
+            clean = {'kind': 'diffexp', 'obs_column': col, 'group': group, 'reference': reference,
+                     'method': method, 'metric': metric, 'cell_subset': cell_subset}
+            return clean, build, f'{col}: {group} vs {reference}{suffix}', f'gsea_{col}_{group}_vs_{reference}'
+
+        if kind == 'pca':
+            comp = ranking.get('component')
+            pcs_key = f'PCs_{cell_subset}' if cell_subset else 'PCs'
+            if pcs_key not in self.adata.varm:
+                raise ValueError(f"No PCA loadings ('{pcs_key}' missing from .varm); run PCA first")
+            pcs = np.asarray(self.adata.varm[pcs_key], dtype=float)
+            if not isinstance(comp, int) or isinstance(comp, bool) or comp < 0 or comp >= pcs.shape[1]:
+                raise ValueError(f'component must be an integer in [0, {pcs.shape[1] - 1}]')
+            loading = pcs[universe_mask, comp].copy()
+            loading[loading == 0] = np.nan   # genes outside the PCA's gene mask carry no loading
+            clean = {'kind': 'pca', 'component': int(comp), 'cell_subset': cell_subset}
+            return (clean, (lambda: loading), f'PC{comp + 1} loading{suffix}',
+                    f'gsea_pca{comp + 1}' + (f'_{cell_subset}' if cell_subset else ''))
+
+        if kind == 'scores':
+            genes = list(ranking.get('genes') or [])
+            scores = list(ranking.get('scores') or [])
+            if len(genes) != len(scores) or not genes:
+                raise ValueError('genes and scores must be non-empty lists of the same length')
+            arr = np.full(len(universe), np.nan)
+            exact, upper = en._symbol_lookup(universe)
+            for g, v in zip(genes, scores):   # first occurrence of a symbol wins
+                sym = str(g).strip()
+                i = exact.get(sym)
+                if i is None:
+                    i = upper.get(sym.upper())
+                if i is not None and np.isnan(arr[i]):
+                    arr[i] = float(v)
+            if np.isfinite(arr).sum() < 2:
+                raise ValueError('Fewer than 2 of the scored genes are in the universe')
+            clean = {'kind': 'scores', 'n_genes': len(genes), 'cell_subset': None}
+            return clean, (lambda: arr), 'custom scores', 'gsea_scores'
+
+        raise ValueError("ranking kind must be 'diffexp', 'pca' or 'scores'")
+
+    def prepare_gsea(self, ranking: dict[str, Any], *, libraries: list[dict[str, Any]] | None = None,
+                     sets: list[dict[str, Any]] | None = None, gene_subset: Any = None,
+                     n_perm: int = 1000, min_set_size: int = 15, max_set_size: int = 500,
+                     weight: float = 1.0, seed: int = 0, key: str | None = None):
+        """Preranked GSEA as a background task: (compute_fn(report), apply_fn(result))."""
+        from datetime import datetime, timezone  # noqa: PLC0415
+        from xcell import enrichment as en  # noqa: PLC0415
+        if n_perm < 10:
+            raise ValueError('n_perm must be at least 10')
+        if min_set_size < 1 or max_set_size < min_set_size:
+            raise ValueError('Set size range must satisfy 1 <= min <= max')
+        raw_sets = self._enrichment_sets(libraries, sets)
+        mask, subset_type, _meta = self._resolve_gene_mask(gene_subset)
+        universe = [str(g) for g in self.adata.var_names[mask]]
+        clean_ranking, build, label, key_hint = self._gsea_ranking_snapshot(dict(ranking), universe, mask)
+        resolved, rmeta = en.resolve_sets(raw_sets, universe, min_size=min_set_size,
+                                          max_size=max_set_size, directional='split')
+        if not resolved:
+            raise ValueError(
+                f'No gene set has between {min_set_size} and {max_set_size} members in the universe')
+        params = {
+            'ranking': clean_ranking, 'libraries': list(libraries or []), 'n_inline_sets': len(sets or []),
+            'gene_subset': gene_subset, 'n_perm': int(n_perm), 'min_set_size': int(min_set_size),
+            'max_set_size': int(max_set_size), 'weight': float(weight), 'seed': int(seed),
+        }
+
+        def compute_fn(report):
+            report(0.02, 'Building the ranking…')
+            scores = build()
+            report(0.15, 'Running GSEA…')
+            out = en.preranked_gsea(
+                scores, resolved, n_perm=n_perm, min_size=min_set_size, max_size=max_set_size,
+                weight=weight, seed=seed,
+                report=lambda f, m: report(0.15 + 0.85 * f, m))
+            out['scores'] = scores
+            return out
+
+        def apply_fn(out):
+            order = np.asarray(out['order'])
+            scores = np.asarray(out['scores'])
+            for r in out['results']:
+                r['leading_edge'] = [universe[i] for i in r['leading_edge']]
+            result = {
+                'kind': 'gsea', 'label': f'GSEA: {label}',
+                'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'ranking': {'kind': clean_ranking['kind'], 'label': label, 'n_ranked': int(out['n_ranked']),
+                            'genes': [universe[i] for i in order],
+                            'scores': [float(scores[i]) for i in order]},
+                'universe_size': len(universe), 'gene_subset_type': subset_type,
+                'n_sets_input': rmeta['n_input'], 'n_sets_tested': int(out['n_sets_tested']),
+                'n_significant': sum(1 for r in out['results'] if r['padj'] <= 0.05),
+                'n_perm': int(out['n_perm']), 'results': out['results'], 'params': params,
+            }
+            stored_key = self._store_enrichment(key or key_hint, result)
+            self._log_action('enrichment_gsea', params, {
+                'key': stored_key, 'n_sets_tested': result['n_sets_tested'],
+                'n_significant': result['n_significant']})
+            return result
+
+        return compute_fn, apply_fn
+
     def guess_species(self) -> dict[str, Any]:
         """Species guess from the current var index (Ensembl prefix, else symbol case)."""
         from xcell import gene_symbols as gs  # noqa: PLC0415

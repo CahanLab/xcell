@@ -102,3 +102,84 @@ def test_overlap_inline_sets_and_errors():
                                  min_set_size=1)
     with pytest.raises(ValueError, match='No gene sets'):
         a.run_overlap_enrichment(['Col1a1', 'Col1a2'])
+
+
+# --- GSEA rankings -------------------------------------------------------------
+
+def _adata_de():
+    """Group a over-expresses Col*, group b over-expresses Ptprc/Cd3e/Cd19."""
+    rng = np.random.default_rng(0)
+    n = 60
+    lam = np.full((n, len(GENES)), 1.0)
+    grp = np.array(['a'] * 30 + ['b'] * 30)
+    for g in ('Col1a1', 'Col1a2', 'Col3a1'):
+        lam[grp == 'a', GENES.index(g)] = 8.0
+    for g in ('Ptprc', 'Cd3e', 'Cd19'):
+        lam[grp == 'b', GENES.index(g)] = 8.0
+    X = csr_matrix(rng.poisson(lam).astype(np.float32))
+    ad = anndata.AnnData(X=X)
+    ad.var_names = GENES
+    ad.obs['grp'] = pd.Categorical(grp)
+    ad.obs['subset_half'] = [True] * 40 + [False] * 20
+    ad.uns['xcell_cell_subsets'] = {'half': {'n_cells': 40, 'created_at': 't', 'origin': 'test'}}
+    pcs = rng.uniform(-0.1, 0.1, size=(len(GENES), 2))
+    pcs[GENES.index('Hoxd13'), 0] = 0.9
+    pcs[GENES.index('Meis1'), 0] = -0.9
+    pcs[GENES.index('Sox9'), 0] = 0.0          # outside the PCA's gene mask -> unranked
+    ad.varm['PCs'] = pcs
+    ad.obsm['X_pca'] = np.zeros((n, 2))
+    return ad
+
+
+def _run(a, ranking, **kw):
+    compute_fn, apply_fn = a.prepare_gsea(ranking, libraries=LIB, min_set_size=2, n_perm=100, **kw)
+    return apply_fn(compute_fn(lambda f, m: None))
+
+
+def test_gsea_diffexp_ranking_vs_rest_and_vs_group():
+    a = DataAdaptor('x.h5ad', adata=_adata_de())
+    res = _run(a, {'kind': 'diffexp', 'obs_column': 'grp', 'group': 'a', 'reference': 'rest'})
+    assert res['kind'] == 'gsea' and res['key'] == 'gsea_grp_a_vs_rest'
+    assert set(res['ranking']['genes'][:3]) == {'Col1a1', 'Col1a2', 'Col3a1'}
+    assert len(res['ranking']['scores']) == len(GENES)
+    by = {r['name']: r for r in res['results']}
+    assert by['COLLAGEN']['nes'] > 0 and by['IMMUNE']['nes'] < 0
+    assert set(by['COLLAGEN']['leading_edge']) >= {'Col1a1', 'Col1a2', 'Col3a1'}
+    assert json.loads(a.adata.uns['xcell_enrichment']['gsea_grp_a_vs_rest'])['kind'] == 'gsea'
+    assert a._action_history[-1]['action'] == 'enrichment_gsea'
+    res2 = _run(a, {'kind': 'diffexp', 'obs_column': 'grp', 'group': 'b', 'reference': 'a', 'metric': 'log2fc'})
+    assert res2['key'] == 'gsea_grp_b_vs_a'
+    assert {r['name']: r for r in res2['results']}['IMMUNE']['nes'] > 0
+
+
+def test_gsea_diffexp_within_named_subset_and_validation():
+    a = DataAdaptor('x.h5ad', adata=_adata_de())
+    res = _run(a, {'kind': 'diffexp', 'obs_column': 'grp', 'group': 'a', 'reference': 'rest', 'cell_subset': 'half'})
+    assert res['params']['ranking']['cell_subset'] == 'half' and res['ranking']['n_ranked'] == len(GENES)
+    assert res['key'] == 'gsea_grp_a_vs_rest' and 'half' in res['label']
+    for bad, msg in [
+        ({'kind': 'diffexp', 'obs_column': 'nope', 'group': 'a'}, 'nope'),
+        ({'kind': 'diffexp', 'obs_column': 'grp', 'group': 'zzz'}, 'zzz'),
+        ({'kind': 'diffexp', 'obs_column': 'grp', 'group': 'a', 'reference': 'a'}, 'reference'),
+        ({'kind': 'diffexp', 'obs_column': 'grp', 'group': 'a', 'method': 'logreg'}, 'method'),
+        ({'kind': 'pca', 'component': 5}, 'component'),
+        ({'kind': 'scores', 'genes': ['Col1a1'], 'scores': [1.0, 2.0]}, 'same length'),
+        ({'kind': 'nope'}, 'kind'),
+    ]:
+        with pytest.raises(ValueError, match=msg):
+            a.prepare_gsea(bad, libraries=LIB, min_set_size=2)
+    with pytest.raises(KeyError):
+        a.prepare_gsea({'kind': 'diffexp', 'obs_column': 'grp', 'group': 'a', 'cell_subset': 'ghost'},
+                       libraries=LIB, min_set_size=2)
+
+
+def test_gsea_pca_and_scores_rankings():
+    a = DataAdaptor('x.h5ad', adata=_adata_de())
+    res = _run(a, {'kind': 'pca', 'component': 0})
+    assert res['key'] == 'gsea_pca1'
+    assert res['ranking']['genes'][0] == 'Hoxd13' and res['ranking']['genes'][-1] == 'Meis1'
+    assert res['ranking']['n_ranked'] == len(GENES) - 1         # zero loadings are unranked
+    res2 = _run(a, {'kind': 'scores', 'genes': ['COL1A1', 'col1a2', 'Col3a1', 'Ptprc'], 'scores': [3, 2, 1, -1]},
+                key='custom')
+    assert res2['key'] == 'custom' and res2['ranking']['n_ranked'] == 4 and res2['ranking']['genes'][0] == 'Col1a1'
+    assert res2['ranking']['label'] == 'custom scores'

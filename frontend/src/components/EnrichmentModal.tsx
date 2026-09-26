@@ -463,6 +463,11 @@ export default function EnrichmentModal() {
   const canRunOra = !nothingToTest && (querySetId === MARKERS ? Boolean(markersColumn) : queryGenes.length >= 2)
   const canRunGsea = !nothingToTest && (rankKind === 'diffexp' ? Boolean(obsColumn && group) : nPcs > 0)
   const pFloor = activeResult?.kind === 'gsea' ? 1 / (1 + Math.floor(activeResult.n_perm / 2)) : undefined
+  const nSetsToAdd = result
+    ? (isBatch(result)
+      ? batchToGeneSets(result, { padjMax, topN: 50 }).reduce((n, f) => n + f.sets.length, 0)
+      : resultsToGeneSets(result, { padjMax, topN: 50 }).length)
+    : 0
   const batchNote = batchGroupsRef.current
     ? `limited to ${batchGroupsRef.current.length} group${batchGroupsRef.current.length === 1 ? '' : 's'}: ${batchGroupsRef.current.join(', ')}`
     : 'every group'
@@ -815,11 +820,11 @@ export default function EnrichmentModal() {
                   <button style={{ ...styles.button, ...styles.secondaryButton }} onClick={downloadSvg}>Download SVG</button>
                 )}
                 <button
-                  style={{ ...styles.button, ...styles.successButton, ...(saved ? styles.disabledButton : {}) }}
-                  disabled={saved} onClick={saveSets}
+                  style={{ ...styles.button, ...styles.successButton, ...(saved || nSetsToAdd === 0 ? styles.disabledButton : {}) }}
+                  disabled={saved || nSetsToAdd === 0} onClick={saveSets}
                   title={isBatch(result) ? 'One folder per group, one gene set per row passing the padj filter (top 50)' : 'One gene set per row passing the padj filter (top 50), in the Enrichment category'}
                 >
-                  {saved ? 'Added to gene sets' : 'Add to gene sets'}
+                  {saved ? 'Added to gene sets' : nSetsToAdd === 0 ? 'Nothing to add' : `Add ${nSetsToAdd} to gene sets`}
                 </button>
               </>
             )}

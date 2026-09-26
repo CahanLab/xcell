@@ -68,7 +68,7 @@ def test_overlap_route_accepts_dict_gene_subset_and_returns_result():
     lst = c.get('/api/enrichment/results').json()['results']
     assert lst[0]['key'] == d['key'] and lst[0]['kind'] == 'ora'
     assert c.get(f"/api/enrichment/results/{d['key']}").json()['results'][0]['name'] == 'COLLAGEN'
-    assert c.delete(f"/api/enrichment/results/{d['key']}").json() == {'deleted': d['key']}
+    assert c.delete(f"/api/enrichment/results/{d['key']}").json() == {'deleted': d['key'], 'also_deleted': []}
     assert c.get(f"/api/enrichment/results/{d['key']}").status_code == 404
 
 

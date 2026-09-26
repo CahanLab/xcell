@@ -292,7 +292,6 @@ export default function DiffExpModal() {
     isDiffExpLoading,
     addGeneSetToCategory,
     clearComparison,
-    markerGenesColumn,
     setEnrichmentSource,
   } = useStore()
   const { runComparison } = useDiffExp()
@@ -607,12 +606,12 @@ export default function DiffExpModal() {
           )}
           {hasResults && (
             <>
-              {markerGenesColumn && comparison.group1Label && comparison.group2Label && (
+              {comparison.obsColumn && comparison.group1Label && comparison.group2Label && (
                 <button
                   style={{ ...styles.button, ...styles.secondaryButton }}
                   title="Preranked GSEA of group 1 vs group 2, against cached gene-set libraries"
                   onClick={() => {
-                    setEnrichmentSource({ kind: 'gsea', obsColumn: markerGenesColumn, groups: [comparison.group1Label!], reference: comparison.group2Label! })
+                    setEnrichmentSource({ kind: 'gsea', obsColumn: comparison.obsColumn!, groups: [comparison.group1Label!], reference: comparison.group2Label! })
                     setDiffExpModalOpen(false)
                   }}
                 >

@@ -6028,25 +6028,48 @@ class DataAdaptor:
         r = json.loads(store[key])
         members = r.get('members')
         if isinstance(members, dict):
-            # A collection carries its per-group results so one GET feeds a figure.
-            r['member_results'] = {g: json.loads(store[k]) for g, k in members.items() if k in store}
+            # A collection carries its per-group results so one GET feeds a
+            # figure. A member must still point back at this collection: keys
+            # can be deleted and later reused by an unrelated run.
+            found: dict[str, Any] = {}
+            missing: dict[str, str] = {}
+            for g, k in members.items():
+                if k not in store:
+                    missing[g] = 'deleted'
+                    continue
+                m = json.loads(store[k])
+                if m.get('collection') != key:
+                    missing[g] = 'replaced'
+                    continue
+                found[g] = m
+            r['member_results'] = found
+            r['missing_members'] = missing
         return r
 
     def delete_enrichment_result(self, key: str) -> dict[str, Any]:
+        """Delete a result; deleting a collection also removes the members that
+        still belong to it (a member re-made by another run stays)."""
         store = self._enrichment_store()
         if key not in store:
             raise KeyError(f"No enrichment result named '{key}'")
+        record = json.loads(store[key])
+        also: list[str] = []
+        for k in (record.get('members') or {}).values() if isinstance(record.get('members'), dict) else []:
+            if k in store and json.loads(store[k]).get('collection') == key:
+                del store[k]
+                also.append(k)
         del store[key]
         self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
-        self._log_action('enrichment_delete', {'key': key}, {'deleted': key})
-        return {'deleted': key}
+        self._log_action('enrichment_delete', {'key': key}, {'deleted': key, 'also_deleted': also})
+        return {'deleted': key, 'also_deleted': also}
 
     def run_overlap_enrichment(self, genes: list[str], *, name: str | None = None,
                                libraries: list[dict[str, Any]] | None = None,
                                sets: list[dict[str, Any]] | None = None,
                                gene_subset: Any = None, min_set_size: int = 5,
                                max_set_size: int = 500, min_overlap: int = 2,
-                               key: str | None = None, _log: bool = True) -> dict[str, Any]:
+                               key: str | None = None, _log: bool = True,
+                               _collection: str | None = None) -> dict[str, Any]:
         """Hypergeometric over-representation of ``genes`` in each library set.
 
         The universe is the dataset's genes after the session gene mask and
@@ -6081,6 +6104,7 @@ class DataAdaptor:
         result = {
             'kind': 'ora', 'label': f'Overlap: {label}',
             'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            **({'collection': _collection} if _collection else {}),
             'query': {'name': label, 'n_input': len(genes or []), 'n_in_universe': len(q_idx),
                       'genes_missing': missing[:self.MAX_REPORTED_OVERLAP_MISSING]},
             'universe_size': len(universe), 'gene_subset_type': subset_type,
@@ -6102,11 +6126,14 @@ class DataAdaptor:
         """Marker genes (one-vs-rest, top N) for every group, then ORA of each list.
 
         The marker lists are stored in the collection so a figure built on it
-        stays self-contained after the marker modal's state is gone.
+        stays self-contained after the marker modal's state is gone. "Rest"
+        follows the marker panel: the other chosen groups when a subset was
+        chosen, every other cell otherwise.
         """
         from datetime import datetime, timezone  # noqa: PLC0415
         self._enrichment_sets(libraries, sets)   # an uncached library fails before the marker run
-        markers = self.run_marker_genes(obs_column, groups=groups, top_n=top_n,
+        _values, _mask, _wanted, runnable, skipped, rest_of = self._batch_groups(obs_column, groups, None, 'rest')
+        markers = self.run_marker_genes(obs_column, groups=runnable, top_n=top_n,
                                         min_in_group_fraction=min_in_group_fraction,
                                         max_out_group_fraction=max_out_group_fraction,
                                         min_fold_change=min_fold_change, gene_subset=gene_subset, _log=False)
@@ -6118,8 +6145,8 @@ class DataAdaptor:
             'gene_subset': gene_subset, 'min_set_size': int(min_set_size), 'max_set_size': int(max_set_size),
             'min_overlap': int(min_overlap),
         }
+        collection_key = self._reserve_enrichment_key(key or f'ora_{obs_column}_batch')
         members: dict[str, str] = {}
-        skipped: dict[str, str] = {}
         n_sig = n_tested = universe_size = 0
         subset_type = 'all'
         for g, genes in lists.items():
@@ -6129,26 +6156,30 @@ class DataAdaptor:
             res = self.run_overlap_enrichment(genes, name=f'{g} markers', libraries=libraries, sets=sets,
                                               gene_subset=gene_subset, min_set_size=min_set_size,
                                               max_set_size=max_set_size, min_overlap=min_overlap,
-                                              key=f'ora_{obs_column}_{g}_markers', _log=False)
+                                              key=f'ora_{obs_column}_{g}_markers', _log=False,
+                                              _collection=collection_key)
             members[g] = res['key']
             n_sig += res['n_significant']
             n_tested = max(n_tested, res['n_sets_tested'])
             universe_size = res['universe_size']
             subset_type = res['gene_subset_type']
         if not members:
+            store = self._enrichment_store()
+            store.pop(collection_key, None)
+            self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
             raise ValueError(f'No group had at least 2 marker genes: {skipped}')
         collection = {
             'kind': 'ora_batch', 'label': f'Overlap: {obs_column} markers ({len(members)} groups)',
             'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-            'obs_column': obs_column, 'groups': list(members), 'members': members, 'skipped': skipped,
-            'markers': {g: lists[g] for g in members}, 'top_n': int(top_n),
+            'obs_column': obs_column, 'rest_of': rest_of, 'groups': list(members), 'members': members,
+            'skipped': skipped, 'markers': {g: lists[g] for g in members}, 'top_n': int(top_n),
             'universe_size': universe_size, 'gene_subset_type': subset_type,
             'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
         }
-        stored = self._store_enrichment(key or f'ora_{obs_column}_batch', collection)
+        self._put_enrichment(collection_key, collection)
         self._log_action('enrichment_ora_batch', params, {
-            'key': stored, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
-        return self.get_enrichment_result(stored)
+            'key': collection_key, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
+        return self.get_enrichment_result(collection_key)
 
     def _gsea_ranking_snapshot(self, ranking: dict[str, Any], universe: list[str],
                                universe_mask: np.ndarray
@@ -6326,6 +6357,68 @@ class DataAdaptor:
 
         return compute_fn, apply_fn
 
+    MAX_BATCH_GROUPS = 200
+
+    def _reserve_enrichment_key(self, key_hint: str) -> str:
+        """Take a key now so members can carry it as a back-reference."""
+        return self._store_enrichment(key_hint, {'kind': 'reserved'})
+
+    def _put_enrichment(self, key: str, result: dict[str, Any]) -> None:
+        store = self._enrichment_store()
+        result['key'] = key
+        store[key] = json.dumps(result)
+        self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
+
+    def _batch_groups(self, obs_column: str, groups, cell_subset: str | None, reference: str):
+        """Shared validation for both batch modes: the column, the chosen groups
+        and the cell mask. With a chosen subset, "rest" means the *other chosen
+        groups* — what the marker panel the user came from shows — so the
+        mask is narrowed to them (``rest_of='selected'``)."""
+        if obs_column not in self.adata.obs.columns:
+            raise ValueError(f"Column '{obs_column}' not found in .obs")
+        col = self.adata.obs[obs_column]
+        if not (isinstance(col.dtype, pd.CategoricalDtype) or col.dtype == object or pd.api.types.is_string_dtype(col)):
+            raise ValueError(f"Column '{obs_column}' is not categorical")
+        cell_mask = self._subset_mask(cell_subset) if cell_subset else np.ones(self.n_cells, dtype=bool)
+        values = col.astype(str).values
+        present = sorted(set(values[cell_mask]))
+        if groups is None:
+            wanted = list(present)
+            rest_of = 'all'
+        else:
+            unknown = [g for g in groups if str(g) not in present]
+            if unknown:
+                raise ValueError(f"Unknown group(s) in '{obs_column}': {unknown}")
+            wanted = [str(g) for g in groups]
+            rest_of = 'selected'
+            keep = set(wanted) | ({reference} if reference != 'rest' else set())
+            cell_mask = cell_mask & np.isin(values, list(keep))
+        if reference != 'rest':
+            if reference not in present:
+                raise ValueError(f"Reference group '{reference}' not found in column '{obs_column}'")
+            wanted = [g for g in wanted if g != reference]
+        if not wanted:
+            raise ValueError('No groups to test')
+        if len(wanted) > self.MAX_BATCH_GROUPS:
+            raise ValueError(f"'{obs_column}' has {len(wanted)} groups; a batch runs at most {self.MAX_BATCH_GROUPS}")
+        runnable: list[str] = []
+        skipped: dict[str, str] = {}
+        for g in wanted:
+            in_g = cell_mask & (values == g)
+            in_ref = cell_mask & ((values != g) if reference == 'rest' else (values == reference))
+            if in_g.sum() < 2:
+                skipped[g] = 'fewer than 2 cells in group'
+            elif in_ref.sum() < 2:
+                skipped[g] = 'fewer than 2 reference cells'
+            else:
+                runnable.append(g)
+        if not runnable:
+            shown = dict(list(skipped.items())[:5])
+            more = f' … and {len(skipped) - 5} more' if len(skipped) > 5 else ''
+            raise ValueError(
+                f'No contrast has at least 2 cells on each side (every group skipped): {shown}{more}')
+        return values, cell_mask, wanted, runnable, skipped, rest_of
+
     def prepare_gsea_batch(self, obs_column: str, *, groups: list[str] | None = None,
                            reference: str = 'rest', libraries=None, sets=None, gene_subset=None,
                            method: str = 'wilcoxon', metric: str = 'score', cell_subset: str | None = None,
@@ -6333,12 +6426,12 @@ class DataAdaptor:
                            weight: float = 1.0, seed: int = 0, key: str | None = None):
         """GSEA for every group of ``obs_column`` (vs rest, or vs one group) in one task.
 
-        One throwaway matrix is snapshotted; each group's ranking is built from
-        it inside the task. Per-group results are stored under the single-run
-        keys so they are ordinary "previous runs"; a collection record lists
+        One throwaway matrix is snapshotted and ranked once for all groups
+        (scanpy ranks each gene chunk a single time). Per-group results are
+        stored under the single-run keys so they are ordinary "previous runs",
+        each carrying the collection key it belongs to; the collection lists
         them for the batch view and for figures. A group with fewer than two
-        cells on either side is skipped and named, not fatal — one tiny cluster
-        should not block the other twenty.
+        cells on either side is skipped and named, not fatal.
         """
         from datetime import datetime, timezone  # noqa: PLC0415
         from xcell import enrichment as en  # noqa: PLC0415
@@ -6354,41 +6447,11 @@ class DataAdaptor:
             raise ValueError("method must be 'wilcoxon' or 't-test'")
         if metric not in ('score', 'log2fc'):
             raise ValueError("metric must be 'score' or 'log2fc'")
-        if obs_column not in self.adata.obs.columns:
-            raise ValueError(f"Column '{obs_column}' not found in .obs")
         raw_sets = self._enrichment_sets(libraries, sets)
+        values, cell_mask, wanted, runnable, skipped, rest_of = self._batch_groups(
+            obs_column, groups, cell_subset, reference)
         mask, subset_type, _meta = self._resolve_gene_mask(gene_subset)
         universe = [str(g) for g in self.adata.var_names[mask]]
-        cell_mask = self._subset_mask(cell_subset) if cell_subset else np.ones(self.n_cells, dtype=bool)
-        values = self.adata.obs[obs_column].astype(str).values
-        present = sorted(set(values[cell_mask]))
-        if groups is None:
-            wanted = list(present)
-        else:
-            unknown = [g for g in groups if str(g) not in present]
-            if unknown:
-                raise ValueError(f"Unknown group(s) in '{obs_column}': {unknown}")
-            wanted = [str(g) for g in groups]
-        if reference != 'rest':
-            if reference not in present:
-                raise ValueError(f"Reference group '{reference}' not found in column '{obs_column}'")
-            wanted = [g for g in wanted if g != reference]
-        if not wanted:
-            raise ValueError('No groups to test')
-        runnable: list[str] = []
-        skipped: dict[str, str] = {}
-        for g in wanted:
-            in_g = cell_mask & (values == g)
-            in_ref = cell_mask & ((values != g) if reference == 'rest' else (values == reference))
-            if in_g.sum() < 2:
-                skipped[g] = 'fewer than 2 cells in group'
-            elif in_ref.sum() < 2:
-                skipped[g] = 'fewer than 2 reference cells'
-            else:
-                runnable.append(g)
-        if not runnable:
-            raise ValueError(
-                f'No contrast has at least 2 cells on each side (every group skipped): {skipped}')
         resolved, rmeta = en.resolve_sets(raw_sets, universe, min_size=min_set_size,
                                           max_size=len(universe), directional='split')
         if not resolved:
@@ -6406,40 +6469,42 @@ class DataAdaptor:
         }
         pos_of = {g: i for i, g in enumerate(universe)}
 
-        def rank_for(group: str) -> np.ndarray:
+        def rankings() -> dict[str, np.ndarray]:
             import anndata as _ad  # noqa: PLC0415
             import scanpy as sc  # noqa: PLC0415
-            keep = (labels == group) | ((labels != group) if reference == 'rest' else (labels == reference))
-            tmp = _ad.AnnData(X=X[keep])
+            tmp = _ad.AnnData(X=X)
             tmp.var_names = universe
-            tmp.obs['g'] = pd.Categorical(np.where(labels[keep] == group, 'group', 'reference'),
-                                          categories=['group', 'reference'])
-            sc.tl.rank_genes_groups(tmp, groupby='g', groups=['group'], reference='reference',
+            tmp.obs['g'] = pd.Categorical(labels)
+            sc.tl.rank_genes_groups(tmp, groupby='g', groups=runnable, reference=reference,
                                     method=method, use_raw=False, key_added='r')
             r = tmp.uns['r']
             field = 'scores' if metric == 'score' else 'logfoldchanges'
-            out = np.full(len(universe), np.nan)
-            for g, v in zip([str(x) for x in r['names']['group']], np.asarray(r[field]['group'], dtype=float)):
-                out[pos_of[g]] = v
+            out: dict[str, np.ndarray] = {}
+            for g in runnable:
+                arr = np.full(len(universe), np.nan)
+                for name, v in zip([str(x) for x in r['names'][g]], np.asarray(r[field][g], dtype=float)):
+                    arr[pos_of[name]] = v
+                out[g] = arr
             return out
 
         def compute_fn(report):
+            report(0.02, 'Ranking every group…')
+            ranks = rankings()
             outs = {}
             n = len(runnable)
             for i, g in enumerate(runnable):
-                report(i / n, f'{g} ({i + 1}/{n}): ranking…')
-                scores = rank_for(g)
                 out = en.preranked_gsea(
-                    scores, resolved, n_perm=n_perm, min_size=min_set_size, max_size=max_set_size,
+                    ranks[g], resolved, n_perm=n_perm, min_size=min_set_size, max_size=max_set_size,
                     weight=weight, seed=seed,
-                    report=lambda f, m, _i=i, _g=g: report((_i + 0.2 + 0.8 * f) / n, f'{_g}: {m}'))
-                out['scores'] = scores
+                    report=lambda f, m, _i=i, _g=g: report(0.1 + 0.9 * (_i + f) / n, f'{_g} ({_i + 1}/{n}): {m}'))
+                out['scores'] = ranks[g]
                 outs[g] = out
             report(1.0, 'Storing…')
             return outs
 
         def apply_fn(outs):
             now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+            collection_key = self._reserve_enrichment_key(key or f'gsea_{obs_column}_batch')
             members: dict[str, str] = {}
             n_sig = 0
             n_tested = 0
@@ -6450,7 +6515,7 @@ class DataAdaptor:
                     r['leading_edge'] = [universe[i] for i in r['leading_edge']]
                 label = f'{obs_column}: {g} vs {reference}' + (f' [{cell_subset}]' if cell_subset else '')
                 result = {
-                    'kind': 'gsea', 'label': f'GSEA: {label}', 'created_at': now,
+                    'kind': 'gsea', 'label': f'GSEA: {label}', 'created_at': now, 'collection': collection_key,
                     'ranking': {'kind': 'diffexp', 'label': label, 'n_ranked': int(out['n_ranked']),
                                 'genes': [universe[i] for i in order],
                                 'scores': [float(scores[i]) for i in order]},
@@ -6460,7 +6525,7 @@ class DataAdaptor:
                     'n_perm': int(out['n_perm']), 'results': out['results'],
                     'params': {**params, 'ranking': {
                         'kind': 'diffexp', 'obs_column': obs_column, 'group': g, 'reference': reference,
-                        'method': method, 'metric': metric, 'cell_subset': cell_subset}},
+                        'method': method, 'metric': metric, 'cell_subset': cell_subset, 'rest_of': rest_of}},
                 }
                 members[g] = self._store_enrichment(f'gsea_{obs_column}_{g}_vs_{reference}', result)
                 n_sig += result['n_significant']
@@ -6468,16 +6533,16 @@ class DataAdaptor:
             collection = {
                 'kind': 'gsea_batch',
                 'label': f'GSEA: {obs_column} ({len(members)} groups vs {reference})',
-                'created_at': now, 'obs_column': obs_column, 'reference': reference,
+                'created_at': now, 'obs_column': obs_column, 'reference': reference, 'rest_of': rest_of,
                 'groups': list(members), 'members': members, 'skipped': skipped,
                 'n_perm': int(n_perm), 'universe_size': len(universe), 'gene_subset_type': subset_type,
                 'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
             }
-            stored = self._store_enrichment(key or f'gsea_{obs_column}_batch', collection)
+            self._put_enrichment(collection_key, collection)
             self._log_action('enrichment_gsea_batch', params, {
-                'key': stored, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
+                'key': collection_key, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
             # The caller renders this directly, so hand back what the GET would.
-            return self.get_enrichment_result(stored)
+            return self.get_enrichment_result(collection_key)
 
         return compute_fn, apply_fn
 

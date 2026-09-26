@@ -238,6 +238,10 @@ export interface ComparisonState {
   group2: number[] | null
   group1Label: string | null
   group2Label: string | null
+  // The .obs column both labels are categories of, when the groups came from
+  // Compare Cells; null when they came from a selection, so a hand-off that
+  // needs a column (enrichment) knows it cannot proceed.
+  obsColumn: string | null
 }
 
 // Source for the "Select cells by expression" modal.
@@ -733,7 +737,7 @@ export function createDefaultDatasetState(
     currentVarIndex: '_index',
     geneMaskConfig: null,
     pcaSubsets: [],
-    comparison: { group1: null, group2: null, group1Label: null, group2Label: null },
+    comparison: { group1: null, group2: null, group1Label: null, group2Label: null, obsColumn: null },
     diffExpResult: null,
     comparisonCheckedColumn: null,
     comparisonCheckedCategories: new Set<string>(),
@@ -1095,6 +1099,7 @@ interface AppState {
   // Comparison actions
   setComparisonGroup1: (indices: number[], label: string) => void
   setComparisonGroup2: (indices: number[], label: string) => void
+  setComparisonColumn: (column: string | null) => void
   clearComparison: () => void
   setDiffExpResult: (result: DiffExpResult | null) => void
   setDiffExpLoading: (loading: boolean) => void
@@ -1403,6 +1408,7 @@ export const useStore = create<AppState>((set, get) => {
       group2: null,
       group1Label: null,
       group2Label: null,
+      obsColumn: null,
     },
     diffExpResult: null,
     isDiffExpLoading: false,
@@ -2158,15 +2164,17 @@ export const useStore = create<AppState>((set, get) => {
     // Comparison actions — per-dataset (the indices name rows of one matrix)
     setComparisonGroup1: (indices, label) =>
       set(dsUpdateFn((state) => ({
-        comparison: { ...state.comparison, group1: indices, group1Label: label },
+        comparison: { ...state.comparison, group1: indices, group1Label: label, obsColumn: null },
       }))),
     setComparisonGroup2: (indices, label) =>
       set(dsUpdateFn((state) => ({
-        comparison: { ...state.comparison, group2: indices, group2Label: label },
+        comparison: { ...state.comparison, group2: indices, group2Label: label, obsColumn: null },
       }))),
+    setComparisonColumn: (column) =>
+      set(dsUpdateFn((state) => ({ comparison: { ...state.comparison, obsColumn: column } }))),
     clearComparison: () =>
       set(dsUpdate({
-        comparison: { group1: null, group2: null, group1Label: null, group2Label: null },
+        comparison: { group1: null, group2: null, group1Label: null, group2Label: null, obsColumn: null },
         diffExpResult: null,
       })),
     setDiffExpResult: (result) => set(dsUpdate({ diffExpResult: result })),

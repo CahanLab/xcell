@@ -114,3 +114,74 @@ def test_batch_return_values_carry_member_results_like_the_get():
     # the stored JSON stays lean: members by key only
     stored = json.loads(a.adata.uns['xcell_enrichment'][col['key']])
     assert 'member_results' not in stored
+
+
+# --- review fix pass -----------------------------------------------------------
+
+def test_ora_batch_skips_single_cell_group():
+    a = DataAdaptor('x.h5ad', adata=_adata())          # group d has one cell
+    col = a.run_overlap_enrichment_batch('grp', top_n=6, libraries=LIB, min_set_size=2, min_overlap=1)
+    assert col['skipped'] == {'d': 'fewer than 2 cells in group'} and set(col['groups']) == {'a', 'b', 'c'}
+
+
+def test_gsea_batch_rest_means_the_chosen_groups_when_groups_is_a_subset():
+    a = DataAdaptor('x.h5ad', adata=_adata((30, 30, 30, 5)))
+    col = _run(a, groups=['a', 'b'])
+    assert col['rest_of'] == 'selected'
+    batch_a = {r['name']: r['nes'] for r in col['member_results']['a']['results']}
+    compute_fn, apply_fn = a.prepare_gsea(
+        {'kind': 'diffexp', 'obs_column': 'grp', 'group': 'a', 'reference': 'b'},
+        libraries=LIB, min_set_size=2, n_perm=60)
+    single = {r['name']: r['nes'] for r in apply_fn(compute_fn(lambda f, m: None))['results']}
+    assert batch_a == single
+    full = _run(a)
+    assert full['rest_of'] == 'all'
+
+
+def test_gsea_batch_guards_column_type_and_group_count(monkeypatch):
+    ad = _adata((30, 30, 30, 5))
+    ad.obs['score'] = np.arange(ad.n_obs, dtype=float)
+    ad.obs['many'] = pd.Categorical([str(i % 20) for i in range(ad.n_obs)])
+    a = DataAdaptor('x.h5ad', adata=ad)
+    with pytest.raises(ValueError, match='categorical'):
+        a.prepare_gsea_batch('score', libraries=LIB, min_set_size=2)
+    monkeypatch.setattr(DataAdaptor, 'MAX_BATCH_GROUPS', 10)
+    with pytest.raises(ValueError, match='at most 10'):
+        a.prepare_gsea_batch('many', libraries=LIB, min_set_size=2)
+
+
+def test_collection_integrity_backrefs_missing_members_and_cascade_delete():
+    a = DataAdaptor('x.h5ad', adata=_adata((30, 30, 30, 5)))
+    col = _run(a)
+    member = a.get_enrichment_result(col['members']['a'])
+    assert member['collection'] == col['key']
+    # a deleted member is reported, not silently dropped
+    a.delete_enrichment_result(col['members']['b'])
+    full = a.get_enrichment_result(col['key'])
+    assert 'b' not in full['member_results'] and full['missing_members'] == {'b': 'deleted'}
+    # a later result that lands on the same key is not this collection's member
+    compute_fn, apply_fn = a.prepare_gsea(
+        {'kind': 'diffexp', 'obs_column': 'grp', 'group': 'b', 'reference': 'rest'},
+        libraries=LIB, min_set_size=2, n_perm=60)
+    reused = apply_fn(compute_fn(lambda f, m: None))
+    assert reused['key'] == col['members']['b']
+    full2 = a.get_enrichment_result(col['key'])
+    assert 'b' not in full2['member_results'] and 'b' in full2['missing_members']
+    # deleting a collection removes the members that still belong to it
+    out = a.delete_enrichment_result(col['key'])
+    assert set(out['also_deleted']) == {col['members']['a'], col['members']['c'], col['members']['d']}
+    keys = {s['key'] for s in a.get_enrichment_results()}
+    assert col['key'] not in keys and col['members']['a'] not in keys and reused['key'] in keys
+
+
+def test_codegen_translates_both_batch_steps():
+    from xcell import codegen
+    from xcell.analysis_record import Step
+    s = Step(index=0, action='enrichment_gsea_batch', params={'obs_column': 'grp', 'n_perm': 50, 'libraries': []},
+             result={'key': 'gsea_grp_batch', 'members': {'a': 'x'}, 'skipped': {}, 'n_significant': 2}, timestamp='t')
+    t = codegen.translate(s)
+    assert t.fidelity == 'xcell' and 'prepare_gsea_batch' in t.code[0] and "obs_column='grp'" in t.code[0]
+    s2 = Step(index=1, action='enrichment_ora_batch', params={'obs_column': 'grp', 'top_n': 5},
+              result={'key': 'ora_grp_batch', 'members': {}, 'skipped': {}, 'n_significant': 0}, timestamp='t')
+    t2 = codegen.translate(s2)
+    assert 'run_overlap_enrichment_batch' in t2.code[0] and 'Top 5 markers' in t2.summary

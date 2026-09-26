@@ -205,6 +205,47 @@ enrichment:
   padj_cutoff: 0.05                 # results table default filter
 
 # ---------------------------------------------------------------------------
+# Figures: per-kind display defaults for new figures (Figures tab).
+# ---------------------------------------------------------------------------
+figures:
+  enrichment_heatmap:
+    value: nes                      # nes|signed_logp|es|fold_enrichment (ORA inputs default to signed_logp)
+    padj_max: 0.05                  # cells above this are drawn as 0
+    top_n: 5                        # per column, positive and negative separately; rows are the union
+    direction: both                 # both|up|down
+    collapse_jaccard: 0.5           # merge rows whose member genes overlap at least this much; blank = off
+    row_order: peak                 # peak|cluster|input
+    col_order: input                # input|cluster
+    colormap: rdbu                  # rdbu|prgn|roma
+    vmax: null                      # symmetric colour limit; null = data max
+    show_values: false
+    label_max_chars: 40
+    cell_size: 14
+  enrichment_network:
+    value: nes
+    padj_max: 0.05
+    top_n: 5
+    direction: both
+    set_edge_jaccard: 0.3           # set–set edges above this overlap; null = none
+    layout: force                   # force|bipartite
+    seed: 0
+    node_size_by: degree            # degree|n_set|constant
+    edge_width_by: value            # value|constant
+    label_max_chars: 30
+    colormap: rdbu
+  composition_barplot:
+    order: category
+    share_of: null
+    normalize: true
+    min_cells: 0
+    show_values: false
+  expression_heatmap:
+    cell_ordering: category
+    gene_ordering: as_provided
+    aggregate_gene_sets: false
+    n_bins: 50
+
+# ---------------------------------------------------------------------------
 # Cluster gene sets modal.
 # ---------------------------------------------------------------------------
 cluster_gene_sets:

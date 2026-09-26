@@ -52,6 +52,8 @@ interface RecordFigure {
   id: string
   caption: string
   step_index: number | null
+  // Set when the PNG was rendered from a saved figure (uns['xcell_figures']).
+  figure_id?: string | null
 }
 
 interface RecordCounts {
@@ -93,6 +95,9 @@ const FIDELITY_STYLE: Record<Fidelity, { label: string; color: string; title: st
 export default function AnalysisRecordPanel() {
   const isOpen = useStore((s) => s.isAnalysisRecordOpen)
   const setOpen = useStore((s) => s.setAnalysisRecordOpen)
+  const setActiveFigureId = useStore((s) => s.setActiveFigureId)
+  const setCenterPanelView = useStore((s) => s.setCenterPanelView)
+  const openFigure = (id: string) => { setActiveFigureId(id); setCenterPanelView('figures'); setOpen(false) }
   const activeSlot = useStore((s) => s.activeSlot)
 
   const [data, setData] = useState<AnalysisRecordData | null>(null)
@@ -374,6 +379,7 @@ export default function AnalysisRecordPanel() {
                           {figs.map((f) => (
                             <span key={f.id} style={{ marginRight: 8 }}>
                               ◈ {f.caption || 'figure'}
+                              {f.figure_id && <button onClick={() => openFigure(f.figure_id!)} style={{ ...ghost, padding: '0 3px', fontSize: 10 }} title="Open in the Figures tab">open</button>}
                               <button onClick={() => removeFigure(f.id)} style={{ ...ghost, padding: '0 3px', fontSize: 10 }}>×</button>
                             </span>
                           ))}
@@ -436,6 +442,7 @@ export default function AnalysisRecordPanel() {
               {looseFigures.map((f) => (
                 <span key={f.id} style={{ marginLeft: 8 }}>
                   ◈ {f.caption || 'figure'}
+                  {f.figure_id && <button onClick={() => openFigure(f.figure_id!)} style={{ ...ghost, padding: '0 3px' }} title="Open in the Figures tab">open</button>}
                   <button onClick={() => removeFigure(f.id)} style={{ ...ghost, padding: '0 3px' }}>×</button>
                 </span>
               ))}

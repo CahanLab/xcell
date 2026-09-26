@@ -576,3 +576,19 @@ describe('setSchema repairs a vanished primary embedding', () => {
     expect(after.embedding?.name).toBe('X_umap')
   })
 })
+
+describe('the comparison remembers which column it came from', () => {
+  it('keeps the column set after the groups, and drops it when groups are set another way', () => {
+    const s = useStore.getState()
+    s.setComparisonGroup1([0, 1], 'a')
+    s.setComparisonGroup2([2, 3], 'b')
+    s.setComparisonColumn('leiden')
+    expect(useStore.getState().comparison.obsColumn).toBe('leiden')
+    // a selection-based group is not a category of any column
+    s.setComparisonGroup1([5, 6], 'Selection (2 cells)')
+    expect(useStore.getState().comparison.obsColumn).toBeNull()
+    s.setComparisonColumn('leiden')
+    s.clearComparison()
+    expect(useStore.getState().comparison.obsColumn).toBeNull()
+  })
+})

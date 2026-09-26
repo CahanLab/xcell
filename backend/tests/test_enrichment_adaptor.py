@@ -83,7 +83,7 @@ def test_overlap_keys_never_overwrite_and_delete():
     k1 = a.run_overlap_enrichment(['Col1a1', 'Col1a2'], name='x', libraries=LIB, min_set_size=2, min_overlap=1)['key']
     k2 = a.run_overlap_enrichment(['Col1a1', 'Col1a2'], name='x', libraries=LIB, min_set_size=2, min_overlap=1)['key']
     assert (k1, k2) == ('ora_x', 'ora_x_2')
-    assert a.delete_enrichment_result('ora_x') == {'deleted': 'ora_x'}
+    assert a.delete_enrichment_result('ora_x') == {'deleted': 'ora_x', 'also_deleted': []}
     assert [s['key'] for s in a.get_enrichment_results()] == ['ora_x_2']
     with pytest.raises(KeyError):
         a.get_enrichment_result('ora_x')

@@ -855,6 +855,7 @@ export default function ScanpyModal() {
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
   const setComparisonGroup2 = useStore((state) => state.setComparisonGroup2)
+  const setComparisonColumn = useStore((state) => state.setComparisonColumn)
   const setDiffExpModalOpen = useStore((state) => state.setDiffExpModalOpen)
   const setDiffExpResult = useStore((state) => state.setDiffExpResult)
   const setDiffExpLoading = useStore((state) => state.setDiffExpLoading)
@@ -1379,6 +1380,7 @@ export default function ScanpyModal() {
         const group2 = categoryIndices[checkedGroups[1]]
         setComparisonGroup1(group1, checkedGroups[0])
         setComparisonGroup2(group2, checkedGroups[1])
+        setComparisonColumn(compareColumn)   // after the groups: setting a group clears it
         setDiffExpLoading(true)
         setDiffExpModalOpen(true)
         setScanpyModalOpen(false)
@@ -1398,7 +1400,7 @@ export default function ScanpyModal() {
     } finally {
       setCompareLoading(false)
     }
-  }, [compareColumn, compareChecked, compareTopN, activeSlot, setComparisonGroup1, setComparisonGroup2, setDiffExpLoading, setDiffExpModalOpen, setDiffExpResult, setMarkerGenesColumn, setMarkerGenesModalOpen, setScanpyModalOpen])
+  }, [compareColumn, compareChecked, compareTopN, activeSlot, setComparisonGroup1, setComparisonGroup2, setComparisonColumn, setDiffExpLoading, setDiffExpModalOpen, setDiffExpResult, setMarkerGenesColumn, setMarkerGenesModalOpen, setScanpyModalOpen])
 
   // Run the selected function
   const handleRun = useCallback(async () => {
@@ -2511,6 +2513,18 @@ export default function ScanpyModal() {
                       ? `Will run marker gene analysis (${compareChecked.size} groups)`
                       : 'Select at least 2 groups'}
                 </div>
+                <button
+                  style={{ ...styles.runButton, ...(compareChecked.size < 2 || !compareColumn ? { opacity: 0.5, cursor: 'not-allowed' } : {}), marginBottom: '8px' }}
+                  disabled={compareChecked.size < 2 || !compareColumn}
+                  title="Preranked GSEA of each checked group vs the rest, against cached gene-set libraries"
+                  onClick={() => {
+                    if (!compareColumn) return
+                    setEnrichmentSource({ kind: 'gsea', obsColumn: compareColumn, groups: [...compareChecked] })
+                    setScanpyModalOpen(false)
+                  }}
+                >
+                  Enrichment for these groups…
+                </button>
               </>
             )}
           </div>

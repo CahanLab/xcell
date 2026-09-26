@@ -142,6 +142,24 @@ def _xcall(method: str, params: dict, only: tuple[str, ...] | None = None) -> st
     return f'{ADAPTOR}.{method}({_splat(params, only)})'
 
 
+#: Notebook-side helpers the figure steps rely on (the export's prelude
+#: includes them). A figure created in the replay is registered under the id
+#: it had in the recorded session; a step for an id no create step produced
+#: falls back to the literal, so a cleared record still replays.
+FIGURE_HELPERS = (
+    '_xcell_figs = {}',
+    '',
+    '',
+    'def _xcell_fig(recorded_id):',
+    '    # the figure a recorded id refers to in this replay (or the id itself)',
+    "    return _xcell_figs.get(recorded_id, {'id': recorded_id})",
+)
+
+
+def notebook_preamble() -> list[str]:
+    return list(FIGURE_HELPERS)
+
+
 def _n(value: Any) -> str:
     """Format a recorded number for prose, tolerating a missing value.
 
@@ -777,6 +795,57 @@ REGISTRY: dict[str, ActionSpec] = {
             f"{_n(r.get('n_sets_tested'))} sets at padj ≤ 0.05 "
             f"→ `.uns['xcell_enrichment']['{r.get('key')}']`."
         ),
+    ),
+    'enrichment_gsea_batch': ActionSpec(
+        label='Preranked GSEA for every group', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_gsea_batch',
+                        ('obs_column', 'groups', 'reference', 'method', 'metric', 'cell_subset',
+                         'libraries', 'sets', 'gene_subset', 'n_perm', 'min_set_size', 'max_set_size',
+                         'weight', 'seed')),
+        summary=lambda p, r: (
+            f"GSEA of every group in '{p.get('obs_column')}' vs {p.get('reference')} "
+            f"({_n(len(r.get('members') or {}))} groups, {_n(p.get('n_perm'))} permutations): "
+            f"{_n(r.get('n_significant'))} significant rows → `.uns['xcell_enrichment']['{r.get('key')}']`"
+            + (f"; skipped {', '.join(r.get('skipped') or {})}." if r.get('skipped') else '.')
+        ),
+    ),
+    'enrichment_ora_batch': ActionSpec(
+        label='Marker-gene overlap enrichment for every group', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('run_overlap_enrichment_batch',
+                     ('obs_column', 'groups', 'top_n', 'min_in_group_fraction', 'max_out_group_fraction',
+                      'min_fold_change', 'libraries', 'sets', 'gene_subset', 'min_set_size', 'max_set_size',
+                      'min_overlap')),
+        summary=lambda p, r: (
+            f"Top {_n(p.get('top_n'))} markers of every group in '{p.get('obs_column')}' tested for overlap: "
+            f"{_n(r.get('n_significant'))} significant rows → `.uns['xcell_enrichment']['{r.get('key')}']`."
+        ),
+    ),
+    'figure_create': ActionSpec(
+        label='Create a figure', fidelity=XCELL, imports=XCELL_API,
+        # The replay may allocate a different id than this session did, so the
+        # record is bound under the *recorded* id and later steps look it up.
+        code=lambda s: [
+            f"_xcell_figs[{_lit((s.result or {}).get('id'))}] = "
+            f"{_xcall('create_figure', s.params, ('kind', 'title', 'caption', 'inputs', 'params'))}",
+            f"fig_data = {ADAPTOR}.figure_data(_xcell_fig({_lit((s.result or {}).get('id'))})['id'])",
+        ],
+        summary=lambda p, r: (
+            f"Figure `{r.get('id')}` ({p.get('kind')}): '{p.get('title')}' from "
+            f"{_lit(p.get('inputs'))} — regenerate with `xa.figure_data({_lit(r.get('id'))})`."
+        ),
+    ),
+    'figure_update': ActionSpec(
+        label='Edit a figure', fidelity=XCELL, imports=XCELL_API,
+        code=lambda s: [f"{ADAPTOR}.update_figure(_xcell_fig({_lit(s.params.get('id'))})['id'], {_splat(s.params, ('title', 'caption', 'params'))})"],
+        summary=lambda p, r: (
+            f"Figure `{p.get('id')}` changed: "
+            + ', '.join(k for k in ('title', 'caption', 'params') if k in p) + '.'
+        ),
+    ),
+    'figure_delete': ActionSpec(
+        label='Delete a figure', fidelity=XCELL, imports=XCELL_API,
+        code=lambda s: [f"{ADAPTOR}.delete_figure(_xcell_fig({_lit(s.params.get('id'))})['id'])"],
+        summary=lambda p, r: f"Deleted figure `{p.get('id')}`.",
     ),
     'enrichment_delete': ActionSpec(
         label='Delete an enrichment result', fidelity=XCELL, imports=XCELL_API,

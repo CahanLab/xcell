@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 
-from .analysis_record import AnalysisRecord
+from .analysis_record import AnalysisRecord, SELECTION_CAP
 from .diffexp import compute_diffexp
 
 
@@ -790,6 +790,10 @@ def _umap_call(adata, *, min_dist, spread, n_components, meta, key_added):
         # A failed run must not leave a fabricated neighbors entry behind for
         # the next tool that reads uns.
         adata.uns.pop(_GRAPH_META_KEY, None)
+
+
+class FigureInputMissing(ValueError):
+    """A stored figure references a result that no longer exists (routes: 409)."""
 
 
 class DataAdaptor:
@@ -5995,6 +5999,7 @@ class DataAdaptor:
         h5ad cannot write an object array of dicts (same reason drawn lines
         and territories are stored this way).
         """
+        import uuid  # noqa: PLC0415
         base = self._sanitize_subset_name(key_hint)
         store = self._enrichment_store()
         key, n = base, 1
@@ -6002,6 +6007,9 @@ class DataAdaptor:
             n += 1
             key = f'{base}_{n}'
         result['key'] = key
+        # Keys are freed on delete and come back around; a figure holds the
+        # uid so a re-run under the same key cannot pass for its input.
+        result.setdefault('uid', uuid.uuid4().hex[:12])
         store[key] = json.dumps(result)
         self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
         return key
@@ -6013,8 +6021,13 @@ class DataAdaptor:
                 r = json.loads(raw)
             except (TypeError, ValueError):
                 continue
-            out.append({k: r.get(k) for k in
-                        ('key', 'kind', 'label', 'n_sets_tested', 'n_significant', 'created_at')})
+            if r.get('kind') == 'reserved':
+                continue
+            summary = {k: r.get(k) for k in
+                       ('key', 'kind', 'label', 'n_sets_tested', 'n_significant', 'created_at')}
+            members = r.get('members')
+            summary['n_groups'] = len(members) if isinstance(members, dict) else None
+            out.append(summary)
         out.sort(key=lambda s: s.get('created_at') or '', reverse=True)
         return out
 
@@ -6022,23 +6035,51 @@ class DataAdaptor:
         store = self._enrichment_store()
         if key not in store:
             raise KeyError(f"No enrichment result named '{key}'")
-        return json.loads(store[key])
+        r = json.loads(store[key])
+        members = r.get('members')
+        if isinstance(members, dict):
+            # A collection carries its per-group results so one GET feeds a
+            # figure. A member must still point back at this collection: keys
+            # can be deleted and later reused by an unrelated run.
+            found: dict[str, Any] = {}
+            missing: dict[str, str] = {}
+            for g, k in members.items():
+                if k not in store:
+                    missing[g] = 'deleted'
+                    continue
+                m = json.loads(store[k])
+                if m.get('collection') != key:
+                    missing[g] = 'replaced'
+                    continue
+                found[g] = m
+            r['member_results'] = found
+            r['missing_members'] = missing
+        return r
 
     def delete_enrichment_result(self, key: str) -> dict[str, Any]:
+        """Delete a result; deleting a collection also removes the members that
+        still belong to it (a member re-made by another run stays)."""
         store = self._enrichment_store()
         if key not in store:
             raise KeyError(f"No enrichment result named '{key}'")
+        record = json.loads(store[key])
+        also: list[str] = []
+        for k in (record.get('members') or {}).values() if isinstance(record.get('members'), dict) else []:
+            if k in store and json.loads(store[k]).get('collection') == key:
+                del store[k]
+                also.append(k)
         del store[key]
         self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
-        self._log_action('enrichment_delete', {'key': key}, {'deleted': key})
-        return {'deleted': key}
+        self._log_action('enrichment_delete', {'key': key}, {'deleted': key, 'also_deleted': also})
+        return {'deleted': key, 'also_deleted': also}
 
     def run_overlap_enrichment(self, genes: list[str], *, name: str | None = None,
                                libraries: list[dict[str, Any]] | None = None,
                                sets: list[dict[str, Any]] | None = None,
                                gene_subset: Any = None, min_set_size: int = 5,
                                max_set_size: int = 500, min_overlap: int = 2,
-                               key: str | None = None) -> dict[str, Any]:
+                               key: str | None = None, _log: bool = True,
+                               _collection: str | None = None) -> dict[str, Any]:
         """Hypergeometric over-representation of ``genes`` in each library set.
 
         The universe is the dataset's genes after the session gene mask and
@@ -6073,6 +6114,7 @@ class DataAdaptor:
         result = {
             'kind': 'ora', 'label': f'Overlap: {label}',
             'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            **({'collection': _collection} if _collection else {}),
             'query': {'name': label, 'n_input': len(genes or []), 'n_in_universe': len(q_idx),
                       'genes_missing': missing[:self.MAX_REPORTED_OVERLAP_MISSING]},
             'universe_size': len(universe), 'gene_subset_type': subset_type,
@@ -6081,9 +6123,74 @@ class DataAdaptor:
             'results': records, 'params': params,
         }
         stored_key = self._store_enrichment(key or f'ora_{label}', result)
-        self._log_action('enrichment_ora', params, {
-            'key': stored_key, 'n_sets_tested': len(records), 'n_significant': result['n_significant']})
+        if _log:   # a batch logs one step for the whole run instead
+            self._log_action('enrichment_ora', params, {
+                'key': stored_key, 'n_sets_tested': len(records), 'n_significant': result['n_significant']})
         return result
+
+    def run_overlap_enrichment_batch(self, obs_column: str, *, groups=None, top_n: int = 100,
+                                     min_in_group_fraction=None, max_out_group_fraction=None,
+                                     min_fold_change=None, libraries=None, sets=None, gene_subset=None,
+                                     min_set_size: int = 5, max_set_size: int = 500, min_overlap: int = 2,
+                                     key: str | None = None) -> dict[str, Any]:
+        """Marker genes (one-vs-rest, top N) for every group, then ORA of each list.
+
+        The marker lists are stored in the collection so a figure built on it
+        stays self-contained after the marker modal's state is gone. "Rest"
+        follows the marker panel: the other chosen groups when a subset was
+        chosen, every other cell otherwise.
+        """
+        from datetime import datetime, timezone  # noqa: PLC0415
+        self._enrichment_sets(libraries, sets)   # an uncached library fails before the marker run
+        _values, _mask, _wanted, runnable, skipped, rest_of = self._batch_groups(obs_column, groups, None, 'rest')
+        markers = self.run_marker_genes(obs_column, groups=runnable, top_n=top_n,
+                                        min_in_group_fraction=min_in_group_fraction,
+                                        max_out_group_fraction=max_out_group_fraction,
+                                        min_fold_change=min_fold_change, gene_subset=gene_subset, _log=False)
+        lists = {r['group']: [g['gene'] for g in r['genes']] for r in markers['results']}
+        params = {
+            'obs_column': obs_column, 'groups': list(lists), 'top_n': int(top_n),
+            'min_in_group_fraction': min_in_group_fraction, 'max_out_group_fraction': max_out_group_fraction,
+            'min_fold_change': min_fold_change, 'libraries': list(libraries or []), 'sets': list(sets or []),
+            'gene_subset': gene_subset, 'min_set_size': int(min_set_size), 'max_set_size': int(max_set_size),
+            'min_overlap': int(min_overlap),
+        }
+        collection_key = self._reserve_enrichment_key(key or f'ora_{obs_column}_batch')
+        try:
+            members: dict[str, str] = {}
+            n_sig = n_tested = universe_size = 0
+            subset_type = 'all'
+            for g, genes in lists.items():
+                if len(genes) < 2:
+                    skipped[g] = f'only {len(genes)} marker gene(s)'
+                    continue
+                res = self.run_overlap_enrichment(genes, name=f'{g} markers', libraries=libraries, sets=sets,
+                                                  gene_subset=gene_subset, min_set_size=min_set_size,
+                                                  max_set_size=max_set_size, min_overlap=min_overlap,
+                                                  key=f'ora_{obs_column}_{g}_markers', _log=False,
+                                                  _collection=collection_key)
+                members[g] = res['key']
+                n_sig += res['n_significant']
+                n_tested = max(n_tested, res['n_sets_tested'])
+                universe_size = res['universe_size']
+                subset_type = res['gene_subset_type']
+            if not members:
+                raise ValueError(f'No group had at least 2 marker genes: {skipped}')
+            collection = {
+                'kind': 'ora_batch', 'label': f'Overlap: {obs_column} markers ({len(members)} groups)',
+                'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'obs_column': obs_column, 'rest_of': rest_of, 'groups': list(members), 'members': members,
+                'skipped': skipped, 'markers': {g: lists[g] for g in members}, 'top_n': int(top_n),
+                'universe_size': universe_size, 'gene_subset_type': subset_type,
+                'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
+            }
+            self._put_enrichment(collection_key, collection)
+            self._log_action('enrichment_ora_batch', params, {
+                'key': collection_key, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
+            return self.get_enrichment_result(collection_key)
+        except Exception:
+            self._drop_enrichment_key(collection_key)
+            raise
 
     def _gsea_ranking_snapshot(self, ranking: dict[str, Any], universe: list[str],
                                universe_mask: np.ndarray
@@ -6260,6 +6367,639 @@ class DataAdaptor:
             return result
 
         return compute_fn, apply_fn
+
+    MAX_BATCH_GROUPS = 200
+
+    def _reserve_enrichment_key(self, key_hint: str) -> str:
+        """Take a key now so members can carry it as a back-reference."""
+        return self._store_enrichment(key_hint, {'kind': 'reserved'})
+
+    def _put_enrichment(self, key: str, result: dict[str, Any]) -> None:
+        """Replace a reserved placeholder with the real record, keeping its uid."""
+        store = self._enrichment_store()
+        result['key'] = key
+        if key in store:
+            try:
+                result.setdefault('uid', json.loads(store[key]).get('uid'))
+            except (TypeError, ValueError):
+                pass
+        store[key] = json.dumps(result)
+        self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
+
+    def _drop_enrichment_key(self, key: str) -> None:
+        store = self._enrichment_store()
+        if key in store:
+            del store[key]
+            self.adata.uns[self.ENRICHMENT_UNS_KEY] = store
+
+    def _batch_groups(self, obs_column: str, groups, cell_subset: str | None, reference: str):
+        """Shared validation for both batch modes: the column, the chosen groups
+        and the cell mask. With a chosen subset, "rest" means the *other chosen
+        groups* — what the marker panel the user came from shows — so the
+        mask is narrowed to them (``rest_of='selected'``)."""
+        if obs_column not in self.adata.obs.columns:
+            raise ValueError(f"Column '{obs_column}' not found in .obs")
+        col = self.adata.obs[obs_column]
+        if not (isinstance(col.dtype, pd.CategoricalDtype) or col.dtype == object or pd.api.types.is_string_dtype(col)):
+            raise ValueError(f"Column '{obs_column}' is not categorical")
+        cell_mask = self._subset_mask(cell_subset) if cell_subset else np.ones(self.n_cells, dtype=bool)
+        values = col.astype(str).values
+        present = sorted(set(values[cell_mask]))
+        if groups is None:
+            wanted = list(present)
+            rest_of = 'all'
+        else:
+            unknown = [g for g in groups if str(g) not in present]
+            if unknown:
+                raise ValueError(f"Unknown group(s) in '{obs_column}': {unknown}")
+            wanted = [str(g) for g in groups]
+            rest_of = 'selected'
+            keep = set(wanted) | ({reference} if reference != 'rest' else set())
+            cell_mask = cell_mask & np.isin(values, list(keep))
+        if reference != 'rest':
+            if reference not in present:
+                raise ValueError(f"Reference group '{reference}' not found in column '{obs_column}'")
+            wanted = [g for g in wanted if g != reference]
+        if not wanted:
+            raise ValueError('No groups to test')
+        if len(wanted) > self.MAX_BATCH_GROUPS:
+            raise ValueError(f"'{obs_column}' has {len(wanted)} groups; a batch runs at most {self.MAX_BATCH_GROUPS}")
+        runnable: list[str] = []
+        skipped: dict[str, str] = {}
+        for g in wanted:
+            in_g = cell_mask & (values == g)
+            in_ref = cell_mask & ((values != g) if reference == 'rest' else (values == reference))
+            if in_g.sum() < 2:
+                skipped[g] = 'fewer than 2 cells in group'
+            elif in_ref.sum() < 2:
+                skipped[g] = 'fewer than 2 reference cells'
+            else:
+                runnable.append(g)
+        if not runnable:
+            shown = dict(list(skipped.items())[:5])
+            more = f' … and {len(skipped) - 5} more' if len(skipped) > 5 else ''
+            raise ValueError(
+                f'No contrast has at least 2 cells on each side (every group skipped): {shown}{more}')
+        return values, cell_mask, wanted, runnable, skipped, rest_of
+
+    def prepare_gsea_batch(self, obs_column: str, *, groups: list[str] | None = None,
+                           reference: str = 'rest', libraries=None, sets=None, gene_subset=None,
+                           method: str = 'wilcoxon', metric: str = 'score', cell_subset: str | None = None,
+                           n_perm: int = 1000, min_set_size: int = 15, max_set_size: int = 500,
+                           weight: float = 1.0, seed: int = 0, key: str | None = None):
+        """GSEA for every group of ``obs_column`` (vs rest, or vs one group) in one task.
+
+        One throwaway matrix is snapshotted and ranked once for all groups
+        (scanpy ranks each gene chunk a single time). Per-group results are
+        stored under the single-run keys so they are ordinary "previous runs",
+        each carrying the collection key it belongs to; the collection lists
+        them for the batch view and for figures. A group with fewer than two
+        cells on either side is skipped and named, not fatal.
+        """
+        from datetime import datetime, timezone  # noqa: PLC0415
+        from xcell import enrichment as en  # noqa: PLC0415
+        if not 10 <= n_perm <= self.GSEA_MAX_PERMUTATIONS:
+            raise ValueError(f'n_perm must be between 10 and {self.GSEA_MAX_PERMUTATIONS}')
+        if min_set_size < 1 or max_set_size < min_set_size:
+            raise ValueError('Set size range must satisfy 1 <= min <= max')
+        if not (weight >= 0):
+            raise ValueError('weight must be >= 0')
+        if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
+            raise ValueError('seed must be a non-negative integer')
+        if method not in ('wilcoxon', 't-test'):
+            raise ValueError("method must be 'wilcoxon' or 't-test'")
+        if metric not in ('score', 'log2fc'):
+            raise ValueError("metric must be 'score' or 'log2fc'")
+        raw_sets = self._enrichment_sets(libraries, sets)
+        values, cell_mask, wanted, runnable, skipped, rest_of = self._batch_groups(
+            obs_column, groups, cell_subset, reference)
+        mask, subset_type, _meta = self._resolve_gene_mask(gene_subset)
+        universe = [str(g) for g in self.adata.var_names[mask]]
+        resolved, rmeta = en.resolve_sets(raw_sets, universe, min_size=min_set_size,
+                                          max_size=len(universe), directional='split')
+        if not resolved:
+            raise ValueError(f'No gene set has at least {min_set_size} members in the universe')
+        cells = np.flatnonzero(cell_mask)
+        X = self.adata.X[cells][:, mask]
+        X = X.copy() if hasattr(X, 'copy') else np.array(X)
+        labels = values[cells]
+        params = {
+            'obs_column': obs_column, 'groups': list(wanted), 'reference': reference, 'method': method,
+            'metric': metric, 'cell_subset': cell_subset, 'libraries': list(libraries or []),
+            'sets': list(sets or []), 'gene_subset': gene_subset, 'n_perm': int(n_perm),
+            'min_set_size': int(min_set_size), 'max_set_size': int(max_set_size),
+            'weight': float(weight), 'seed': int(seed),
+        }
+        pos_of = {g: i for i, g in enumerate(universe)}
+
+        def rankings() -> dict[str, np.ndarray]:
+            import anndata as _ad  # noqa: PLC0415
+            import scanpy as sc  # noqa: PLC0415
+            tmp = _ad.AnnData(X=X)
+            tmp.var_names = universe
+            tmp.obs['g'] = pd.Categorical(labels)
+            sc.tl.rank_genes_groups(tmp, groupby='g', groups=runnable, reference=reference,
+                                    method=method, use_raw=False, key_added='r')
+            r = tmp.uns['r']
+            field = 'scores' if metric == 'score' else 'logfoldchanges'
+            out: dict[str, np.ndarray] = {}
+            for g in runnable:
+                arr = np.full(len(universe), np.nan)
+                for name, v in zip([str(x) for x in r['names'][g]], np.asarray(r[field][g], dtype=float)):
+                    arr[pos_of[name]] = v
+                out[g] = arr
+            return out
+
+        def compute_fn(report):
+            report(0.02, 'Ranking every group…')
+            ranks = rankings()
+            outs = {}
+            n = len(runnable)
+            for i, g in enumerate(runnable):
+                out = en.preranked_gsea(
+                    ranks[g], resolved, n_perm=n_perm, min_size=min_set_size, max_size=max_set_size,
+                    weight=weight, seed=seed,
+                    report=lambda f, m, _i=i, _g=g: report(0.1 + 0.9 * (_i + f) / n, f'{_g} ({_i + 1}/{n}): {m}'))
+                out['scores'] = ranks[g]
+                outs[g] = out
+            report(1.0, 'Storing…')
+            return outs
+
+        def apply_fn(outs):
+            now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+            collection_key = self._reserve_enrichment_key(key or f'gsea_{obs_column}_batch')
+            try:
+                members: dict[str, str] = {}
+                n_sig = 0
+                n_tested = 0
+                for g, out in outs.items():
+                    order = np.asarray(out['order'])
+                    scores = np.asarray(out['scores'])
+                    for r in out['results']:
+                        r['leading_edge'] = [universe[i] for i in r['leading_edge']]
+                    label = f'{obs_column}: {g} vs {reference}' + (f' [{cell_subset}]' if cell_subset else '')
+                    result = {
+                        'kind': 'gsea', 'label': f'GSEA: {label}', 'created_at': now, 'collection': collection_key,
+                        'ranking': {'kind': 'diffexp', 'label': label, 'n_ranked': int(out['n_ranked']),
+                                    'genes': [universe[i] for i in order],
+                                    'scores': [float(scores[i]) for i in order]},
+                        'universe_size': len(universe), 'gene_subset_type': subset_type,
+                        'n_sets_input': rmeta['n_input'], 'n_sets_tested': int(out['n_sets_tested']),
+                        'n_significant': sum(1 for r in out['results'] if r['padj'] <= 0.05),
+                        'n_perm': int(out['n_perm']), 'results': out['results'],
+                        'params': {**params, 'ranking': {
+                            'kind': 'diffexp', 'obs_column': obs_column, 'group': g, 'reference': reference,
+                            'method': method, 'metric': metric, 'cell_subset': cell_subset, 'rest_of': rest_of}},
+                    }
+                    members[g] = self._store_enrichment(f'gsea_{obs_column}_{g}_vs_{reference}', result)
+                    n_sig += result['n_significant']
+                    n_tested = max(n_tested, result['n_sets_tested'])
+                collection = {
+                    'kind': 'gsea_batch',
+                    'label': f'GSEA: {obs_column} ({len(members)} groups vs {reference})',
+                    'created_at': now, 'obs_column': obs_column, 'reference': reference, 'rest_of': rest_of,
+                    'groups': list(members), 'members': members, 'skipped': skipped,
+                    'n_perm': int(n_perm), 'universe_size': len(universe), 'gene_subset_type': subset_type,
+                    'n_sets_tested': n_tested, 'n_significant': n_sig, 'params': params,
+                }
+                self._put_enrichment(collection_key, collection)
+                self._log_action('enrichment_gsea_batch', params, {
+                    'key': collection_key, 'members': members, 'skipped': skipped, 'n_significant': n_sig})
+                # The caller renders this directly, so hand back what the GET would.
+                return self.get_enrichment_result(collection_key)
+            except Exception:
+                self._drop_enrichment_key(collection_key)
+                raise
+
+        return compute_fn, apply_fn
+
+    # ------------------------------------------------------------------
+    # Figures: declarative, persisted, reproducible plots
+    # ------------------------------------------------------------------
+    FIGURES_UNS_KEY = 'xcell_figures'
+    FIGURES_SEQ_KEY = 'xcell_figures_seq'
+    FIGURE_KINDS = ('enrichment_heatmap', 'enrichment_network', 'composition_barplot', 'expression_heatmap')
+    _FIGURE_PARAM_KEYS = {
+        'enrichment_heatmap': ('value', 'padj_max', 'top_n', 'direction', 'collapse_jaccard', 'row_order',
+                               'col_order', 'colormap', 'vmax', 'show_values', 'label_max_chars', 'cell_size'),
+        'enrichment_network': ('value', 'padj_max', 'top_n', 'direction', 'set_edge_jaccard', 'layout', 'seed',
+                               'node_size_by', 'edge_width_by', 'label_max_chars', 'colormap'),
+        'composition_barplot': ('order', 'share_of', 'normalize', 'min_cells', 'show_values'),
+        'expression_heatmap': ('cell_ordering', 'gene_ordering', 'aggregate_gene_sets', 'n_bins'),
+    }
+
+    def _figure_store(self) -> dict[str, str]:
+        raw = self.adata.uns.get(self.FIGURES_UNS_KEY)
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def _put_figure(self, record: dict[str, Any]) -> None:
+        store = self._figure_store()
+        store[record['id']] = json.dumps(record)
+        self.adata.uns[self.FIGURES_UNS_KEY] = store
+
+    def _next_figure_id(self) -> str:
+        """Ids come from a counter that survives deletion, so a notebook's
+        `fig_3` never silently means a different figure later."""
+        n = int(self.adata.uns.get(self.FIGURES_SEQ_KEY, 0)) + 1
+        self.adata.uns[self.FIGURES_SEQ_KEY] = n
+        return f'fig_{n}'
+
+    def _figure_defaults(self, kind: str) -> dict[str, Any]:
+        from xcell import config as user_config  # noqa: PLC0415
+        cfg = user_config.get_user_config().get('figures')
+        d = cfg.get(kind) if isinstance(cfg, dict) else None
+        return dict(d) if isinstance(d, dict) else {}
+
+    def _validate_figure_inputs(self, kind: str, inputs: dict[str, Any]) -> dict[str, Any]:
+        inputs = dict(inputs or {})
+        if kind in ('enrichment_heatmap', 'enrichment_network'):
+            keys = inputs.get('enrichment_keys')
+            if not isinstance(keys, list) or not keys:
+                raise ValueError("inputs.enrichment_keys must be a non-empty list of stored enrichment result keys")
+            store = self._enrichment_store()
+            missing = [k for k in keys if k not in store]
+            if missing:
+                raise ValueError(f'No stored enrichment result named {missing}')
+            return {'enrichment_keys': [str(k) for k in keys]}
+        if kind == 'composition_barplot':
+            for f in ('column_a', 'column_b'):
+                col = inputs.get(f)
+                if not col or col not in self.adata.obs.columns:
+                    raise ValueError(f"inputs.{f} must name an .obs column (got {col!r})")
+            return {'column_a': inputs['column_a'], 'column_b': inputs['column_b'],
+                    **self._figure_cell_inputs(inputs)}
+        if kind == 'expression_heatmap':
+            sets = inputs.get('gene_sets')
+            if not isinstance(sets, list) or not sets or not all(isinstance(s, dict) and s.get('genes') for s in sets):
+                raise ValueError('inputs.gene_sets must be a non-empty list of {name, genes}')
+            obs_column = inputs.get('obs_column') or None
+            if obs_column and obs_column not in self.adata.obs.columns:
+                raise ValueError(f"inputs.obs_column '{obs_column}' is not an .obs column")
+            line_name = inputs.get('line_name') or None
+            if line_name and line_name not in {l.get('name') for l in self.get_lines()}:
+                raise ValueError(f"inputs.line_name '{line_name}' is not a drawn line")
+            transform = inputs.get('transform') or None
+            if transform not in (None, 'log1p'):
+                raise ValueError("inputs.transform must be null or 'log1p'")
+            return {'gene_sets': [{'name': str(s.get('name', '')), 'genes': [str(g) for g in s['genes']]} for s in sets],
+                    'obs_column': obs_column, 'line_name': line_name, 'transform': transform,
+                    **self._figure_cell_inputs(inputs)}
+        raise ValueError(f"Unknown figure kind '{kind}'; expected one of {', '.join(self.FIGURE_KINDS)}")
+
+    def _figure_cell_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Which cells a figure counts: a named subset (validated now, resolved
+        at draw time so it follows edits) or an explicit index list (a
+        selection, frozen like the record's selections). A figure saved under
+        the ephemeral mask must record it, or it silently draws every cell."""
+        subset = inputs.get('cell_subset') or None
+        if subset:
+            self._subset_mask(subset)   # KeyError when unknown
+            return {'cell_subset': subset, 'cell_indices': None}
+        idx = inputs.get('cell_indices')
+        if idx is not None:
+            if not isinstance(idx, list) or not idx:
+                raise ValueError('inputs.cell_indices must be a non-empty list of cell indices')
+            if not all(isinstance(i, (int, np.integer)) and not isinstance(i, bool) for i in idx):
+                raise ValueError('inputs.cell_indices must be integer cell indices')
+            seen: set[int] = set()
+            clean = [int(i) for i in idx if not (int(i) in seen or seen.add(int(i)))]
+            if min(clean) < 0 or max(clean) >= self.n_cells:
+                raise ValueError('inputs.cell_indices out of range')
+            return {'cell_subset': None, 'cell_indices': clean}
+        return {'cell_subset': None, 'cell_indices': None}
+
+    @staticmethod
+    def _compatible_ordering(inputs: dict[str, Any], ordering: str) -> str:
+        has_line, has_col = bool(inputs.get('line_name')), bool(inputs.get('obs_column'))
+        if ordering == 'category_then_position':
+            return ordering if (has_line and has_col) else ('category' if has_col else ('line_position' if has_line else 'none'))
+        if ordering in ('line_position', 'line_distance') and not has_line:
+            return 'category' if has_col else 'none'
+        if ordering == 'category' and not has_col:
+            return 'none'
+        return ordering
+
+    def _check_heatmap_params(self, inputs: dict[str, Any], params: dict[str, Any]) -> None:
+        """An ordering that needs a line or column the inputs do not carry is a
+        request that cannot mean anything — refuse it rather than fall back."""
+        ordering = str(params.get('cell_ordering', 'none'))
+        if ordering in ('line_position', 'line_distance', 'category_then_position') and not inputs.get('line_name'):
+            raise ValueError(f"cell_ordering '{ordering}' needs a drawn line, and this figure has none")
+        if ordering in ('category', 'category_then_position') and not inputs.get('obs_column'):
+            raise ValueError(f"cell_ordering '{ordering}' needs an .obs column, and this figure has none")
+
+    def _figure_cells(self, inputs: dict[str, Any]) -> list[int] | None:
+        """Resolve at draw time; a subset that has since been deleted is a
+        missing input, like a deleted enrichment result."""
+        if inputs.get('cell_subset'):
+            try:
+                return self.get_cell_subset_indices(inputs['cell_subset'])
+            except KeyError as e:
+                raise FigureInputMissing(
+                    f"Cell subset '{inputs['cell_subset']}' no longer exists; the figure cannot be drawn") from e
+        return inputs.get('cell_indices') or None
+
+    def _figure_provenance_steps(self, kind: str, inputs: dict[str, Any]) -> list[int]:
+        """Record steps that produced the inputs — best effort by key match."""
+        keys = set(inputs.get('enrichment_keys') or [])
+        # a member key also belongs to the batch step that made it
+        store = self._enrichment_store()
+        for k in list(keys):
+            if k in store:
+                try:
+                    parent = json.loads(store[k]).get('collection')
+                except (TypeError, ValueError):
+                    parent = None
+                if parent:
+                    keys.add(parent)
+        columns = {inputs.get('column_a'), inputs.get('column_b'), inputs.get('obs_column')} - {None}
+        out: list[int] = []
+        for step in self.analysis_record.steps:
+            r = step.result or {}
+            p = step.params or {}
+            hit = False
+            if keys:
+                if r.get('key') in keys or (isinstance(r.get('members'), dict) and keys & set(r['members'].values())):
+                    hit = True
+            # only the step that *created* a column counts; every analysis run on it does not
+            if columns and p.get('key_added') in columns:
+                hit = True
+            if hit:
+                out.append(step.index)
+        return out
+
+    def _default_figure_title(self, kind: str, inputs: dict[str, Any]) -> str:
+        if kind in ('enrichment_heatmap', 'enrichment_network'):
+            keys = inputs['enrichment_keys']
+            store = self._enrichment_store()
+            labels = []
+            for k in keys:
+                try:
+                    labels.append(json.loads(store[k]).get('label') or k)
+                except (KeyError, TypeError, ValueError):
+                    labels.append(k)
+            what = 'heatmap' if kind == 'enrichment_heatmap' else 'network'
+            return f"Enrichment {what}: {'; '.join(labels)}"
+        if kind == 'composition_barplot':
+            return f"Composition of {inputs['column_a']} by {inputs['column_b']}"
+        return f"Expression heatmap: {', '.join(s['name'] for s in inputs['gene_sets'][:3])}"
+
+    def create_figure(self, kind: str, *, title: str | None = None, caption: str = '',
+                      inputs: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Register a figure: kind + inputs + params. Nothing is rendered here."""
+        from datetime import datetime, timezone  # noqa: PLC0415
+        if kind not in self.FIGURE_KINDS:
+            raise ValueError(f"Unknown figure kind '{kind}'; expected one of {', '.join(self.FIGURE_KINDS)}")
+        clean_inputs = self._validate_figure_inputs(kind, inputs)
+        merged = self._figure_defaults(kind)
+        if kind in ('enrichment_heatmap', 'enrichment_network') and not (params or {}).get('value'):
+            # ORA results have no NES; a signed −log10 padj is the honest default
+            first = json.loads(self._enrichment_store()[clean_inputs['enrichment_keys'][0]])
+            if str(first.get('kind', '')).startswith('ora'):
+                merged['value'] = 'signed_logp'
+        unknown = sorted(set(params or {}) - set(self._FIGURE_PARAM_KEYS[kind]))
+        if unknown:
+            raise ValueError(f'unknown params for {kind}: {unknown}')
+        merged.update(params or {})
+        if kind == 'expression_heatmap':
+            # A defaulted ordering the inputs cannot support degrades quietly
+            # (config defaults must suit any inputs); an explicit one is an error.
+            if 'cell_ordering' not in (params or {}):
+                merged['cell_ordering'] = self._compatible_ordering(clean_inputs, str(merged.get('cell_ordering', 'none')))
+            self._check_heatmap_params(clean_inputs, merged)
+        now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        store = self._enrichment_store()
+        input_ids = {}
+        for k in clean_inputs.get('enrichment_keys') or []:
+            try:
+                input_ids[k] = json.loads(store[k]).get('uid')
+            except (KeyError, TypeError, ValueError):
+                input_ids[k] = None
+        record = {
+            'id': self._next_figure_id(), 'kind': kind,
+            'title': title or self._default_figure_title(kind, clean_inputs), 'caption': caption or '',
+            'created_at': now, 'updated_at': now, 'inputs': clean_inputs, 'input_ids': input_ids, 'params': merged,
+            'provenance': {'steps': self._figure_provenance_steps(kind, clean_inputs), 'created_step': None,
+                           'source': str(self.file_path) if getattr(self, 'file_path', None) else ''},
+        }
+        self._put_figure(record)
+        self._log_action('figure_create', {'kind': kind, 'title': record['title'], 'caption': record['caption'],
+                                           'inputs': self._loggable_inputs(clean_inputs), 'params': merged},
+                         {'id': record['id']})
+        record['provenance']['created_step'] = self.analysis_record.steps[-1].index
+        self._put_figure(record)
+        return record
+
+    @staticmethod
+    def _loggable_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+        """Inputs as they go into the record: an index list beyond the record's
+        selection cap is replaced by its size (the figure itself keeps it)."""
+        idx = inputs.get('cell_indices')
+        if not idx:
+            return dict(inputs)
+        out = {k: v for k, v in inputs.items() if k != 'cell_indices'}
+        out['n_cell_indices'] = len(idx)
+        if len(idx) <= SELECTION_CAP:
+            out['cell_indices'] = list(idx)
+        else:
+            out['cell_indices_omitted'] = True
+        return out
+
+    @staticmethod
+    def _summary_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+        idx = inputs.get('cell_indices')
+        if not idx:
+            return dict(inputs)
+        out = {k: v for k, v in inputs.items() if k != 'cell_indices'}
+        out['n_cell_indices'] = len(idx)
+        return out
+
+    def list_figures(self) -> list[dict[str, Any]]:
+        out = []
+        for raw in self._figure_store().values():
+            try:
+                r = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            out.append({k: r.get(k) for k in ('id', 'kind', 'title', 'created_at', 'updated_at')}
+                       | {'inputs': self._summary_inputs(r.get('inputs') or {}),
+                          'n_provenance_steps': len((r.get('provenance') or {}).get('steps') or [])})
+        # created_at has second resolution; the id counter breaks ties
+        out.sort(key=lambda s: (s.get('created_at') or '', int(str(s['id']).rsplit('_', 1)[-1] or 0)), reverse=True)
+        return out
+
+    def get_figure(self, figure_id: str) -> dict[str, Any]:
+        store = self._figure_store()
+        if figure_id not in store:
+            raise KeyError(f"No figure named '{figure_id}'")
+        return json.loads(store[figure_id])
+
+    def update_figure(self, figure_id: str, *, title: str | None = None, caption: str | None = None,
+                      params: dict[str, Any] | None = None) -> dict[str, Any]:
+        from datetime import datetime, timezone  # noqa: PLC0415
+        record = self.get_figure(figure_id)
+        changes: dict[str, Any] = {'id': figure_id}
+        if title is not None and title != record['title']:
+            record['title'] = title
+            changes['title'] = title
+        if caption is not None and caption != record.get('caption', ''):
+            record['caption'] = caption
+            changes['caption'] = caption
+        if params:
+            unknown = sorted(set(params) - set(self._FIGURE_PARAM_KEYS[record['kind']]))
+            if unknown:
+                raise ValueError(f"unknown params for {record['kind']}: {unknown}")
+            delta = {k: v for k, v in params.items() if record['params'].get(k) != v}
+            if delta:
+                if record['kind'] == 'expression_heatmap':
+                    self._check_heatmap_params(record['inputs'], {**record['params'], **delta})
+                record['params'].update(delta)
+                changes['params'] = delta
+        if len(changes) > 1:
+            record['updated_at'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+            self._put_figure(record)
+            self._log_action('figure_update', changes, {'id': figure_id})
+        return record
+
+    def delete_figure(self, figure_id: str) -> dict[str, Any]:
+        store = self._figure_store()
+        if figure_id not in store:
+            raise KeyError(f"No figure named '{figure_id}'")
+        del store[figure_id]
+        self.adata.uns[self.FIGURES_UNS_KEY] = store
+        self._log_action('figure_delete', {'id': figure_id}, {'deleted': figure_id})
+        return {'deleted': figure_id}
+
+    def _enrichment_columns(self, record: dict[str, Any]
+                            ) -> tuple[dict[str, dict[str, Any]], dict[str, str], dict[str, set[str]] | None, list[str]]:
+        """Expand figure inputs into {column key: single result}, display labels,
+        member gene sets (for collapse / overlap edges) when the libraries are
+        cached, and notes. Column keys are ``<input key>:<group>`` so two
+        collections on the same column never collapse into one."""
+        from xcell import enrichment as en  # noqa: PLC0415
+        store = self._enrichment_store()
+        keys = record['inputs']['enrichment_keys']
+        input_ids = record.get('input_ids') or {}
+        cols: dict[str, dict[str, Any]] = {}
+        labels: dict[str, str] = {}
+        notes: list[str] = []
+        first: dict[str, Any] | None = None
+        for k in keys:
+            if k not in store:
+                raise FigureInputMissing(f"Enrichment result '{k}' no longer exists; the figure cannot be drawn")
+            r = self.get_enrichment_result(k)
+            expected = input_ids.get(k)
+            if expected and r.get('uid') != expected:
+                raise FigureInputMissing(
+                    f"Enrichment result '{k}' was replaced by a later run since this figure was made; "
+                    "the figure cannot be drawn from it")
+            if isinstance(r.get('members'), dict):
+                for g, m in (r.get('member_results') or {}).items():
+                    cols[f'{k}:{g}'] = m
+                    labels[f'{k}:{g}'] = str(g)
+                    first = first or m
+                missing = r.get('missing_members') or {}
+                if missing:
+                    notes.append(f"{k}: members missing for {', '.join(sorted(missing))}")
+            else:
+                cols[k] = r
+                labels[k] = (r.get('ranking') or {}).get('label') or (r.get('query') or {}).get('name') or k
+                first = first or r
+        if not cols:
+            raise FigureInputMissing('The figure inputs hold no per-contrast results')
+        members: dict[str, set[str]] | None = None
+        params = (first or {}).get('params') or {}
+        try:
+            raw_sets = self._enrichment_sets(params.get('libraries') or None, params.get('sets') or None)
+            mask, _t, _m = self._resolve_gene_mask(params.get('gene_subset'))
+            universe = [str(g) for g in self.adata.var_names[mask]]
+            directional = 'split' if str(first.get('kind', '')).startswith('gsea') else 'union'
+            resolved, _ = en.resolve_sets(raw_sets, universe, min_size=1, max_size=len(universe) + 1,
+                                          directional=directional)
+            members = {s['name']: {universe[i] for i in s['indices']} for s in resolved}
+        except (ValueError, KeyError):
+            members = None
+        return cols, labels, members, notes
+
+    def figure_data(self, figure_id: str, params_override: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The plotted table/graph for a figure, from its stored inputs and params.
+
+        ``params_override`` previews a change without persisting or logging.
+        """
+        from xcell import enrichment_figures as ef  # noqa: PLC0415
+        record = self.get_figure(figure_id)
+        kind = record['kind']
+        params = {**record['params'], **(params_override or {})}
+        allowed = set(self._FIGURE_PARAM_KEYS[kind])
+        unknown = sorted(set(params_override or {}) - allowed)
+        if unknown:
+            raise ValueError(f'unknown params for {kind}: {unknown}')
+        if kind in ('enrichment_heatmap', 'enrichment_network'):
+            cols, labels, members, notes = self._enrichment_columns(record)
+            if kind == 'enrichment_heatmap':
+                out = ef.assemble_matrix(
+                    cols, value=params['value'], padj_max=float(params['padj_max']), top_n=int(params['top_n']),
+                    direction=params['direction'], collapse_jaccard=params.get('collapse_jaccard'),
+                    row_order=params['row_order'], col_order=params['col_order'], members=members, labels=labels)
+            else:
+                out = ef.assemble_network(
+                    cols, value=params['value'], padj_max=float(params['padj_max']), top_n=int(params['top_n']),
+                    direction=params['direction'], set_edge_jaccard=params.get('set_edge_jaccard'),
+                    layout=params['layout'], seed=int(params['seed']), members=members, labels=labels)
+            if notes:
+                out['note'] = '; '.join(([out['note']] if out.get('note') else []) + notes)
+            out['figure_id'] = figure_id
+            out['kind'] = kind
+            return out
+        if kind == 'composition_barplot':
+            inp = record['inputs']
+            out = self.crosstab(inp['column_a'], inp['column_b'], active_cell_indices=self._figure_cells(inp))
+            out['params'] = params
+            out['figure_id'] = figure_id
+            out['kind'] = kind
+            return out
+        if kind == 'expression_heatmap':
+            from xcell.heatmap import compute_heatmap_data  # noqa: PLC0415
+            inp = record['inputs']
+            # Everything named by the inputs must still exist: the heatmap code
+            # falls back silently otherwise, and a wrong figure under the same
+            # title is worse than none.
+            if inp.get('line_name') and inp['line_name'] not in {l.get('name') for l in self.get_lines()}:
+                raise FigureInputMissing(f"Drawn line '{inp['line_name']}' no longer exists; the figure cannot be drawn")
+            if inp.get('obs_column') and inp['obs_column'] not in self.adata.obs.columns:
+                raise FigureInputMissing(f"Column '{inp['obs_column']}' no longer exists; the figure cannot be drawn")
+            self._check_heatmap_params(inp, params)
+            genes: list[str] = []
+            seen: set[str] = set()
+            for s_ in inp['gene_sets']:
+                for g in s_['genes']:
+                    if g not in seen:
+                        seen.add(g)
+                        genes.append(g)
+            out = compute_heatmap_data(
+                self, genes, gene_set_groups=[{'name': s_['name'], 'genes': list(s_['genes'])} for s_ in inp['gene_sets']],
+                aggregate_gene_sets=bool(params.get('aggregate_gene_sets')), cell_ordering=str(params.get('cell_ordering', 'category')),
+                obs_column=inp.get('obs_column'), line_name=inp.get('line_name'),
+                gene_ordering=str(params.get('gene_ordering', 'as_provided')), n_bins=int(params.get('n_bins', 0)),
+                transform=inp.get('transform'), cell_indices=self._figure_cells(inp))
+            out['figure_id'] = figure_id
+            out['kind'] = kind
+            return out
+        raise ValueError(f"figure kind '{kind}' is not renderable yet")
+
+    def attach_figure_to_record(self, figure_id: str, png_b64: str, caption: str | None = None) -> dict[str, Any]:
+        record = self.get_figure(figure_id)
+        # The record can be cleared and renumbered, so find the figure's own
+        # create step by content; with none, the PNG stands alone.
+        step = None
+        for st in self.analysis_record.steps:
+            if st.action == 'figure_create' and (st.result or {}).get('id') == figure_id:
+                step = st.index
+                break
+        fig = self.analysis_record.add_figure(png_b64, caption=caption or record['title'], step_index=step,
+                                              standalone=step is None)
+        fig.figure_id = figure_id
+        return {'record_figure_id': fig.id, 'step_index': fig.step_index}
 
     def guess_species(self) -> dict[str, Any]:
         """Species guess from the current var index (Ensembl prefix, else symbol case)."""
@@ -12673,6 +13413,7 @@ class DataAdaptor:
         max_out_group_fraction: float | None = None,
         min_fold_change: float | None = None,
         gene_subset: str | list[str] | dict[str, Any] | None = None,
+        _log: bool = True,
     ) -> dict[str, Any]:
         """Run one-vs-rest marker gene analysis using scanpy.
 
@@ -12792,18 +13533,19 @@ class DataAdaptor:
                     'genes': [],
                 })
 
-        self._log_action('marker_genes', {
-            'obs_column': obs_column,
-            'groups': groups,
-            'top_n': top_n,
-            'min_in_group_fraction': min_in_group_fraction,
-            'max_out_group_fraction': max_out_group_fraction,
-            'min_fold_change': min_fold_change,
-            'gene_subset': gene_subset,
-        }, {
-            'n_groups': len(result_groups),
-            'total_genes': sum(len(g['genes']) for g in result_groups),
-        })
+        if _log:
+            self._log_action('marker_genes', {
+                'obs_column': obs_column,
+                'groups': groups,
+                'top_n': top_n,
+                'min_in_group_fraction': min_in_group_fraction,
+                'max_out_group_fraction': max_out_group_fraction,
+                'min_fold_change': min_fold_change,
+                'gene_subset': gene_subset,
+            }, {
+                'n_groups': len(result_groups),
+                'total_genes': sum(len(g['genes']) for g in result_groups),
+            })
 
         return {
             'obs_column': obs_column,

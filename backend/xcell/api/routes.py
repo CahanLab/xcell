@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from xcell.adaptor import DataAdaptor, combine_datasets, describe_combine_columns
+from xcell.adaptor import DataAdaptor, combine_datasets, describe_combine_columns, FigureInputMissing
 from xcell.task_manager import task_manager
 from xcell import config as user_config
 from xcell import gene_set_store
@@ -2312,6 +2312,190 @@ def run_gsea(request: GseaRequest, dataset: str | None = Query(None)):
     return {"task_id": task_id, "status": "running"}
 
 
+class GseaBatchRequest(BaseModel):
+    obs_column: str
+    groups: list[str] | None = None
+    reference: str = 'rest'
+    method: str = 'wilcoxon'
+    metric: str = 'score'
+    cell_subset: str | None = None
+    libraries: list[EnrichmentLibraryRef] | None = None
+    sets: list[EnrichmentInlineSet] | None = None
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    n_perm: int = 1000
+    min_set_size: int = 15
+    max_set_size: int = 500
+    weight: float = 1.0
+    seed: int = 0
+    key: str | None = None
+
+
+@router.post("/enrichment/gsea_batch", status_code=202)
+def run_gsea_batch(request: GseaBatchRequest, dataset: str | None = Query(None)):
+    """Preranked GSEA for every group of a column, as one background task."""
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_gsea_batch(
+            request.obs_column, groups=request.groups, reference=request.reference,
+            libraries=[lib.model_dump() for lib in request.libraries] if request.libraries else None,
+            sets=[s.model_dump() for s in request.sets] if request.sets else None,
+            gene_subset=_gene_subset_arg(request.gene_subset), method=request.method, metric=request.metric,
+            cell_subset=request.cell_subset, n_perm=request.n_perm, min_set_size=request.min_set_size,
+            max_set_size=request.max_set_size, weight=request.weight, seed=request.seed, key=request.key)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task_id = task_manager.submit(compute_fn, apply_fn)
+    return {"task_id": task_id, "status": "running"}
+
+
+class OraBatchRequest(BaseModel):
+    obs_column: str
+    groups: list[str] | None = None
+    top_n: int = 100
+    min_in_group_fraction: float | None = None
+    max_out_group_fraction: float | None = None
+    min_fold_change: float | None = None
+    libraries: list[EnrichmentLibraryRef] | None = None
+    sets: list[EnrichmentInlineSet] | None = None
+    gene_subset: str | list[str] | GeneSubsetSpec | None = None
+    min_set_size: int = 5
+    max_set_size: int = 500
+    min_overlap: int = 2
+    key: str | None = None
+
+
+@router.post("/enrichment/ora_batch")
+def run_ora_batch(request: OraBatchRequest, dataset: str | None = Query(None)):
+    """Marker genes of every group, then overlap enrichment of each list."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.run_overlap_enrichment_batch(
+            request.obs_column, groups=request.groups, top_n=request.top_n,
+            min_in_group_fraction=request.min_in_group_fraction,
+            max_out_group_fraction=request.max_out_group_fraction, min_fold_change=request.min_fold_change,
+            libraries=[lib.model_dump() for lib in request.libraries] if request.libraries else None,
+            sets=[s.model_dump() for s in request.sets] if request.sets else None,
+            gene_subset=_gene_subset_arg(request.gene_subset), min_set_size=request.min_set_size,
+            max_set_size=request.max_set_size, min_overlap=request.min_overlap, key=request.key)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Figures: declarative, persisted, reproducible plots
+# ---------------------------------------------------------------------------
+
+class FigureCreateRequest(BaseModel):
+    kind: str
+    title: str | None = None
+    caption: str = ''
+    inputs: dict[str, Any]
+    params: dict[str, Any] | None = None
+
+
+class FigureUpdateRequest(BaseModel):
+    title: str | None = None
+    caption: str | None = None
+    params: dict[str, Any] | None = None
+
+
+class FigureDataRequest(BaseModel):
+    params: dict[str, Any] | None = None
+
+
+class FigureAttachRequest(BaseModel):
+    png_b64: str
+    caption: str | None = None
+
+
+@router.get("/figures")
+def list_figures(dataset: str | None = Query(None)):
+    return {"figures": get_adaptor(dataset).list_figures()}
+
+
+@router.post("/figures")
+def create_figure(request: FigureCreateRequest, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).create_figure(
+            request.kind, title=request.title, caption=request.caption,
+            inputs=request.inputs, params=request.params)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/figures/{figure_id}")
+def get_figure(figure_id: str, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).get_figure(figure_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.put("/figures/{figure_id}")
+def update_figure(figure_id: str, request: FigureUpdateRequest, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).update_figure(
+            figure_id, title=request.title, caption=request.caption, params=request.params)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/figures/{figure_id}")
+def delete_figure(figure_id: str, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).delete_figure(figure_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/figures/{figure_id}/data")
+def figure_data(figure_id: str, request: FigureDataRequest, dataset: str | None = Query(None)):
+    """The plotted table/graph; `params` previews a change without saving it."""
+    try:
+        return get_adaptor(dataset).figure_data(figure_id, params_override=request.params)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except FigureInputMissing as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/figures/{figure_id}/attach")
+def attach_figure(figure_id: str, request: FigureAttachRequest, dataset: str | None = Query(None)):
+    """Put a rendered PNG of this figure into the analysis record, linked to its spec."""
+    import base64
+    import binascii
+
+    payload = request.png_b64
+    if payload.startswith("data:"):
+        _, _, payload = payload.partition(",")
+    try:
+        base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Figure is not valid base64 PNG data")
+    try:
+        return get_adaptor(dataset).attach_figure_to_record(figure_id, payload, caption=request.caption)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.get("/enrichment/results")
 def list_enrichment_results(dataset: str | None = Query(None)):
     return {"results": get_adaptor(dataset).get_enrichment_results()}
@@ -4522,7 +4706,7 @@ def _record_payload(adaptor: DataAdaptor) -> dict[str, Any]:
         "steps": steps,
         "figures": [
             {"id": f.id, "caption": f.caption, "step_index": f.step_index,
-             "timestamp": f.timestamp}
+             "timestamp": f.timestamp, "figure_id": f.figure_id}
             for f in record.figures.values()
         ],
         "counts": report_counts(record),

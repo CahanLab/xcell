@@ -103,6 +103,9 @@ class Figure:
     caption: str = ''
     step_index: int | None = None
     timestamp: str = ''
+    # The xcell figure record (uns['xcell_figures']) this PNG was rendered
+    # from, when it was; a reader of the notebook can then find the spec.
+    figure_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +114,7 @@ class Figure:
             'caption': self.caption,
             'step_index': self.step_index,
             'timestamp': self.timestamp,
+            'figure_id': self.figure_id,
         }
 
     @classmethod
@@ -121,6 +125,7 @@ class Figure:
             caption=d.get('caption') or '',
             step_index=d.get('step_index'),
             timestamp=d.get('timestamp') or '',
+            figure_id=d.get('figure_id') or None,
         )
 
 
@@ -197,10 +202,12 @@ class AnalysisRecord:
         *,
         caption: str = '',
         step_index: int | None = None,
+        standalone: bool = False,
     ) -> Figure:
         """Attach a captured PNG. Defaults to the most recent step; with no
-        steps yet it stands alone and renders at the end of the report."""
-        if step_index is None and self.steps:
+        steps yet, or when ``standalone`` is asked for, it stands alone and
+        renders at the end of the report."""
+        if step_index is None and self.steps and not standalone:
             step_index = len(self.steps) - 1
         if step_index is not None and not (0 <= step_index < len(self.steps)):
             raise IndexError(f"No step at index {step_index}")

@@ -225,6 +225,7 @@ export default function MarkerGenesModal() {
     comparisonCheckedColumn,
     comparisonCheckedCategories,
     activeSlot,
+    setEnrichmentSource,
   } = useStore()
 
   const { summaries } = useObsSummaries()
@@ -589,6 +590,18 @@ export default function MarkerGenesModal() {
               <span style={{ fontSize: '12px', color: '#4ecdc4', alignSelf: 'center' }}>
                 Added to Marker Genes
               </span>
+            )}
+            {markerGenesColumn && selectedGroups.size >= 2 && (
+              <button
+                style={{ ...styles.button, ...styles.secondaryButton }}
+                title="Preranked GSEA of each selected group vs the rest, against cached gene-set libraries"
+                onClick={() => {
+                  setEnrichmentSource({ kind: 'gsea', obsColumn: markerGenesColumn, groups: [...selectedGroups] })
+                  setMarkerGenesModalOpen(false)
+                }}
+              >
+                Enrichment…
+              </button>
             )}
             <button
               style={{

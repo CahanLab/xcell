@@ -10,18 +10,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { appendDataset } from '../hooks/useData'
+import { appendDataset, createFigure } from '../hooks/useData'
+import { barplotFigureFromConfig } from '../lib/figures'
 import { resolveCategoryPalette } from '../lib/cellColors'
 import { standaloneSvg, downloadText } from '../lib/svgExport'
-import { orderBars, stackBar, fitRotatedLabel, type Crosstab } from '../lib/stackedBars'
+import { orderBars, type Crosstab } from '../lib/stackedBars'
+import CompositionBarplotFigure from './figures/CompositionBarplotFigure'
 import { indicesFromMask } from '../lib/cellSubsets'
 import { FloatingPanel } from './PlotLegends'
 import BarplotConfigModal from './BarplotConfigModal'
 
-const M = { top: 16, right: 16, bottom: 96, left: 60 }
-const BAR_GAP = 0.25          // share of a slot left empty between bars
-const CHAR_PX = 5.6           // 10px sans-serif, near enough for truncation
-const LABEL_PX = M.bottom * Math.SQRT2 - 12   // diagonal room for a 45° label
 
 export default function BarplotView() {
   const config = useStore((s) => s.barplotConfig)
@@ -31,6 +29,10 @@ export default function BarplotView() {
   // A composition drawn under a mask describes the cells on screen, so the
   // count is restricted to them.
   const activeCellMask = useStore((s) => s.activeCellMask)
+  const activeSubsetName = useStore((s) => s.activeSubsetName)
+  const refreshFigures = useStore((s) => s.refreshFigures)
+  const setActiveFigureId = useStore((s) => s.setActiveFigureId)
+  const setCenterPanelView = useStore((s) => s.setCenterPanelView)
 
   const [data, setData] = useState<Crosstab | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -98,10 +100,17 @@ export default function BarplotView() {
     })
   }, [data, config])
 
-  const scaleMax = useMemo(() => {
-    if (!data) return 1
-    return Math.max(1, ...bars.map((i) => data.counts[i].reduce((s, n) => s + n, 0)))
-  }, [data, bars])
+  // A saved figure records which cells were counted: the active named
+  // subset, else the frozen mask indices, else every cell.
+  const saveAsFigure = useCallback(async () => {
+    if (!config) return
+    try {
+      const rec = await createFigure(barplotFigureFromConfig(config, activeSubsetName ?? null, activeCellMask ? indicesFromMask(activeCellMask) : null), activeSlot)
+      refreshFigures(); setActiveFigureId(rec.id); setCenterPanelView('figures')
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }, [config, activeSubsetName, activeCellMask, activeSlot, refreshFigures, setActiveFigureId, setCenterPanelView])
 
   const exportSvg = useCallback(() => {
     const svg = svgRef.current
@@ -135,11 +144,6 @@ export default function BarplotView() {
     )
   }
 
-  const plotW = Math.max(40, size.w - M.left - M.right)
-  const plotH = Math.max(40, size.h - M.top - M.bottom)
-  const slot = bars.length > 0 ? plotW / bars.length : plotW
-  const barW = slot * (1 - BAR_GAP)
-
   return (
     <div style={styles.wrap}>
       <div style={styles.toolbar}>
@@ -157,85 +161,17 @@ export default function BarplotView() {
         <div style={{ flex: 1 }} />
         <button style={styles.btn} onClick={() => setConfigOpen(true)}>Columns…</button>
         <button style={styles.btn} onClick={exportSvg} disabled={!data}>Export SVG</button>
+        <button style={styles.btn} onClick={saveAsFigure} disabled={!data} title="Keep this plot as a figure record (Figures tab): editable, exportable, with provenance">Save as figure</button>
       </div>
 
       <div ref={boxRef} style={styles.canvasBox}>
         {loading && <div style={styles.note}>Counting…</div>}
         {error && <div style={styles.error}>{error}</div>}
         {data && !error && (
-          <svg ref={svgRef} width={size.w} height={size.h} style={{ display: 'block' }}>
-            {/* y axis */}
-            {(config.normalize ? [0, 0.25, 0.5, 0.75, 1] : [0, 0.5, 1]).map((t) => {
-              const y = M.top + plotH * (1 - t)
-              return (
-                <g key={t}>
-                  <line x1={M.left} x2={M.left + plotW} y1={y} y2={y}
-                        stroke="#0f3460" strokeWidth={1} />
-                  <text x={M.left - 8} y={y + 3} textAnchor="end"
-                        fill="#888" fontSize={10} fontFamily="sans-serif">
-                    {config.normalize ? `${Math.round(t * 100)}%` : Math.round(t * scaleMax)}
-                  </text>
-                </g>
-              )
-            })}
-            <text
-              transform={`translate(14 ${M.top + plotH / 2}) rotate(-90)`}
-              textAnchor="middle" fill="#888" fontSize={11} fontFamily="sans-serif"
-            >
-              {config.normalize ? 'proportion of cells' : 'cells'}
-            </text>
-
-            {bars.map((rowIdx, pos) => {
-              const x = M.left + pos * slot + (slot - barW) / 2
-              const total = data.counts[rowIdx].reduce((s, n) => s + n, 0)
-              const segs = stackBar(data.counts[rowIdx], {
-                normalize: config.normalize, scaleMax,
-              })
-              const name = data.a_categories[rowIdx]
-              const labelText = fitRotatedLabel(name, LABEL_PX, CHAR_PX)
-              return (
-                <g key={name}>
-                  {segs.map((seg) => {
-                    const h = seg.fraction * plotH
-                    const y = M.top + plotH - (seg.start + seg.fraction) * plotH
-                    const pct = (seg.count / total) * 100
-                    return (
-                      <rect
-                        key={seg.index}
-                        x={x} y={y} width={barW} height={Math.max(0.5, h)}
-                        fill={palette[seg.index]}
-                        onMouseMove={(e) => setHover({
-                          x: e.clientX, y: e.clientY,
-                          text: `${name} · ${data.b_categories[seg.index]}: `
-                            + `${seg.count.toLocaleString()} cells (${pct.toFixed(1)}%)`,
-                        })}
-                        onMouseLeave={() => setHover(null)}
-                      />
-                    )
-                  })}
-                  {config.showValues && (
-                    <text x={x + barW / 2} y={M.top + plotH - (config.normalize ? plotH : (total / scaleMax) * plotH) - 4}
-                          textAnchor="middle" fill="#888" fontSize={9} fontFamily="sans-serif">
-                      {total.toLocaleString()}
-                    </text>
-                  )}
-                  {/* Category label: rotated 45° and ending at the bar's centre,
-                      so it points at the bar it names instead of the next one. */}
-                  {labelText && (
-                    <text
-                      transform={`translate(${x + barW / 2} ${M.top + plotH + 8}) rotate(-45)`}
-                      textAnchor="end" fill="#ccc" fontSize={10} fontFamily="sans-serif"
-                    >
-                      <title>{name}</title>
-                      {labelText}
-                    </text>
-                  )}
-                </g>
-              )
-            })}
-            <line x1={M.left} x2={M.left + plotW} y1={M.top + plotH} y2={M.top + plotH}
-                  stroke="#0f3460" strokeWidth={1} />
-          </svg>
+          <CompositionBarplotFigure
+            ref={svgRef} data={data} config={config} width={size.w} height={size.h}
+            legend="none" onHover={setHover}
+          />
         )}
 
         {data && !error && (

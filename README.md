@@ -453,6 +453,40 @@ re-clustering at another resolution. Start with a low resolution (default
 0.3): a gene-set PCA fragments easily. The results panel colours the plot by
 the new clusters or switches to the new UMAP.
 
+### Gene-set enrichment: overlap and GSEA
+
+Two ways to ask which annotated gene sets a result points at, both against
+the libraries you have already fetched into the Gene set library cache
+(MSigDB, GO, Enrichr, OmniPath, MGI) and against your own Gene Panel
+folders. Open it from `⋯` → `Enrichment (overlap)…` on a gene-set row, from
+the Genes panel menu (`Enrichment analysis…`), or from Analyze → Genes →
+*Gene-set Enrichment*.
+
+- **Overlap (ORA).** A gene list — a Gene Panel set or a pasted list — is
+  tested against every library set with the hypergeometric test, with
+  Benjamini–Hochberg across sets. The universe is the dataset's genes after
+  the gene mask, optionally narrowed to a boolean `.var` column such as
+  `highly_variable`; library symbols are matched case-insensitively, so a
+  human-symbol library works on mouse data. Each row reports the overlap
+  `k/K`, expected count, fold enrichment, odds ratio, p and padj; expanding
+  a row lists the overlapping genes.
+- **GSEA (preranked).** Rank every gene by a group-vs-rest or group-vs-group
+  contrast (Wilcoxon or t-test statistic, or log2 fold change), optionally
+  within a saved cell subset, or by a PCA loading, then run the weighted
+  running-sum test of Subramanian et al. with a gene-permutation null. Rows
+  report ES, NES, p and padj; expanding one draws the running score with a
+  hit rug and the ranking-metric strip, and lists the leading-edge genes.
+  p-values are empirical and floor at about 2 / permutations, so raise the
+  permutation count when many sets sit at the floor.
+
+Results persist in `uns["xcell_enrichment"]` (so they export with the
+file), appear in the analysis record and notebook, and can be reopened from
+the *Previous runs* menu. **Add to gene sets** files the overlap or
+leading-edge genes of every row passing the padj filter as a folder under
+the Enrichment category; **Copy TSV** and **Download SVG** take the table
+and the curve out. Defaults (set sizes, permutations, padj cutoff) live under
+`enrichment:` in `config.yaml`.
+
 ### Selecting cells by expression threshold
 
 You can select cells based on a gene's expression or a gene set score without needing to eyeball the scatter plot:

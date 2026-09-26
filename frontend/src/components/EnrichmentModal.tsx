@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
+import { Fragment, useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useStore, cfgDefault, GeneSet } from '../store'
 import {
   useObsSummaries, appendDataset, pollTask,
@@ -39,7 +39,8 @@ const styles = {
   body: { flex: 1, overflowY: 'auto' as const, padding: '14px 20px' },
   tabs: { display: 'flex', gap: '4px', marginBottom: '14px', borderBottom: '1px solid #0f3460' },
   tab: (active: boolean) => ({
-    padding: '6px 14px', fontSize: '13px', cursor: 'pointer', border: 'none', background: 'none',
+    padding: '6px 14px', fontSize: '13px', cursor: 'pointer', background: 'none',
+    borderTop: 'none', borderLeft: 'none', borderRight: 'none',
     color: active ? ACCENT : '#888', borderBottom: active ? `2px solid ${ACCENT}` : '2px solid transparent',
   }),
   label: { fontSize: '12px', color: '#aaa', marginBottom: '6px', display: 'block', fontWeight: 500 },
@@ -519,8 +520,8 @@ export default function EnrichmentModal() {
     const barColor = isOra || (row as GseaRow).nes >= 0 ? ACCENT : ALERT
     const genes = isOra ? (row as OraRow).genes : (row as GseaRow).leading_edge
     return (
-      <>
-        <tr key={row.name} onClick={() => setExpanded(isOpen ? null : row.name)} style={{ cursor: 'pointer', backgroundColor: isOpen ? '#0f1625' : undefined }}>
+      <Fragment key={row.name}>
+        <tr onClick={() => setExpanded(isOpen ? null : row.name)} style={{ cursor: 'pointer', backgroundColor: isOpen ? '#0f1625' : undefined }}>
           <td style={{ ...styles.td, color: '#eee', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.description || row.name}>{row.name}</td>
           <td style={styles.td}>{row.library}</td>
           <td style={{ ...styles.td, textAlign: 'right' }}>{row.n_set}</td>
@@ -536,7 +537,7 @@ export default function EnrichmentModal() {
           </td>
         </tr>
         {isOpen && (
-          <tr key={`${row.name}-detail`}>
+          <tr>
             <td colSpan={7} style={{ ...styles.td, backgroundColor: '#0f1625' }}>
               {row.description && <div style={{ ...styles.muted, marginBottom: '6px' }}>{row.description}</div>}
               {row.url && <a href={row.url} target="_blank" rel="noreferrer" style={{ fontSize: '11px', color: ACCENT }}>{row.url}</a>}
@@ -552,7 +553,7 @@ export default function EnrichmentModal() {
             </td>
           </tr>
         )}
-      </>
+      </Fragment>
     )
   }
 

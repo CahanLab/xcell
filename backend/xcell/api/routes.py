@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from xcell.adaptor import DataAdaptor, combine_datasets, describe_combine_columns
+from xcell.adaptor import DataAdaptor, combine_datasets, describe_combine_columns, FigureInputMissing
 from xcell.task_manager import task_manager
 from xcell import config as user_config
 from xcell import gene_set_store
@@ -2387,6 +2387,113 @@ def run_ora_batch(request: OraBatchRequest, dataset: str | None = Query(None)):
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Figures: declarative, persisted, reproducible plots
+# ---------------------------------------------------------------------------
+
+class FigureCreateRequest(BaseModel):
+    kind: str
+    title: str | None = None
+    caption: str = ''
+    inputs: dict[str, Any]
+    params: dict[str, Any] | None = None
+
+
+class FigureUpdateRequest(BaseModel):
+    title: str | None = None
+    caption: str | None = None
+    params: dict[str, Any] | None = None
+
+
+class FigureDataRequest(BaseModel):
+    params: dict[str, Any] | None = None
+
+
+class FigureAttachRequest(BaseModel):
+    png_b64: str
+    caption: str | None = None
+
+
+@router.get("/figures")
+def list_figures(dataset: str | None = Query(None)):
+    return {"figures": get_adaptor(dataset).list_figures()}
+
+
+@router.post("/figures")
+def create_figure(request: FigureCreateRequest, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).create_figure(
+            request.kind, title=request.title, caption=request.caption,
+            inputs=request.inputs, params=request.params)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/figures/{figure_id}")
+def get_figure(figure_id: str, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).get_figure(figure_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.put("/figures/{figure_id}")
+def update_figure(figure_id: str, request: FigureUpdateRequest, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).update_figure(
+            figure_id, title=request.title, caption=request.caption, params=request.params)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/figures/{figure_id}")
+def delete_figure(figure_id: str, dataset: str | None = Query(None)):
+    try:
+        return get_adaptor(dataset).delete_figure(figure_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/figures/{figure_id}/data")
+def figure_data(figure_id: str, request: FigureDataRequest, dataset: str | None = Query(None)):
+    """The plotted table/graph; `params` previews a change without saving it."""
+    try:
+        return get_adaptor(dataset).figure_data(figure_id, params_override=request.params)
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except FigureInputMissing as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/figures/{figure_id}/attach")
+def attach_figure(figure_id: str, request: FigureAttachRequest, dataset: str | None = Query(None)):
+    """Put a rendered PNG of this figure into the analysis record, linked to its spec."""
+    import base64
+    import binascii
+
+    payload = request.png_b64
+    if payload.startswith("data:"):
+        _, _, payload = payload.partition(",")
+    try:
+        base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Figure is not valid base64 PNG data")
+    try:
+        return get_adaptor(dataset).attach_figure_to_record(figure_id, payload, caption=request.caption)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/enrichment/results")

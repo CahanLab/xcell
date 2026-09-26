@@ -168,6 +168,14 @@ export function rowsToTsv(result: EnrichmentResult): string {
   return table.map((row) => row.join('\t')).join('\n') + '\n'
 }
 
+/** A picker's stored value survives only while the dataset still offers it;
+ *  '' is the "none" sentinel and is always valid. A stale value would leave
+ *  the <select> *showing* the first option while the run sends the old one. */
+export function reconcileChoice(value: string, options: string[], fallback: string): string {
+  if (value === '' || options.includes(value)) return value
+  return fallback
+}
+
 /** Mean ranking score per bin, for the metric strip under a curve. */
 export function metricStripBins(scores: number[], nBins: number): number[] {
   const out = new Array<number>(Math.max(0, nBins)).fill(0)

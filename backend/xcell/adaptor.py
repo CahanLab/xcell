@@ -5959,6 +5959,7 @@ class DataAdaptor:
         for ref in libraries or []:
             source = str(ref.get('source') or '')
             lib_id = str(ref.get('id') or '')
+            gss.get_source(source)   # ValueError on an unknown source: it is also a path segment
             lib = gss.find_library(source, lib_id, ref.get('species'))
             if lib is None:
                 raise ValueError(
@@ -6183,10 +6184,13 @@ class DataAdaptor:
                     arr[i] = float(v)
             if np.isfinite(arr).sum() < 2:
                 raise ValueError('Fewer than 2 of the scored genes are in the universe')
-            clean = {'kind': 'scores', 'n_genes': len(genes), 'cell_subset': None}
+            clean = {'kind': 'scores', 'genes': [str(g) for g in genes],
+                     'scores': [float(v) for v in scores], 'cell_subset': None}
             return clean, (lambda: arr), 'custom scores', 'gsea_scores'
 
         raise ValueError("ranking kind must be 'diffexp', 'pca' or 'scores'")
+
+    GSEA_MAX_PERMUTATIONS = 50_000
 
     def prepare_gsea(self, ranking: dict[str, Any], *, libraries: list[dict[str, Any]] | None = None,
                      sets: list[dict[str, Any]] | None = None, gene_subset: Any = None,
@@ -6195,19 +6199,27 @@ class DataAdaptor:
         """Preranked GSEA as a background task: (compute_fn(report), apply_fn(result))."""
         from datetime import datetime, timezone  # noqa: PLC0415
         from xcell import enrichment as en  # noqa: PLC0415
-        if n_perm < 10:
-            raise ValueError('n_perm must be at least 10')
+        if not 10 <= n_perm <= self.GSEA_MAX_PERMUTATIONS:
+            raise ValueError(f'n_perm must be between 10 and {self.GSEA_MAX_PERMUTATIONS}')
         if min_set_size < 1 or max_set_size < min_set_size:
             raise ValueError('Set size range must satisfy 1 <= min <= max')
+        if not (weight >= 0):
+            raise ValueError('weight must be >= 0')
+        if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
+            raise ValueError('seed must be a non-negative integer')
         raw_sets = self._enrichment_sets(libraries, sets)
         mask, subset_type, _meta = self._resolve_gene_mask(gene_subset)
         universe = [str(g) for g in self.adata.var_names[mask]]
         clean_ranking, build, label, key_hint = self._gsea_ranking_snapshot(dict(ranking), universe, mask)
+        # Size limits apply to *ranked* members (fgsea's rule): a set can lose
+        # members to unranked genes (zero PCA loadings, NaN statistics), so the
+        # filter runs inside preranked_gsea. Only the lower bound is checked
+        # here, so an impossible request is still a synchronous 400.
         resolved, rmeta = en.resolve_sets(raw_sets, universe, min_size=min_set_size,
-                                          max_size=max_set_size, directional='split')
+                                          max_size=len(universe), directional='split')
         if not resolved:
             raise ValueError(
-                f'No gene set has between {min_set_size} and {max_set_size} members in the universe')
+                f'No gene set has at least {min_set_size} members in the universe')
         params = {
             'ranking': clean_ranking, 'libraries': list(libraries or []), 'sets': list(sets or []),
             'gene_subset': gene_subset, 'n_perm': int(n_perm), 'min_set_size': int(min_set_size),

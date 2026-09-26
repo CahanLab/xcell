@@ -152,3 +152,35 @@ def test_gsea_report_called():
     sets = [_rset('a', rng.choice(100, 10, replace=False)), _rset('b', rng.choice(100, 12, replace=False))]
     en.preranked_gsea(scores, sets, n_perm=10, min_size=5, report=lambda f, m: calls.append((f, m)))
     assert calls and 0.0 <= calls[0][0] <= 1.0 and calls[-1][0] == pytest.approx(1.0)
+
+
+def test_null_positions_are_sorted_k_subsets_of_bounded_width():
+    rng = np.random.default_rng(0)
+    pos = en._null_positions(rng, n=5000, max_k=40, n_perm=250, chunk=64)
+    assert pos.shape == (250, 40) and pos.dtype == np.int32
+    assert (np.diff(np.sort(pos, axis=1), axis=1) > 0).all()   # no repeats within a row
+    assert pos.min() >= 0 and pos.max() < 5000
+    # rows differ from each other (a real permutation pool, not one row repeated)
+    assert len({tuple(r) for r in pos[:50]}) == 50
+
+
+def test_gsea_es_zero_has_empty_leading_edge_and_docstring_floor():
+    scores = np.array([3.0, 2.0, 1.0, 0.0, 0.0, -1.0, -2.0])
+    out = en.preranked_gsea(scores, [_rset('zero', [3, 4])], n_perm=20, min_size=1, max_size=10, seed=0)
+    assert out['results'][0]['leading_edge'] == [] and out['results'][0]['n_leading_edge'] == 0
+    assert '2/n_perm' in en.preranked_gsea.__doc__
+
+
+def test_gsea_null_is_calibrated_across_mixed_set_sizes():
+    """Random sets of several sizes must give ~uniform p (the null must be a
+    uniform k-subset for every k, not a biased slice of one pool)."""
+    rng = np.random.default_rng(5)
+    n = 3000
+    scores = rng.normal(size=n)
+    sets = [_rset(f'r{i}', rng.choice(n, size=int(k), replace=False))
+            for i, k in enumerate(rng.integers(15, 200, size=150))]
+    out = en.preranked_gsea(scores, sets, n_perm=300, min_size=10, max_size=500, seed=1)
+    p = np.array([r['pval'] for r in out['results']])
+    frac05 = float((p < 0.05).mean())
+    assert 0.0 <= frac05 <= 0.10, frac05         # sign-split null runs slightly conservative
+    assert np.median(p) > 0.25

@@ -194,6 +194,25 @@ def _es_from_positions(pos: np.ndarray, w: np.ndarray, n_ranked: int
     return es, peak, pre, post
 
 
+def _null_positions(rng: np.random.Generator, *, n: int, max_k: int, n_perm: int,
+                    chunk: int = 128) -> np.ndarray:
+    """``n_perm`` random permutation prefixes of length ``max_k`` (int32).
+
+    Each row is the first ``max_k`` entries of a random permutation of
+    ``range(n)``, *in permutation order*: the first k of a row is then a
+    uniform random k-subset for every k ≤ max_k (re-sorting the prefix first
+    would bias smaller k toward the low positions). Drawn in chunks so
+    transient memory is O(chunk × n) rather than O(n_perm × n) — at 10,000
+    permutations over 30k genes the unchunked version was gigabytes.
+    """
+    max_k = max(1, min(int(max_k), int(n)))
+    out = np.empty((int(n_perm), max_k), dtype=np.int32)
+    for start in range(0, int(n_perm), chunk):
+        stop = min(start + chunk, int(n_perm))
+        out[start:stop] = np.argsort(rng.random((stop - start, n)), axis=1)[:, :max_k]
+    return out
+
+
 def preranked_gsea(scores: np.ndarray, resolved_sets: list[ResolvedSet], *, n_perm: int = 1000,
                    min_size: int = 15, max_size: int = 500, weight: float = 1.0, seed: int = 0,
                    curve_top_n: int = 50, report: Report = None) -> dict[str, Any]:
@@ -202,7 +221,8 @@ def preranked_gsea(scores: np.ndarray, resolved_sets: list[ResolvedSet], *, n_pe
     The null for size k is the first k entries of each of n_perm random
     permutations of the ranked list — a uniform random k-subset — so one
     permutation pool serves every set size and each size class costs one
-    vectorised ES evaluation. p-values are therefore floored at 1/(n_perm+1).
+    vectorised ES evaluation. The null is split by sign (Subramanian 2005), so
+    the smallest attainable p is 1/(1 + n_same_sign), about 2/n_perm.
     """
     scores = np.asarray(scores, dtype=float)
     keep = np.flatnonzero(np.isfinite(scores))
@@ -224,7 +244,8 @@ def preranked_gsea(scores: np.ndarray, resolved_sets: list[ResolvedSet], *, n_pe
         raise ValueError(f'No gene set has between {min_size} and {max_size} ranked members')
 
     rng = np.random.default_rng(seed)
-    perms = np.argsort(rng.random((int(n_perm), n)), axis=1)
+    max_k = max(pos.size for _, pos in sets)
+    perms = _null_positions(rng, n=n, max_k=max_k, n_perm=int(n_perm))
     null_cache: dict[int, np.ndarray] = {}
 
     def null_for(k: int) -> np.ndarray:
@@ -246,7 +267,10 @@ def preranked_gsea(scores: np.ndarray, resolved_sets: list[ResolvedSet], *, n_pe
         else:
             nes = es / float(np.mean(np.abs(same)))
             p = (1 + int((np.abs(same) >= abs(es)).sum())) / (1 + same.size)
-        lead = pos[: j + 1] if es >= 0 else pos[j:]
+        if es == 0:
+            lead = pos[:0]
+        else:
+            lead = pos[: j + 1] if es > 0 else pos[j:]
         results.append({
             'name': s['name'], 'library': s['library'], 'description': s['description'],
             'url': s['url'], 'n_set': k, 'es': es, 'nes': float(nes), 'pval': float(p),

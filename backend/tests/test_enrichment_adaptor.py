@@ -183,3 +183,39 @@ def test_gsea_pca_and_scores_rankings():
                 key='custom')
     assert res2['key'] == 'custom' and res2['ranking']['n_ranked'] == 4 and res2['ranking']['genes'][0] == 'Col1a1'
     assert res2['ranking']['label'] == 'custom scores'
+
+
+def test_gsea_size_filter_uses_ranked_members_not_universe_size():
+    """A set larger than max_set_size in the universe but within it after
+    unranked (zero-loading) genes drop out must still be tested."""
+    ad = _adata_de()
+    pcs = np.zeros((len(GENES), 2))
+    for g in ('Col1a1', 'Col1a2', 'Col3a1'):
+        pcs[GENES.index(g), 0] = 0.9
+    pcs[GENES.index('Ptprc'), 0] = -0.5
+    ad.varm['PCs'] = pcs
+    a = DataAdaptor('x.h5ad', adata=ad)
+    compute_fn, apply_fn = a.prepare_gsea({'kind': 'pca', 'component': 0}, libraries=LIB,
+                                         min_set_size=2, max_set_size=4, n_perm=50)
+    res = apply_fn(compute_fn(lambda f, m: None))
+    names = {r['name'] for r in res['results']}
+    assert 'COLLAGEN' in names                  # 5 in universe, 3 ranked
+    assert res['ranking']['n_ranked'] == 4
+
+
+def test_gsea_validates_weight_seed_n_perm_and_source_and_logs_scores():
+    a = DataAdaptor('x.h5ad', adata=_adata_de())
+    rk = {'kind': 'diffexp', 'obs_column': 'grp', 'group': 'a'}
+    with pytest.raises(ValueError, match='weight'):
+        a.prepare_gsea(rk, libraries=LIB, min_set_size=2, weight=-1)
+    with pytest.raises(ValueError, match='seed'):
+        a.prepare_gsea(rk, libraries=LIB, min_set_size=2, seed=-3)
+    with pytest.raises(ValueError, match='n_perm'):
+        a.prepare_gsea(rk, libraries=LIB, min_set_size=2, n_perm=10 ** 7)
+    with pytest.raises(ValueError, match='Unknown gene-set source'):
+        a.run_overlap_enrichment(['Col1a1', 'Col1a2'], libraries=[{'source': '../../etc', 'id': 'toy'}])
+    with pytest.raises(ValueError, match='No gene set has'):
+        a.prepare_gsea(rk, libraries=LIB, min_set_size=50)
+    res = _run(a, {'kind': 'scores', 'genes': ['Col1a1', 'Col1a2', 'Ptprc'], 'scores': [2, 1, -1]})
+    assert res['params']['ranking']['genes'] == ['Col1a1', 'Col1a2', 'Ptprc']
+    assert res['params']['ranking']['scores'] == [2.0, 1.0, -1.0]

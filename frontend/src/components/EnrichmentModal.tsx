@@ -6,7 +6,7 @@ import {
   fetchCachedLibraries,
 } from '../hooks/useData'
 import {
-  formatP, curvePath, hitTicks, filterRows, resultsToGeneSets, libraryGroups, rowsToTsv, metricStripBins,
+  formatP, curvePath, hitTicks, filterRows, resultsToGeneSets, libraryGroups, rowsToTsv, metricStripBins, reconcileChoice,
   type EnrichmentResult, type EnrichmentSummary, type CachedLibrary, type GseaResult, type GseaRow, type OraRow,
 } from '../lib/enrichment'
 import { standaloneSvg, downloadText } from '../lib/svgExport'
@@ -227,12 +227,20 @@ export default function EnrichmentModal() {
     fetchEnrichmentResults(activeSlot).then(setPrevious).catch(() => setPrevious([]))
   }, [source, activeSlot])
 
+  // Pickers hold names, and the dataset behind them can change under an
+  // always-mounted modal (slot switch, deleted subset or column): drop any
+  // value the current options no longer offer.
   useEffect(() => {
-    if (!obsColumn && categoricalColumns.length > 0) {
-      const pick = categoricalColumns.find((c) => (c.categories?.length ?? 0) <= 200) ?? categoricalColumns[0]
-      setObsColumn(pick.name)
-    }
-  }, [categoricalColumns, obsColumn])
+    const names = categoricalColumns.map((c) => c.name)
+    const pick = categoricalColumns.find((c) => (c.categories?.length ?? 0) <= 200) ?? categoricalColumns[0]
+    setObsColumn((v) => reconcileChoice(v, names, pick?.name ?? '') || (pick?.name ?? ''))
+  }, [categoricalColumns])
+  useEffect(() => {
+    setCellSubset((v) => reconcileChoice(v, cellSubsets.map((s) => s.name), ''))
+  }, [cellSubsets])
+  useEffect(() => {
+    setUniverseCol((v) => reconcileChoice(v, booleanColumns.map((c) => c.name), ''))
+  }, [booleanColumns])
 
   useEffect(() => {
     if (groupOptions.length > 0 && !groupOptions.some((g) => g.value === group)) setGroup(groupOptions[0].value)
@@ -357,7 +365,7 @@ export default function EnrichmentModal() {
 
   const downloadSvg = useCallback(() => {
     if (!svgRef.current || !result || !expanded) return
-    const safe = expanded.replace(/[^A-Za-z0-9_-]+/g, '_')
+    const safe = expanded.split('\u0000').pop()!.replace(/[^A-Za-z0-9_-]+/g, '_')
     downloadText(`${result.key}_${safe}.svg`, standaloneSvg(svgRef.current.outerHTML, { background: '#16213e' }), 'image/svg+xml')
   }, [result, expanded])
 
@@ -512,7 +520,9 @@ export default function EnrichmentModal() {
   )
 
   const renderRow = (row: OraRow | GseaRow) => {
-    const isOpen = expanded === row.name
+    // Two selected libraries can share a term name; key and expansion are per library.
+    const rowKey = `${row.library}\u0000${row.name}`
+    const isOpen = expanded === rowKey
     const isOra = result?.kind === 'ora'
     const barFrac = isOra
       ? Math.min(1, -Math.log10(Math.max(row.padj, 1e-10)) / 10)
@@ -520,8 +530,8 @@ export default function EnrichmentModal() {
     const barColor = isOra || (row as GseaRow).nes >= 0 ? ACCENT : ALERT
     const genes = isOra ? (row as OraRow).genes : (row as GseaRow).leading_edge
     return (
-      <Fragment key={row.name}>
-        <tr onClick={() => setExpanded(isOpen ? null : row.name)} style={{ cursor: 'pointer', backgroundColor: isOpen ? '#0f1625' : undefined }}>
+      <Fragment key={rowKey}>
+        <tr onClick={() => setExpanded(isOpen ? null : rowKey)} style={{ cursor: 'pointer', backgroundColor: isOpen ? '#0f1625' : undefined }}>
           <td style={{ ...styles.td, color: '#eee', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.description || row.name}>{row.name}</td>
           <td style={styles.td}>{row.library}</td>
           <td style={{ ...styles.td, textAlign: 'right' }}>{row.n_set}</td>

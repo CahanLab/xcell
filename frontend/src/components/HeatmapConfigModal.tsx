@@ -16,7 +16,7 @@ import { useState, useEffect, useRef } from 'react'
 import { orderSelectedSets, groupLabel, folderSelectionState, restoreSelectedIds } from '../lib/heatmapGroups'
 import { useStore, HeatmapConfig, GeneSet, GeneSetCategoryType, cfgDefault } from '../store'
 
-const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial', 'marker_genes', 'line_association']
+const CATEGORY_ORDER: GeneSetCategoryType[] = ['manual', 'gene_clusters', 'similar_genes', 'diff_exp', 'spatial', 'marker_genes', 'line_association', 'enrichment']
 const CATEGORY_NAMES: Record<GeneSetCategoryType, string> = {
   manual: 'Manual',
   gene_clusters: 'Gene Clusters',

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  formatP, curvePath, hitTicks, filterRows, resultsToGeneSets, libraryGroups, rowsToTsv, metricStripBins,
+  formatP, curvePath, hitTicks, filterRows, resultsToGeneSets, libraryGroups, rowsToTsv, metricStripBins, reconcileChoice,
   type OraResult, type GseaResult,
 } from './enrichment'
 
@@ -85,5 +85,14 @@ describe('libraryGroups + rowsToTsv + metricStripBins', () => {
   it('bins scores by mean', () => {
     expect(metricStripBins([4, 2, -2, -4], 2)).toEqual([3, -3])
     expect(metricStripBins([], 3)).toEqual([0, 0, 0])
+  })
+})
+
+describe('reconcileChoice', () => {
+  it('keeps a value that is still offered and falls back otherwise', () => {
+    expect(reconcileChoice('leiden', ['cell_type', 'leiden'], 'cell_type')).toBe('leiden')
+    expect(reconcileChoice('gone', ['cell_type', 'leiden'], 'cell_type')).toBe('cell_type')
+    expect(reconcileChoice('', ['a'], '')).toBe('')            // '' is the "none" sentinel, always valid
+    expect(reconcileChoice('x', [], '')).toBe('')
   })
 })

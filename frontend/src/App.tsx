@@ -10,6 +10,7 @@ import { FloatingPanel, CategoryLegend, ContinuousLegend, ExpressionLegend, Biva
 import { umPerUnitForSlot, expressionLegendTitle } from './lib/datasetPanes'
 import { loadedSlots, datasetLabel, nextSlotKey, resizePanes, paneGrid } from './lib/datasetSlots'
 import { loadWorkspace, saveWorkspace } from './lib/workspaceLayout'
+import { flattenGeneSetsForExport } from './utils/exportGeneSets'
 import DatasetTabs from './components/DatasetTabs'
 import PaneDivider from './components/PaneDivider'
 import GenePanel from './components/GenePanel'
@@ -48,6 +49,8 @@ import GeneMaskModal from './components/GeneMaskModal'
 import GeneSymbolModal from './components/GeneSymbolModal'
 import ExportModal from './components/ExportModal'
 import PyscnModal from './components/PyscnModal'
+import GeneSetManagerModal from './components/GeneSetManagerModal'
+import { NewSessionDialog, ClearGeneSetsDialog } from './components/SessionDialogs'
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './components/LayerScaleInfo'
 import { MESSAGES } from './messages'
 import { buildCrumbs } from './lib/pathCrumbs'
@@ -78,6 +81,14 @@ const styles = {
     fontSize: '20px',
     fontWeight: 600,
     color: '#e94560',
+    margin: 0,
+    lineHeight: 1.1,
+  },
+  version: {
+    fontSize: '10px',
+    color: '#666',
+    lineHeight: 1.2,
+    letterSpacing: '0.3px',
   },
   statsInline: {
     fontSize: '11px',
@@ -579,8 +590,10 @@ export default function App() {
     restoreStartedRef.current = true
     ;(async () => {
       let held: Record<string, unknown> = {}
+      let listed = false
       try {
-        held = await fetch('/api/datasets').then((r) => (r.ok ? r.json() : {}))
+        const r = await fetch('/api/datasets')
+        if (r.ok) { held = await r.json(); listed = true }
         // 'primary' is left to useSchema, which is already fetching it; loading
         // it again here would reset whatever that has set up.
         for (const slot of Object.keys(held).filter((s) => s !== 'primary')) {
@@ -602,7 +615,7 @@ export default function App() {
         // Nothing else moved it, and appendDataset() omits ?dataset= for
         // primary — so every request addressed the missing slot and came back
         // 503, including mount-only fetches that never retry.
-        useStore.getState().ensureActiveSlot(Object.keys(held))
+        useStore.getState().ensureActiveSlot(Object.keys(held), listed)
         // Only now may the save effect run. Flipping this at the *start* let it
         // fire against the half-loaded state and overwrite the stored
         // arrangement with one dataset and no names, before the restore had
@@ -749,6 +762,8 @@ export default function App() {
   const [adjustSubMode, setAdjustSubMode] = useState<'adjust' | 'quilt'>('adjust')
   // State for export modal
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
+  const [isNewSessionOpen, setIsNewSessionOpen] = useState(false)
+  const setClearGeneSetsOpen = useStore((s) => s.setClearGeneSetsOpen)
 
   // State for load data modal
   const [loadSlot, setLoadSlot] = useState<DatasetSlot>('primary')
@@ -1001,20 +1016,7 @@ export default function App() {
   const geneSetCategories = useStore((state) => state.geneSetCategories)
 
   // Collect all gene sets from all categories (direct + inside folders)
-  const allGeneSets = useMemo(() => {
-    const result: { name: string; genes: string[]; category: string; folder?: string }[] = []
-    for (const cat of Object.values(geneSetCategories)) {
-      for (const gs of cat.geneSets) {
-        result.push({ name: gs.name, genes: gs.genes, category: cat.name })
-      }
-      for (const folder of cat.folders) {
-        for (const gs of folder.geneSets) {
-          result.push({ name: gs.name, genes: gs.genes, category: cat.name, folder: folder.name })
-        }
-      }
-    }
-    return result
-  }, [geneSetCategories])
+  const allGeneSets = useMemo(() => flattenGeneSetsForExport(geneSetCategories), [geneSetCategories])
 
   // Drawn shapes live in the h5ad. Read the active slot's once per load…
   const slotsResolved = useStore((s) => s.slotsResolved)
@@ -1138,6 +1140,16 @@ export default function App() {
     }
   }, [])
 
+  // File → Load…, and the empty state's button after a fresh session.
+  const openLoadDialog = useCallback(() => {
+    setIsLoadModalOpen(true)
+    setLoadError(null)
+    setLoadFilePath('')
+    setLoadMode('single')
+    setCombineFiles([])
+    browseDirectory()
+  }, [browseDirectory])
+
   // What the filter box leaves standing. Substring rather than prefix, because
   // dataset filenames carry their identity in the middle: a date, a stage, a
   // sample id.
@@ -1242,7 +1254,13 @@ export default function App() {
     <div style={styles.container}>
       <header style={styles.header}>
         <div style={styles.titleGroup}>
-          <h1 style={styles.title}>xcell</h1>
+          <div
+            style={{ display: 'flex', flexDirection: 'column' }}
+            title={`xcell ${__XCELL_VERSION__}${__XCELL_COMMIT__ ? ` · commit ${__XCELL_COMMIT__} (when the dev server started)` : ''}`}
+          >
+            <h1 style={styles.title}>xcell</h1>
+            <span style={styles.version}>v{__XCELL_VERSION__}</span>
+          </div>
           {schema && (
             <div style={{ display: 'flex', flexDirection: 'column', lineHeight: '1.3' }}>
               {schema.filename && (
@@ -1280,15 +1298,7 @@ export default function App() {
                 }}
               >
                 <div
-                  onClick={() => {
-                    setShowFileMenu(false)
-                    setIsLoadModalOpen(true)
-                    setLoadError(null)
-                    setLoadFilePath('')
-                    setLoadMode('single')
-                    setCombineFiles([])
-                    browseDirectory()
-                  }}
+                  onClick={() => { setShowFileMenu(false); openLoadDialog() }}
                   style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', color: '#ccc', display: 'flex', alignItems: 'center', gap: '8px' }}
                 >
                   <span style={{ fontSize: '14px', width: '18px', textAlign: 'center' }}>{'\u{1F4C2}'}</span>
@@ -1341,6 +1351,28 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                <div
+                  onClick={() => { setShowFileMenu(false); setClearGeneSetsOpen(true) }}
+                  style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', color: '#ccc', display: 'flex', alignItems: 'center', gap: '8px', borderTop: '1px solid #0f3460' }}
+                  title="Delete every gene set and folder in the Genes pane"
+                >
+                  <span style={{ fontSize: '14px', width: '18px', textAlign: 'center' }}>{'⌫'}</span>
+                  <div>
+                    <div>Clear all gene sets…</div>
+                    <div style={{ fontSize: '10px', color: '#888' }}>Empty the Genes pane (asks first)</div>
+                  </div>
+                </div>
+                <div
+                  onClick={() => { setShowFileMenu(false); setIsNewSessionOpen(true) }}
+                  style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', color: '#ccc', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  title="Unload every dataset and start a new analysis"
+                >
+                  <span style={{ fontSize: '14px', width: '18px', textAlign: 'center' }}>{'⟲'}</span>
+                  <div>
+                    <div>New session…</div>
+                    <div style={{ fontSize: '10px', color: '#888' }}>Unload all datasets and start fresh (asks first)</div>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -2095,8 +2127,18 @@ export default function App() {
                     )}
 
                     {!embedding && !isLoading && !error && (
-                      <div style={styles.loading}>
+                      <div style={{ ...styles.loading, textAlign: 'center' }}>
                         {schema ? MESSAGES.noEmbedding : MESSAGES.noDataLoaded}
+                        {!schema && (
+                          <div style={{ marginTop: '14px' }}>
+                            <button
+                              onClick={openLoadDialog}
+                              style={{ padding: '8px 18px', fontSize: '13px', backgroundColor: '#0f3460', color: '#4ecdc4', border: '1px solid #4ecdc4', borderRadius: '4px', cursor: 'pointer' }}
+                            >
+                              <span style={{ marginRight: '6px' }}>{'\u{1F4C2}'}</span>Load a dataset…
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </>
@@ -2203,6 +2245,13 @@ export default function App() {
       <SelectByExpressionModal />
       <GeneMaskModal />
       <GeneSymbolModal />
+      <GeneSetManagerModal />
+      <ClearGeneSetsDialog />
+      <NewSessionDialog
+        open={isNewSessionOpen}
+        onClose={() => setIsNewSessionOpen(false)}
+        onExport={() => setIsExportModalOpen(true)}
+      />
 
       {/* Export modal */}
       <ExportModal

@@ -1,5 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { execSync } from 'node:child_process'
+import pkg from './package.json'
 
 const BACKEND = process.env.XCELL_BACKEND || 'http://127.0.0.1:8000'
 
@@ -7,9 +9,24 @@ const BACKEND = process.env.XCELL_BACKEND || 'http://127.0.0.1:8000'
 // calls and would otherwise bury the message in repeats.
 let warnedUnreachable = false
 
+// Shown under the title. The commit is read once, when the dev server starts,
+// so the header only puts it in a tooltip — a long-running server can outlive
+// several merges. No git (an unpacked release) just means no commit.
+function gitCommit(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+  } catch {
+    return ''
+  }
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __XCELL_VERSION__: JSON.stringify(pkg.version),
+    __XCELL_COMMIT__: JSON.stringify(gitCommit()),
+  },
   server: {
     port: 5173,
     // Proxy API requests to FastAPI backend during development.

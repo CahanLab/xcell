@@ -549,6 +549,36 @@ def unload_dataset(slot: str):
     return {"status": "ok", "slot": slot}
 
 
+class SessionResetRequest(BaseModel):
+    clear_gene_sets: bool = False
+
+
+@router.post("/session/reset")
+def reset_session(request: SessionResetRequest):
+    """Back to a fresh session: every dataset unloaded, running tasks cancelled.
+
+    Slot-less, like /gene_sets — it is about the whole process. Gene sets are
+    kept unless asked for: they are user-level and outlive any one dataset.
+    """
+    import gc
+
+    cancelled = task_manager.cancel_all()
+    unloaded = sorted(_adaptors)
+    for slot in unloaded:
+        remove_adaptor(slot)
+    if request.clear_gene_sets:
+        gene_set_store.reset()
+    # An AnnData can be gigabytes. Collect now so the memory is back before the
+    # next load asks for it, rather than whenever the collector next runs.
+    gc.collect()
+    return {
+        "status": "ok",
+        "unloaded": unloaded,
+        "cancelled_tasks": cancelled,
+        "gene_sets_cleared": request.clear_gene_sets,
+    }
+
+
 @router.get("/schema")
 def get_schema(dataset: str | None = Query(None)):
     """Get dataset schema including available embeddings and metadata columns.

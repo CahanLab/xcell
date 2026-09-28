@@ -151,11 +151,15 @@ export function useSlotEmbedding(slot: DatasetSlot) {
 export function useSchema() {
   const { schema, setSchema, setLoading, setError, setSelectedEmbedding } = useStore()
   const slotsResolved = useStore((s) => s.slotsResolved)
+  const backendEmpty = useStore((s) => s.backendEmpty)
 
   useEffect(() => {
     if (schema) return // Already loaded
     // Which slot this asks about is only known once the backend's list is in.
     if (!slotsResolved) return
+    // Nothing loaded (a fresh session): there is no schema to ask for, and
+    // asking would 503 into an error banner on an app that is working fine.
+    if (backendEmpty) return
 
     setLoading(true)
     fetchJson<Schema>(appendDataset(`${API_BASE}/schema`))
@@ -174,7 +178,7 @@ export function useSchema() {
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
-  }, [schema, slotsResolved, setSchema, setLoading, setError, setSelectedEmbedding])
+  }, [schema, slotsResolved, backendEmpty, setSchema, setLoading, setError, setSelectedEmbedding])
 
   return schema
 }

@@ -114,6 +114,19 @@ class TaskManager:
         # Status will be set to 'cancelled' by _run when it checks the flag
         return True
 
+    def cancel_all(self) -> int:
+        """Cancel every running task. Returns how many were running.
+
+        For a session reset: the datasets these tasks were computing on are
+        about to be dropped, and a result applied afterwards would write into
+        an AnnData nobody can reach any more.
+        """
+        with self._lock:
+            running = [e for e in self._tasks.values() if e.status == 'running']
+        for entry in running:
+            entry.cancelled.set()
+        return len(running)
+
     def get_status(self, task_id: str) -> TaskEntry | None:
         """Get a task's current state. Returns None if not found."""
         with self._lock:

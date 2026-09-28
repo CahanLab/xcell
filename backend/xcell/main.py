@@ -8,12 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from xcell.adaptor import DataAdaptor
 from xcell.api.routes import router, set_adaptor
+from xcell import __version__
 from xcell import config as user_config
 
 app = FastAPI(
     title="XCell",
     description="Modern web app for scRNA-seq and spatial transcriptomics exploration",
-    version="0.1.0",
+    version=__version__,
 )
 
 # Configure CORS for development (frontend runs on different port)
@@ -69,7 +70,7 @@ def root():
     """Root endpoint with basic info."""
     return {
         "name": "XCell",
-        "version": "0.1.0",
+        "version": __version__,
         "docs": "/docs",
         "api": "/api/schema",
     }

@@ -59,6 +59,8 @@ last browse directories, and the library species.
 **The empty state has to be clean**, because after a reset it is the normal state
 rather than an edge case:
 - `ensureActiveSlot` records `backendEmpty` when the backend reports no datasets.
+  That is only when the list was actually read: a backend still starting is
+  unknown, not empty, and keeps its "not reachable yet" message.
 - `useSchema` does not fetch in that state. It would 503 and flash a red "No data
   loaded for slot 'primary'".
 - The centre panel's "No data loaded" message gains a **Load a dataset…** button.
@@ -105,6 +107,12 @@ Genes stay optional in the New tab, so the drag workflow still works.
 - Every category, folder and set has a checkbox. A folder's checkbox selects the
   folder *and* its sets, and shows indeterminate when only some are ticked.
   Unticking a set inside a ticked folder unticks the folder.
+- With a filter active, a category's or folder's checkbox acts only on the rows
+  it shows (`shownState` / `toggleShown`). A filtered Delete therefore never
+  takes a hidden set. Unticking a partly shown folder that was ticked whole also
+  unticks the folder.
+- Closing the manager (Escape, the backdrop, ×) with typed, unsaved Edit changes
+  asks first, the same question as switching to another set.
 - Folders start collapsed, so 23 pathway folders are 23 rows.
 - Toolbar:
   - *Tick all* / *Tick all matches*;

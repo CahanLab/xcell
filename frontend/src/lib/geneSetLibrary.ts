@@ -157,3 +157,63 @@ export function pickSpecies(guess: { species: string | null } | null, remembered
 export function defaultFolderName(libraryName: string, source: string): string {
   return `${libraryName} (${SOURCE_LABELS[source] ?? source})`
 }
+
+// --- selection across pages ---------------------------------------------------
+//
+// The set list is paged, a selection is not. Picks are held as name → row so a
+// set ticked on page 1 is still imported after moving to page 3, and the header
+// box can take every set the search returned rather than the 50 on screen.
+
+export type Picked = ReadonlyMap<string, SetRow>
+
+export function togglePick(picked: Picked, row: SetRow): Map<string, SetRow> {
+  const next = new Map(picked)
+  if (next.has(row.name)) next.delete(row.name); else next.set(row.name, row)
+  return next
+}
+
+export function pickRows(picked: Picked, rows: SetRow[]): Map<string, SetRow> {
+  const next = new Map(picked)
+  for (const r of rows) next.set(r.name, r)
+  return next
+}
+
+export function unpickNames(picked: Picked, names: Iterable<string>): Map<string, SetRow> {
+  const next = new Map(picked)
+  for (const n of names) next.delete(n)
+  return next
+}
+
+/** The header box. `complete` is every match of the current search that the
+ *  row filter keeps — the page itself when one page holds them all, else the
+ *  list gathered by `collectAllMatching`, or null when that is not known yet.
+ *  Only a complete list can be "all": a full page of a longer search is "some". */
+export function headerTickState(picked: Picked, page: SetRow[], complete: string[] | null): 'none' | 'some' | 'all' {
+  if (complete && complete.length > 0 && complete.every((n) => picked.has(n))) return 'all'
+  const any = page.some((r) => picked.has(r.name)) || (complete ?? []).some((n) => picked.has(n))
+  return any ? 'some' : 'none'
+}
+
+/** Every set a search matched, with its overlap, passing the row filter.
+ *
+ *  Fetches and checks `chunk` sets at a time: one request per chunk keeps
+ *  payloads bounded (a whole GO library is ~15,000 sets) and gives progress.
+ *  Stops early if a page comes back short, so a stale `total` cannot loop. */
+export async function collectAllMatching(
+  total: number,
+  fetchPage: (offset: number, limit: number) => Promise<LibrarySet[]>,
+  overlap: (sets: LibrarySet[]) => Promise<SetRow[]>,
+  filter: RowFilter,
+  opts: { chunk?: number; onProgress?: (done: number, total: number) => void } = {},
+): Promise<SetRow[]> {
+  const chunk = Math.max(1, opts.chunk ?? 1000)
+  const out: SetRow[] = []
+  for (let offset = 0; offset < total; offset += chunk) {
+    const sets = await fetchPage(offset, chunk)
+    const rows = await overlap(sets)
+    for (const r of rows) if (rowPasses(r, filter)) out.push(r)
+    opts.onProgress?.(Math.min(offset + sets.length, total), total)
+    if (sets.length < chunk) break
+  }
+  return out
+}

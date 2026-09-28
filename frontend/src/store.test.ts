@@ -654,3 +654,14 @@ describe('a backend with nothing loaded', () => {
     expect(useStore.getState().backendEmpty).toBe(false)
   })
 })
+
+describe('a large import lands collapsed', () => {
+  it('a folder can be added collapsed, and is expanded by default', () => {
+    const s = useStore.getState()
+    s.addFolderToCategory('manual', 'small', [{ name: 'a', genes: ['A'] }])
+    s.addFolderToCategory('manual', 'huge', [{ name: 'b', genes: ['B'] }], { expanded: false })
+    const folders = useStore.getState().geneSetCategories.manual.folders
+    expect(folders.find((f) => f.name === 'small')?.expanded).toBe(true)
+    expect(folders.find((f) => f.name === 'huge')?.expanded).toBe(false)
+  })
+})

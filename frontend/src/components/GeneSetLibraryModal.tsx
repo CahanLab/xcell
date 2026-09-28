@@ -14,13 +14,16 @@ import { useStore } from '../store'
 import { appendDataset, fetchVarBooleanColumns, pollTask, type VarBooleanColumn } from '../hooks/useData'
 import { flattenGeneSets } from './GenePanel'
 import {
-  attachOverlap, defaultFolderName, filterLibraries, importSets, pickSpecies, presenceLabel,
-  rowPasses, sortLibraries,
+  attachOverlap, collectAllMatching, defaultFolderName, filterLibraries, headerTickState, importSets,
+  pickRows, pickSpecies, presenceLabel, rowPasses, sortLibraries, togglePick, unpickNames,
   type LibraryEntry, type LibrarySet, type OverlapEntry, type SetRow, type Species,
 } from '../lib/geneSetLibrary'
 
 const API_BASE = '/api'
 const PAGE = 50
+// An import bigger than this lands as a collapsed folder: the Genes pane draws
+// every set of an open folder, and a whole library's worth locks the tab.
+const COLLAPSE_IMPORT_ABOVE = 100
 const SPECIES_KEY = 'xcell_librarySpecies'
 
 const dark = {
@@ -89,7 +92,15 @@ export default function GeneSetLibraryModal() {
   const [minPresent, setMinPresent] = useState(1)
   const [filterColumn, setFilterColumn] = useState<string>('')
   const [minInColumn, setMinInColumn] = useState(0)
-  const [checked, setChecked] = useState<Set<string>>(new Set())
+  // Ticked sets, by name, wherever they were ticked: the list is paged, the
+  // selection is not.
+  const [picked, setPicked] = useState<Map<string, SetRow>>(new Map())
+  // Every match of a search (after the row filter), once the header box has
+  // gathered them; `sig` says which search and filter it belongs to.
+  const [complete, setComplete] = useState<{ sig: string; names: string[] } | null>(null)
+  const [selectingAll, setSelectingAll] = useState<{ done: number; total: number } | null>(null)
+  // The terms the current rows were searched with — the boxes may since have been edited.
+  const [searchedTerms, setSearchedTerms] = useState<{ q: string; gene: string }>({ q: '', gene: '' })
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [folderName, setFolderName] = useState('')
   const [hasDataset, setHasDataset] = useState(true)
@@ -174,7 +185,7 @@ export default function GeneSetLibraryModal() {
   useEffect(() => {
     if (!isOpen) return
     setSelectedLib(null)
-    setRows([]); setTotal(0); setOffset(0); setChecked(new Set())
+    setRows([]); setTotal(0); setOffset(0); setPicked(new Map()); setComplete(null)
     loadLibraries(false)
   }, [isOpen, loadLibraries])
 
@@ -203,16 +214,21 @@ export default function GeneSetLibraryModal() {
   // --- search a cached library -----------------------------------------------
   // `terms` overrides the current search boxes, for callers that just changed
   // them and cannot wait for the state to settle (the Clear button).
+  const fetchSetsPage = useCallback(async (lib: LibraryEntry, terms: { q: string; gene: string }, from: number, limit: number) => {
+    const params = new URLSearchParams({ species: lib.species, q: terms.q, gene: terms.gene, offset: String(from), limit: String(limit) })
+    return getJson<{ total: number; sets: LibrarySet[] }>(`${API_BASE}/gene_set_sources/${lib.source}/libraries/${encodeURIComponent(lib.id)}/sets?${params}`)
+  }, [])
+
   const search = useCallback(async (lib: LibraryEntry, newOffset: number, terms?: { q: string; gene: string }) => {
     const qq = terms ? terms.q : q
     const gg = terms ? terms.gene : gene
     setSearching(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ species: lib.species, q: qq, gene: gg, offset: String(newOffset), limit: String(PAGE) })
-      const body = await getJson<{ total: number; sets: LibrarySet[] }>(`${API_BASE}/gene_set_sources/${lib.source}/libraries/${encodeURIComponent(lib.id)}/sets?${params}`)
+      const body = await fetchSetsPage(lib, { q: qq, gene: gg }, newOffset, PAGE)
       setTotal(body.total)
       setOffset(newOffset)
+      setSearchedTerms({ q: qq, gene: gg })
       setRows(body.sets)
       setRows(await overlapFor(body.sets))
     } catch (e) {
@@ -220,11 +236,11 @@ export default function GeneSetLibraryModal() {
     } finally {
       setSearching(false)
     }
-  }, [q, gene, overlapFor])
+  }, [q, gene, overlapFor, fetchSetsPage])
 
   const selectLibrary = useCallback((lib: LibraryEntry) => {
     setSelectedLib(lib)
-    setChecked(new Set()); setExpanded(new Set())
+    setPicked(new Map()); setComplete(null); setExpanded(new Set())
     setFolderName(defaultFolderName(lib.name, lib.source))
     setRows([]); setTotal(0); setOffset(0)
     if (lib.cached) search(lib, 0)
@@ -275,9 +291,11 @@ export default function GeneSetLibraryModal() {
       const sets: LibrarySet[] = body.sets.map((s) => ({ name: s.name, description: s.description, url: s.url, n_genes: s.genes.length, genes: s.genes }))
       setStringMeta({ unmapped: body.unmapped, nEdges: body.edges.length })
       setTotal(sets.length); setOffset(0)
-      setChecked(new Set(sets.map((s) => s.name)))
       setFolderName(`STRING partners (${species})`)
-      setRows(await overlapFor(sets))
+      const withOverlap = await overlapFor(sets)
+      setRows(withOverlap)
+      setPicked(pickRows(new Map(), withOverlap))
+      setComplete(null)
     } catch (e) {
       setError(String((e as Error).message || e))
     } finally {
@@ -286,19 +304,31 @@ export default function GeneSetLibraryModal() {
   }, [seedSetId, seedText, allGeneSets, species, stringLimit, stringScore, overlapFor])
 
   // --- import ------------------------------------------------------------------
-  const doImport = useCallback(() => {
-    const chosen = rows.filter((r) => checked.has(r.name))
+  const doImport = useCallback(async () => {
+    // Every pick, on this page or another. A row ticked before its overlap
+    // arrived is taken from the page if it has one by now, else checked here —
+    // an import without overlap would carry the library's spelling.
+    const onPage = new Map(rows.map((r) => [r.name, r]))
+    let chosen = [...picked.values()].map((r) => (r.overlap ? r : onPage.get(r.name) ?? r))
+    const unchecked = chosen.filter((r) => !r.overlap)
+    if (hasDataset && unchecked.length > 0) {
+      const filled = new Map((await overlapFor(unchecked)).map((r) => [r.name, r]))
+      chosen = chosen.map((r) => filled.get(r.name) ?? r)
+    }
     const meta = sourceId === 'string'
       ? { source: 'string', library: 'partners', libraryName: 'STRING partners', version: '12.0' }
       : { source: selectedLib!.source, library: selectedLib!.id, libraryName: selectedLib!.name, version: selectedLib!.version }
     const sets = importSets(chosen, meta)
     if (sets.length === 0) { setError('Nothing to import: none of the chosen sets has a gene present in the dataset'); return }
     const name = folderName.trim() || defaultFolderName(meta.libraryName, meta.source)
-    addFolderToCategory('manual', name, sets)
+    const collapsed = sets.length > COLLAPSE_IMPORT_ABOVE
+    addFolderToCategory('manual', name, sets, collapsed ? { expanded: false } : undefined)
     const skipped = chosen.length - sets.length
-    toast(`Imported ${sets.length} set${sets.length === 1 ? '' : 's'} into "${name}"${skipped ? ` (${skipped} skipped: no genes present)` : ''}`)
-    setChecked(new Set())
-  }, [rows, checked, sourceId, selectedLib, folderName, addFolderToCategory, toast])
+    toast(`Imported ${sets.length.toLocaleString()} set${sets.length === 1 ? '' : 's'} into "${name}"`
+      + `${skipped ? ` (${skipped.toLocaleString()} skipped: no genes present)` : ''}${collapsed ? ' — folder collapsed' : ''}`)
+    setPicked(new Map())
+    setComplete(null)
+  }, [rows, picked, hasDataset, overlapFor, sourceId, selectedLib, folderName, addFolderToCategory, toast])
 
   if (!isOpen) return null
 
@@ -306,10 +336,46 @@ export default function GeneSetLibraryModal() {
   const visibleLibs = sortLibraries(filterLibraries(libraries, libFilter), species)
   const rowFilter = { minPresent: hasDataset ? minPresent : 0, column: filterColumn || undefined, minInColumn }
   const shownRows = rows.filter((r) => rowPasses(r, rowFilter))
-  const nChecked = shownRows.filter((r) => checked.has(r.name)).length
-  const canImport = nChecked > 0 && (sourceId === 'string' || !!selectedLib)
+  const nPicked = picked.size
+  const nPickedElsewhere = [...picked.keys()].filter((n) => !shownRows.some((r) => r.name === n)).length
+  const canImport = nPicked > 0 && !selectingAll && (sourceId === 'string' || !!selectedLib)
 
-  const toggleChecked = (name: string) => setChecked((c) => { const n = new Set(c); n.has(name) ? n.delete(name) : n.add(name); return n })
+  // One page holds every match (always so for STRING): the page is the whole list.
+  const onePage = offset === 0 && rows.length >= total
+  const matchSig = JSON.stringify([selectedLib?.id, searchedTerms, rowFilter])
+  const completeNames = onePage
+    ? shownRows.map((r) => r.name)
+    : complete && complete.sig === matchSig ? complete.names : null
+  const headState = headerTickState(picked, shownRows, completeNames)
+
+  const toggleHeader = async () => {
+    if (headState === 'all' && completeNames) { setPicked((p) => unpickNames(p, completeNames)); return }
+    if (onePage) { setPicked((p) => pickRows(p, shownRows)); return }
+    if (!selectedLib) return
+    const lib = selectedLib
+    const terms = searchedTerms
+    const filter = rowFilter
+    const sig = matchSig
+    setError(null)
+    setSelectingAll({ done: 0, total })
+    try {
+      const all = await collectAllMatching(
+        total,
+        async (from, limit) => (await fetchSetsPage(lib, terms, from, limit)).sets,
+        overlapFor,
+        filter,
+        { onProgress: (done, t) => setSelectingAll({ done, total: t }) },
+      )
+      setPicked((p) => pickRows(p, all))
+      setComplete({ sig, names: all.map((r) => r.name) })
+    } catch (e) {
+      setError(`Could not select every set: ${(e as Error).message || e}`)
+    } finally {
+      setSelectingAll(null)
+    }
+  }
+
+  const toggleChecked = (row: SetRow) => setPicked((p) => togglePick(p, row))
   const toggleExpanded = (name: string) => setExpanded((c) => { const n = new Set(c); n.has(name) ? n.delete(name) : n.add(name); return n })
 
   const chooseSpecies = (sp: Species) => {
@@ -351,7 +417,7 @@ export default function GeneSetLibraryModal() {
           {Object.entries(sources).map(([id, info]) => (
             <button
               key={id}
-              onClick={() => { setSourceId(id); setRows([]); setTotal(0); setChecked(new Set()); setStringMeta(null); setQ(''); setGene('') }}
+              onClick={() => { setSourceId(id); setRows([]); setTotal(0); setPicked(new Map()); setComplete(null); setStringMeta(null); setQ(''); setGene('') }}
               title={info.description}
               style={{ ...btnGhost, color: sourceId === id ? dark.accent : dark.muted, borderColor: sourceId === id ? dark.accent : dark.border, background: sourceId === id ? dark.inset : 'transparent' }}
             >
@@ -500,8 +566,16 @@ export default function GeneSetLibraryModal() {
                   <thead>
                     <tr style={{ color: dark.dim, textAlign: 'left', position: 'sticky', top: 0, background: dark.inset }}>
                       <th style={{ padding: '4px 6px', width: 24 }}>
-                        <input type="checkbox" checked={shownRows.length > 0 && nChecked === shownRows.length}
-                          onChange={(e) => setChecked(e.target.checked ? new Set(shownRows.map((r) => r.name)) : new Set())} title="Select all shown" />
+                        <input
+                          type="checkbox"
+                          checked={headState === 'all'}
+                          ref={(el) => { if (el) el.indeterminate = headState === 'some' }}
+                          disabled={!!selectingAll}
+                          onChange={toggleHeader}
+                          title={onePage
+                            ? 'Select all shown'
+                            : `Select all ${total.toLocaleString()} matching sets, on every page${rowFilter.minPresent > 0 || rowFilter.column ? ' (that pass the filter)' : ''}`}
+                        />
                       </th>
                       <th style={{ padding: '4px 6px' }}>Set</th>
                       <th style={{ padding: '4px 6px', textAlign: 'right' }}>genes</th>
@@ -516,7 +590,7 @@ export default function GeneSetLibraryModal() {
                       return (
                         <React.Fragment key={r.name}>
                           <tr style={{ borderTop: `1px solid ${dark.border}` }}>
-                            <td style={{ padding: '3px 6px' }}><input type="checkbox" checked={checked.has(r.name)} onChange={() => toggleChecked(r.name)} /></td>
+                            <td style={{ padding: '3px 6px' }}><input type="checkbox" checked={picked.has(r.name)} onChange={() => toggleChecked(r)} /></td>
                             <td style={{ padding: '3px 6px', maxWidth: 420 }}>
                               <span onClick={() => toggleExpanded(r.name)} style={{ cursor: 'pointer', color: dark.text }} title={r.description || r.name}>
                                 {isOpenRow ? '▾ ' : '▸ '}{r.name}
@@ -569,11 +643,20 @@ export default function GeneSetLibraryModal() {
                 </>
               )}
               {sourceId === 'string' && total > 0 && <span style={{ color: dark.dim }}>{total} set{total === 1 ? '' : 's'}</span>}
+              {selectingAll ? (
+                <span style={{ color: dark.warn }}>Selecting… {selectingAll.done.toLocaleString()} / {selectingAll.total.toLocaleString()}</span>
+              ) : nPicked > 0 && (
+                <span style={{ color: dark.muted }}>
+                  {nPicked.toLocaleString()} selected{nPickedElsewhere > 0 ? ` (${nPickedElsewhere.toLocaleString()} not on this page)` : ''}
+                  {' '}
+                  <button onClick={() => { setPicked(new Map()); setComplete(null) }} style={{ ...btnGhost, padding: '0 6px', fontSize: 11 }}>clear</button>
+                </span>
+              )}
               <div style={{ flex: 1 }} />
               <span style={{ color: dark.dim }}>into folder</span>
               <input value={folderName} onChange={(e) => setFolderName(e.target.value)} style={{ ...field, width: 240 }} placeholder="Folder name" />
               <button onClick={doImport} disabled={!canImport} style={{ ...btn, opacity: canImport ? 1 : 0.5 }} title={hasDataset ? 'Imports the dataset spelling of each present gene' : 'Imports the library spelling (no dataset loaded)'}>
-                Import {nChecked > 0 ? nChecked : ''} set{nChecked === 1 ? '' : 's'}
+                Import {nPicked > 0 ? nPicked.toLocaleString() : ''} set{nPicked === 1 ? '' : 's'}
               </button>
             </div>
           </div>

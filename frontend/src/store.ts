@@ -1091,7 +1091,9 @@ interface AppState {
   toggleCategoryExpanded: (categoryType: GeneSetCategoryType) => void
   toggleFolderExpanded: (categoryType: GeneSetCategoryType, folderId: string) => void
   addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[], genesDown?: string[], source?: GeneSetSource) => void
-  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[]; genesDown?: string[]; source?: GeneSetSource }[]) => void
+  /** `expanded: false` files a big import collapsed — the Genes pane draws
+   *  every set of an open folder, and thousands of rows lock the tab. */
+  addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[]; genesDown?: string[]; source?: GeneSetSource }[], opts?: { expanded?: boolean }) => void
   removeGeneSetFromCategory: (categoryType: GeneSetCategoryType, geneSetId: string) => void
   removeGeneSetFromFolder: (categoryType: GeneSetCategoryType, folderId: string, geneSetId: string) => void
   removeFolder: (categoryType: GeneSetCategoryType, folderId: string) => void
@@ -1724,7 +1726,7 @@ export const useStore = create<AppState>((set, get) => {
         },
       })),
 
-    addFolderToCategory: (categoryType, folderName, geneSets) =>
+    addFolderToCategory: (categoryType, folderName, geneSets, opts) =>
       set((state) => ({
         geneSetCategories: {
           ...state.geneSetCategories,
@@ -1735,7 +1737,7 @@ export const useStore = create<AppState>((set, get) => {
               {
                 id: generateFolderId(),
                 name: folderName,
-                expanded: true,
+                expanded: opts?.expanded ?? true,
                 createdAt: new Date().toISOString(),
                 geneSets: geneSets.map((gs) => ({
                   id: generateGeneSetId(),

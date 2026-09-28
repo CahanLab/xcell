@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   sortLibraries, filterLibraries, attachOverlap, presenceLabel, importSets,
-  pickSpecies, rowPasses, defaultFolderName, type LibraryEntry, type LibrarySet, type OverlapEntry,
+  pickSpecies, rowPasses, defaultFolderName, collectAllMatching, headerTickState, togglePick, pickRows, unpickNames,
+  type LibraryEntry, type LibrarySet, type OverlapEntry, type SetRow,
 } from './geneSetLibrary'
 
 const lib = (over: Partial<LibraryEntry>): LibraryEntry => ({
@@ -92,5 +93,78 @@ describe('pickSpecies / defaultFolderName', () => {
   it('names the folder after the library and its source', () => {
     expect(defaultFolderName('Hallmark', 'msigdb')).toBe('Hallmark (MSigDB)')
     expect(defaultFolderName('GO Biological Process 2026', 'enrichr')).toBe('GO Biological Process 2026 (Enrichr)')
+  })
+})
+
+// The set list is paged (50 a page), but a selection is not: the header box
+// takes every set the search returned, and ticks survive paging.
+describe('selecting across pages', () => {
+  const librarySet = (i: number): LibrarySet => ({ name: `set${i}`, description: '', url: '', n_genes: 2, genes: [`G${i}`, 'SHARED'] })
+  const all = Array.from({ length: 2345 }, (_, i) => librarySet(i))
+  const overlapOf = (s: LibrarySet, i: number): OverlapEntry => ({
+    name: s.name, n_genes: 2, n_present: i % 3 === 0 ? 0 : 2, n_exact: 2, n_case_insensitive: 0, n_missing: 0,
+    genes_resolved: i % 3 === 0 ? [] : s.genes, genes_down_resolved: [], genes_missing: [], columns: {},
+  })
+
+  it('collectAllMatching pages through every match, checks overlap per chunk, and keeps library order', async () => {
+    const pages: [number, number][] = []
+    const overlapSizes: number[] = []
+    const progress: number[] = []
+    const rows = await collectAllMatching(
+      all.length,
+      async (offset, limit) => { pages.push([offset, limit]); return all.slice(offset, offset + limit) },
+      async (sets) => { overlapSizes.push(sets.length); return sets.map((s) => ({ ...s, overlap: overlapOf(s, Number(s.name.slice(3))) })) },
+      { minPresent: 0 },
+      { chunk: 1000, onProgress: (done) => progress.push(done) },
+    )
+    expect(pages).toEqual([[0, 1000], [1000, 1000], [2000, 1000]])
+    expect(overlapSizes).toEqual([1000, 1000, 345])
+    expect(progress).toEqual([1000, 2000, 2345])
+    expect(rows).toHaveLength(2345)
+    expect(rows[0].name).toBe('set0')
+    expect(rows[2344].name).toBe('set2344')
+  })
+
+  it('applies the row filter, so sets hidden by "≥ N present" are not taken', async () => {
+    const rows = await collectAllMatching(
+      all.length,
+      async (offset, limit) => all.slice(offset, offset + limit),
+      async (sets) => sets.map((s) => ({ ...s, overlap: overlapOf(s, Number(s.name.slice(3))) })),
+      { minPresent: 1 },
+    )
+    expect(rows).toHaveLength(2345 - Math.ceil(2345 / 3))
+    expect(rows.every((r) => (r.overlap?.n_present ?? 0) >= 1)).toBe(true)
+  })
+
+  it('stops early if the library holds fewer sets than the total said', async () => {
+    const rows = await collectAllMatching(5000, async (offset, limit) => all.slice(offset, offset + limit), async (s) => s, { minPresent: 0 })
+    expect(rows).toHaveLength(2345)
+  })
+
+  const row = (name: string): SetRow => ({ name, description: '', url: '', n_genes: 1, genes: ['A'] })
+
+  it('picks are a name → row map that toggles and survives changing pages', () => {
+    let picked = togglePick(new Map(), row('a'))
+    picked = togglePick(picked, row('b'))
+    expect([...picked.keys()]).toEqual(['a', 'b'])
+    picked = togglePick(picked, row('a'))
+    expect([...picked.keys()]).toEqual(['b'])
+    // a later page adds to it rather than replacing it
+    picked = pickRows(picked, [row('c'), row('d')])
+    expect([...picked.keys()]).toEqual(['b', 'c', 'd'])
+    expect([...unpickNames(picked, ['c', 'zzz']).keys()]).toEqual(['b', 'd'])
+  })
+
+  it('the header box is ticked only when every match is picked', () => {
+    const page = [row('a'), row('b')]
+    // one page holds every match
+    expect(headerTickState(new Map(), page, page.map((r) => r.name))).toBe('none')
+    expect(headerTickState(pickRows(new Map(), [row('a')]), page, page.map((r) => r.name))).toBe('some')
+    expect(headerTickState(pickRows(new Map(), page), page, page.map((r) => r.name))).toBe('all')
+    // several pages, not yet collected: a full page is only "some"
+    expect(headerTickState(pickRows(new Map(), page), page, null)).toBe('some')
+    // collected: all 3 matches picked
+    expect(headerTickState(pickRows(new Map(), [...page, row('c')]), page, ['a', 'b', 'c'])).toBe('all')
+    expect(headerTickState(new Map(), [], ['a'])).toBe('none')
   })
 })

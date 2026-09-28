@@ -113,6 +113,16 @@ export interface GeneSet {
 // Category types for organizing gene sets
 export type GeneSetCategoryType = 'manual' | 'gene_clusters' | 'similar_genes' | 'diff_exp' | 'spatial' | 'marker_genes' | 'line_association' | 'enrichment'
 
+export type GeneSetManagerTab = 'new' | 'edit' | 'merge'
+
+export interface GeneSetManagerSource {
+  tab: GeneSetManagerTab
+  // Where the New tab files a set: the folder or category whose + opened it
+  dest?: { cat: GeneSetCategoryType; folderId: string | null }
+  // The Edit tab's set, as a lib/geneSetManager setKey
+  focus?: string
+}
+
 export interface GeneSetFolder {
   id: string
   name: string
@@ -911,6 +921,18 @@ interface AppState {
   // Combine-gene-sets modal state
   isCombineModalOpen: boolean
   setCombineModalOpen: (open: boolean) => void
+  // Gene Set Manager: null = closed
+  geneSetManager: GeneSetManagerSource | null
+  setGeneSetManager: (src: GeneSetManagerSource | null) => void
+  // Confirm step for Clear all gene sets (File menu, Genes ⋯, the manager)
+  isClearGeneSetsOpen: boolean
+  setClearGeneSetsOpen: (open: boolean) => void
+  /** Back to the categories a fresh session starts with: every set and
+   *  folder gone, hidden categories shown again. */
+  clearAllGeneSets: () => void
+  /** Install a whole new category tree — the Gene Set Manager's edits are
+   *  pure functions over it (lib/geneSetManager.ts). */
+  replaceGeneSetCategories: (next: Record<GeneSetCategoryType, GeneSetCategory>) => void
 
   // Gene mask modal state (global)
   geneMaskModalOpen: boolean
@@ -1302,6 +1324,10 @@ interface AppState {
    *  slot that may not be loaded — and a mount-only fetch that 503s there
    *  never retries. */
   slotsResolved: boolean
+  /** The backend's slot list came back empty — the state after File → New
+   *  session. Startup's schema fetch skips it rather than 503ing into a red
+   *  "No data loaded for slot 'primary'"; a load clears it. */
+  backendEmpty: boolean
   /** Point the app at a slot that exists, given the backend's own list.
    *
    *  Takes the loaded slots rather than reading them off `datasets`: on
@@ -1466,6 +1492,8 @@ export const useStore = create<AppState>((set, get) => {
     isImportModalOpen: false,
     isGeneSetLibraryModalOpen: false,
     isCombineModalOpen: false,
+    geneSetManager: null,
+    isClearGeneSetsOpen: false,
     geneMaskModalOpen: false,
     geneSymbolModalOpen: false,
     geneMaskConfig: null,
@@ -1521,6 +1549,7 @@ export const useStore = create<AppState>((set, get) => {
     },
     activeSlot: 'primary' as DatasetSlot,
     slotsResolved: false,
+    backendEmpty: false,
     legendPanels: {},
     embeddingSnapshots: [],
     embeddingLabelColumn: null,
@@ -2614,6 +2643,10 @@ export const useStore = create<AppState>((set, get) => {
     setImportModalOpen: (open) => set({ isImportModalOpen: open }),
     setGeneSetLibraryModalOpen: (open) => set({ isGeneSetLibraryModalOpen: open }),
     setCombineModalOpen: (open) => set({ isCombineModalOpen: open }),
+    setGeneSetManager: (src) => set({ geneSetManager: src }),
+    setClearGeneSetsOpen: (open) => set({ isClearGeneSetsOpen: open }),
+    clearAllGeneSets: () => set({ geneSetCategories: createDefaultCategories(), geneSets: [] }),
+    replaceGeneSetCategories: (next) => set({ geneSetCategories: next }),
 
     // Gene mask actions
     setGeneMaskModalOpen: (open) => set({ geneMaskModalOpen: open }),
@@ -2997,9 +3030,9 @@ export const useStore = create<AppState>((set, get) => {
         [slot]: freshDs,
       })
       if (slot === state.activeSlot) {
-        set({ datasets: newDatasets, ...syncFlatFields(slot, newDatasets) })
+        set({ datasets: newDatasets, backendEmpty: false, ...syncFlatFields(slot, newDatasets) })
       } else {
-        set({ datasets: newDatasets })
+        set({ datasets: newDatasets, backendEmpty: false })
       }
     },
 
@@ -3051,8 +3084,9 @@ export const useStore = create<AppState>((set, get) => {
       const next = activeSlotFrom(state.activeSlot, loaded, Object.keys(state.datasets))
       // The flag flips either way: callers are waiting to learn the slot, not
       // waiting for it to change.
-      if (next === state.activeSlot) { set({ slotsResolved: true }); return }
-      set({ activeSlot: next, slotsResolved: true, ...syncFlatFields(next, state.datasets) })
+      const backendEmpty = loaded.length === 0
+      if (next === state.activeSlot) { set({ slotsResolved: true, backendEmpty }); return }
+      set({ activeSlot: next, slotsResolved: true, backendEmpty, ...syncFlatFields(next, state.datasets) })
     },
 
     setPaneLayout: (layout) => set({ paneLayout: layout }),

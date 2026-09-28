@@ -592,3 +592,58 @@ describe('the comparison remembers which column it came from', () => {
     expect(useStore.getState().comparison.obsColumn).toBeNull()
   })
 })
+
+describe('gene sets can be wiped and replaced wholesale', () => {
+  it('clearAllGeneSets leaves every category present and empty', () => {
+    const s = useStore.getState()
+    s.addGeneSetToCategory('manual', 'chondro', ['Sox9'])
+    s.addFolderToCategory('manual', 'Wnt', [{ name: 'ligands', genes: ['Wnt1'] }])
+    s.addGeneSetToCategory('diff_exp', 'grp1', ['Acan'])
+    s.toggleCategoryVisible('diff_exp')
+    useStore.getState().clearAllGeneSets()
+    const after = useStore.getState()
+    for (const cat of Object.values(after.geneSetCategories)) {
+      expect(cat.geneSets).toEqual([])
+      expect(cat.folders).toEqual([])
+      expect(cat.visible).toBeUndefined()
+    }
+    expect(after.geneSets).toEqual([])
+  })
+
+  it('replaceGeneSetCategories installs exactly what it is given', () => {
+    const next = useStore.getState().geneSetCategories
+    const edited = { ...next, manual: { ...next.manual, geneSets: [{ id: 'x', name: 'x', genes: ['A'] }] } }
+    useStore.getState().replaceGeneSetCategories(edited)
+    expect(useStore.getState().geneSetCategories).toBe(edited)
+  })
+
+  it('the manager opens on a tab and closes to null', () => {
+    useStore.getState().setGeneSetManager({ tab: 'new', dest: { cat: 'manual', folderId: null } })
+    expect(useStore.getState().geneSetManager?.tab).toBe('new')
+    useStore.getState().setGeneSetManager(null)
+    expect(useStore.getState().geneSetManager).toBeNull()
+  })
+})
+
+describe('a backend with nothing loaded', () => {
+  it('is recorded when the slot list comes back empty, so startup does not ask for a schema', () => {
+    useStore.setState(pristine, true)
+    expect(useStore.getState().backendEmpty).toBe(false)
+    useStore.getState().ensureActiveSlot([])
+    expect(useStore.getState().backendEmpty).toBe(true)
+    expect(useStore.getState().slotsResolved).toBe(true)
+  })
+
+  it('stops being empty once a dataset is loaded', () => {
+    useStore.setState(pristine, true)
+    useStore.getState().ensureActiveSlot([])
+    useStore.getState().loadDatasetIntoSlot('primary', PRIMARY)
+    expect(useStore.getState().backendEmpty).toBe(false)
+  })
+
+  it('is not empty when the backend holds anything', () => {
+    useStore.setState(pristine, true)
+    useStore.getState().ensureActiveSlot(['slot3'])
+    expect(useStore.getState().backendEmpty).toBe(false)
+  })
+})

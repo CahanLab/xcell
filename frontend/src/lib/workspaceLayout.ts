@@ -79,3 +79,14 @@ export function loadWorkspace(): Workspace | null {
     return null
   }
 }
+
+/** Forget the stored arrangement — File → New session. It names datasets that
+ *  are about to be unloaded; `applyWorkspace` would ignore them, but a fresh
+ *  session should not inherit a previous one's layout either. */
+export function clearWorkspace(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY)
+  } catch {
+    // Same reasoning as saveWorkspace.
+  }
+}

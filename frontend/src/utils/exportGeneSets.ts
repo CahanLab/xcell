@@ -1,4 +1,38 @@
-import type { GeneSet } from '../store'
+import type { GeneSet, GeneSetCategory } from '../store'
+
+export interface ExportedGeneSet {
+  name: string
+  genes: string[]
+  genesDown?: string[]
+  category: string
+  folder?: string
+}
+
+/**
+ * Every gene set as one flat list — File → Export → gene sets, and the backup
+ * offered before Clear all gene sets. `genesDown` and `folder` are the fields
+ * the Import modal reads back, so a directional set stays directional and a
+ * folder is rebuilt on re-import.
+ */
+export function flattenGeneSetsForExport(categories: Record<string, GeneSetCategory>): ExportedGeneSet[] {
+  const out: ExportedGeneSet[] = []
+  const entry = (gs: GeneSet, category: string, folder?: string): ExportedGeneSet => ({
+    name: gs.name,
+    genes: gs.genes,
+    ...(gs.genesDown && gs.genesDown.length > 0 ? { genesDown: gs.genesDown } : {}),
+    category,
+    ...(folder !== undefined ? { folder } : {}),
+  })
+  for (const cat of Object.values(categories)) {
+    for (const gs of cat.geneSets) out.push(entry(gs, cat.name))
+    for (const f of cat.folders) for (const gs of f.geneSets) out.push(entry(gs, cat.name, f.name))
+  }
+  return out
+}
+
+export function downloadGeneSetsJson(filename: string, sets: ExportedGeneSet[]): void {
+  triggerDownload(filename, JSON.stringify(sets, null, 2), 'application/json')
+}
 
 /**
  * Turn an arbitrary folder name into something safe to use as a filename stem.

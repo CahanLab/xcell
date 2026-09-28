@@ -14,6 +14,7 @@ import { UcellScoreModal } from './UcellScoreModal'
 import { ScoreGeneSetsModal } from './ScoreGeneSetsModal'
 import { MESSAGES } from '../messages'
 import { copyText } from '../lib/clipboard'
+import { setKey } from '../lib/geneSetManager'
 
 const API_BASE = '/api'
 
@@ -844,6 +845,7 @@ function CategoryGeneSetComponent({
   } = useStore()
   const setSelectByExpressionSource = useStore((s) => s.setSelectByExpressionSource)
   const setUcellScoreSource = useStore((s) => s.setUcellScoreSource)
+  const setGeneSetManager = useStore((s) => s.setGeneSetManager)
   const geneMaskConfig = useStore((s) => s.geneMaskConfig)
   const visibleGeneNameSet = useMemo<Set<string> | null>(() => {
     if (!geneMaskConfig?.active || !geneMaskConfig.visibleGeneNames) return null
@@ -1089,6 +1091,14 @@ function CategoryGeneSetComponent({
           <OverflowMenu
             items={[
               {
+                label: 'Edit genes…',
+                onClick: () => setGeneSetManager({
+                  tab: 'edit',
+                  focus: setKey({ cat: categoryType, folderId: folderId ?? null, setId: geneSet.id }),
+                }),
+                tooltip: 'Rename, and type or paste genes (Gene Set Manager)',
+              },
+              {
                 label: geneSet.pinned ? 'Unpin' : 'Pin to top',
                 onClick: () => toggleSetPinned(categoryType, folderId ?? null, geneSet.id),
               },
@@ -1265,14 +1275,13 @@ function GeneSetFolderComponent({
   activeGenes: string[]
   allowAddSet?: boolean
 }) {
-  const { toggleFolderExpanded, removeFolder, toggleFolderPinned, renameFolder, addGeneSetToFolder, moveGeneSetToFolder, reorderFolder } = useStore()
+  const { toggleFolderExpanded, removeFolder, toggleFolderPinned, renameFolder, moveGeneSetToFolder, reorderFolder } = useStore()
   const setScoreGeneSetsSource = useStore((s) => s.setScoreGeneSetsSource)
+  const setGeneSetManager = useStore((s) => s.setGeneSetManager)
 
   const [isEditing, setIsEditing] = useState(false)
   const [editName, setEditName] = useState(folder.name)
   const editInputRef = useRef<HTMLInputElement>(null)
-  const [showAddSet, setShowAddSet] = useState(false)
-  const [newSetNameInFolder, setNewSetNameInFolder] = useState('')
   const [isSetDragOver, setIsSetDragOver] = useState(false)
   const [folderDropIndicator, setFolderDropIndicator] = useState<'above' | 'below' | null>(null)
   const folderRowRef = useRef<HTMLDivElement>(null)
@@ -1357,15 +1366,6 @@ function GeneSetFolderComponent({
       renameFolder(categoryType, folder.id, trimmed)
     }
     setIsEditing(false)
-  }
-
-  const handleCreateSetInFolder = () => {
-    const trimmed = newSetNameInFolder.trim()
-    if (trimmed) {
-      addGeneSetToFolder(categoryType, folder.id, trimmed, [])
-      setNewSetNameInFolder('')
-      setShowAddSet(false)
-    }
   }
 
   const totalGenes = folder.geneSets.reduce((sum, gs) => sum + gs.genes.length, 0)
@@ -1461,9 +1461,9 @@ function GeneSetFolderComponent({
               style={{ ...styles.iconButton, fontSize: '11px', color: '#888' }}
               onClick={(e) => {
                 e.stopPropagation()
-                setShowAddSet(true)
+                setGeneSetManager({ tab: 'new', dest: { cat: categoryType, folderId: folder.id } })
               }}
-              title="New gene set in this folder"
+              title="New gene set in this folder — type or paste its genes"
             >
               +
             </button>
@@ -1519,31 +1519,6 @@ function GeneSetFolderComponent({
       </div>
       {folder.expanded && (
         <div style={styles.folderContent}>
-          {showAddSet && (
-            <div style={{ marginBottom: '4px', display: 'flex', gap: '4px' }}>
-              <input
-                type="text"
-                placeholder="Set name..."
-                value={newSetNameInFolder}
-                onChange={(e) => setNewSetNameInFolder(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreateSetInFolder()
-                  if (e.key === 'Escape') {
-                    setNewSetNameInFolder('')
-                    setShowAddSet(false)
-                  }
-                }}
-                style={{ ...styles.searchInput, flex: 1, padding: '3px 6px', fontSize: '11px' }}
-                autoFocus
-              />
-              <button
-                style={{ ...styles.addButton, padding: '3px 8px', fontSize: '10px' }}
-                onClick={handleCreateSetInFolder}
-              >
-                Add
-              </button>
-            </div>
-          )}
           {pinSort(folder.geneSets).map((gs) => (
             <CategoryGeneSetComponent
               key={gs.id}
@@ -1719,7 +1694,7 @@ function GeneSetCategoryComponent({
               e.stopPropagation()
               onAddNewSet()
             }}
-            title="New gene set"
+            title="New gene set — type or paste its genes"
           >
             +
           </button>
@@ -1801,7 +1776,9 @@ export function flattenGeneSets(categories: Record<GeneSetCategoryType, GeneSetC
 }
 
 export default function GenePanel() {
-  const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSet, addGeneSetToCategory, addFolderToCategory, setImportModalOpen, setGeneSetLibraryModalOpen, setGeneMapSource, setEnrichmentSource } = useStore()
+  const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSetToCategory, addFolderToCategory, setImportModalOpen, setGeneSetLibraryModalOpen, setGeneMapSource, setEnrichmentSource } = useStore()
+  const setGeneSetManager = useStore((s) => s.setGeneSetManager)
+  const setClearGeneSetsOpen = useStore((s) => s.setClearGeneSetsOpen)
   const selectedCellIndices = useStore((s) => s.selectedCellIndices)
   const { colorByGene, colorByGenes, colorByScore, clearExpressionColor, colorByBivariate, clearBivariateColor, addGeneSetHighlight, addCellSetHighlight, removeHighlightLayer, updateHighlightLayer, clearHighlightOverlay } = useDataActions()
   const scoreMatrices = useStore((s) => s.schema?.score_matrices)
@@ -1838,8 +1815,6 @@ export default function GenePanel() {
 
   // Flatten gene sets for bivariate selection
   const allGeneSets = flattenGeneSets(geneSetCategories)
-  const [newSetName, setNewSetName] = useState('')
-  const [showNewSetInput, setShowNewSetInput] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [showNewFolderInput, setShowNewFolderInput] = useState(false)
   const [selectedSearchGenes, setSelectedSearchGenes] = useState<Set<string>>(new Set())
@@ -1947,14 +1922,6 @@ export default function GenePanel() {
     }
   }
 
-  const handleCreateSet = () => {
-    if (newSetName.trim()) {
-      addGeneSet(newSetName.trim(), [])
-      setNewSetName('')
-      setShowNewSetInput(false)
-    }
-  }
-
   const handleCreateFolder = () => {
     const trimmed = newFolderName.trim()
     if (trimmed) {
@@ -1971,6 +1938,16 @@ export default function GenePanel() {
           <div style={styles.title}>Genes</div>
           <OverflowMenu
             items={[
+              {
+                label: 'Manage gene sets…',
+                onClick: () => setGeneSetManager({ tab: 'new' }),
+                tooltip: 'Create from pasted genes, edit, merge several, delete many at once',
+              },
+              {
+                label: 'Clear all gene sets…',
+                onClick: () => setClearGeneSetsOpen(true),
+                tooltip: 'Delete every gene set and folder (asks first)',
+              },
               {
                 label: MESSAGES.geneMask.menuItem,
                 onClick: () => setGeneMaskModalOpen(true),
@@ -2001,6 +1978,21 @@ export default function GenePanel() {
               },
             ]}
           />
+          <button
+            onClick={() => setGeneSetManager({ tab: 'new' })}
+            style={{
+              padding: '2px 8px',
+              fontSize: '10px',
+              backgroundColor: '#0f3460',
+              color: '#4ecdc4',
+              border: '1px solid #1a1a2e',
+              borderRadius: '3px',
+              cursor: 'pointer',
+            }}
+            title="Gene Set Manager — paste genes into a new set, edit, merge several, delete many at once"
+          >
+            Manage
+          </button>
           <button
             onClick={() => setGeneSetLibraryModalOpen(true)}
             style={{
@@ -2180,27 +2172,6 @@ export default function GenePanel() {
 
         {geneTab === 'sets' && (
         <>
-        {/* New Set Input (for manual category) */}
-        {showNewSetInput && (
-          <div style={{ marginBottom: '12px', display: 'flex', gap: '4px' }}>
-            <input
-              type="text"
-              placeholder="Set name..."
-              value={newSetName}
-              onChange={(e) => setNewSetName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleCreateSet()
-                if (e.key === 'Escape') setShowNewSetInput(false)
-              }}
-              style={{ ...styles.searchInput, flex: 1 }}
-              autoFocus
-            />
-            <button style={styles.addButton} onClick={handleCreateSet}>
-              Add
-            </button>
-          </div>
-        )}
-
         {/* New Folder Input (for manual category) */}
         {showNewFolderInput && (
           <div style={{ marginBottom: '12px', display: 'flex', gap: '4px' }}>
@@ -2265,7 +2236,7 @@ export default function GenePanel() {
               onColorByGene={colorByGene}
               onColorBySet={handleColorBySet}
               activeGenes={selectedGenes}
-              onAddNewSet={catType === 'manual' ? () => setShowNewSetInput(true) : undefined}
+              onAddNewSet={catType === 'manual' ? () => setGeneSetManager({ tab: 'new', dest: { cat: 'manual', folderId: null } }) : undefined}
               onAddNewFolder={catType === 'manual' ? () => setShowNewFolderInput(true) : undefined}
             />
           )

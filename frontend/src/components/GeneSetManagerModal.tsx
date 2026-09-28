@@ -272,6 +272,9 @@ export default function GeneSetManagerModal() {
   // Tree editing: a new folder, renaming in place, drag and drop
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [folderDraft, setFolderDraft] = useState('')
+  // As with renaming: Enter creates, and the input's blur on unmount would
+  // create again from a stale closure. This makes it once.
+  const folderOpenRef = useRef(false)
   // 'f:<folderKey>' or 's:<setKey>' — the row whose name is being edited
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
@@ -349,7 +352,7 @@ export default function GeneSetManagerModal() {
       setCollapsedCats(new Set())
       setStatus(null)
       setConfirmDelete(false)
-      setCreatingFolder(false); setFolderDraft('')
+      setCreatingFolder(false); setFolderDraft(''); folderOpenRef.current = false
       setRenaming(null); renameOpenRef.current = false
       setDragKeys(null); setDropTarget(null); setUndo(null)
       setNewName(''); setNewUp(''); setNewDown(''); setNewShowDown(false); setNewKeepMissing(false); setNewError(null)
@@ -391,6 +394,12 @@ export default function GeneSetManagerModal() {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') requestCloseRef.current() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  // A hover-to-open timer must not fire into a closed manager.
+  useEffect(() => {
+    if (open) return
+    if (expandTimerRef.current) { window.clearTimeout(expandTimerRef.current.id); expandTimerRef.current = null }
   }, [open])
 
   useEffect(() => {
@@ -546,6 +555,8 @@ export default function GeneSetManagerModal() {
   }
 
   const createFolder = () => {
+    if (!folderOpenRef.current) return
+    folderOpenRef.current = false
     const name = folderDraft.trim()
     setCreatingFolder(false)
     setFolderDraft('')
@@ -672,12 +683,20 @@ export default function GeneSetManagerModal() {
   const mergeInto = (keys: string[], targetKey: string) => {
     const sourceKeys = keys.filter((k) => k !== targetKey && findGeneSet(cats, k))
     if (sourceKeys.length === 0) return
+    // A merge rewrites the target and deletes the sources. If either is the set
+    // open with unsaved edits, the draft would be lost — or, for the target,
+    // saved later over the merge — so ask, as switching sets or closing does.
+    const touchesFocus = !!focusKey && (focusKey === targetKey || sourceKeys.includes(focusKey))
+    if (touchesFocus && editTouched && editDirty
+      && !window.confirm(`Discard your unsaved edits to "${focused?.name}"?`)) return
     try {
       const { cats: next, merged } = mergeSetsInto(cats, keys, targetKey)
       const first = findGeneSet(cats, sourceKeys[0])!
       const what = sourceKeys.length === 1 ? `“${first.name}” (${whereIs(sourceKeys[0])})` : plural(sourceKeys.length, 'set')
       applyTreeChange(next, new Map(),
         `Merged ${what} into “${merged.name}” (${whereIs(targetKey)}) — ${plural(merged.genes.length, 'gene')}`)
+      if (focusKey === targetKey) loadEdit(merged)
+      else if (focusKey && sourceKeys.includes(focusKey)) { setFocusKey(null); loadEdit(null) }
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err))
     }
@@ -1109,7 +1128,7 @@ export default function GeneSetManagerModal() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
                 <button
                   style={{ ...styles.smallButton, color: '#4ecdc4' }}
-                  onClick={() => { setCreatingFolder(true); setFolderDraft('') }}
+                  onClick={() => { folderOpenRef.current = true; setCreatingFolder(true); setFolderDraft('') }}
                   title="Make a folder in Manual, then drag sets onto it"
                 >
                   + New folder
@@ -1155,7 +1174,7 @@ export default function GeneSetManagerModal() {
                     onChange={(e) => setFolderDraft(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') createFolder()
-                      if (e.key === 'Escape') { e.stopPropagation(); setCreatingFolder(false); setFolderDraft('') }
+                      if (e.key === 'Escape') { e.stopPropagation(); folderOpenRef.current = false; setCreatingFolder(false); setFolderDraft('') }
                     }}
                     onBlur={createFolder}
                     placeholder="New folder name (in Manual) — Enter to create"

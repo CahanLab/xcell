@@ -12,9 +12,8 @@ import {
   EMPTY_SELECTION,
   toggleSet,
   toggleFolder,
-  toggleCategory,
-  folderState,
-  categoryState,
+  shownState,
+  toggleShown,
   selectAllShown,
   deleteSelection,
   selectionSummary,
@@ -214,7 +213,6 @@ describe('selection', () => {
     expect(sel.folders.has(fk('manual', 'f1'))).toBe(true)
     expect(sel.sets.has(sk('manual', 'f1', 'w1'))).toBe(true)
     expect(sel.sets.has(sk('manual', 'f1', 'w2'))).toBe(true)
-    expect(folderState(c.manual.folders[0], 'manual', sel)).toBe('all')
     // and again unticks all of it
     const off = toggleFolder(sel, 'manual', c.manual.folders[0])
     expect(off.folders.size + off.sets.size).toBe(0)
@@ -226,7 +224,6 @@ describe('selection', () => {
     sel = toggleSet(sel, 'manual', c.manual.folders[0], 'w1')
     expect(sel.folders.has(fk('manual', 'f1'))).toBe(false)
     expect(sel.sets.has(sk('manual', 'f1', 'w2'))).toBe(true)
-    expect(folderState(c.manual.folders[0], 'manual', sel)).toBe('some')
   })
 
   it('ticking every set of a folder one by one ticks the folder too', () => {
@@ -240,7 +237,7 @@ describe('selection', () => {
   it('an empty folder can be ticked on its own', () => {
     const c = cats()
     const sel = toggleFolder(EMPTY_SELECTION, 'manual', c.manual.folders[2])
-    expect(folderState(c.manual.folders[2], 'manual', sel)).toBe('all')
+    expect(sel.folders.has(fk('manual', 'f3'))).toBe(true)
   })
 
   it('a top-level set toggles without touching folders', () => {
@@ -250,14 +247,72 @@ describe('selection', () => {
     expect(sel.sets.size).toBe(0)
   })
 
-  it('a category tick covers its folders and sets', () => {
-    const c = cats()
-    const sel = toggleCategory(EMPTY_SELECTION, c.manual)
-    expect(categoryState(c.manual, sel)).toBe('all')
+})
+
+// A checkbox in the tree acts on what its row shows: with no filter that is
+// the whole category or folder; with one, only the matches — so a filtered
+// Delete can never take a set that was hidden.
+describe('ticking what is shown', () => {
+  const view = (q: string, cat: GeneSetCategoryType) => filterTree(cats(), ORDER, q).filter((x) => x.cat === cat)
+  const folderView = (q: string, folderId: string) => {
+    const c = filterTree(cats(), ORDER, q).find((x) => x.folders.some((f) => f.folder.id === folderId))!
+    return [{ ...c, folders: c.folders.filter((f) => f.folder.id === folderId), sets: [] }]
+  }
+
+  it('with no filter a category tick covers every folder and set, and ticks back off', () => {
+    const v = view('', 'manual')
+    const sel = toggleShown(EMPTY_SELECTION, v)
+    expect(shownState(sel, v)).toBe('all')
     expect(sel.folders.size).toBe(3)
     expect(sel.sets.size).toBe(5)
-    expect(categoryState(c.gene_clusters, sel)).toBe('none')
-    expect(categoryState(c.manual, toggleCategory(sel, c.manual))).toBe('none')
+    expect(shownState(sel, view('', 'gene_clusters'))).toBe('none')
+    const off = toggleShown(sel, v)
+    expect(off.sets.size + off.folders.size).toBe(0)
+  })
+
+  it('with no filter a folder tick is the same as ticking the folder', () => {
+    const c = cats()
+    expect(toggleShown(EMPTY_SELECTION, folderView('', 'f1'))).toEqual(toggleFolder(EMPTY_SELECTION, 'manual', c.manual.folders[0]))
+  })
+
+  it('reports some when only part of what is shown is ticked', () => {
+    const sel = toggleSet(EMPTY_SELECTION, 'manual', cats().manual.folders[0], 'w1')
+    expect(shownState(sel, folderView('', 'f1'))).toBe('some')
+  })
+
+  it('a filtered category tick takes only the matches', () => {
+    const sel = toggleShown(EMPTY_SELECTION, view('ligands', 'manual'))
+    expect(sel.sets.has(sk('manual', 'f1', 'w1'))).toBe(true)
+    expect(sel.sets.has(sk('manual', 'f1', 'w2'))).toBe(false)
+    expect(sel.folders.has(fk('manual', 'f1'))).toBe(false)
+    // BMP's only set matched, so the folder is shown whole and ticked whole
+    expect(sel.folders.has(fk('manual', 'f2'))).toBe(true)
+    expect(sel.sets.has(sk('manual', null, 's1'))).toBe(false)
+    // Deleting now removes exactly what was shown
+    const out = deleteSelection(cats(), sel)
+    expect(out.manual.folders.map((f) => f.id)).toEqual(['f1', 'f3'])
+    expect(out.manual.folders[0].geneSets.map((g) => g.id)).toEqual(['w2'])
+    expect(out.manual.geneSets.map((g) => g.id)).toEqual(['s1', 's2'])
+  })
+
+  it('unticking a partly shown folder that was ticked whole unticks the folder too', () => {
+    const whole = toggleFolder(EMPTY_SELECTION, 'manual', cats().manual.folders[0])
+    const v = folderView('ligands', 'f1')
+    expect(shownState(whole, v)).toBe('all')
+    const sel = toggleShown(whole, v)
+    expect(sel.folders.has(fk('manual', 'f1'))).toBe(false)
+    expect(sel.sets.has(sk('manual', 'f1', 'w1'))).toBe(false)
+    expect(sel.sets.has(sk('manual', 'f1', 'w2'))).toBe(true)
+    // so a delete keeps the folder and the set that was unticked
+    expect(deleteSelection(cats(), sel).manual.folders[0].geneSets.map((g) => g.id)).toEqual(['w1'])
+  })
+
+  it('ticking the last unticked sets of a folder through a filter ticks the folder', () => {
+    const one = toggleSet(EMPTY_SELECTION, 'manual', cats().manual.folders[0], 'w2')
+    const sel = toggleShown(one, folderView('ligands', 'f1'))
+    expect(sel.folders.has(fk('manual', 'f1'))).toBe(true)
+    // and Tick all matches promotes the same way
+    expect(selectAllShown(one, filterTree(cats(), ORDER, 'ligands')).folders.has(fk('manual', 'f1'))).toBe(true)
   })
 })
 

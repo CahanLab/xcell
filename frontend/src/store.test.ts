@@ -641,6 +641,13 @@ describe('a backend with nothing loaded', () => {
     expect(useStore.getState().backendEmpty).toBe(false)
   })
 
+  it('is not assumed when the list could not be read — an unreachable backend is not an empty one', () => {
+    useStore.setState(pristine, true)
+    useStore.getState().ensureActiveSlot([], false)
+    expect(useStore.getState().backendEmpty).toBe(false)
+    expect(useStore.getState().slotsResolved).toBe(true)
+  })
+
   it('is not empty when the backend holds anything', () => {
     useStore.setState(pristine, true)
     useStore.getState().ensureActiveSlot(['slot3'])

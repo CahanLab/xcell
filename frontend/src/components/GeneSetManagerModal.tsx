@@ -16,7 +16,6 @@ import {
   MANAGER_ORDER,
   NEW_FOLDER,
   addFolder,
-  categoryState,
   countGeneSets,
   deleteSelection,
   destinationFromValue,
@@ -25,7 +24,6 @@ import {
   filterTree,
   findGeneSet,
   folderKey,
-  folderState,
   gatherSelectedSets,
   insertGeneSet,
   makeGeneIndex,
@@ -35,13 +33,14 @@ import {
   selectAllShown,
   selectionSummary,
   setKey,
+  shownState,
   suggestMergeName,
-  toggleCategory,
-  toggleFolder,
   toggleSet,
+  toggleShown,
   updateGeneSet,
   type Categories,
   type Destination,
+  type FilteredCategory,
   type GeneIndex,
   type GeneResolution,
   type MergeRule,
@@ -342,12 +341,15 @@ export default function GeneSetManagerModal() {
 
   const index: GeneIndex | null = useMemo(() => (universe ? makeGeneIndex(universe) : null), [universe])
 
+  // Escape goes through the same guard as the backdrop and ×; a ref, so the
+  // listener sees the current edit state without re-subscribing per keystroke.
+  const requestCloseRef = useRef<() => void>(() => {})
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSource(null) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') requestCloseRef.current() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, setSource])
+  }, [open])
 
   useEffect(() => {
     if (!status) return
@@ -394,9 +396,17 @@ export default function GeneSetManagerModal() {
   const suggested = selectedSets.length >= 2 ? suggestMergeName(selectedSets.map((s) => s.set.name), rule) : ''
   const shownMergeName = mergeNameEdited ? mergeName : suggested
 
+  // Leaving with typed, unsaved edits asks first — the same question as
+  // switching to another set. Closing is the likelier way to lose them.
+  const requestClose = () => {
+    if (editTouched && editDirty && !window.confirm(`Discard your unsaved edits to "${focused?.name}"?`)) return
+    setSource(null)
+  }
+  requestCloseRef.current = requestClose
+
   if (!source) return null
 
-  const close = () => setSource(null)
+  const close = requestClose
 
   // A remembered destination whose folder has since been deleted falls back
   // to Manual rather than failing at Create.
@@ -542,9 +552,9 @@ export default function GeneSetManagerModal() {
             })}
           >
             <TriCheckbox
-              state={categoryState(c.category, selection)}
-              onChange={() => setSelection((s) => toggleCategory(s, c.category))}
-              title={`Tick everything in ${c.category.name}`}
+              state={shownState(selection, [c])}
+              onChange={() => setSelection((s) => toggleShown(s, [c]))}
+              title={searching ? `Tick every match in ${c.category.name}` : `Tick everything in ${c.category.name}`}
             />
             <span style={{ color: '#888', fontSize: '9px', width: '10px' }}>{collapsed ? '▶' : '▼'}</span>
             <span>{c.category.name}</span>
@@ -556,6 +566,7 @@ export default function GeneSetManagerModal() {
             <>
               {c.folders.map((f) => {
                 const isOpen = searching || expanded.has(f.key)
+                const view: FilteredCategory[] = [{ ...c, folders: [f], sets: [] }]
                 return (
                   <div key={f.key}>
                     <div
@@ -563,9 +574,9 @@ export default function GeneSetManagerModal() {
                       onClick={() => toggleExpanded(f.key)}
                     >
                       <TriCheckbox
-                        state={folderState(f.folder, c.cat, selection)}
-                        onChange={() => setSelection((s) => toggleFolder(s, c.cat, f.folder))}
-                        title="Tick this folder and everything in it"
+                        state={shownState(selection, view)}
+                        onChange={() => setSelection((s) => toggleShown(s, view))}
+                        title={f.whole ? 'Tick this folder and everything in it' : `Tick the ${f.sets.length} matching sets`}
                       />
                       <span style={{ color: '#888', fontSize: '9px', width: '10px' }}>{isOpen ? '▼' : '▶'}</span>
                       <span style={{ color: '#ccc', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>📁 {f.folder.name}</span>

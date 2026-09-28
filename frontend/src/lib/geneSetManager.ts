@@ -178,11 +178,6 @@ export type TickState = 'none' | 'some' | 'all'
 const folderSetKeys = (cat: GeneSetCategoryType, f: GeneSetFolder) =>
   f.geneSets.map((gs) => setKey({ cat, folderId: f.id, setId: gs.id }))
 
-export function folderState(folder: GeneSetFolder, cat: GeneSetCategoryType, sel: Selection): TickState {
-  if (sel.folders.has(folderKey({ cat, folderId: folder.id }))) return 'all'
-  return folderSetKeys(cat, folder).some((k) => sel.sets.has(k)) ? 'some' : 'none'
-}
-
 export function toggleFolder(sel: Selection, cat: GeneSetCategoryType, folder: GeneSetFolder): Selection {
   const fk = folderKey({ cat, folderId: folder.id })
   const sets = new Set(sel.sets)
@@ -218,39 +213,6 @@ export function toggleSet(
     if (folder && folderSetKeys(cat, folder).every((fk) => sets.has(fk))) {
       folders.add(folderKey({ cat, folderId: folder.id }))
     }
-  }
-  return { sets, folders }
-}
-
-function categoryKeys(category: GeneSetCategory) {
-  const cat = category.type
-  return {
-    folders: category.folders.map((f) => folderKey({ cat, folderId: f.id })),
-    sets: [
-      ...category.folders.flatMap((f) => folderSetKeys(cat, f)),
-      ...category.geneSets.map((gs) => setKey({ cat, folderId: null, setId: gs.id })),
-    ],
-  }
-}
-
-export function categoryState(category: GeneSetCategory, sel: Selection): TickState {
-  const { folders, sets } = categoryKeys(category)
-  if (folders.length + sets.length === 0) return 'none'
-  const ticked = folders.filter((k) => sel.folders.has(k)).length + sets.filter((k) => sel.sets.has(k)).length
-  if (ticked === 0) return 'none'
-  return ticked === folders.length + sets.length ? 'all' : 'some'
-}
-
-export function toggleCategory(sel: Selection, category: GeneSetCategory): Selection {
-  const { folders: fks, sets: sks } = categoryKeys(category)
-  const sets = new Set(sel.sets)
-  const folders = new Set(sel.folders)
-  if (categoryState(category, sel) === 'all') {
-    for (const k of fks) folders.delete(k)
-    for (const k of sks) sets.delete(k)
-  } else {
-    for (const k of fks) folders.add(k)
-    for (const k of sks) sets.add(k)
   }
   return { sets, folders }
 }
@@ -315,7 +277,9 @@ export function filterTree(cats: Categories, order: GeneSetCategoryType[], query
 }
 
 /** Tick everything the filter shows: folders shown whole as folders, the rest
- *  set by set — so a filtered bulk delete never takes a set the user could not see. */
+ *  set by set — so a filtered bulk delete never takes a set the user could not
+ *  see. A partly shown folder whose sets end up all ticked is ticked whole,
+ *  as `toggleSet` does. */
 export function selectAllShown(sel: Selection, tree: FilteredCategory[]): Selection {
   const sets = new Set(sel.sets)
   const folders = new Set(sel.folders)
@@ -323,8 +287,40 @@ export function selectAllShown(sel: Selection, tree: FilteredCategory[]): Select
     for (const f of c.folders) {
       if (f.whole) folders.add(f.key)
       for (const gs of f.sets) sets.add(setKey({ cat: c.cat, folderId: f.folder.id, setId: gs.id }))
+      const all = folderSetKeys(c.cat, f.folder)
+      if (all.length > 0 && all.every((k) => sets.has(k))) folders.add(f.key)
     }
     for (const gs of c.sets) sets.add(setKey({ cat: c.cat, folderId: null, setId: gs.id }))
+  }
+  return { sets, folders }
+}
+
+/** A tree row's checkbox — a category, or one folder (pass a one-folder view)
+ *  — reflects and toggles only what that row shows. Unfiltered, that is all
+ *  of it; filtered, only the matches. */
+export function shownState(sel: Selection, view: FilteredCategory[]): TickState {
+  const shown = selectAllShown(EMPTY_SELECTION, view)
+  const total = shown.sets.size + shown.folders.size
+  if (total === 0) return 'none'
+  let ticked = 0
+  for (const k of shown.sets) if (sel.sets.has(k)) ticked++
+  for (const k of shown.folders) if (sel.folders.has(k)) ticked++
+  if (ticked === 0) return 'none'
+  return ticked === total ? 'all' : 'some'
+}
+
+export function toggleShown(sel: Selection, view: FilteredCategory[]): Selection {
+  if (shownState(sel, view) !== 'all') return selectAllShown(sel, view)
+  const sets = new Set(sel.sets)
+  const folders = new Set(sel.folders)
+  for (const c of view) {
+    for (const f of c.folders) {
+      // Unticking any of its sets means the folder is no longer ticked whole —
+      // left ticked, a delete would still take the sets just unticked.
+      folders.delete(f.key)
+      for (const gs of f.sets) sets.delete(setKey({ cat: c.cat, folderId: f.folder.id, setId: gs.id }))
+    }
+    for (const gs of c.sets) sets.delete(setKey({ cat: c.cat, folderId: null, setId: gs.id }))
   }
   return { sets, folders }
 }

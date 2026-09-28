@@ -1079,7 +1079,6 @@ interface AppState {
   setError: (error: string | null) => void
 
   // Gene set actions (legacy - for backward compatibility)
-  addGeneSet: (name: string, genes: string[]) => void
   removeGeneSet: (name: string) => void
   addGenesToSet: (setName: string, genes: string[]) => void
   removeGenesFromSet: (setName: string, genes: string[]) => void
@@ -1093,7 +1092,6 @@ interface AppState {
   toggleFolderExpanded: (categoryType: GeneSetCategoryType, folderId: string) => void
   addGeneSetToCategory: (categoryType: GeneSetCategoryType, name: string, genes: string[], genesDown?: string[], source?: GeneSetSource) => void
   addFolderToCategory: (categoryType: GeneSetCategoryType, folderName: string, geneSets: { name: string; genes: string[]; genesDown?: string[]; source?: GeneSetSource }[]) => void
-  addGeneSetToFolder: (categoryType: GeneSetCategoryType, folderId: string, name: string, genes: string[]) => void
   removeGeneSetFromCategory: (categoryType: GeneSetCategoryType, geneSetId: string) => void
   removeGeneSetFromFolder: (categoryType: GeneSetCategoryType, folderId: string, geneSetId: string) => void
   removeFolder: (categoryType: GeneSetCategoryType, folderId: string) => void
@@ -1333,8 +1331,12 @@ interface AppState {
    *  Takes the loaded slots rather than reading them off `datasets`: on
    *  startup the primary slot's schema arrives on its own path, so the store
    *  briefly shows it as unloaded when it is not. The backend's list is the
-   *  only account that is true at this moment. */
-  ensureActiveSlot: (loaded: string[]) => void
+   *  only account that is true at this moment.
+   *
+   *  `listed` is false when that list could not be read (the backend still
+   *  starting, say): the slots are then unknown, not absent, and
+   *  `backendEmpty` stays false so startup still asks — and reports why. */
+  ensureActiveSlot: (loaded: string[], listed?: boolean) => void
   setPaneLayout: (layout: { cols: number[]; rows: number[] }) => void
   /** Rename a dataset for display. Empty clears it, and its filename is used. */
   setDatasetDisplayName: (slot: DatasetSlot, name: string) => void
@@ -1648,22 +1650,6 @@ export const useStore = create<AppState>((set, get) => {
     setError: (error) => set({ error }),
 
     // Gene set actions (global)
-    addGeneSet: (name, genes) =>
-      set((state) => {
-        const newGeneSet = { id: generateGeneSetId(), name, genes }
-        return {
-          // Add to legacy flat list
-          geneSets: [...state.geneSets, newGeneSet],
-          // Also add to manual category in hierarchical structure
-          geneSetCategories: {
-            ...state.geneSetCategories,
-            manual: {
-              ...state.geneSetCategories.manual,
-              geneSets: [...state.geneSetCategories.manual.geneSets, newGeneSet],
-            },
-          },
-        }
-      }),
 
     removeGeneSet: (name) =>
       set((state) => ({
@@ -1760,24 +1746,6 @@ export const useStore = create<AppState>((set, get) => {
                 })),
               },
             ],
-          },
-        },
-      })),
-
-    addGeneSetToFolder: (categoryType, folderId, name, genes) =>
-      set((state) => ({
-        geneSetCategories: {
-          ...state.geneSetCategories,
-          [categoryType]: {
-            ...state.geneSetCategories[categoryType],
-            folders: state.geneSetCategories[categoryType].folders.map((f) =>
-              f.id === folderId
-                ? {
-                    ...f,
-                    geneSets: [...f.geneSets, { id: generateGeneSetId(), name, genes }],
-                  }
-                : f
-            ),
           },
         },
       })),
@@ -3079,12 +3047,12 @@ export const useStore = create<AppState>((set, get) => {
       })
     },
 
-    ensureActiveSlot: (loaded) => {
+    ensureActiveSlot: (loaded, listed = true) => {
       const state = get()
       const next = activeSlotFrom(state.activeSlot, loaded, Object.keys(state.datasets))
       // The flag flips either way: callers are waiting to learn the slot, not
       // waiting for it to change.
-      const backendEmpty = loaded.length === 0
+      const backendEmpty = listed && loaded.length === 0
       if (next === state.activeSlot) { set({ slotsResolved: true, backendEmpty }); return }
       set({ activeSlot: next, slotsResolved: true, backendEmpty, ...syncFlatFields(next, state.datasets) })
     },

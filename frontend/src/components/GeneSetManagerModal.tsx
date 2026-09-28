@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import {
   useStore,
   generateFolderId,
@@ -28,6 +28,10 @@ import {
   insertGeneSet,
   makeGeneIndex,
   mergeGeneSets,
+  mergeSetsInto,
+  moveSets,
+  remapSelection,
+  renameFolder,
   parseGeneText,
   resolveGenes,
   selectAllShown,
@@ -175,6 +179,23 @@ function ResolutionSummary({
   )
 }
 
+// Sets dragged inside the manager. Its own type, so a drag from the Genes
+// pane (or anywhere else) is never mistaken for one of these.
+const MANAGER_DRAG_TYPE = 'application/x-xcell-manager-sets'
+
+// A small "3 sets" badge as the drag image when several ticked sets travel together.
+function setDragBadge(e: DragEvent, text: string) {
+  const el = document.createElement('div')
+  el.textContent = text
+  Object.assign(el.style, {
+    position: 'fixed', top: '-100px', left: '-100px', padding: '3px 10px', background: '#0f3460',
+    color: '#4ecdc4', border: '1px solid #4ecdc4', borderRadius: '10px', font: '12px sans-serif',
+  })
+  document.body.appendChild(el)
+  e.dataTransfer.setDragImage(el, 12, 12)
+  window.setTimeout(() => el.remove(), 0)
+}
+
 function DestinationSelect({
   cats, value, onChange, newFolderName, onNewFolderName,
 }: {
@@ -248,6 +269,24 @@ export default function GeneSetManagerModal() {
   const [status, setStatus] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
+  // Tree editing: a new folder, renaming in place, drag and drop
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [folderDraft, setFolderDraft] = useState('')
+  // 'f:<folderKey>' or 's:<setKey>' — the row whose name is being edited
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  // Enter commits and the input's blur would commit again; this makes it once.
+  const renameOpenRef = useRef(false)
+  const [hoverRow, setHoverRow] = useState<string | null>(null)
+  const [dragKeys, setDragKeys] = useState<string[] | null>(null)
+  // 'c:<cat>' | 'f:<folderKey>' | 's:<setKey>'
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const expandTimerRef = useRef<{ key: string; id: number } | null>(null)
+  // The last move or merge, undoable while nothing else has changed the tree.
+  const [undo, setUndo] = useState<{
+    label: string; before: Categories; after: Categories; selection: Selection; focusKey: string | null
+  } | null>(null)
+
   // New tab
   const [newName, setNewName] = useState('')
   const [newDest, setNewDest] = useState(destinationValue({ cat: 'manual', folderId: null }))
@@ -310,6 +349,9 @@ export default function GeneSetManagerModal() {
       setCollapsedCats(new Set())
       setStatus(null)
       setConfirmDelete(false)
+      setCreatingFolder(false); setFolderDraft('')
+      setRenaming(null); renameOpenRef.current = false
+      setDragKeys(null); setDropTarget(null); setUndo(null)
       setNewName(''); setNewUp(''); setNewDown(''); setNewShowDown(false); setNewKeepMissing(false); setNewError(null)
       setNewFolderName('')
       setNewDest(validDestination(cats, source.dest ? destinationValue(source.dest) : destinationValue({ cat: 'manual', folderId: null })))
@@ -482,6 +524,187 @@ export default function GeneSetManagerModal() {
     setStatus(`Deleted ${parts.join(' and ')}`)
   }
 
+  // --- tree editing: new folder, rename, move, merge ---------------------------
+
+  // A move or merge rewrites keys (a key names the set's folder): ticks and
+  // the Edit focus follow the set, and the change can be undone.
+  const applyTreeChange = (next: Categories, keyMap: ReadonlyMap<string, string>, label: string) => {
+    setUndo({ label, before: cats, after: next, selection, focusKey })
+    replace(next)
+    setSelection(remapSelection(selection, keyMap, next))
+    if (focusKey && keyMap.has(focusKey)) setFocusKey(keyMap.get(focusKey)!)
+    setStatus(null)
+  }
+
+  const undoLast = () => {
+    if (!undo || undo.after !== cats) return
+    replace(undo.before)
+    setSelection(undo.selection)
+    setFocusKey(undo.focusKey)
+    setUndo(null)
+    setStatus('Undone')
+  }
+
+  const createFolder = () => {
+    const name = folderDraft.trim()
+    setCreatingFolder(false)
+    setFolderDraft('')
+    if (!name) return
+    const folder: GeneSetFolder = { id: generateFolderId(), name, expanded: true, createdAt: new Date().toISOString(), geneSets: [] }
+    replace(addFolder(cats, 'manual', folder))
+    setExpanded((prev) => new Set(prev).add(folderKey({ cat: 'manual', folderId: folder.id })))
+    setCollapsedCats((prev) => { const n = new Set(prev); n.delete('manual'); return n })
+    setStatus(`Created folder “${name}” in Manual — drag sets onto it`)
+  }
+
+  const startRename = (rowId: string, current: string) => {
+    renameOpenRef.current = true
+    setRenaming(rowId)
+    setRenameDraft(current)
+  }
+
+  const commitRename = () => {
+    if (!renameOpenRef.current || !renaming) return
+    renameOpenRef.current = false
+    const target = renaming
+    const name = renameDraft.trim()
+    setRenaming(null)
+    if (!name) return
+    if (target.startsWith('f:')) {
+      const [cat, folderId] = target.slice(2).split('|') as [GeneSetCategoryType, string]
+      const f = cats[cat]?.folders.find((x) => x.id === folderId)
+      if (!f || f.name === name) return
+      replace(renameFolder(cats, cat, folderId, name))
+      setStatus(`Renamed folder “${f.name}” to “${name}”`)
+    } else {
+      const key = target.slice(2)
+      const gs = findGeneSet(cats, key)
+      if (!gs || gs.name === name) return
+      replace(updateGeneSet(cats, key, { name }))
+      setStatus(`Renamed “${gs.name}” to “${name}”`)
+    }
+  }
+
+  const cancelRename = () => { renameOpenRef.current = false; setRenaming(null) }
+
+  const renameInput = () => (
+    <input
+      autoFocus
+      value={renameDraft}
+      onChange={(e) => setRenameDraft(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commitRename()
+        // Stop here, or the manager's own Escape handler closes the window too.
+        if (e.key === 'Escape') { e.stopPropagation(); cancelRename() }
+      }}
+      onBlur={commitRename}
+      style={{ ...styles.input, padding: '1px 6px', fontSize: '12px', flex: 1, minWidth: 0 }}
+    />
+  )
+
+  const clearExpandTimer = () => {
+    if (expandTimerRef.current) { window.clearTimeout(expandTimerRef.current.id); expandTimerRef.current = null }
+  }
+
+  const endDrag = () => { setDragKeys(null); setDropTarget(null); clearExpandTimer() }
+
+  const startDrag = (e: DragEvent, key: string, name: string) => {
+    // A ticked set carries every ticked set with it; an unticked one goes alone.
+    const keys = selection.sets.has(key) ? selectedSets.map((s) => s.key) : [key]
+    e.dataTransfer.setData(MANAGER_DRAG_TYPE, JSON.stringify(keys))
+    e.dataTransfer.setData('text/plain', keys.length > 1 ? `${keys.length} gene sets` : name)
+    e.dataTransfer.effectAllowed = 'move'
+    if (keys.length > 1) setDragBadge(e, `${keys.length} sets`)
+    setDragKeys(keys)
+  }
+
+  // Drop-target handlers for one row. `accept` false leaves the drop refused.
+  const dropProps = (rowId: string, accept: boolean, onDropKeys: (keys: string[]) => void, openFolderKey?: string) => ({
+    onDragOver: (e: DragEvent) => {
+      if (!dragKeys || !accept) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      if (dropTarget !== rowId) setDropTarget(rowId)
+      // Hovering a closed folder opens it, so a set inside can be a merge target.
+      if (openFolderKey && !expanded.has(openFolderKey) && expandTimerRef.current?.key !== openFolderKey) {
+        clearExpandTimer()
+        const id = window.setTimeout(() => {
+          setExpanded((prev) => new Set(prev).add(openFolderKey))
+          expandTimerRef.current = null
+        }, 600)
+        expandTimerRef.current = { key: openFolderKey, id }
+      }
+    },
+    onDragLeave: (e: DragEvent) => {
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+      if (dropTarget === rowId) setDropTarget(null)
+      if (openFolderKey && expandTimerRef.current?.key === openFolderKey) clearExpandTimer()
+    },
+    onDrop: (e: DragEvent) => {
+      if (!dragKeys || !accept) return
+      e.preventDefault()
+      const keys = dragKeys
+      endDrag()
+      onDropKeys(keys)
+    },
+  })
+
+  const moveTo = (keys: string[], dest: Destination, label: string) => {
+    try {
+      const { cats: next, keyMap } = moveSets(cats, keys, dest)
+      if (keyMap.size === 0) { setStatus(`Already in ${label}`); return }
+      applyTreeChange(next, keyMap, `Moved ${keyMap.size === 1 ? `“${findGeneSet(next, [...keyMap.values()][0])?.name}”` : plural(keyMap.size, 'set')} to ${label}`)
+      if (dest.folderId) setExpanded((prev) => new Set(prev).add(folderKey({ cat: dest.cat, folderId: dest.folderId! })))
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // Where a set lives, for messages: sets often share a name (every pathway
+  // folder has its "ligands"), so the name alone does not say which.
+  const whereIs = (key: string) => {
+    const [cat, folderId] = key.split('|') as [GeneSetCategoryType, string]
+    return (folderId && cats[cat]?.folders.find((f) => f.id === folderId)?.name) || cats[cat]?.name || ''
+  }
+
+  const mergeInto = (keys: string[], targetKey: string) => {
+    const sourceKeys = keys.filter((k) => k !== targetKey && findGeneSet(cats, k))
+    if (sourceKeys.length === 0) return
+    try {
+      const { cats: next, merged } = mergeSetsInto(cats, keys, targetKey)
+      const first = findGeneSet(cats, sourceKeys[0])!
+      const what = sourceKeys.length === 1 ? `“${first.name}” (${whereIs(sourceKeys[0])})` : plural(sourceKeys.length, 'set')
+      applyTreeChange(next, new Map(),
+        `Merged ${what} into “${merged.name}” (${whereIs(targetKey)}) — ${plural(merged.genes.length, 'gene')}`)
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const dropHint = (kind: 'move' | 'merge') => (
+    <span style={{ ...styles.count, color: kind === 'move' ? '#4ecdc4' : '#e9a23b', fontWeight: 600 }}>
+      {kind === 'move' ? '⤵ move here' : '⊕ merge into'}
+    </span>
+  )
+
+  const targetStyle = (rowId: string, kind: 'move' | 'merge'): CSSProperties => (dropTarget === rowId
+    ? kind === 'move'
+      ? { outline: '1px dashed #4ecdc4', backgroundColor: 'rgba(78,205,196,0.12)' }
+      : { outline: '1px dashed #e9a23b', backgroundColor: 'rgba(233,162,59,0.16)' }
+    : {})
+
+  const editButton = (rowId: string, current: string) => (hoverRow === rowId && renaming !== rowId && !dragKeys ? (
+    <button
+      onClick={(e) => { e.stopPropagation(); startRename(rowId, current) }}
+      style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '11px', padding: '0 2px', flex: '0 0 auto' }}
+      title="Rename (or double-click the name)"
+    >
+      ✎
+    </button>
+  ) : null)
+
   const mergeDestKey = mergeDestValue === NEW_FOLDER ? null : mergeDestValue
   const mergeDestDoomed = mergeDeleteSources && !!mergeDestKey && (() => {
     const d = destinationFromValue(mergeDestKey)
@@ -513,21 +736,39 @@ export default function GeneSetManagerModal() {
 
   const renderSetRow = (cat: GeneSetCategoryType, folder: GeneSetFolder | null, gs: GeneSet, indent: number) => {
     const key = setKey({ cat, folderId: folder?.id ?? null, setId: gs.id })
+    const rowId = `s:${key}`
     const isFocused = key === focusKey && tab === 'edit'
+    const isDragged = !!dragKeys?.includes(key)
     return (
       <div
         key={key}
-        style={{ ...styles.row, paddingLeft: `${indent}px`, backgroundColor: isFocused ? '#0f3460' : undefined }}
+        draggable={renaming !== rowId}
+        onDragStart={(e) => startDrag(e, key, gs.name)}
+        onDragEnd={endDrag}
+        onMouseEnter={() => setHoverRow(rowId)}
+        onMouseLeave={() => setHoverRow((h) => (h === rowId ? null : h))}
+        {...dropProps(rowId, !isDragged, (keys) => mergeInto(keys, key))}
+        style={{
+          ...styles.row, paddingLeft: `${indent}px`, backgroundColor: isFocused ? '#0f3460' : undefined,
+          opacity: isDragged ? 0.45 : 1, cursor: 'grab', ...targetStyle(rowId, 'merge'),
+        }}
+        title="Drag onto a folder to move it, onto another set to merge (union) into that set"
       >
         <TriCheckbox state={selection.sets.has(key) ? 'all' : 'none'} onChange={() => setSelection((s) => toggleSet(s, cat, folder, gs.id))} />
-        <span
-          onClick={() => focusSet(cat, folder?.id ?? null, gs)}
-          style={{ cursor: 'pointer', color: isFocused ? '#4ecdc4' : '#ddd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-          title="Edit this set"
-        >
-          {gs.name}
-        </span>
-        <span style={styles.count}>{geneCountLabel(gs)}</span>
+        {renaming === rowId ? renameInput() : (
+          <>
+            <span
+              onClick={() => focusSet(cat, folder?.id ?? null, gs)}
+              onDoubleClick={(e) => { e.stopPropagation(); startRename(rowId, gs.name) }}
+              style={{ cursor: 'pointer', color: isFocused ? '#4ecdc4' : '#ddd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title="Click to edit its genes, double-click to rename"
+            >
+              {gs.name}
+            </span>
+            {editButton(rowId, gs.name)}
+          </>
+        )}
+        {dropTarget === rowId ? dropHint('merge') : <span style={styles.count}>{geneCountLabel(gs)}</span>}
       </div>
     )
   }
@@ -544,7 +785,8 @@ export default function GeneSetManagerModal() {
       return (
         <div key={c.cat} style={{ marginBottom: '6px' }}>
           <div
-            style={{ ...styles.row, backgroundColor: '#0f1625', cursor: 'pointer', fontWeight: 600 }}
+            {...dropProps(`c:${c.cat}`, true, (keys) => moveTo(keys, { cat: c.cat, folderId: null }, `${c.category.name} (top level)`))}
+            style={{ ...styles.row, backgroundColor: '#0f1625', cursor: 'pointer', fontWeight: 600, ...targetStyle(`c:${c.cat}`, 'move') }}
             onClick={() => setCollapsedCats((prev) => {
               const next = new Set(prev)
               if (next.has(c.cat)) next.delete(c.cat); else next.add(c.cat)
@@ -558,20 +800,26 @@ export default function GeneSetManagerModal() {
             />
             <span style={{ color: '#888', fontSize: '9px', width: '10px' }}>{collapsed ? '▶' : '▼'}</span>
             <span>{c.category.name}</span>
-            <span style={styles.count}>
-              {c.category.folders.length > 0 && `${plural(c.category.folders.length, 'folder')} · `}{plural(nSets, 'set')}
-            </span>
+            {dropTarget === `c:${c.cat}` ? dropHint('move') : (
+              <span style={styles.count}>
+                {c.category.folders.length > 0 && `${plural(c.category.folders.length, 'folder')} · `}{plural(nSets, 'set')}
+              </span>
+            )}
           </div>
           {!collapsed && (
             <>
               {c.folders.map((f) => {
                 const isOpen = searching || expanded.has(f.key)
                 const view: FilteredCategory[] = [{ ...c, folders: [f], sets: [] }]
+                const rowId = `f:${f.key}`
                 return (
                   <div key={f.key}>
                     <div
-                      style={{ ...styles.row, paddingLeft: '20px', cursor: 'pointer' }}
-                      onClick={() => toggleExpanded(f.key)}
+                      {...dropProps(rowId, true, (keys) => moveTo(keys, { cat: c.cat, folderId: f.folder.id }, `${c.category.name} › ${f.folder.name}`), f.key)}
+                      onMouseEnter={() => setHoverRow(rowId)}
+                      onMouseLeave={() => setHoverRow((h) => (h === rowId ? null : h))}
+                      style={{ ...styles.row, paddingLeft: '20px', cursor: 'pointer', ...targetStyle(rowId, 'move') }}
+                      onClick={() => { if (renaming !== rowId) toggleExpanded(f.key) }}
                     >
                       <TriCheckbox
                         state={shownState(selection, view)}
@@ -579,10 +827,23 @@ export default function GeneSetManagerModal() {
                         title={f.whole ? 'Tick this folder and everything in it' : `Tick the ${f.sets.length} matching sets`}
                       />
                       <span style={{ color: '#888', fontSize: '9px', width: '10px' }}>{isOpen ? '▼' : '▶'}</span>
-                      <span style={{ color: '#ccc', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>📁 {f.folder.name}</span>
-                      <span style={styles.count}>
-                        {searching && !f.whole ? `${f.sets.length} of ${f.folder.geneSets.length}` : plural(f.folder.geneSets.length, 'set')}
-                      </span>
+                      {renaming === rowId ? (<><span>📁</span>{renameInput()}</>) : (
+                        <>
+                          <span
+                            onDoubleClick={(e) => { e.stopPropagation(); startRename(rowId, f.folder.name) }}
+                            style={{ color: '#ccc', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                            title="Double-click to rename"
+                          >
+                            📁 {f.folder.name}
+                          </span>
+                          {editButton(rowId, f.folder.name)}
+                        </>
+                      )}
+                      {dropTarget === rowId ? dropHint('move') : (
+                        <span style={styles.count}>
+                          {searching && !f.whole ? `${f.sets.length} of ${f.folder.geneSets.length}` : plural(f.folder.geneSets.length, 'set')}
+                        </span>
+                      )}
                     </div>
                     {isOpen && f.sets.map((gs) => renderSetRow(c.cat, f.folder, gs, 44))}
                     {isOpen && f.folder.geneSets.length === 0 && (
@@ -846,6 +1107,13 @@ export default function GeneSetManagerModal() {
                 style={styles.input}
               />
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
+                <button
+                  style={{ ...styles.smallButton, color: '#4ecdc4' }}
+                  onClick={() => { setCreatingFolder(true); setFolderDraft('') }}
+                  title="Make a folder in Manual, then drag sets onto it"
+                >
+                  + New folder
+                </button>
                 <button style={styles.smallButton} onClick={() => setSelection((s) => selectAllShown(s, tree))}>
                   {searching ? 'Tick all matches' : 'Tick all'}
                 </button>
@@ -877,9 +1145,35 @@ export default function GeneSetManagerModal() {
                 </span>
               </div>
             </div>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px 8px' }}>{renderTree()}</div>
-            <div style={{ minHeight: '26px', padding: '4px 12px', borderTop: '1px solid #0f3460', fontSize: '11px', color: '#4ecdc4', display: 'flex', alignItems: 'center' }}>
-              {status}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px 8px' }}>
+              {creatingFolder && (
+                <div style={{ ...styles.row, marginBottom: '4px', backgroundColor: '#0f1625' }}>
+                  <span>📁</span>
+                  <input
+                    autoFocus
+                    value={folderDraft}
+                    onChange={(e) => setFolderDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') createFolder()
+                      if (e.key === 'Escape') { e.stopPropagation(); setCreatingFolder(false); setFolderDraft('') }
+                    }}
+                    onBlur={createFolder}
+                    placeholder="New folder name (in Manual) — Enter to create"
+                    style={{ ...styles.input, padding: '2px 6px', flex: 1 }}
+                  />
+                </div>
+              )}
+              {renderTree()}
+            </div>
+            <div style={{ minHeight: '26px', padding: '4px 12px', borderTop: '1px solid #0f3460', fontSize: '11px', color: '#4ecdc4', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {undo && undo.after === cats ? (
+                <>
+                  <span>{undo.label}</span>
+                  <button onClick={undoLast} style={{ ...styles.smallButton, padding: '1px 8px', color: '#e9a23b' }}>Undo</button>
+                </>
+              ) : status ?? (
+                <span style={{ color: '#666' }}>Drag a set onto a folder to move it, or onto another set to merge them.</span>
+              )}
             </div>
           </div>
 

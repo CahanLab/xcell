@@ -29,6 +29,10 @@ import {
   destinationFromValue,
   NEW_FOLDER,
   MANAGER_ORDER,
+  moveSets,
+  mergeSetsInto,
+  renameFolder,
+  remapSelection,
   type Selection,
 } from './geneSetManager'
 import { createDefaultCategories, type GeneSet, type GeneSetCategoryType } from '../store'
@@ -476,5 +480,132 @@ describe('destinations', () => {
 
   it('MANAGER_ORDER covers every category, including ones the panel does not list', () => {
     expect([...MANAGER_ORDER].sort()).toEqual(Object.keys(createDefaultCategories()).sort())
+  })
+})
+
+// --- drag and drop ---------------------------------------------------------------
+
+describe('moveSets', () => {
+  it('moves a set into another folder, appended, and reports its new key', () => {
+    const { cats: out, keyMap } = moveSets(cats(), [sk('manual', 'f1', 'w1')], { cat: 'manual', folderId: 'f2' })
+    expect(out.manual.folders[0].geneSets.map((g) => g.id)).toEqual(['w2'])
+    expect(out.manual.folders[1].geneSets.map((g) => g.id)).toEqual(['b1', 'w1'])
+    expect(keyMap.get(sk('manual', 'f1', 'w1'))).toBe(sk('manual', 'f2', 'w1'))
+  })
+
+  it('moves to a category top level, across categories, keeping the set whole', () => {
+    const { cats: out } = moveSets(cats(), [sk('manual', 'f1', 'w2')], { cat: 'gene_clusters', folderId: null })
+    const moved = out.gene_clusters.geneSets[0]
+    expect(moved.id).toBe('w2')
+    expect(moved.genesDown).toEqual(['Dkk1'])
+    expect(out.manual.folders[0].geneSets.map((g) => g.id)).toEqual(['w1'])
+  })
+
+  it('moves several in tree order, and leaves ones already there where they are', () => {
+    const c = cats()
+    const { cats: out, keyMap } = moveSets(c, [sk('manual', null, 's1'), sk('manual', 'f2', 'b1'), sk('manual', 'f1', 'w2')], { cat: 'manual', folderId: 'f2' })
+    expect(out.manual.folders[1].geneSets.map((g) => g.id)).toEqual(['b1', 'w2', 's1'])
+    expect(out.manual.geneSets.map((g) => g.id)).toEqual(['s2'])
+    expect(keyMap.has(sk('manual', 'f2', 'b1'))).toBe(false)
+  })
+
+  it('refuses a destination folder that is not there, and ignores unknown keys', () => {
+    expect(() => moveSets(cats(), [sk('manual', null, 's1')], { cat: 'manual', folderId: 'nope' })).toThrow(/folder/i)
+    const c = cats()
+    expect(moveSets(c, [sk('manual', null, 'zzz')], { cat: 'manual', folderId: 'f2' }).cats).toBe(c)
+  })
+})
+
+describe('mergeSetsInto', () => {
+  it('unions the dropped set into the target, which keeps its name and place; the dropped set goes', () => {
+    const { cats: out, merged } = mergeSetsInto(cats(), [sk('gene_clusters', 'g1', 'm1')], sk('manual', null, 's1'))
+    expect(merged.name).toBe('Chondro')
+    expect(merged.genes).toEqual(['Sox9', 'Col2a1', 'Acan', 'Wnt1'])
+    expect(out.manual.geneSets.map((g) => g.id)).toEqual(['s1', 's2'])
+    expect(out.manual.geneSets[0].genes).toEqual(['Sox9', 'Col2a1', 'Acan', 'Wnt1'])
+    expect(out.gene_clusters.folders[0].geneSets).toEqual([])
+  })
+
+  it('unions down genes too, and a gene cannot be both up and down', () => {
+    const c = cats()
+    c.manual.geneSets[0] = { ...c.manual.geneSets[0], genesDown: ['Axin2'] }
+    const { merged } = mergeSetsInto(c, [sk('manual', 'f1', 'w2')], sk('manual', null, 's1'))
+    expect(merged.genes).toEqual(['Sox9', 'Col2a1', 'Acan', 'Axin2', 'Lef1'])
+    expect(merged.genesDown).toEqual(['Dkk1'])
+  })
+
+  it('takes several dropped sets at once and ignores the target among them', () => {
+    const { cats: out, merged } = mergeSetsInto(cats(), [sk('manual', 'f1', 'w1'), sk('manual', 'f2', 'b1'), sk('manual', null, 's1')], sk('manual', null, 's1'))
+    expect(merged.genes).toEqual(['Sox9', 'Col2a1', 'Acan', 'Wnt1', 'Wnt3a', 'Bmp2', 'Bmp4'])
+    expect(out.manual.folders[0].geneSets.map((g) => g.id)).toEqual(['w2'])
+    expect(out.manual.folders[1].geneSets).toEqual([])
+    expect(out.manual.geneSets.map((g) => g.id)).toEqual(['s1', 's2'])
+  })
+
+  it('refuses a target that is not there', () => {
+    expect(() => mergeSetsInto(cats(), [sk('manual', null, 's1')], sk('manual', null, 'zzz'))).toThrow()
+  })
+})
+
+describe('renameFolder', () => {
+  it('renames one folder; blank names are refused', () => {
+    const c = cats()
+    const out = renameFolder(c, 'manual', 'f2', '  Bone morphogenetic  ')
+    expect(out.manual.folders[1].name).toBe('Bone morphogenetic')
+    expect(out.manual.folders[0]).toBe(c.manual.folders[0])
+    expect(() => renameFolder(cats(), 'manual', 'f2', '   ')).toThrow()
+  })
+})
+
+describe('remapSelection', () => {
+  it('follows moved sets to their new keys', () => {
+    const c = cats()
+    let sel = toggleFolder(EMPTY_SELECTION, 'manual', c.manual.folders[0])
+    sel = toggleSet(sel, 'manual', null, 's2')
+    const { cats: out, keyMap } = moveSets(c, [sk('manual', 'f1', 'w1')], { cat: 'manual', folderId: 'f3' })
+    const next = remapSelection(sel, keyMap, out)
+    expect(next.sets.has(sk('manual', 'f3', 'w1'))).toBe(true)
+    expect(next.sets.has(sk('manual', 'f1', 'w1'))).toBe(false)
+    expect(next.sets.has(sk('manual', 'f1', 'w2'))).toBe(true)
+    expect(next.sets.has(sk('manual', null, 's2'))).toBe(true)
+    // f1 still holds only ticked sets, so it stays ticked as a folder
+    expect(next.folders.has(fk('manual', 'f1'))).toBe(true)
+  })
+
+  it('a ticked folder that gains an unticked set is no longer ticked whole, so Delete cannot take it', () => {
+    const c = cats()
+    const sel = toggleFolder(EMPTY_SELECTION, 'manual', c.manual.folders[1]) // BMP
+    const { cats: out, keyMap } = moveSets(c, [sk('manual', null, 's1')], { cat: 'manual', folderId: 'f2' })
+    const next = remapSelection(sel, keyMap, out)
+    expect(next.folders.has(fk('manual', 'f2'))).toBe(false)
+    expect(next.sets.has(sk('manual', 'f2', 'b1'))).toBe(true)
+    expect(deleteSelection(out, next).manual.folders[1].geneSets.map((g) => g.id)).toEqual(['s1'])
+  })
+
+  it('a folder ticked because its sets were, emptied by a move or merge, is no longer ticked', () => {
+    const c = cats()
+    // BMP's only set ticked → BMP ticked as a folder
+    const sel = toggleSet(EMPTY_SELECTION, 'manual', c.manual.folders[1], 'b1')
+    expect(sel.folders.has(fk('manual', 'f2'))).toBe(true)
+    const moved = moveSets(c, [sk('manual', 'f2', 'b1')], { cat: 'manual', folderId: 'f3' })
+    expect(remapSelection(sel, moved.keyMap, moved.cats).folders.has(fk('manual', 'f2'))).toBe(false)
+    const merged = mergeSetsInto(c, [sk('manual', 'f2', 'b1')], sk('manual', null, 's1'))
+    expect(remapSelection(sel, new Map(), merged.cats).folders.has(fk('manual', 'f2'))).toBe(false)
+  })
+
+  it('an empty folder ticked on purpose stays ticked', () => {
+    const c = cats()
+    const sel = toggleFolder(EMPTY_SELECTION, 'manual', c.manual.folders[2])
+    const moved = moveSets(c, [sk('manual', null, 's1')], { cat: 'manual', folderId: 'f1' })
+    expect(remapSelection(sel, moved.keyMap, moved.cats).folders.has(fk('manual', 'f3'))).toBe(true)
+  })
+
+  it('drops keys for sets that no longer exist (merged away)', () => {
+    const c = cats()
+    const sel = toggleSet(toggleSet(EMPTY_SELECTION, 'manual', null, 's2'), 'manual', c.manual.folders[1], 'b1')
+    const { cats: out } = mergeSetsInto(c, [sk('manual', null, 's2')], sk('manual', null, 's1'))
+    const next = remapSelection(sel, new Map(), out)
+    expect(next.sets.has(sk('manual', null, 's2'))).toBe(false)
+    expect(next.sets.has(sk('manual', 'f2', 'b1'))).toBe(true)
   })
 })

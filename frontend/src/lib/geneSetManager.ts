@@ -521,3 +521,93 @@ export function destinationOptions(cats: Categories, order: GeneSetCategoryType[
   }
   return out
 }
+
+// ---------------------------------------------------------------------------
+// Drag and drop, renaming
+
+interface Located { key: string; cat: GeneSetCategoryType; folderId: string | null; set: GeneSet }
+
+// Every set in tree order: a category's folders, then its own sets.
+function allSets(cats: Categories): Located[] {
+  const out: Located[] = []
+  const order = [...MANAGER_ORDER, ...(Object.keys(cats) as GeneSetCategoryType[]).filter((c) => !MANAGER_ORDER.includes(c))]
+  for (const cat of order) {
+    const c = cats[cat]
+    if (!c) continue
+    for (const f of c.folders) for (const set of f.geneSets) out.push({ key: setKey({ cat, folderId: f.id, setId: set.id }), cat, folderId: f.id, set })
+    for (const set of c.geneSets) out.push({ key: setKey({ cat, folderId: null, setId: set.id }), cat, folderId: null, set })
+  }
+  return out
+}
+
+/** Move sets to a folder or a category's top level, appended in tree order.
+ *  A set already there stays put. `keyMap` gives each moved set's new key —
+ *  a key names the folder a set sits in — so ticks and the Edit focus can
+ *  follow it. */
+export function moveSets(
+  cats: Categories, keys: string[], dest: Destination,
+): { cats: Categories; keyMap: Map<string, string> } {
+  if (dest.folderId !== null && !cats[dest.cat].folders.some((f) => f.id === dest.folderId)) {
+    throw new Error('That folder no longer exists — pick another destination.')
+  }
+  const wanted = new Set(keys)
+  const moving = allSets(cats).filter((s) => wanted.has(s.key) && !(s.cat === dest.cat && s.folderId === dest.folderId))
+  const keyMap = new Map<string, string>()
+  if (moving.length === 0) return { cats, keyMap }
+  let out = deleteSelection(cats, { sets: new Set(moving.map((m) => m.key)), folders: new Set() })
+  for (const m of moving) {
+    out = insertGeneSet(out, dest, m.set)
+    keyMap.set(m.key, setKey({ cat: dest.cat, folderId: dest.folderId, setId: m.set.id }))
+  }
+  return { cats: out, keyMap }
+}
+
+/** Drop sets onto another: the target keeps its name and place and becomes
+ *  the union (its own genes first), down genes included; the dropped sets go. */
+export function mergeSetsInto(
+  cats: Categories, sourceKeys: string[], targetKey: string,
+): { cats: Categories; merged: GeneSet } {
+  const all = allSets(cats)
+  const target = all.find((s) => s.key === targetKey)
+  if (!target) throw new Error('The set to merge into no longer exists.')
+  const wanted = new Set(sourceKeys.filter((k) => k !== targetKey))
+  // In the order given — the drag's own order — so the result reads naturally.
+  const sources = [...wanted].map((k) => all.find((s) => s.key === k)).filter((s): s is Located => !!s)
+  const union = mergeGeneSets([target.set, ...sources.map((s) => s.set)], { kind: 'union' })
+  let out = deleteSelection(cats, { sets: new Set(sources.map((s) => s.key)), folders: new Set() })
+  out = updateGeneSet(out, targetKey, { genes: union.genes, genesDown: union.genesDown ?? [] })
+  return { cats: out, merged: findGeneSet(out, targetKey)! }
+}
+
+export function renameFolder(cats: Categories, cat: GeneSetCategoryType, folderId: string, name: string): Categories {
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('A folder needs a name.')
+  const c = cats[cat]
+  return { ...cats, [cat]: { ...c, folders: c.folders.map((f) => (f.id === folderId ? { ...f, name: trimmed } : f)) } }
+}
+
+/** Carry ticks through a move or merge: moved sets follow `keyMap`, sets that
+ *  are gone drop out, and a folder stays ticked only while every set it now
+ *  holds is ticked — one that gained an unticked set must not let Delete take
+ *  it. A folder emptied by the change is unticked too: it was ticked for its
+ *  sets, and Delete would otherwise take a folder nobody chose. An empty folder
+ *  ticked on purpose stays ticked. */
+export function remapSelection(sel: Selection, keyMap: ReadonlyMap<string, string>, cats: Categories): Selection {
+  const existing = new Set(allSets(cats).map((s) => s.key))
+  const sets = new Set<string>()
+  for (const k of sel.sets) {
+    const nk = keyMap.get(k) ?? k
+    if (existing.has(nk)) sets.add(nk)
+  }
+  const folders = new Set<string>()
+  for (const cat of Object.keys(cats) as GeneSetCategoryType[]) {
+    for (const f of cats[cat].folders) {
+      const fk = folderKey({ cat, folderId: f.id })
+      if (!sel.folders.has(fk) || !folderSetKeys(cat, f).every((k) => sets.has(k))) continue
+      const lostSets = [...sel.sets].some((k) => k.startsWith(`${fk}|`) && (keyMap.has(k) || !existing.has(k)))
+      if (lostSets && f.geneSets.length === 0) continue
+      folders.add(fk)
+    }
+  }
+  return { sets, folders }
+}

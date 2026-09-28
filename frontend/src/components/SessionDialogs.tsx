@@ -141,7 +141,10 @@ export function ClearGeneSetsDialog() {
   const empty = counts.sets + counts.folders === 0
 
   const backup = () => {
-    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')
+    // Local time, as the user reads a clock: 20260928-0940, not UTC's 1340.
+    const d = new Date()
+    const two = (n: number) => String(n).padStart(2, '0')
+    const stamp = `${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-${two(d.getHours())}${two(d.getMinutes())}`
     downloadGeneSetsJson(`xcell_gene_sets_${stamp}.json`, flattenGeneSetsForExport(geneSetCategories))
     setBackedUp(true)
   }

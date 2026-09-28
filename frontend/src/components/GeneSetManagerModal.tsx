@@ -84,11 +84,11 @@ const styles: Record<string, CSSProperties> = {
   },
   primaryButton: {
     padding: '7px 16px', fontSize: '12px', fontWeight: 600, backgroundColor: '#4ecdc4', color: '#000',
-    border: 'none', borderRadius: '4px', cursor: 'pointer',
+    border: 'none', borderRadius: '4px', cursor: 'pointer', whiteSpace: 'nowrap', flex: '0 0 auto',
   },
   disabledButton: {
     padding: '7px 16px', fontSize: '12px', fontWeight: 600, backgroundColor: '#1a1a2e', color: '#666',
-    border: 'none', borderRadius: '4px', cursor: 'not-allowed',
+    border: 'none', borderRadius: '4px', cursor: 'not-allowed', whiteSpace: 'nowrap', flex: '0 0 auto',
   },
   row: {
     display: 'flex', alignItems: 'center', gap: '6px', padding: '3px 8px', fontSize: '12px',
@@ -738,6 +738,8 @@ export default function GeneSetManagerModal() {
                   <input
                     type="number" min={1} max={n} value={Math.min(ruleK, n)}
                     onChange={(e) => { setRuleK(Math.max(1, Number(e.target.value) || 1)); setRuleKind('atLeast') }}
+                    // Clicking into the count means this rule, even before the number changes.
+                    onFocus={() => setRuleKind('atLeast')}
                     style={{ ...styles.input, width: '52px', padding: '2px 4px' }}
                   />
                   of {n}
@@ -751,7 +753,7 @@ export default function GeneSetManagerModal() {
           {merged.genesDown && <span style={{ color: '#888' }}> · ↓{merged.genesDown.length} down</span>}
         </div>
         {merged.genes.length > 0 && (
-          <div style={{ fontSize: '11px', color: '#888', marginTop: '2px', maxHeight: '36px', overflow: 'hidden' }}>
+          <div style={{ fontSize: '11px', color: '#888', marginTop: '2px', lineHeight: '15px', maxHeight: '45px', overflow: 'hidden' }}>
             {merged.genes.slice(0, 30).join(', ')}{merged.genes.length > 30 ? ', …' : ''}
           </div>
         )}

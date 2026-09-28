@@ -2133,7 +2133,7 @@ export default function App() {
                               onClick={openLoadDialog}
                               style={{ padding: '8px 18px', fontSize: '13px', backgroundColor: '#0f3460', color: '#4ecdc4', border: '1px solid #4ecdc4', borderRadius: '4px', cursor: 'pointer' }}
                             >
-                              {'\u{1F4C2}'} Load a dataset…
+                              <span style={{ marginRight: '6px' }}>{'\u{1F4C2}'}</span>Load a dataset…
                             </button>
                           </div>
                         )}

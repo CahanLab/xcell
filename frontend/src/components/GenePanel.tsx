@@ -14,7 +14,7 @@ import { UcellScoreModal } from './UcellScoreModal'
 import { ScoreGeneSetsModal } from './ScoreGeneSetsModal'
 import { MESSAGES } from '../messages'
 import { copyText } from '../lib/clipboard'
-import { setKey } from '../lib/geneSetManager'
+import { setKey, countGeneSets } from '../lib/geneSetManager'
 
 const API_BASE = '/api'
 
@@ -1779,6 +1779,7 @@ export default function GenePanel() {
   const { geneSetCategories, selectedGenes, bivariateData, highlightLayers, colorMode, addGeneSetToCategory, addFolderToCategory, setImportModalOpen, setGeneSetLibraryModalOpen, setGeneMapSource, setEnrichmentSource } = useStore()
   const setGeneSetManager = useStore((s) => s.setGeneSetManager)
   const setClearGeneSetsOpen = useStore((s) => s.setClearGeneSetsOpen)
+  const geneSetTotals = useMemo(() => countGeneSets(geneSetCategories), [geneSetCategories])
   const selectedCellIndices = useStore((s) => s.selectedCellIndices)
   const { colorByGene, colorByGenes, colorByScore, clearExpressionColor, colorByBivariate, clearBivariateColor, addGeneSetHighlight, addCellSetHighlight, removeHighlightLayer, updateHighlightLayer, clearHighlightOverlay } = useDataActions()
   const scoreMatrices = useStore((s) => s.schema?.score_matrices)
@@ -1837,6 +1838,9 @@ export default function GenePanel() {
   const setGeneSymbolModalOpen = useStore((s) => s.setGeneSymbolModalOpen)
   const setCombineModalOpen = useStore((s) => s.setCombineModalOpen)
   const slotsResolved = useStore((s) => s.slotsResolved)
+  // Nothing loaded (a fresh session): both fetches below would only 503, the
+  // similar-genes check every five seconds. They start once a load clears it.
+  const backendEmpty = useStore((s) => s.backendEmpty)
   const [isSwapping, setIsSwapping] = useState(false)
   const [showBrowse, setShowBrowse] = useState(false)
   const [geneTab, setGeneTab] = useState<'sets' | 'color'>('sets')
@@ -1846,9 +1850,9 @@ export default function GenePanel() {
   // loaded — and this runs once, so a 503 here left gene-symbol switching
   // empty for the rest of the session.
   useEffect(() => {
-    if (!slotsResolved) return
+    if (!slotsResolved || backendEmpty) return
     fetchVarIdentifierColumns()
-  }, [slotsResolved])
+  }, [slotsResolved, backendEmpty])
 
   const handleSwapVarIndex = async (column: string) => {
     if (column === currentVarIndex) return
@@ -1865,7 +1869,7 @@ export default function GenePanel() {
   // Check prerequisites for find_similar_genes once the slot is known, then
   // periodically.
   useEffect(() => {
-    if (!slotsResolved) return
+    if (!slotsResolved || backendEmpty) return
     const checkPrerequisites = async () => {
       try {
         const response = await fetch(appendDataset(`${API_BASE}/scanpy/prerequisites/find_similar_genes`))
@@ -1882,7 +1886,7 @@ export default function GenePanel() {
     // Re-check every 5 seconds in case user runs gene_neighbors from ScanpyModal
     const interval = setInterval(checkPrerequisites, 5000)
     return () => clearInterval(interval)
-  }, [slotsResolved])
+  }, [slotsResolved, backendEmpty])
 
   const handleFindSimilarGenes = async () => {
     if (!similarGenesSeed.trim()) return
@@ -1978,21 +1982,6 @@ export default function GenePanel() {
               },
             ]}
           />
-          <button
-            onClick={() => setGeneSetManager({ tab: 'new' })}
-            style={{
-              padding: '2px 8px',
-              fontSize: '10px',
-              backgroundColor: '#0f3460',
-              color: '#4ecdc4',
-              border: '1px solid #1a1a2e',
-              borderRadius: '3px',
-              cursor: 'pointer',
-            }}
-            title="Gene Set Manager — paste genes into a new set, edit, merge several, delete many at once"
-          >
-            Manage
-          </button>
           <button
             onClick={() => setGeneSetLibraryModalOpen(true)}
             style={{
@@ -2172,6 +2161,24 @@ export default function GenePanel() {
 
         {geneTab === 'sets' && (
         <>
+        {/* The header row is full at this pane's width, so the manager's
+            entry point sits at the top of the list it manages. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+          <span style={{ fontSize: '11px', color: '#888' }}>
+            {geneSetTotals.sets} set{geneSetTotals.sets === 1 ? '' : 's'}
+            {geneSetTotals.folders > 0 && ` in ${geneSetTotals.folders} folder${geneSetTotals.folders === 1 ? '' : 's'}`}
+          </span>
+          <button
+            onClick={() => setGeneSetManager({ tab: 'new' })}
+            style={{
+              marginLeft: 'auto', padding: '3px 10px', fontSize: '11px', backgroundColor: '#0f3460',
+              color: '#4ecdc4', border: '1px solid #1a1a2e', borderRadius: '3px', cursor: 'pointer',
+            }}
+            title="Gene Set Manager — paste genes into a new set, edit, merge several, delete many at once"
+          >
+            Manage sets…
+          </button>
+        </div>
         {/* New Folder Input (for manual category) */}
         {showNewFolderInput && (
           <div style={{ marginBottom: '12px', display: 'flex', gap: '4px' }}>

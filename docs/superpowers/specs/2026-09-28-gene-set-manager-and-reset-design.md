@@ -88,7 +88,9 @@ A large modal (`GeneSetManagerModal`), store-held source object:
 `geneSetManager: {tab, dest?, focus?} | null`, where `null` means closed.
 
 **Entry points:**
-- a **Manage** button beside Library / Import / Browse at the top of the Genes pane;
+- a **Manage sets…** button at the top of the Sets tab, next to a set count. The
+  header row beside Library / Import / Browse was tried first and pushed Browse
+  off the edge of the pane;
 - Genes ⋯ → *Manage gene sets…*;
 - a set row's ⋯ → *Edit genes…*, which opens the Edit tab on that set;
 - the Manual category's **+**, which now opens the New tab with the destination
@@ -105,12 +107,14 @@ Genes stay optional in the New tab, so the drag workflow still works.
   Unticking a set inside a ticked folder unticks the folder.
 - Folders start collapsed, so 23 pathway folders are 23 rows.
 - Toolbar:
-  - *Select all shown*;
-  - *Clear*;
-  - **Delete (N)**: one confirm for everything ticked. Ticked folders go
+  - *Tick all* / *Tick all matches*;
+  - *Untick*;
+  - **Delete ticked**: one confirm for everything ticked. Ticked folders go
     entirely, ticked sets individually, and the dialog states counts;
-  - **Move to…**: any category's top level, any folder, or a new Manual folder;
   - *Clear all…*.
+
+  A *Move to…* was drafted and cut: drag and drop in the panel already moves
+  sets between folders, and nothing asked for it.
 
 **Right: three tabs.**
 - **New** — name, destination, and a textarea for pasted genes (spaces, commas,
@@ -142,8 +146,8 @@ Genes stay optional in the New tab, so the drag workflow still works.
 Each is a function `categories → categories` or `lists → list`, so the modal is
 mostly wiring:
 - `parseGeneText`, `resolveGenes`, `mergeGeneLists` / `mergeGeneSets`;
-- `deleteSelection`, `insertGeneSet`, `updateGeneSet`, `moveSets`;
-- `filterTree`, `selectionSummary`, `gatherSets`.
+- `deleteSelection`, `insertGeneSet`, `addFolder`, `updateGeneSet`;
+- `filterTree`, `selectionSummary`, `gatherSelectedSets`, `destinationOptions`.
 
 IDs are passed in rather than generated in the lib. The store gains one action,
 `replaceGeneSetCategories(next)`.
@@ -164,6 +168,9 @@ does set algebra with boolean `.var` columns.
     selection summary;
   - store tests for `clearAllGeneSets` / `replaceGeneSetCategories` /
     `backendEmpty`.
+- Also gated on `backendEmpty`: the Genes pane's gene-ID columns fetch and its
+  five-second similar-genes check. The browser run found both 503ing in an empty
+  session.
 - Browser, on an isolated stack (`:8100` / `:5273`):
   - import the signalling pathways and delete all 23 folders in one confirm;
   - merge 3+ sets;

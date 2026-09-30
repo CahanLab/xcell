@@ -13585,6 +13585,264 @@ class DataAdaptor:
         }
 
     # ------------------------------------------------------------------
+    # PyStemFinder differentiation scores (optional dependency)
+    # ------------------------------------------------------------------
+
+    def stemfinder_status(self) -> dict[str, Any]:
+        """Whether PyStemFinder is installed, plus what the modal's pickers need.
+
+        PC embeddings are every 2-D ``X_pca*`` in .obsm — the dataset's own,
+        PC subsets, and subsets' ``X_pca_<name>``.
+        """
+        from xcell import layer_scale  # noqa: PLC0415
+        from xcell import stemfinder as sf  # noqa: PLC0415
+
+        out = sf.availability()
+        pcs = [
+            k for k in self.adata.obsm.keys()
+            if k.startswith('X_pca') and len(getattr(self.adata.obsm[k], 'shape', ())) == 2
+            and self.adata.obsm[k].shape[1] >= 2
+        ]
+        out.update({
+            'n_cells': int(self.n_cells),
+            # The method's neighbourhood size, k = √n.
+            'default_n_neighbors': int(round(np.sqrt(self.n_cells))),
+            'pc_embeddings': pcs,
+            'pc_dims': {k: int(self.adata.obsm[k].shape[1]) for k in pcs},
+            'graphs': self.list_neighbor_graphs(),
+            'species': self.guess_species().get('species'),
+            'x_scale': layer_scale.assess_matrix_scale(self.adata.X)['verdict'],
+            'layers': sorted(str(k) for k in self.adata.layers.keys()),
+        })
+        return out
+
+    def prepare_stemfinder(
+        self,
+        metrics: list[str] | None = None,
+        markers: list[str] | None = None,
+        species: str | None = None,
+        method: str = 'gini',
+        threshold: float = 0.0,
+        binarize_on: str = 'scaled',
+        weight_by: str = 'equal',
+        include_self: bool = True,
+        graph: str = 'build',
+        use_rep: str = 'X_pca',
+        n_pcs: int | None = 32,
+        n_neighbors: int | None = None,
+        graph_key: str | None = None,
+        layer: str | None = None,
+        suffix: str = '',
+        summary_by: str | None = None,
+        active_cell_indices: list[int] | None = None,
+    ) -> tuple[Callable, Callable]:
+        """Score differentiation with PyStemFinder; see :mod:`xcell.stemfinder`.
+
+        ``metrics`` is any of ``stemfinder`` (writes ``stemfinder`` and
+        ``stemfinder_raw``), ``diffometer``, ``cc_mean`` (mean log expression of
+        the markers) and ``n_tfs`` (expressed transcription factors). Markers
+        default to the species' S + G2M cell cycle genes. ``graph='build'``
+        makes a kNN graph on ``use_rep`` with k = ``n_neighbors`` (default √n)
+        for this run only; ``'existing'`` reads ``obsp[graph_key]``, preferring
+        its ``*_distances`` partner. The cell mask scopes everything — scaling,
+        graph, √n — and cells outside it get NaN. ``suffix`` is appended to
+        every column name.
+        """
+        import re  # noqa: PLC0415
+
+        from xcell import layer_scale  # noqa: PLC0415
+        from xcell import stemfinder as sf  # noqa: PLC0415
+
+        sf.import_psf()
+        # Columns come out in the table's order whatever order the UI sent.
+        metrics = ['stemfinder', 'diffometer'] if metrics is None else list(dict.fromkeys(metrics))
+        rank = list(sf.METRIC_COLUMNS)
+        metrics.sort(key=lambda m: rank.index(m) if m in rank else len(rank))
+        source = self._resolve_source_matrix(layer)
+        cell_idx = self._validate_cell_indices(active_cell_indices)
+        cells = np.arange(self.n_cells) if cell_idx is None else np.asarray(cell_idx, dtype=int)
+        verdict = layer_scale.assess_matrix_scale(source)['verdict']
+        sf.validate_options(metrics=metrics, method=method, binarize_on=binarize_on,
+                            weight_by=weight_by, scale_verdict=verdict)
+        if graph not in ('build', 'existing'):
+            raise ValueError(f"Unknown graph choice '{graph}'. Expected 'build' or 'existing'.")
+        if summary_by is not None:
+            if summary_by not in self.adata.obs.columns:
+                raise ValueError(f"Column '{summary_by}' not found in .obs")
+            sdt = self.adata.obs[summary_by].dtype
+            if not (isinstance(sdt, pd.CategoricalDtype) or pd.api.types.is_string_dtype(sdt)
+                    or pd.api.types.is_bool_dtype(sdt)):
+                # A numeric column is one group per value: tens of thousands.
+                raise ValueError(f"Summarize by needs a categorical column; '{summary_by}' is {sdt}.")
+
+        needs_graph = bool({'stemfinder', 'diffometer'} & set(metrics))
+        needs_markers = needs_graph or 'cc_mean' in metrics
+        species = species or self.guess_species().get('species')
+        if species is None and ((needs_markers and not markers) or 'n_tfs' in metrics):
+            raise ValueError("Could not tell the species from the gene names. Pick one, or give markers.")
+
+        var_names = [str(v) for v in self.adata.var_names]
+        Xs = source if cell_idx is None else source[cells]
+        present: list[str] = []
+        missing: list[str] = []
+        log_expr = scaled_expr = None
+        if needs_markers:
+            wanted = list(markers) if markers else sf.cell_cycle_markers(species)
+            present, missing = sf.match_genes(wanted, var_names)
+            if not present:
+                raise ValueError(
+                    f"None of the {len(wanted)} markers are in this dataset's genes"
+                    + (f" (first: {', '.join(wanted[:5])})." if wanted else ".")
+                    + " If the genes are Ensembl IDs, map them to symbols first."
+                )
+            cols = [self.adata.var_names.get_loc(g) for g in present]
+            if verdict == 'z_scored':
+                sub = Xs[:, cols]
+                scaled_expr = (sub.toarray() if hasattr(sub, 'toarray') else np.asarray(sub)).astype(np.float64)
+                if cell_idx is not None:
+                    # Scaled over every cell; gini splits at the scored cells' mean.
+                    scaled_expr = sf.scale_columns(scaled_expr)
+            else:
+                log_expr = sf.log_normalized_columns(Xs, cols, verdict)
+        tf_counts = None
+        tf_present: list[str] = []
+        if 'n_tfs' in metrics:
+            tf_present, _ = sf.match_genes(sf.transcription_factors(species), var_names)
+            if not tf_present:
+                raise ValueError(f"None of the {species} transcription factors are in this dataset's genes.")
+            tf_counts = sf.count_expressed(Xs, [self.adata.var_names.get_loc(g) for g in tf_present])
+
+        k = None
+        rep = None
+        graph_matrix = None
+        graph_source = None
+        if needs_graph and graph == 'build':
+            if use_rep not in self.adata.obsm:
+                raise ValueError(f"No embedding '{use_rep}' in .obsm. Run PCA first, or pick another.")
+            rep = np.asarray(self.adata.obsm[use_rep])[cells].astype(np.float32)
+            if not np.isfinite(rep).all():
+                n_bad = int((~np.isfinite(rep).all(axis=1)).sum())
+                raise ValueError(
+                    f"'{use_rep}' has no coordinates for {n_bad:,} of the cells being scored "
+                    "(a subset's embedding covers only its own cells). Pick another embedding "
+                    "or narrow the cell mask."
+                )
+            k = int(n_neighbors) if n_neighbors else int(round(np.sqrt(len(cells))))
+            if k < 2:
+                raise ValueError("The neighbourhood needs at least 2 cells (k ≥ 2).")
+            k = min(k, len(cells) - 1)
+            graph_source = 'knn'
+        elif needs_graph:
+            if not graph_key or graph_key not in self.adata.obsp:
+                raise ValueError(f"No graph '{graph_key}' in .obsp. Pick one of the listed graphs.")
+            partner = ('distances' if graph_key == 'connectivities'
+                       else graph_key[:-len('connectivities')] + 'distances'
+                       if graph_key.endswith('_connectivities') else None)
+            key = partner if partner and partner in self.adata.obsp else graph_key
+            graph_source = 'distances' if key == partner else 'connectivities'
+            graph_matrix = sf.subgraph(self.adata.obsp[key], cells)
+
+        notes: list[str] = []
+        if verdict in ('unknown', 'binary', 'empty'):
+            notes.append(
+                f"Could not tell the expression scale ({layer_scale.SCALE_LABELS[verdict]}); it was read as "
+                "log-normalized."
+            )
+        if needs_graph and graph == 'build' and 'highly_variable' in self.adata.var.columns and present:
+            hv = self.adata.var['highly_variable'].reindex(present).fillna(False).astype(bool)
+            if hv.sum():
+                notes.append(
+                    f"{int(hv.sum())} of the {len(present)} markers are highly variable genes, so they may have "
+                    f"shaped {use_rep}: cycling cells then sit together in the graph, which damps the "
+                    "heterogeneity stemFinder measures. PyStemFinder builds its PCA with the markers left out."
+                )
+
+        clean = re.sub(r'[^A-Za-z0-9_]+', '_', str(suffix or '')).strip('_')
+        labels = (self.adata.obs[summary_by].astype(object).to_numpy()[cells]
+                  if summary_by is not None else None)
+        n_obs = self.n_cells
+        params = {
+            'metrics': metrics, 'markers': list(markers) if markers else None, 'species': species,
+            'method': method, 'threshold': float(threshold), 'binarize_on': binarize_on,
+            'weight_by': weight_by, 'include_self': bool(include_self), 'graph': graph,
+            'use_rep': use_rep, 'n_pcs': n_pcs, 'n_neighbors': n_neighbors,
+            'graph_key': graph_key, 'layer': layer, 'suffix': suffix, 'summary_by': summary_by,
+        }
+
+        def compute_fn(report: Callable[[float, str], None] | None = None) -> dict[str, Any]:
+            report = report or (lambda f, m=None: None)
+            g = graph_matrix
+            if rep is not None:
+                report(0.05, f'Building a kNN graph on {use_rep} (k = {k})')
+                g = sf.knn_from_embedding(rep, n_neighbors=k, n_pcs=n_pcs)
+            report(0.7, 'Scoring')
+            degree = sf.neighbour_counts(g) if g is not None else None
+            if needs_markers:
+                scores = sf.compute_scores(
+                    log_expr, present, g, metrics=metrics, method=method, threshold=float(threshold),
+                    binarize_on=binarize_on, weight_by=weight_by, include_self=bool(include_self),
+                    scaled_expr=scaled_expr, tf_counts=tf_counts,
+                )
+            else:
+                scores = {'stemfinder_n_TFs': np.asarray(tf_counts, dtype=np.float64)}
+            return {'scores': scores, 'degree': degree}
+
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            if self.n_cells != n_obs:
+                raise ValueError("The dataset's cells changed while stemFinder ran; run it again.")
+            scores = result['scores']
+            order = [c for m in metrics for c in sf.METRIC_COLUMNS[m] if c in scores]
+            columns = [f'{c}_{clean}' if clean else c for c in order]
+            for base, name in zip(order, columns):
+                full = np.full(n_obs, np.nan, dtype=np.float64)
+                full[cells] = scores[base]
+                self.adata.obs[name] = full
+            named = {name: scores[base] for base, name in zip(order, columns)}
+            degree = result.get('degree')
+            n_isolated = int((degree == 0).sum()) if degree is not None else 0
+            min_neighbors = int(degree.min()) if degree is not None and len(degree) else None
+            warnings_out = list(notes)
+            if degree is not None and graph == 'existing' and (min_neighbors or 0) < 5:
+                warnings_out.append(
+                    f"Some cells have few neighbours in '{graph_key}' among the scored cells "
+                    f"(fewest: {min_neighbors}); {n_isolated:,} have none and get no score. "
+                    "Small neighbourhoods score as homogeneous — more differentiated than they may be. "
+                    "Building a graph for the run gives every cell k − 1."
+                )
+            summary = None
+            if labels is not None:
+                # Least differentiated first: low stemfinder, else a high
+                # diffOmeter / cell-cycle / TF score.
+                lead = columns[0]
+                summary = sf.group_summary(named, labels, sort_by=lead,
+                                           descending=order[0] != 'stemfinder')
+            out = {
+                'columns': columns,
+                'n_cells_scored': int(len(cells)),
+                'n_markers_used': len(present),
+                'n_markers_missing': len(missing),
+                'markers_missing': missing[:30],
+                'n_tfs_used': len(tf_present),
+                'n_neighbors': k,
+                'graph_source': graph_source,
+                'species': species,
+                'x_scale': verdict,
+                'stats': {name: sf.column_stats(v) for name, v in named.items()},
+                'summary': summary,
+                'summary_by': summary_by,
+                'n_isolated': n_isolated,
+                'min_neighbors': min_neighbors,
+                'warnings': warnings_out,
+            }
+            self._log_action('stemfinder', params, {
+                'columns': columns, 'n_cells_scored': out['n_cells_scored'],
+                'n_markers_used': out['n_markers_used'], 'n_neighbors': k,
+            }, subset=cell_idx)
+            return out
+
+        return compute_fn, apply_fn
+
+    # ------------------------------------------------------------------
     # PySingleCellNet cell-type classification (optional dependency)
     # ------------------------------------------------------------------
 

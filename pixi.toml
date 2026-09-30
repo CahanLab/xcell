@@ -40,6 +40,10 @@ python-igraph = "*"
 # The backend package, installed editable. Pulls fastapi + uvicorn[standard]
 # from its own pyproject.toml.
 xcell = { path = "backend", editable = true }
+# Differentiation scores (Analyze → Cells → Differentiation). Light: its own
+# dependencies (anndata, numpy, pandas, scanpy, scipy) are already above. The
+# backend still degrades to install instructions without it.
+pystemfinder = ">=0.5"
 
 [tasks.install-frontend]
 # `npm ci` uses the pinned Node above and respects package-lock.json.

@@ -354,6 +354,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         params: [],
         custom: true,
       },
+      stemfinder: {
+        label: 'Differentiation (stemFinder)',
+        description: 'Score how differentiated each cell is with PyStemFinder: less differentiated cells vary more in their cell cycle gene expression than their neighbours do. Writes stemFinder and diffOmeter scores (plus optional cell-cycle and expressed-TF baselines) to .obs, scoped to the cell mask. Opens the Differentiation tool.',
+        prerequisites: [],
+        custom: true,
+        params: [],
+      },
       compare_cells: {
         label: 'Compare Cells',
         description: 'Compare cell groups: differential expression (2 groups) or marker genes (3+ groups)',
@@ -850,7 +857,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setEnrichmentSource, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, activeSubsetName, setActiveSubsetName, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setEnrichmentSource, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, setStemFinderModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, activeSubsetName, setActiveSubsetName, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2926,6 +2933,13 @@ export default function ScanpyModal() {
               onClick={() => { setMergeSpotsModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Merge Spots tool…
+            </button>
+          ) : selectedFunction === 'stemfinder' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setStemFinderModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Differentiation tool…
             </button>
           ) : selectedFunction === 'downsample' ? (
             <button

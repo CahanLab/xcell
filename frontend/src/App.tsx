@@ -24,6 +24,7 @@ import AnalysisRecordPanel from './components/AnalysisRecordPanel'
 import LocalizeModal from './components/LocalizeModal'
 import MergeSpotsModal from './components/MergeSpotsModal'
 import DownsampleModal from './components/DownsampleModal'
+import StemFinderModal from './components/StemFinderModal'
 import LigRecModal from './components/LigRecModal'
 import NeighborhoodModal from './components/NeighborhoodModal'
 import GeneNmfModal from './components/GeneNmfModal'
@@ -2229,6 +2230,7 @@ export default function App() {
       <LocalizeModal />
       <MergeSpotsModal />
       <DownsampleModal />
+      <StemFinderModal />
       <LigRecModal />
       <NeighborhoodModal />
       <GeneNmfModal />

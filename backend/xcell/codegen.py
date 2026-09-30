@@ -303,6 +303,14 @@ def _selection_arg(step: Step) -> str:
     return f", active_cell_indices=SELECTIONS[{_lit(f'step_{step.index}')}]"
 
 
+def _two_phase_on_selection(method: str):
+    """A prepare_* method taking ``active_cell_indices``, given the step's own."""
+    def build(step: Step) -> list[str]:
+        args = _splat(step.params) + _selection_arg(step)
+        return [f'_xcell_run({ADAPTOR}.{method}({args.lstrip(", ")}))']
+    return build
+
+
 def _direct_on_selection(method: str):
     """An adaptor call that takes ``active_cell_indices`` and gets the step's own."""
     def build(step: Step) -> list[str]:
@@ -612,6 +620,17 @@ REGISTRY: dict[str, ActionSpec] = {
             f"Ranked marker genes for `{p.get('obs_column')}` "
             f"(top {_n(p.get('top_n'))} per group) → "
             f"{_n(r.get('total_genes'))} genes across {_n(r.get('n_groups'))} groups."
+        ),
+    ),
+    'stemfinder': ActionSpec(
+        label='Differentiation (stemFinder)', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase_on_selection('prepare_stemfinder'), replays_selection=True,
+        summary=lambda p, r: (
+            f"PyStemFinder scores ({', '.join(p.get('metrics') or [])}) from "
+            f"{_n(r.get('n_markers_used'))} markers"
+            + (f", k = {_n(r.get('n_neighbors'))}" if r.get('n_neighbors') else '')
+            + f" → {', '.join(f'`{c}`' for c in (r.get('columns') or []))} "
+            f"for {_n(r.get('n_cells_scored'))} cells."
         ),
     ),
     'transfer_obs_labels': ActionSpec(

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { GeneSet, HighlightLayer, HighlightSource, HighlightThresholdMode } from '../store'
 import { ObsSummary } from '../hooks/useData'
 import { HistogramChart, computeHistogram, defaultThresholds } from '../utils/histogram'
+import { GENE_SET_LAYER_DEFAULTS, nextHighlightColor } from '../lib/highlightLayers'
 
 interface Props {
   highlightLayers: HighlightLayer[]
@@ -24,12 +25,6 @@ interface Props {
     patch: Partial<Omit<HighlightLayer, 'id' | 'source'>> & { source?: Partial<HighlightSource> }
   ) => void
   clearHighlightOverlay: () => void
-}
-
-const HIGHLIGHT_PALETTE = ['#22c55e', '#06b6d4', '#f59e0b', '#ec4899', '#a855f7', '#84cc16', '#ef4444', '#0ea5e9']
-
-function pickNextColor(n: number): string {
-  return HIGHLIGHT_PALETTE[n % HIGHLIGHT_PALETTE.length]
 }
 
 const labelStyle = { fontSize: '11px', color: '#888' } as const
@@ -79,9 +74,8 @@ export default function HighlightOverlayPanel({
     setAdding(true)
     try {
       await addGeneSetHighlight(gs.genes, gs.name, {
-        color: pickNextColor(highlightLayers.length),
-        intensity: 0.85,
-        thresholdMode: 'above',
+        color: nextHighlightColor(highlightLayers),
+        ...GENE_SET_LAYER_DEFAULTS,
       })
       setPicker(null)
       setPickGeneSetId('')
@@ -94,7 +88,7 @@ export default function HighlightOverlayPanel({
     if (selectedCellIndices.length === 0) return
     const label = `Selection (${selectedCellIndices.length.toLocaleString()} cells)`
     addCellSetHighlight([...selectedCellIndices], label, {
-      color: pickNextColor(highlightLayers.length),
+      color: nextHighlightColor(highlightLayers),
       intensity: 0.85,
     })
     setPicker(null)
@@ -123,7 +117,7 @@ export default function HighlightOverlayPanel({
       }
       if (indices.length === 0) return
       addCellSetHighlight(indices, `${pickColumn}: ${pickValue}`, {
-        color: pickNextColor(highlightLayers.length),
+        color: nextHighlightColor(highlightLayers),
         intensity: 0.85,
       })
       setPicker(null)

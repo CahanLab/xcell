@@ -18,6 +18,7 @@ from scipy.sparse import csr_matrix
 
 from xcell.adaptor import DataAdaptor
 from xcell.api import routes
+from xcell.codegen import translate
 from xcell.main import app
 
 
@@ -134,3 +135,52 @@ def test_the_route_forwards_the_mask(monkeypatch):
     body = res.json()
     assert body["n_cells_tested"] == HALF
     assert next(r for r in body["results"] if r["group"] == "a")["genes"][0]["gene"] == "g01"
+
+
+def test_a_single_cell_group_survives_the_filters_too():
+    a = _adaptor()
+    grp = a.adata.obs["grp"].to_numpy()
+    one_c = sorted([i for i in range(N_CELLS) if grp[i] != "c"] + [int(np.flatnonzero(grp == "c")[0])])
+    # scanpy's other filter defaults (max_out_group_fraction=0.5) would drop
+    # every gene of this Poisson background, so open them up.
+    r = a.run_marker_genes(obs_column="grp", top_n=3, min_fold_change=0.5, min_in_group_fraction=0.0,
+                           max_out_group_fraction=1.0, active_cell_indices=one_c)
+    by_group = {g["group"]: g["genes"] for g in r["results"]}
+    assert by_group["c"] == [] and by_group["a"]
+
+
+def test_the_cell_mask_and_the_gene_mask_combine():
+    a = _adaptor()
+    a.adata.var["panel"] = [i < 4 for i in range(N_GENES)]
+    a.set_gene_mask(keep_columns=["panel"], hide_columns=[])
+    r = a.run_marker_genes(obs_column="grp", top_n=3, active_cell_indices=SECOND)
+    assert r["n_genes_tested"] == 4
+    assert r["n_cells_tested"] == HALF
+    assert _top(r, "a") == "g01"
+
+
+def test_too_few_testable_groups_under_a_mask_says_so():
+    a = _adaptor()
+    grp = a.adata.obs["grp"].to_numpy()
+    # a in full, one b cell, no c: only one group with two or more cells.
+    cells = sorted(list(np.flatnonzero(grp == "a")) + [int(np.flatnonzero(grp == "b")[0])])
+    with pytest.raises(ValueError, match="among the active cells"):
+        a.run_marker_genes(obs_column="grp", active_cell_indices=cells)
+
+
+def test_the_notebook_replays_the_selection():
+    a = _adaptor()
+    a.run_marker_genes(obs_column="grp", top_n=3, active_cell_indices=FIRST)
+    t = translate(a.analysis_record.steps[-1])
+    code = "\n".join(t.code)
+    assert "active_cell_indices=SELECTIONS['step_" in code
+    compile(code, "<marker_genes>", "exec")
+    # It runs on the selection, so the whole-dataset caveat would be false.
+    assert not any("whole dataset" in w for w in t.warnings)
+
+
+def test_the_notebook_without_a_selection_is_the_plain_call():
+    a = _adaptor()
+    a.run_marker_genes(obs_column="grp", top_n=3)
+    t = translate(a.analysis_record.steps[-1])
+    assert "active_cell_indices" not in "\n".join(t.code)

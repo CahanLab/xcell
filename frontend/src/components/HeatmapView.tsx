@@ -9,7 +9,7 @@
  * from App.tsx plus the heatmap state from store.ts.
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useStore, HeatmapConfig } from '../store'
 import { useDataActions, appendDataset, createFigure } from '../hooks/useData'
 import { heatmapFigureFromConfig } from '../lib/figures'
@@ -37,6 +37,14 @@ export default function HeatmapView() {
     () => heatmapCellScope(heatmapConfig?.cellIndices, activeCellMask, activeSubsetName),
     [heatmapConfig?.cellIndices, activeCellMask, activeSubsetName],
   )
+  // The drawn cells alone: saving the mask as a subset renames it without
+  // changing a cell, and must not recompute the heatmap.
+  const drawnCells = useMemo(
+    () => heatmapCellScope(heatmapConfig?.cellIndices, activeCellMask, null).indices,
+    [heatmapConfig?.cellIndices, activeCellMask],
+  )
+  // Mask changes can overlap requests; only the latest may land.
+  const requestSeq = useRef(0)
   const saveAsFigure = useCallback(async () => {
     if (!heatmapConfig) return
     try {
@@ -61,13 +69,19 @@ export default function HeatmapView() {
   // Fetch heatmap data when the config or the cells it draws change
   useEffect(() => {
     if (!heatmapConfig) return
-    fetchHeatmapData(heatmapConfig, cellScope.indices)
-  }, [heatmapConfig, cellScope])
+    fetchHeatmapData(heatmapConfig, drawnCells)
+  }, [heatmapConfig, drawnCells])
 
   const fetchHeatmapData = async (config: HeatmapConfig, cellIndices: number[] | null) => {
+    const seq = ++requestSeq.current
     if (cellIndices && cellIndices.length === 0) {
+      // An older request still in flight is now ignored, so its finally
+      // will not clear the spinner — clear it here.
+      setLoading(false)
       setData(null)
-      setError('The cell mask excludes every cell this heatmap is restricted to. Reset the mask or reconfigure.')
+      setError(config.cellIndices?.length
+        ? 'The cell mask excludes every cell this heatmap is restricted to. Reset the mask or reconfigure.'
+        : 'The cell mask has no active cells. Reset the mask.')
       return
     }
     setLoading(true)
@@ -129,12 +143,14 @@ export default function HeatmapView() {
       }
 
       const result: HeatmapData = await response.json()
+      if (seq !== requestSeq.current) return
       setData(result)
     } catch (err) {
+      if (seq !== requestSeq.current) return
       setError((err as Error).message)
       setData(null)
     } finally {
-      setLoading(false)
+      if (seq === requestSeq.current) setLoading(false)
     }
   }
 

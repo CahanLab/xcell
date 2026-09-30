@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { markerGenesParams, maskedCategoryCounts } from './markerGenes'
+import { markerGenesParams, maskedCategoryCounts, runnableGroupCount } from './markerGenes'
 
 // The marker-genes request as the modal builds it. The gene subset travels
 // only when one is chosen: an empty choice means "all genes", and a stale
@@ -64,5 +64,18 @@ describe('maskedCategoryCounts', () => {
   it('leaves out a category with no masked cell', () => {
     const col = { values: [0, 1, 0, 0, 1], categories: ['a', 'b'] }
     expect(maskedCategoryCounts(col, mask).has('b')).toBe(false)
+  })
+})
+
+describe('runnableGroupCount', () => {
+  const picked = new Set(['a', 'b', 'c'])
+
+  it('counts every checked group without a mask', () => {
+    expect(runnableGroupCount(picked, null)).toBe(3)
+  })
+
+  it('counts only groups with two or more active cells, as the backend tests them', () => {
+    expect(runnableGroupCount(picked, new Map([['a', 40], ['b', 1]]))).toBe(1)
+    expect(runnableGroupCount(picked, new Map([['a', 40], ['b', 2], ['c', 0]]))).toBe(2)
   })
 })

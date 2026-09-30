@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { markerGenesParams, maskedCategoryCounts } from '../lib/markerGenes'
+import { markerGenesParams, maskedCategoryCounts, runnableGroupCount } from '../lib/markerGenes'
 import { indicesFromMask } from '../lib/cellSubsets'
 import { useStore, cfgDefault, ObsColumnData } from '../store'
 import { useObsSummaries, runMarkerGenes, MarkerGenesGroupResult, appendDataset } from '../hooks/useData'
@@ -286,12 +286,25 @@ export default function MarkerGenesModal() {
 
   // Results state
   const [results, setResults] = useState<MarkerGenesGroupResult[] | null>(null)
-  // Which cells the shown results came from, for the gene-set folder name.
+  // Which cells the shown results came from: the folder name and summary line
+  // use the label; the mask it was run under decides whether they still hold.
   const [resultScope, setResultScope] = useState<string | null>(null)
+  const [resultCells, setResultCells] = useState(0)
+  const [resultMask, setResultMask] = useState<boolean[] | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [addedToSets, setAddedToSets] = useState(false)
+
+  // Results answer for the cells they were run on. This modal never unmounts,
+  // so a mask changed while it was closed would otherwise leave markers for
+  // the old cells under the new scope note. Masks are replaced, not mutated.
+  useEffect(() => {
+    if (results && activeCellMask !== resultMask) {
+      setResults(null)
+      setAddedToSets(false)
+    }
+  }, [activeCellMask, resultMask, results])
 
   // Get the summary for the selected column
   const columnSummary = summaries.find((s) => s.name === markerGenesColumn)
@@ -368,6 +381,8 @@ export default function MarkerGenesModal() {
       const response = await runMarkerGenes(params, activeSlot)
       setResults(response.results)
       setResultScope(activeCellMask ? (activeSubsetName ?? `${response.n_cells_tested.toLocaleString()} cells`) : null)
+      setResultCells(response.n_cells_tested)
+      setResultMask(activeCellMask)
       // Auto-expand first group
       if (response.results.length > 0) {
         setExpandedGroups(new Set([response.results[0].group]))
@@ -414,10 +429,7 @@ export default function MarkerGenesModal() {
 
   if (!isMarkerGenesModalOpen || !markerGenesColumn) return null
 
-  // Under a mask, a checked group needs an active cell to count toward the two.
-  const nRunnableGroups = maskedCounts
-    ? [...selectedGroups].filter((g) => (maskedCounts.get(g) ?? 0) > 0).length
-    : selectedGroups.size
+  const nRunnableGroups = runnableGroupCount(selectedGroups, maskedCounts)
   const canRun = nRunnableGroups >= 2 && !isRunning
   const nActive = activeCellMask ? activeCellMask.reduce((n, b) => n + (b ? 1 : 0), 0) : 0
 
@@ -438,8 +450,8 @@ export default function MarkerGenesModal() {
           {activeCellMask && (
             <div style={styles.scopeNote}>
               Scoped to the cell mask: {nActive.toLocaleString()} active cells
-              {activeSubsetName ? ` (${activeSubsetName})` : ''}. Each group is compared with the
-              rest of these cells; groups with none are left out.
+              {activeSubsetName ? ` (${activeSubsetName})` : ''}. Groups are compared within these
+              cells only; a group needs two of them to be tested.
             </div>
           )}
 
@@ -567,6 +579,7 @@ export default function MarkerGenesModal() {
               <div style={styles.resultsSummary}>
                 {results.length} group{results.length !== 1 ? 's' : ''},{' '}
                 {results.reduce((sum, r) => sum + r.genes.length, 0)} total marker genes
+                {' '}from {resultCells.toLocaleString()} cells{resultScope ? ` (cell mask: ${resultScope})` : ''}
               </div>
               {results.map((groupResult) => (
                 <div key={groupResult.group} style={styles.resultGroup}>
@@ -604,7 +617,9 @@ export default function MarkerGenesModal() {
                   )}
                   {expandedGroups.has(groupResult.group) && groupResult.genes.length === 0 && (
                     <div style={{ padding: '8px 12px', fontSize: '12px', color: '#666', fontStyle: 'italic' }}>
-                      No marker genes found
+                      {maskedCounts?.get(groupResult.group) === 1
+                        ? 'Not tested: only one active cell in this group'
+                        : 'No marker genes found'}
                     </div>
                   )}
                 </div>

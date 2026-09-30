@@ -13481,8 +13481,8 @@ class DataAdaptor:
 
         # Validate we have at least 2 groups
         n_groups = len(work_adata.obs[obs_column].cat.categories)
+        where = ' among the active cells' if cell_idx is not None else ''
         if n_groups < 2:
-            where = ' among the active cells' if cell_idx is not None else ''
             raise ValueError(f"Need at least 2 groups for marker gene analysis, got {n_groups}{where}")
 
         # scanpy refuses the whole call when any group has a single cell, and a
@@ -13493,7 +13493,8 @@ class DataAdaptor:
         tested_groups = [str(g) for g in work_adata.obs[obs_column].cat.categories if str(g) not in singletons]
         if len(tested_groups) < 2:
             raise ValueError(
-                f"Need at least 2 groups with 2 or more cells for marker gene analysis, got {len(tested_groups)}"
+                f"Need at least 2 groups with 2 or more cells for marker gene analysis, "
+                f"got {len(tested_groups)}{where}"
             )
 
         # Run rank_genes_groups (one-vs-rest). use_raw=False so we test against

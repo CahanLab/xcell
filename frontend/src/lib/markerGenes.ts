@@ -70,3 +70,13 @@ export function maskedCategoryCounts(
   }
   return counts
 }
+
+/** Checked groups the run will actually test. Under a mask a group needs two
+ *  active cells — scanpy cannot test a single-cell group, and the backend
+ *  reports it with no markers rather than failing. */
+export function runnableGroupCount(selected: ReadonlySet<string>, maskedCounts: ReadonlyMap<string, number> | null): number {
+  if (!maskedCounts) return selected.size
+  let n = 0
+  for (const g of selected) if ((maskedCounts.get(g) ?? 0) >= 2) n++
+  return n
+}

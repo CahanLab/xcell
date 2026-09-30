@@ -169,7 +169,7 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
         <div style={styles.section}>
           {activeCellMask && (
             <div style={{ fontSize: '11px', color: '#e9a23b', marginBottom: '8px', padding: '6px 8px', border: '1px solid #0f3460', borderRadius: '4px' }}>
-              Cell mask active: the heatmap draws only the {nActive.toLocaleString()} active cells.
+              Cell mask active ({nActive.toLocaleString()} cells): the heatmap draws only cells inside it.
             </div>
           )}
           {config?.cellIndices && config.cellIndices.length > 0 && (

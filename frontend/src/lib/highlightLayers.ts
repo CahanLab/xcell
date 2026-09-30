@@ -16,17 +16,56 @@ export function nextHighlightColor(layers: readonly HighlightLayer[]): string {
   return HIGHLIGHT_PALETTE.find((c) => !used.has(c)) ?? HIGHLIGHT_PALETTE[layers.length % HIGHLIGHT_PALETTE.length]
 }
 
-/** The gene-set layer made from this set: same label and the same genes in
- *  any order. A set edited since has other genes, so it reads as not shown. */
+/** Every gene-set layer made from this set: same label and the same genes,
+ *  as sets (imports can list a gene twice). Duplicates are possible — the
+ *  Color tab's "+ Gene set" does not dedupe — so a toggle removes them all.
+ *  A set edited since has other genes, so it reads as not shown. */
+export function findGeneSetLayers(
+  layers: readonly HighlightLayer[],
+  set: { name: string; genes: readonly string[] },
+): HighlightLayer[] {
+  // Rows call this on every highlightLayers change (a threshold drag is one
+  // per tick), so do no per-row work unless a layer could match.
+  const candidates = layers.filter((l) => l.source.kind === 'geneset' && l.source.label === set.name)
+  if (candidates.length === 0) return []
+  const want = new Set(set.genes)
+  return candidates.filter((l) => {
+    const have = new Set(l.source.kind === 'geneset' ? l.source.genes : [])
+    if (have.size !== want.size) return false
+    for (const g of have) if (!want.has(g)) return false
+    return true
+  })
+}
+
 export function findGeneSetLayer(
   layers: readonly HighlightLayer[],
   set: { name: string; genes: readonly string[] },
 ): HighlightLayer | null {
-  const want = new Set(set.genes)
-  for (const l of layers) {
-    if (l.source.kind !== 'geneset' || l.source.label !== set.name) continue
-    const genes = l.source.genes
-    if (genes.length === want.size && genes.every((g) => want.has(g))) return l
+  return findGeneSetLayers(layers, set)[0] ?? null
+}
+
+/** Identity of a set for "an add is already in flight": name + genes as a set. */
+export function geneSetLayerKey(set: { name: string; genes: readonly string[] }): string {
+  return `${set.name}\u0000${[...new Set(set.genes)].sort().join('\u0001')}`
+}
+
+/** Why a gene-set score should not become a highlight layer, or null.
+ *  An "above" threshold on a score that is the same in every cell passes
+ *  every cell — including the all-zero score the backend returns when none of
+ *  the set's genes are in the dataset — and tints the whole plot. */
+export function highlightSkipReason(data: {
+  genes?: readonly string[]
+  min: number
+  max: number
+  n_masked_excluded?: number
+}): string | null {
+  if ((data.genes?.length ?? 0) === 0) {
+    return (data.n_masked_excluded ?? 0) > 0
+      ? 'Every gene in this set is hidden by the gene mask, so there is nothing to highlight.'
+      : 'None of this set\u2019s genes are in this dataset, so there is nothing to highlight.'
+  }
+  if (!(data.max > data.min)) {
+    return 'This set\u2019s score is the same in every cell, so there is nothing to highlight.'
   }
   return null
 }

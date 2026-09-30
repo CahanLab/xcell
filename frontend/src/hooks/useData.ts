@@ -4,6 +4,7 @@ import type { FigureRecord, FigureSummary, FigureData } from '../lib/figures'
 import { mergePcaSubsetLists } from '../lib/pcaSubsets'
 import { useStore, DatasetSlot, Schema, EmbeddingData, ObsColumnData, DrawnLine, ExpressionData, BivariateExpressionData, DiffExpResult, LineAssociationResult, GeneMaskConfig, PCASubsetSummary, HighlightLayer, HighlightThresholdMode } from '../store'
 import { defaultThresholds } from '../utils/histogram'
+import { highlightSkipReason, nextHighlightColor } from '../lib/highlightLayers'
 import { assertJsonResponse } from '../lib/foreignServer'
 import { pollTaskLoop, TaskStatus } from '../lib/taskPolling'
 import { mirrorTargets } from '../lib/datasetSlots'
@@ -876,7 +877,7 @@ export function useDataActions() {
     async (
       genes: string[],
       label: string,
-      opts: { color: string; intensity: number; thresholdMode?: HighlightThresholdMode }
+      opts: { color?: string; intensity: number; thresholdMode?: HighlightThresholdMode }
     ): Promise<string | null> => {
       if (!genes.length) return null
       const layer = displayLayer && displayLayer !== 'X' ? displayLayer : undefined
@@ -895,12 +896,19 @@ export function useDataActions() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         })
+        const skip = highlightSkipReason(data)
+        if (skip) {
+          setError(skip)
+          return null
+        }
         const mode = opts.thresholdMode ?? 'above'
         const { lo, hi } = defaultThresholds(data.values, mode, data.min, data.max)
         const id = nextHighlightId()
         const newLayer: HighlightLayer = {
           id,
-          color: opts.color,
+          // Picked now, after the fetch: picked before it, two adds in flight
+          // would both see the same free colour.
+          color: opts.color ?? nextHighlightColor(useStore.getState().highlightLayers),
           intensity: opts.intensity,
           source: {
             kind: 'geneset',

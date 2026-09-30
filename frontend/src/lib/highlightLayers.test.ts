@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { HIGHLIGHT_PALETTE, findGeneSetLayer, nextHighlightColor } from './highlightLayers'
+import { HIGHLIGHT_PALETTE, findGeneSetLayer, findGeneSetLayers, geneSetLayerKey, highlightSkipReason, nextHighlightColor } from './highlightLayers'
 import type { HighlightLayer } from '../store'
 
 // The gene-set row's highlight toggle: it must find the layer it added (to
@@ -36,6 +36,50 @@ describe('findGeneSetLayer', () => {
   it('does not match another set with the same genes', () => {
     expect(findGeneSetLayer([geneLayer('b', 'Other', ['Axin2', 'Lef1', 'Sp5'])], set)).toBeNull()
   })
+
+  it('matches a set listing a gene twice', () => {
+    // Imports do not dedupe; a length check would never match, and every
+    // click would stack another layer.
+    const dup = { name: 'Wnt targets', genes: ['Axin2', 'Axin2', 'Lef1', 'Sp5'] }
+    expect(findGeneSetLayer([geneLayer('b', 'Wnt targets', ['Axin2', 'Axin2', 'Lef1', 'Sp5'])], dup)?.id).toBe('b')
+    expect(findGeneSetLayer([geneLayer('b', 'Wnt targets', ['Axin2', 'Lef1', 'Sp5'])], dup)?.id).toBe('b')
+  })
+
+  it('finds every layer of the set, so a toggle can clear duplicates', () => {
+    const layers = [geneLayer('a', 'Wnt targets', set.genes), cellLayer('x', 'y'), geneLayer('b', 'Wnt targets', set.genes)]
+    expect(findGeneSetLayers(layers, set).map((l) => l.id)).toEqual(['a', 'b'])
+  })
+
+  it('finds nothing among no layers', () => {
+    expect(findGeneSetLayers([], set)).toEqual([])
+  })
+})
+
+describe('geneSetLayerKey', () => {
+  it('ignores gene order and repeats but not the name', () => {
+    expect(geneSetLayerKey({ name: 'A', genes: ['x', 'y', 'x'] })).toBe(geneSetLayerKey({ name: 'A', genes: ['y', 'x'] }))
+    expect(geneSetLayerKey({ name: 'A', genes: ['x'] })).not.toBe(geneSetLayerKey({ name: 'B', genes: ['x'] }))
+  })
+})
+
+describe('highlightSkipReason', () => {
+  it('refuses a set with no gene in the dataset', () => {
+    // The backend returns all-zero values with min = max = 0, and "above 0"
+    // then highlights every cell.
+    expect(highlightSkipReason({ genes: [], min: 0, max: 0 })).toMatch(/none of/i)
+  })
+
+  it('says so when the gene mask hid them all', () => {
+    expect(highlightSkipReason({ genes: [], min: 0, max: 0, n_masked_excluded: 4 })).toMatch(/mask/i)
+  })
+
+  it('refuses a score that is the same in every cell', () => {
+    expect(highlightSkipReason({ genes: ['a'], min: 0, max: 0 })).toMatch(/same/i)
+  })
+
+  it('accepts a score that varies', () => {
+    expect(highlightSkipReason({ genes: ['a'], min: 0, max: 2.5 })).toBeNull()
+  })
 })
 
 describe('nextHighlightColor', () => {
@@ -53,8 +97,13 @@ describe('nextHighlightColor', () => {
     expect(nextHighlightColor(layers)).toBe(HIGHLIGHT_PALETTE[0])
   })
 
-  it('cycles once every colour is taken', () => {
+  it('cycles by count once every colour is taken', () => {
     const layers = HIGHLIGHT_PALETTE.map((c, i) => geneLayer(String(i), String(i), ['g'], c))
-    expect(HIGHLIGHT_PALETTE).toContain(nextHighlightColor(layers))
+    expect(nextHighlightColor(layers)).toBe(HIGHLIGHT_PALETTE[0])
+  })
+
+  it('compares colours case-insensitively', () => {
+    const layers = [geneLayer('a', 'x', ['g'], HIGHLIGHT_PALETTE[0].toUpperCase())]
+    expect(nextHighlightColor(layers)).toBe(HIGHLIGHT_PALETTE[1])
   })
 })

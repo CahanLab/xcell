@@ -15,7 +15,7 @@ import { ScoreGeneSetsModal } from './ScoreGeneSetsModal'
 import { MESSAGES } from '../messages'
 import { copyText } from '../lib/clipboard'
 import { setKey, countGeneSets } from '../lib/geneSetManager'
-import { findGeneSetLayer, nextHighlightColor, GENE_SET_LAYER_DEFAULTS } from '../lib/highlightLayers'
+import { findGeneSetLayer, findGeneSetLayers, geneSetLayerKey, GENE_SET_LAYER_DEFAULTS } from '../lib/highlightLayers'
 
 const API_BASE = '/api'
 
@@ -1091,19 +1091,23 @@ function CategoryGeneSetComponent({
             style={{
               ...styles.iconButton,
               ...(highlightLayer ? { backgroundColor: `${highlightLayer.color}33`, boxShadow: `inset 0 0 0 1px ${highlightLayer.color}` } : {}),
-              opacity: highlightBusy ? 0.5 : 1,
+              ...(geneSet.genes.length === 0 ? { cursor: 'not-allowed' } : {}),
+              opacity: highlightBusy || geneSet.genes.length === 0 ? 0.4 : 1,
             }}
             disabled={highlightBusy || geneSet.genes.length === 0}
+            aria-label="Highlight overlay"
+            aria-pressed={!!highlightLayer}
             onClick={async (e) => {
               e.stopPropagation()
               setHighlightBusy(true)
               try { await onToggleHighlight(geneSet) } finally { setHighlightBusy(false) }
             }}
-            title={highlightLayer
-              ? 'Highlighted — click to remove this overlay'
-              : 'Highlight: overlay this set on the current colouring. Adjust its threshold and colour under Color → Highlight.'}
+            title={geneSet.genes.length === 0 ? 'Empty set'
+              : highlightBusy ? 'Adding…'
+              : highlightLayer ? `Highlighted in ${highlightLayer.color} — click to remove`
+              : `Highlight this set over the current color (Color → Highlight to adjust)${geneSet.genesDown?.length ? '. Scores the \u2191 genes only, as the Color tab does' : ''}`}
           >
-            🖍
+            🖍️
           </button>
           <button
             style={styles.iconButton}
@@ -1848,14 +1852,23 @@ export default function GenePanel() {
   // The row's 🖍: what Color → Highlight → + Gene set does, in one click, and
   // a second click takes it off. Layers are read at click time so a layer
   // removed in the Color tab is not toggled from a stale list.
+  // A row's busy flag dies with the row (a folder collapsed mid-fetch) and
+  // the same set can sit in two rows, so in-flight adds are tracked here.
+  const pendingHighlights = useRef(new Set<string>())
   const handleToggleHighlight = useCallback(async (geneSet: GeneSet) => {
-    const layers = useStore.getState().highlightLayers
-    const existing = findGeneSetLayer(layers, geneSet)
-    if (existing) {
-      removeHighlightLayer(existing.id)
+    const existing = findGeneSetLayers(useStore.getState().highlightLayers, geneSet)
+    if (existing.length) {
+      existing.forEach((l) => removeHighlightLayer(l.id))
       return
     }
-    await addGeneSetHighlight(geneSet.genes, geneSet.name, { color: nextHighlightColor(layers), ...GENE_SET_LAYER_DEFAULTS })
+    const key = geneSetLayerKey(geneSet)
+    if (pendingHighlights.current.has(key)) return
+    pendingHighlights.current.add(key)
+    try {
+      await addGeneSetHighlight(geneSet.genes, geneSet.name, GENE_SET_LAYER_DEFAULTS)
+    } finally {
+      pendingHighlights.current.delete(key)
+    }
   }, [addGeneSetHighlight, removeHighlightLayer])
 
   // Flatten gene sets for bivariate selection

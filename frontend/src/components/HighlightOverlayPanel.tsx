@@ -12,7 +12,7 @@ interface Props {
   addGeneSetHighlight: (
     genes: string[],
     label: string,
-    opts: { color: string; intensity: number; thresholdMode?: HighlightThresholdMode }
+    opts: { color?: string; intensity: number; thresholdMode?: HighlightThresholdMode }
   ) => Promise<string | null>
   addCellSetHighlight: (
     indices: number[],
@@ -73,10 +73,8 @@ export default function HighlightOverlayPanel({
     if (!gs) return
     setAdding(true)
     try {
-      await addGeneSetHighlight(gs.genes, gs.name, {
-        color: nextHighlightColor(highlightLayers),
-        ...GENE_SET_LAYER_DEFAULTS,
-      })
+      // No colour: addGeneSetHighlight picks a free one once the score is in.
+      await addGeneSetHighlight(gs.genes, gs.name, GENE_SET_LAYER_DEFAULTS)
       setPicker(null)
       setPickGeneSetId('')
     } finally {

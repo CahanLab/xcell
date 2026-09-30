@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { GeneSet, HighlightLayer, HighlightSource, HighlightThresholdMode } from '../store'
 import { ObsSummary } from '../hooks/useData'
 import { HistogramChart, computeHistogram, defaultThresholds } from '../utils/histogram'
@@ -277,16 +277,35 @@ export default function HighlightOverlayPanel({
   )
 }
 
-function LayerRow({
+/** One layer's controls: colour, threshold mode, the score histogram with a
+ *  draggable cutoff, and opacity. Also the gene-set row's 🖍 tuning strip, so
+ *  both places tune a layer the same way. */
+export function LayerRow({
   layer,
   onRemove,
   onUpdate,
+  label,
 }: {
   layer: HighlightLayer
   onRemove: () => void
   onUpdate: (patch: Partial<Omit<HighlightLayer, 'id' | 'source'>> & { source?: Partial<HighlightSource> }) => void
+  /** Replaces the layer name, where the context already shows it. */
+  label?: string
 }) {
   const src = layer.source
+  // The histogram fills the row: 252px fits the Color tab, and a gene-set row
+  // indented in a folder is narrower.
+  const boxRef = useRef<HTMLDivElement>(null)
+  const [chartWidth, setChartWidth] = useState(252)
+  useLayoutEffect(() => {
+    const el = boxRef.current
+    if (!el) return
+    const measure = () => setChartWidth(Math.max(120, Math.floor(el.clientWidth - 16)))
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   // Compute histogram for geneset layers (memoized on values identity).
   const histogram = useMemo(() => {
     if (src.kind !== 'geneset') return null
@@ -303,7 +322,7 @@ function LayerRow({
   const hasHistogram = isGeneset && histogram && !histogram.zeroVariance
 
   return (
-    <div style={layerRowStyle}>
+    <div ref={boxRef} style={layerRowStyle}>
       {/* Row 1 — color | label | (mode dropdown if geneset) | × */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
         <input
@@ -314,7 +333,7 @@ function LayerRow({
           title="Layer color"
         />
         <span style={{ fontSize: '12px', color: '#eee', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={src.label}>
-          {src.label}
+          {label ?? src.label}
         </span>
         {hasHistogram && (
           <select
@@ -347,7 +366,7 @@ function LayerRow({
             hi={src.hi}
             onChangeLo={(v) => onUpdate({ source: { lo: v } })}
             onChangeHi={(v) => onUpdate({ source: { hi: v } })}
-            width={252}
+            width={chartWidth}
             height={44}
             barColor={layer.color}
           />
@@ -369,6 +388,7 @@ function LayerRow({
               : src.lo.toFixed(2)}
           </span>
         )}
+        <span style={{ fontSize: '10px', color: '#888' }}>opacity</span>
         <input
           type="range"
           min={0}
@@ -376,8 +396,9 @@ function LayerRow({
           step={0.05}
           value={layer.intensity}
           onChange={(e) => onUpdate({ intensity: parseFloat(e.target.value) })}
-          style={{ flex: 1 }}
-          title="Intensity"
+          style={{ flex: 1, minWidth: 0 }}
+          title="Opacity of the highlight colour over the cells' own colour"
+          aria-label="Highlight opacity"
         />
         <span style={{ fontSize: '10px', color: '#888', width: '30px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
           {Math.round(layer.intensity * 100)}%

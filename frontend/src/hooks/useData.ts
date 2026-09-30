@@ -2111,6 +2111,7 @@ export interface MarkerGenesGroupResult {
 export interface MarkerGenesResponse {
   obs_column: string
   results: MarkerGenesGroupResult[]
+  n_cells_tested: number
 }
 
 export async function runMarkerGenes(params: {
@@ -2121,6 +2122,7 @@ export async function runMarkerGenes(params: {
   max_out_group_fraction?: number
   min_fold_change?: number
   gene_subset?: string | null
+  active_cell_indices?: number[]
 }, slot?: DatasetSlot): Promise<MarkerGenesResponse> {
   return fetchJson<MarkerGenesResponse>(appendDataset(`${API_BASE}/marker-genes`, slot), {
     method: 'POST',

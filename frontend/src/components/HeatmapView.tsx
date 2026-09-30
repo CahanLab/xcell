@@ -9,10 +9,11 @@
  * from App.tsx plus the heatmap state from store.ts.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useStore, HeatmapConfig } from '../store'
 import { useDataActions, appendDataset, createFigure } from '../hooks/useData'
 import { heatmapFigureFromConfig } from '../lib/figures'
+import { heatmapCellScope } from '../lib/heatmapCells'
 import HeatmapConfigModal from './HeatmapConfigModal'
 import ExpressionHeatmapFigure from './figures/ExpressionHeatmapFigure'
 import type { ExpressionHeatmapData as HeatmapData } from '../lib/figures'
@@ -30,17 +31,34 @@ export default function HeatmapView() {
   const refreshFigures = useStore((s) => s.refreshFigures)
   const setActiveFigureId = useStore((s) => s.setActiveFigureId)
   const setCenterPanelView = useStore((s) => s.setCenterPanelView)
+  const activeCellMask = useStore((s) => s.activeCellMask)
+  const activeSubsetName = useStore((s) => s.activeSubsetName)
+  const cellScope = useMemo(
+    () => heatmapCellScope(heatmapConfig?.cellIndices, activeCellMask, activeSubsetName),
+    [heatmapConfig?.cellIndices, activeCellMask, activeSubsetName],
+  )
+  // The drawn cells alone: saving the mask as a subset renames it without
+  // changing a cell, and must not recompute the heatmap.
+  const drawnCells = useMemo(
+    () => heatmapCellScope(heatmapConfig?.cellIndices, activeCellMask, null).indices,
+    [heatmapConfig?.cellIndices, activeCellMask],
+  )
+  // Mask changes can overlap requests; only the latest may land.
+  const requestSeq = useRef(0)
   const saveAsFigure = useCallback(async () => {
     if (!heatmapConfig) return
     try {
-      // What the tab drew: only config.cellIndices scope it (never the active subset), under the display transform.
+      // What the tab drew: the config's cells narrowed by the mask, under the display transform.
       const transform = displayPreferences.expressionTransform === 'log1p' ? 'log1p' as const : null
-      const rec = await createFigure(heatmapFigureFromConfig(heatmapConfig, null, transform), activeSlot)
+      const rec = await createFigure(
+        heatmapFigureFromConfig({ ...heatmapConfig, cellIndices: cellScope.indices }, cellScope.subset, transform),
+        activeSlot,
+      )
       refreshFigures(); setActiveFigureId(rec.id); setCenterPanelView('figures')
     } catch (e) {
       setError((e as Error).message)
     }
-  }, [heatmapConfig, displayPreferences.expressionTransform, activeSlot, refreshFigures, setActiveFigureId, setCenterPanelView])
+  }, [heatmapConfig, cellScope, displayPreferences.expressionTransform, activeSlot, refreshFigures, setActiveFigureId, setCenterPanelView])
   const { colorByGene } = useDataActions()
 
   const [configOpen, setConfigOpen] = useState(!heatmapConfig)
@@ -48,13 +66,24 @@ export default function HeatmapView() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch heatmap data when config changes
+  // Fetch heatmap data when the config or the cells it draws change
   useEffect(() => {
     if (!heatmapConfig) return
-    fetchHeatmapData(heatmapConfig)
-  }, [heatmapConfig])
+    fetchHeatmapData(heatmapConfig, drawnCells)
+  }, [heatmapConfig, drawnCells])
 
-  const fetchHeatmapData = async (config: HeatmapConfig) => {
+  const fetchHeatmapData = async (config: HeatmapConfig, cellIndices: number[] | null) => {
+    const seq = ++requestSeq.current
+    if (cellIndices && cellIndices.length === 0) {
+      // An older request still in flight is now ignored, so its finally
+      // will not clear the spinner — clear it here.
+      setLoading(false)
+      setData(null)
+      setError(config.cellIndices?.length
+        ? 'The cell mask excludes every cell this heatmap is restricted to. Reset the mask or reconfigure.'
+        : 'The cell mask has no active cells. Reset the mask.')
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -104,7 +133,7 @@ export default function HeatmapView() {
           gene_ordering: config.geneOrdering,
           n_bins: config.nBins,
           transform,
-          cell_indices: config.cellIndices ?? null,
+          cell_indices: cellIndices,
         }),
       })
 
@@ -114,12 +143,14 @@ export default function HeatmapView() {
       }
 
       const result: HeatmapData = await response.json()
+      if (seq !== requestSeq.current) return
       setData(result)
     } catch (err) {
+      if (seq !== requestSeq.current) return
       setError((err as Error).message)
       setData(null)
     } finally {
-      setLoading(false)
+      if (seq === requestSeq.current) setLoading(false)
     }
   }
 
@@ -189,6 +220,7 @@ export default function HeatmapView() {
           {data.row_labels.length} genes &times; {data.n_bins} {data.n_bins < data.n_cells ? 'bins' : 'cells'}
           {data.n_bins < data.n_cells && ` (${data.n_cells.toLocaleString()} cells)`}
           {heatmapConfig?.cellLabel && ` · ${heatmapConfig.cellLabel}`}
+          {activeCellMask && ` · cell mask${activeSubsetName ? ` (${activeSubsetName})` : ''}`}
           {!!data.n_genes_hidden && (
             <span
               style={{ color: '#e9a23b' }}

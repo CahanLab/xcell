@@ -1703,6 +1703,7 @@ class MarkerGenesRequest(BaseModel):
     max_out_group_fraction: float | None = None
     min_fold_change: float | None = None
     gene_subset: str | None = None
+    active_cell_indices: list[int] | None = None
 
 
 class ClusterGeneSetRequest(BaseModel):
@@ -1753,6 +1754,7 @@ class MarkerGenesResponse(BaseModel):
     """Response model for marker gene analysis."""
     obs_column: str
     results: list[MarkerGenesGroupResult]
+    n_cells_tested: int
 
 
 @router.post("/marker-genes", response_model=MarkerGenesResponse)
@@ -1783,6 +1785,7 @@ def run_marker_genes(request: MarkerGenesRequest, dataset: str | None = Query(No
             max_out_group_fraction=request.max_out_group_fraction,
             min_fold_change=request.min_fold_change,
             gene_subset=request.gene_subset,
+            active_cell_indices=request.active_cell_indices,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

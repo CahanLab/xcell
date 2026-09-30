@@ -81,6 +81,10 @@ class ActionSpec:
     # in-memory source. None downgrades the step to `manual`.
     code: Callable[[Step], list[str] | Emission | None] | None = None
     imports: tuple[str, ...] = ()
+    # The emitted call passes the recorded selection itself
+    # (``active_cell_indices=SELECTIONS[...]``), so a step with a kept
+    # selection needs no "runs on the whole dataset" caveat.
+    replays_selection: bool = False
 
 
 # --- literal rendering ----------------------------------------------------
@@ -289,6 +293,21 @@ def _two_phase(method: str, only: tuple[str, ...] | None = None):
 def _direct(method: str, only: tuple[str, ...] | None = None):
     def build(step: Step) -> list[str]:
         return [_xcall(method, step.params, only)]
+    return build
+
+
+def _selection_arg(step: Step) -> str:
+    """``, active_cell_indices=SELECTIONS[...]`` when the step kept its cells."""
+    if not step.selection:
+        return ''
+    return f", active_cell_indices=SELECTIONS[{_lit(f'step_{step.index}')}]"
+
+
+def _direct_on_selection(method: str):
+    """An adaptor call that takes ``active_cell_indices`` and gets the step's own."""
+    def build(step: Step) -> list[str]:
+        args = _splat(step.params) + _selection_arg(step)
+        return [f'{ADAPTOR}.{method}({args.lstrip(", ")})']
     return build
 
 
@@ -588,7 +607,7 @@ REGISTRY: dict[str, ActionSpec] = {
     ),
     'marker_genes': ActionSpec(
         label='Marker genes', fidelity=XCELL, imports=XCELL_API,
-        code=_direct('run_marker_genes'),
+        code=_direct_on_selection('run_marker_genes'), replays_selection=True,
         summary=lambda p, r: (
             f"Ranked marker genes for `{p.get('obs_column')}` "
             f"(top {_n(p.get('top_n'))} per group) → "
@@ -1076,7 +1095,8 @@ def _warnings_for(step: Step, spec: ActionSpec | None) -> list[str]:
     # A step scoped to a named subset is emitted as the adaptor call that
     # names it, so the code does run on the selection; only an ad-hoc
     # selection needs the caveat.
-    if step.n_active is not None and not step.params.get('cell_subset'):
+    replayed = spec is not None and spec.replays_selection and bool(step.selection)
+    if step.n_active is not None and not step.params.get('cell_subset') and not replayed:
         out.append(
             f'xcell ran this on an active selection of {step.n_active:,} '
             f'of {step.n_total:,} cells. The code below runs on the whole dataset.'

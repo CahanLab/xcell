@@ -37,6 +37,9 @@ interface ColumnStats { n: number; min: number | null; median: number | null; ma
 
 interface Result {
   columns: string[]
+  summary_by: string | null
+  warnings: string[]
+  n_isolated: number
   n_cells_scored: number
   n_markers_used: number
   n_markers_missing: number
@@ -158,13 +161,14 @@ export default function StemFinderModal() {
       .then((s) => {
         if (cancelled) return
         setStatus(s)
-        if (s.species) setSpecies(s.species)
         // A saved subset's own PCA is the natural space for its cells.
         const subsetPca = activeSubsetName ? `X_pca_${activeSubsetName}` : null
         setUseRep(subsetPca && s.pc_embeddings.includes(subsetPca) ? subsetPca
           : s.pc_embeddings.includes('X_pca') ? 'X_pca' : (s.pc_embeddings[0] ?? ''))
         setGraphKey(s.graphs[0]?.key ?? '')
-        if (s.pc_embeddings.length === 0 && s.graphs.length > 0) setGraph('existing')
+        setGraph(s.pc_embeddings.length === 0 && s.graphs.length > 0 ? 'existing' : 'build')
+        setSpecies(s.species ?? 'mouse')
+        setNNeighbors(''); setNPcs('32')
         setLayer(''); setSummaryBy('')
         setSuffix(activeCellMask && activeSubsetName ? activeSubsetName : '')
       })
@@ -195,6 +199,8 @@ export default function StemFinderModal() {
     metrics, markerSource, species, geneSetGenes, method, threshold, binarizeOn, weightBy,
     includeSelf, graph, useRep, nPcs, nNeighbors, graphKey, layer, suffix, summaryBy,
     activeCellIndices: null,   // filled at Run; O(n) is not worth paying every render
+    pcEmbeddingCount: status?.pc_embeddings.length,
+    graphCount: status?.graphs.length,
   }
   const blocker = status?.available ? stemFinderBlocker(inputs) : 'PyStemFinder is not installed.'
   const usesGraph = metrics.has('stemfinder') || metrics.has('diffometer')
@@ -377,8 +383,12 @@ export default function StemFinderModal() {
               <div style={dark.row}>
                 Column suffix
                 <input style={{ ...dark.input, width: 120 }} value={suffix} placeholder="none" onChange={(e) => setSuffix(e.target.value)} />
-                <span style={{ fontSize: 10.5, color: '#666' }}>
-                  {suffix.trim() ? `→ stemfinder_${suffix.trim().replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')}` : 'overwrites stemfinder, diffometer, …'}
+                <span style={{ fontSize: 10.5, color: suffix.trim() || !activeCellMask ? '#666' : '#e9a23b' }}>
+                  {suffix.trim()
+                    ? `→ stemfinder_${suffix.trim().replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')}`
+                    : activeCellMask
+                      ? 'overwrites stemfinder, diffometer, …; cells outside the mask become empty'
+                      : 'overwrites stemfinder, diffometer, …'}
                 </span>
               </div>
               <div style={dark.row}>
@@ -453,6 +463,9 @@ export default function StemFinderModal() {
                   {result.n_markers_missing ? ` (${result.n_markers_missing} not in this dataset)` : ''}
                   {result.n_neighbors ? `, k = ${result.n_neighbors}` : result.graph_source ? `, ${result.graph_source} graph` : ''}
                   {result.n_tfs_used ? `; ${result.n_tfs_used} TFs present` : ''}.
+                  {result.warnings.map((w) => (
+                    <div key={w} style={{ marginTop: 6, color: '#e9a23b' }}>{w}</div>
+                  ))}
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
                     {result.columns.map((c) => (
                       <button key={c} style={dark.chip} onClick={() => colorBy(c)}
@@ -465,7 +478,7 @@ export default function StemFinderModal() {
                     <table style={{ ...dark.table, marginTop: 8 }}>
                       <thead>
                         <tr>
-                          <th style={dark.th}>{summaryBy || 'group'}</th>
+                          <th style={dark.th}>{result.summary_by || 'group'}</th>
                           <th style={dark.th}>cells</th>
                           {result.columns.map((c) => <th key={c} style={dark.th}>{c}</th>)}
                         </tr>

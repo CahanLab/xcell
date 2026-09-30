@@ -36,6 +36,9 @@ export interface StemFinderInputs {
   /** '' = no per-group summary */
   summaryBy: string
   activeCellIndices: number[] | null
+  /** What the dataset offers to build a neighbourhood from; absent = unknown. */
+  pcEmbeddingCount?: number
+  graphCount?: number
 }
 
 const needsGraph = (m: ReadonlySet<StemMetric>) => m.has('stemfinder') || m.has('diffometer')
@@ -76,6 +79,10 @@ export function stemFinderBlocker(i: StemFinderInputs): string | null {
     return 'Pick a gene set with genes in it, or use the cell-cycle markers.'
   }
   if (needsGraph(i.metrics)) {
+    if (i.pcEmbeddingCount === 0 && i.graphCount === 0) {
+      return 'Run PCA first (Analyze \u2192 Cells \u2192 PCA): the neighbourhood is built on it.'
+    }
+    if (i.threshold.trim() !== '' && !Number.isFinite(Number(i.threshold))) return 'Threshold must be a number.'
     if (i.graph === 'build' && i.nNeighbors.trim() !== '') {
       const k = Number(i.nNeighbors)
       if (!Number.isInteger(k) || k < 2) return 'k must be a whole number of at least 2 (blank = √n).'

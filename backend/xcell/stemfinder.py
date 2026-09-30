@@ -167,14 +167,20 @@ def count_expressed(X, cols: Sequence[int], threshold: float = 0.0) -> np.ndarra
     return (np.asarray(sub) > threshold).sum(axis=1).astype(np.int64)
 
 
-def knn_from_embedding(rep: np.ndarray, n_neighbors: int, n_pcs: int | None, seed: int = 0) -> sparse.csr_matrix:
-    """The kNN distances graph ``sc.pp.neighbors`` builds on ``rep``.
+def knn_from_embedding(rep: np.ndarray, n_neighbors: int, n_pcs: int | None) -> sparse.csr_matrix:
+    """Exact kNN distances on ``rep`` — the graph ``sc.pp.neighbors`` stores
+    in ``obsp['distances']``, without its UMAP connectivities.
 
     ``n_neighbors`` counts the cell itself, as in scanpy, so each cell gets
     ``n_neighbors - 1`` neighbours. Clamped below the number of cells.
+
+    stemFinder reads only which cells are neighbours. ``sc.pp.neighbors`` at the
+    method's k = √n spent ~75 of ~100 s on 60k cells computing connectivities
+    nothing here reads; this takes seconds. Below 4,096 cells scanpy is exact
+    too and the neighbours are the same; above, scanpy approximates
+    (pynndescent) and this does not.
     """
-    import anndata  # noqa: PLC0415
-    import scanpy as sc  # noqa: PLC0415
+    from sklearn.neighbors import NearestNeighbors  # noqa: PLC0415
 
     rep = np.asarray(rep, dtype=np.float32)
     n = rep.shape[0]
@@ -182,12 +188,19 @@ def knn_from_embedding(rep: np.ndarray, n_neighbors: int, n_pcs: int | None, see
         raise ValueError(f"Need at least 3 cells to build a neighbour graph, got {n}.")
     k = int(max(2, min(int(n_neighbors), n - 1)))
     use = None if n_pcs is None else int(max(1, min(int(n_pcs), rep.shape[1])))
-    ad = anndata.AnnData(obs={'i': np.arange(n)})
-    ad.obsm['X_rep'] = rep if use is None else rep[:, :use]
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        sc.pp.neighbors(ad, n_neighbors=k, use_rep='X_rep', random_state=seed)
-    return sparse.csr_matrix(ad.obsp['distances'])
+    X = rep if use is None else rep[:, :use]
+    # X=None queries the fitted points and leaves each out of its own list.
+    graph = NearestNeighbors(n_neighbors=k - 1).fit(X).kneighbors_graph(mode='distance')
+    return sparse.csr_matrix(graph)
+
+
+def neighbour_counts(graph) -> np.ndarray:
+    """Neighbours per cell in the graph's sparsity pattern, the cell itself not
+    counted — what PyStemFinder divides by."""
+    g = sparse.csr_matrix(graph)
+    rows = np.repeat(np.arange(g.shape[0]), np.diff(g.indptr))
+    keep = rows != g.indices
+    return np.bincount(rows[keep], minlength=g.shape[0])
 
 
 def subgraph(graph, idx: np.ndarray) -> sparse.csr_matrix:
@@ -254,7 +267,9 @@ def compute_scores(
     defaults to scaling ``log_expr``. ``graph`` is any cells x cells matrix
     whose sparsity is the kNN neighbourhood. A cell with no neighbours gets
     NaN — PyStemFinder would divide by zero there, and the NaN would then
-    reach ``raw.max()`` and blank every cell's normalized score.
+    reach ``raw.max()`` and blank every cell's normalized score. With
+    ``include_self`` PyStemFinder would instead score it 0, which reads as
+    fully differentiated.
     """
     import anndata  # noqa: PLC0415
 
@@ -271,8 +286,12 @@ def compute_scores(
     bin_layer = None if binarize_on == 'scaled' else 'log'
 
     out: dict[str, np.ndarray] = {}
-    # Division by an empty neighbourhood is expected (see above); the NaNs it
-    # leaves are the answer, not a warning.
+    # A cell with no neighbours has no neighbourhood to be heterogeneous in.
+    # PyStemFinder divides by zero there (gini) or, counting the cell itself,
+    # scores it 0 — "fully differentiated" (diffOmeter, stdev, variance).
+    isolated = neighbour_counts(graph) == 0 if graph is not None else None
+    # The division by an empty neighbourhood is expected; its NaNs are the
+    # answer, not a warning.
     with np.errstate(divide='ignore', invalid='ignore'), warnings.catch_warnings():
         warnings.simplefilter('ignore', RuntimeWarning)
         if 'stemfinder' in metrics:
@@ -280,6 +299,10 @@ def compute_scores(
             psf.stemfinder(ad, markers, threshold=threshold, method=method, layer=layer)
             raw = np.asarray(ad.obs['stemfinder_raw'], dtype=np.float64)
             raw[~np.isfinite(raw)] = np.nan
+            if isolated is not None:
+                raw[isolated] = np.nan
+            # Re-normalized here: PyStemFinder's raw.max() is NaN as soon as
+            # one cell is, which would blank every cell.
             top = np.nanmax(raw) if np.isfinite(raw).any() else np.nan
             out['stemfinder'] = 1.0 - raw / top if top and np.isfinite(top) else np.full_like(raw, np.nan)
             out['stemfinder_raw'] = raw
@@ -288,6 +311,8 @@ def compute_scores(
                            include_self=include_self, layer=bin_layer)
             d = np.asarray(ad.obs['diffometer'], dtype=np.float64)
             d[~np.isfinite(d)] = np.nan
+            if isolated is not None:
+                d[isolated] = np.nan
             out['diffometer'] = d
         if 'cc_mean' in metrics:
             psf.gene_set_score(ad, markers, layer='log', key_added='cc_mean')

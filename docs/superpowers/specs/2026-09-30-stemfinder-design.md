@@ -56,18 +56,28 @@ offered then, since mean scaled expression is ~0.
 
 **Neighbourhood.** Two choices:
 
-1. *Build a kNN graph for stemFinder* (default): `sc.pp.neighbors` on a PC
-   embedding (`X_pca`, a PC subset, or the active subset's `X_pca_<name>`),
-   `n_pcs` default min(32, available), **k = round(√n)** as the method
-   prescribes. Built on a throwaway AnnData and discarded — it is an
-   intermediate of the score, not a dataset graph.
+1. *Build a kNN graph for stemFinder* (default): exact kNN distances
+   (scikit-learn) on a PC embedding (`X_pca`, a PC subset, or the active
+   subset's `X_pca_<name>`), `n_pcs` default min(32, available),
+   **k = round(√n)** as the method prescribes, counting the cell itself as
+   scanpy does. Discarded after the run — an intermediate of the score, not a
+   dataset graph. `sc.pp.neighbors` was the first version: the same
+   neighbours below 4,096 cells, but ~100 s at 60k cells and k = 245, three
+   quarters of it UMAP connectivities stemFinder never reads; this is ~3 s.
 2. *Use an existing graph*: any `obsp` `*_connectivities`; its `*_distances`
    partner is preferred (the directed kNN), otherwise the connectivities'
    sparsity. Only the sparsity pattern matters to PyStemFinder.
 
 **Cells.** The cell mask scopes the run: scores are computed among the masked
 cells only (their own scaling, graph and √n) and cells outside get NaN, like
-UMAP on a subset. Cells left with no neighbours get NaN rather than inf.
+UMAP on a subset. Cells left with no neighbours (an existing graph cut by the
+mask) get NaN for every neighbourhood score — PyStemFinder would divide by
+zero, or, counting the cell itself, score it 0, i.e. fully differentiated —
+and the result warns when neighbourhoods are small.
+
+**Warnings** travel with the result: an expression scale that could not be
+told, markers that are highly variable genes (they shaped the PCA the graph is
+built on, which damps the heterogeneity measured), small neighbourhoods.
 
 ## Shape
 

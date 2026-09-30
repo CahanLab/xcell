@@ -175,6 +175,43 @@ def test_a_cell_with_no_neighbours_gets_nan_and_does_not_poison_the_rest():
 
 
 @needs_psf
+def test_an_isolated_cell_is_nan_for_diffometer_even_counting_itself():
+    # With include_self the lone cell's neighbourhood is itself: impurity 0,
+    # which reads as "fully differentiated". It has no neighbourhood at all.
+    ad = _adata()
+    cols = [list(ad.var_names).index(g) for g in MARKERS]
+    log = sf.log_normalized_columns(ad.X, cols, "raw_counts")
+    graph = sf.knn_from_embedding(np.log1p(ad.X.toarray()), n_neighbors=14, n_pcs=None).tolil()
+    graph[0, :] = 0
+    s = sf.compute_scores(log, MARKERS, graph.tocsr(), metrics=["stemfinder", "diffometer"],
+                          method="gini", threshold=0.0, binarize_on="scaled",
+                          weight_by="equal", include_self=True)
+    assert np.isnan(s["diffometer"][0]) and np.isnan(s["stemfinder_raw"][0])
+    assert np.isfinite(s["diffometer"][1:]).all()
+
+
+def test_neighbour_counts_exclude_the_cell_itself():
+    g = csr_matrix(np.array([[1, 1, 0], [0, 0, 0], [1, 1, 1]], dtype=float))
+    np.testing.assert_array_equal(sf.neighbour_counts(g), [1, 0, 2])
+
+
+def test_the_knn_graph_matches_scanpys_neighbours():
+    # stemFinder reads only which cells are neighbours. Built directly, it
+    # skips the UMAP connectivities sc.pp.neighbors spends most of its time on.
+    import anndata as _ad
+    import scanpy as sc
+    rng = np.random.default_rng(1)
+    rep = rng.normal(size=(300, 8)).astype(np.float32)
+    ours = sf.knn_from_embedding(rep, n_neighbors=17, n_pcs=5)
+    ref = _ad.AnnData(obs={"i": np.arange(300)})
+    ref.obsm["X_rep"] = rep[:, :5]
+    sc.pp.neighbors(ref, n_neighbors=17, use_rep="X_rep")
+    theirs = ref.obsp["distances"]
+    for i in range(300):
+        assert set(ours[i].indices) == set(theirs[i].indices)
+
+
+@needs_psf
 def test_cell_cycle_mean_is_the_mean_log_expression_of_the_markers():
     ad = _adata()
     cols = [list(ad.var_names).index(g) for g in MARKERS]

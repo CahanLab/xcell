@@ -13666,8 +13666,14 @@ class DataAdaptor:
                             weight_by=weight_by, scale_verdict=verdict)
         if graph not in ('build', 'existing'):
             raise ValueError(f"Unknown graph choice '{graph}'. Expected 'build' or 'existing'.")
-        if summary_by is not None and summary_by not in self.adata.obs.columns:
-            raise ValueError(f"Column '{summary_by}' not found in .obs")
+        if summary_by is not None:
+            if summary_by not in self.adata.obs.columns:
+                raise ValueError(f"Column '{summary_by}' not found in .obs")
+            sdt = self.adata.obs[summary_by].dtype
+            if not (isinstance(sdt, pd.CategoricalDtype) or pd.api.types.is_string_dtype(sdt)
+                    or pd.api.types.is_bool_dtype(sdt)):
+                # A numeric column is one group per value: tens of thousands.
+                raise ValueError(f"Summarize by needs a categorical column; '{summary_by}' is {sdt}.")
 
         needs_graph = bool({'stemfinder', 'diffometer'} & set(metrics))
         needs_markers = needs_graph or 'cc_mean' in metrics
@@ -13693,6 +13699,9 @@ class DataAdaptor:
             if verdict == 'z_scored':
                 sub = Xs[:, cols]
                 scaled_expr = (sub.toarray() if hasattr(sub, 'toarray') else np.asarray(sub)).astype(np.float64)
+                if cell_idx is not None:
+                    # Scaled over every cell; gini splits at the scored cells' mean.
+                    scaled_expr = sf.scale_columns(scaled_expr)
             else:
                 log_expr = sf.log_normalized_columns(Xs, cols, verdict)
         tf_counts = None
@@ -13733,6 +13742,21 @@ class DataAdaptor:
             graph_source = 'distances' if key == partner else 'connectivities'
             graph_matrix = sf.subgraph(self.adata.obsp[key], cells)
 
+        notes: list[str] = []
+        if verdict in ('unknown', 'binary', 'empty'):
+            notes.append(
+                f"Could not tell the expression scale ({layer_scale.SCALE_LABELS[verdict]}); it was read as "
+                "log-normalized."
+            )
+        if needs_graph and graph == 'build' and 'highly_variable' in self.adata.var.columns and present:
+            hv = self.adata.var['highly_variable'].reindex(present).fillna(False).astype(bool)
+            if hv.sum():
+                notes.append(
+                    f"{int(hv.sum())} of the {len(present)} markers are highly variable genes, so they may have "
+                    f"shaped {use_rep}: cycling cells then sit together in the graph, which damps the "
+                    "heterogeneity stemFinder measures. PyStemFinder builds its PCA with the markers left out."
+                )
+
         clean = re.sub(r'[^A-Za-z0-9_]+', '_', str(suffix or '')).strip('_')
         labels = (self.adata.obs[summary_by].astype(object).to_numpy()[cells]
                   if summary_by is not None else None)
@@ -13752,6 +13776,7 @@ class DataAdaptor:
                 report(0.05, f'Building a kNN graph on {use_rep} (k = {k})')
                 g = sf.knn_from_embedding(rep, n_neighbors=k, n_pcs=n_pcs)
             report(0.7, 'Scoring')
+            degree = sf.neighbour_counts(g) if g is not None else None
             if needs_markers:
                 scores = sf.compute_scores(
                     log_expr, present, g, metrics=metrics, method=method, threshold=float(threshold),
@@ -13760,7 +13785,7 @@ class DataAdaptor:
                 )
             else:
                 scores = {'stemfinder_n_TFs': np.asarray(tf_counts, dtype=np.float64)}
-            return {'scores': scores}
+            return {'scores': scores, 'degree': degree}
 
         def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
             if self.n_cells != n_obs:
@@ -13773,6 +13798,17 @@ class DataAdaptor:
                 full[cells] = scores[base]
                 self.adata.obs[name] = full
             named = {name: scores[base] for base, name in zip(order, columns)}
+            degree = result.get('degree')
+            n_isolated = int((degree == 0).sum()) if degree is not None else 0
+            min_neighbors = int(degree.min()) if degree is not None and len(degree) else None
+            warnings_out = list(notes)
+            if degree is not None and graph == 'existing' and (min_neighbors or 0) < 5:
+                warnings_out.append(
+                    f"Some cells have few neighbours in '{graph_key}' among the scored cells "
+                    f"(fewest: {min_neighbors}); {n_isolated:,} have none and get no score. "
+                    "Small neighbourhoods score as homogeneous — more differentiated than they may be. "
+                    "Building a graph for the run gives every cell k − 1."
+                )
             summary = None
             if labels is not None:
                 # Least differentiated first: low stemfinder, else a high
@@ -13793,6 +13829,10 @@ class DataAdaptor:
                 'x_scale': verdict,
                 'stats': {name: sf.column_stats(v) for name, v in named.items()},
                 'summary': summary,
+                'summary_by': summary_by,
+                'n_isolated': n_isolated,
+                'min_neighbors': min_neighbors,
+                'warnings': warnings_out,
             }
             self._log_action('stemfinder', params, {
                 'columns': columns, 'n_cells_scored': out['n_cells_scored'],

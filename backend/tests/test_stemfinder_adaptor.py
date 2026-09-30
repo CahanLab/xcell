@@ -166,6 +166,62 @@ def test_the_mask_scores_only_its_cells_as_a_run_on_them_alone_would():
 
 
 @needs_psf
+def test_scores_equal_a_direct_pystemfinder_run():
+    # The contract the feature rests on: xcell only prepares what PyStemFinder
+    # expects, so the same preparation done by hand gives the same numbers.
+    import pystemfinder as psf
+    import scanpy as sc
+    a = _adaptor()
+    _run(a)
+    ref = _adata()
+    sc.pp.normalize_total(ref, target_sum=1e4)
+    sc.pp.log1p(ref)
+    ref = ref[:, MARKERS].copy()
+    sc.pp.scale(ref, max_value=10)
+    sc.pp.neighbors(ref, n_neighbors=round(np.sqrt(N_CELLS)), n_pcs=10, use_rep="X_pca")
+    psf.stemfinder(ref, MARKERS)
+    psf.diffometer(ref, MARKERS)
+    np.testing.assert_allclose(a.adata.obs["stemfinder_raw"], ref.obs["stemfinder_raw"], atol=1e-12)
+    np.testing.assert_allclose(a.adata.obs["diffometer"], ref.obs["diffometer"], atol=1e-12)
+
+
+@needs_psf
+def test_a_masked_existing_graph_reports_and_blanks_isolated_cells():
+    import scanpy as sc
+    a = _adaptor()
+    sc.pp.neighbors(a.adata, n_neighbors=6, use_rep="X_pca")
+    idx = list(range(0, N_CELLS, 7))                       # sparse mask: many lose every neighbour
+    r = _run(a, graph="existing", graph_key="connectivities", active_cell_indices=idx)
+    d = a.adata.obs["diffometer"].to_numpy()[idx]
+    assert r["n_isolated"] > 0
+    assert np.isnan(d).sum() == r["n_isolated"]
+    assert r["min_neighbors"] == 0
+    assert any("neighbour" in w for w in r["warnings"])
+
+
+@needs_psf
+def test_summary_by_must_be_categorical():
+    a = _adaptor()
+    a.adata.obs["depth"] = np.arange(N_CELLS, dtype=float)
+    with pytest.raises(ValueError, match="categorical"):
+        a.prepare_stemfinder(markers=MARKERS, summary_by="depth")
+
+
+@needs_psf
+def test_summary_sorts_the_other_metrics_high_first():
+    r = _run(_adaptor(), metrics=["diffometer"], summary_by="pop")
+    assert [g["group"] for g in r["summary"]] == ["hi", "lo"]      # higher diffOmeter = less differentiated
+
+
+@needs_psf
+def test_markers_among_the_hvgs_are_flagged():
+    a = _adaptor()
+    a.adata.var["highly_variable"] = [g in MARKERS[:3] for g in a.adata.var_names]
+    r = _run(a)
+    assert any("highly variable" in w for w in r["warnings"])
+
+
+@needs_psf
 def test_an_existing_graph_is_used_through_its_distances():
     import scanpy as sc
     a = _adaptor()
@@ -202,8 +258,12 @@ def test_the_record_step_and_its_notebook_code():
     assert step.n_active == 100
     assert "active_cell_indices" not in step.params
     t = codegen.translate(step)
-    assert any("xa.prepare_stemfinder(" in line for line in t.code)
-    assert t.warnings                                   # ran on a selection
+    code = "\n".join(t.code)
+    assert "xa.prepare_stemfinder(" in code
+    # The notebook scores the same cells, so it needs no whole-dataset caveat.
+    assert "active_cell_indices=SELECTIONS['step_" in code
+    assert not any("whole dataset" in w for w in t.warnings)
+    compile(code, "<stemfinder>", "exec")
 
 
 # ---------- routes ----------

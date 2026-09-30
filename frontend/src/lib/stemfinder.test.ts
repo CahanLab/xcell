@@ -96,6 +96,16 @@ describe('stemFinderBlocker', () => {
     expect(stemFinderBlocker({ ...base, metrics: new Set(['n_tfs']), graph: 'existing', graphKey: '' })).toBeNull()
   })
 
+  it('needs a numeric threshold', () => {
+    expect(stemFinderBlocker({ ...base, threshold: 'abc' })).toMatch(/threshold/i)
+    expect(stemFinderBlocker({ ...base, threshold: '-0.5' })).toBeNull()
+  })
+
+  it('says to run PCA first when there is nothing to build a neighbourhood from', () => {
+    expect(stemFinderBlocker({ ...base, pcEmbeddingCount: 0, graphCount: 0 })).toMatch(/run pca/i)
+    expect(stemFinderBlocker({ ...base, metrics: new Set(['cc_mean']), pcEmbeddingCount: 0, graphCount: 0 })).toBeNull()
+  })
+
   it('rejects expression weighting on scaled expression', () => {
     expect(stemFinderBlocker({ ...base, weightBy: 'expression' })).toMatch(/expression/i)
     expect(stemFinderBlocker({ ...base, weightBy: 'expression', binarizeOn: 'log_normalized' })).toBeNull()

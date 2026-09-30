@@ -17,6 +17,8 @@ export interface MarkerGenesInputs {
   minInGroupFraction: string
   maxOutGroupFraction: string
   minFoldChange: string
+  /** The cell mask's cells; null/absent when no mask is active. */
+  activeCellIndices?: number[] | null
 }
 
 export interface MarkerGenesParams {
@@ -27,11 +29,14 @@ export interface MarkerGenesParams {
   max_out_group_fraction?: number
   min_fold_change?: number
   gene_subset?: string
+  active_cell_indices?: number[]
 }
 
 export function markerGenesParams(i: MarkerGenesInputs): MarkerGenesParams {
   const params: MarkerGenesParams = { obs_column: i.obsColumn, top_n: i.topN }
   if (i.geneSubset) params.gene_subset = i.geneSubset
+  // "The rest" in one-vs-rest is the rest of the masked cells.
+  if (i.activeCellIndices) params.active_cell_indices = i.activeCellIndices
   // Only name the groups when not every category is checked.
   if (i.selectedGroups.size < i.nCategories) params.groups = Array.from(i.selectedGroups)
   const minIGF = parseFloat(i.minInGroupFraction)
@@ -41,4 +46,27 @@ export function markerGenesParams(i: MarkerGenesInputs): MarkerGenesParams {
   const minFC = parseFloat(i.minFoldChange)
   if (!Number.isNaN(minFC)) params.min_fold_change = minFC
   return params
+}
+
+/**
+ * Cells per category among the masked cells, from an `/api/obs/{column}`
+ * payload: a categorical column arrives as codes (-1 = missing) plus the
+ * category names, anything else as raw values. A category with no masked cell
+ * is absent, which is how the modal knows the run will leave it out.
+ */
+export function maskedCategoryCounts(
+  col: { values: readonly (number | string | null)[]; categories?: readonly string[] },
+  mask: readonly boolean[],
+): Map<string, number> {
+  const counts = new Map<string, number>()
+  const n = Math.min(col.values.length, mask.length)
+  for (let i = 0; i < n; i++) {
+    if (!mask[i]) continue
+    const v = col.values[i]
+    let key: string | null
+    if (col.categories) key = typeof v === 'number' && v >= 0 ? col.categories[v] ?? null : null
+    else key = v === null ? null : String(v)
+    if (key !== null) counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return counts
 }

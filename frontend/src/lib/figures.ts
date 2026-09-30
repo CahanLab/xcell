@@ -124,8 +124,8 @@ export function barplotFigureFromConfig(cfg: BarplotConfigLike, cellSubset: stri
   }
 }
 
-/** The Heatmap tab draws only the cells in `config.cellIndices` (never the
- *  active subset or mask), so callers pass `null` for the subset; `transform`
+/** `cfg.cellIndices` / `cellSubset` are the cells the tab drew — its own
+ *  restriction narrowed by the cell mask (see `heatmapCellScope`); `transform`
  *  is the display transform the tab drew with, part of what the figure is. */
 export function heatmapFigureFromConfig(cfg: HeatmapConfigLike, cellSubset: string | null, transform: 'log1p' | null = null) {
   return {

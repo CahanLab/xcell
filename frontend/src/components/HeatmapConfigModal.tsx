@@ -76,6 +76,8 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
   const geneSetCategories = useStore((s) => s.geneSetCategories)
   const schema = useStore((s) => s.schema)
   const drawnLines = useStore((s) => s.drawnLines)
+  const activeCellMask = useStore((s) => s.activeCellMask)
+  const nActive = activeCellMask ? activeCellMask.reduce((n, b) => n + (b ? 1 : 0), 0) : 0
 
   const allGeneSets = getAllGeneSets(geneSetCategories)
   const nonEmptySets = allGeneSets.filter((gs) => gs.genes.length > 0)
@@ -165,6 +167,11 @@ export default function HeatmapConfigModal({ config, onApply, onCancel }: Props)
 
         {/* Gene set selection */}
         <div style={styles.section}>
+          {activeCellMask && (
+            <div style={{ fontSize: '11px', color: '#e9a23b', marginBottom: '8px', padding: '6px 8px', border: '1px solid #0f3460', borderRadius: '4px' }}>
+              Cell mask active: the heatmap draws only the {nActive.toLocaleString()} active cells.
+            </div>
+          )}
           {config?.cellIndices && config.cellIndices.length > 0 && (
             <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '8px', padding: '6px 8px', border: '1px solid #0f3460', borderRadius: '4px' }}>
               <label style={{ cursor: 'pointer' }}>

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { markerGenesParams } from '../lib/markerGenes'
-import { useStore, cfgDefault } from '../store'
+import { markerGenesParams, maskedCategoryCounts } from '../lib/markerGenes'
+import { indicesFromMask } from '../lib/cellSubsets'
+import { useStore, cfgDefault, ObsColumnData } from '../store'
 import { useObsSummaries, runMarkerGenes, MarkerGenesGroupResult, appendDataset } from '../hooks/useData'
 
 const styles = {
@@ -206,6 +207,14 @@ const styles = {
     fontSize: '11px',
     color: '#666',
   },
+  scopeNote: {
+    fontSize: '11px',
+    color: '#e9a23b',
+    padding: '6px 8px',
+    border: '1px solid #0f3460',
+    borderRadius: '4px',
+    marginBottom: '12px',
+  },
   error: {
     fontSize: '12px',
     color: '#e94560',
@@ -226,6 +235,8 @@ export default function MarkerGenesModal() {
     comparisonCheckedCategories,
     activeSlot,
     setEnrichmentSource,
+    activeCellMask,
+    activeSubsetName,
   } = useStore()
 
   const { summaries } = useObsSummaries()
@@ -255,8 +266,28 @@ export default function MarkerGenesModal() {
       .catch(() => setBooleanColumns([]))
   }, [isMarkerGenesModalOpen, activeSlot])
 
+  // Per-group cell counts inside the cell mask (null without one), so a group
+  // the mask empties is visible before Run rather than missing after it.
+  const [maskedCounts, setMaskedCounts] = useState<Map<string, number> | null>(null)
+  useEffect(() => {
+    if (!isMarkerGenesModalOpen || !markerGenesColumn || !activeCellMask) {
+      setMaskedCounts(null)
+      return
+    }
+    let cancelled = false
+    fetch(appendDataset(`/api/obs/${encodeURIComponent(markerGenesColumn)}`, activeSlot))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((col: ObsColumnData | null) => {
+        if (!cancelled) setMaskedCounts(col ? maskedCategoryCounts(col, activeCellMask) : null)
+      })
+      .catch(() => { if (!cancelled) setMaskedCounts(null) })
+    return () => { cancelled = true }
+  }, [isMarkerGenesModalOpen, markerGenesColumn, activeCellMask, activeSlot])
+
   // Results state
   const [results, setResults] = useState<MarkerGenesGroupResult[] | null>(null)
+  // Which cells the shown results came from, for the gene-set folder name.
+  const [resultScope, setResultScope] = useState<string | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
@@ -331,10 +362,12 @@ export default function MarkerGenesModal() {
         minInGroupFraction,
         maxOutGroupFraction,
         minFoldChange,
+        activeCellIndices: activeCellMask ? indicesFromMask(activeCellMask) : null,
       })
 
       const response = await runMarkerGenes(params, activeSlot)
       setResults(response.results)
+      setResultScope(activeCellMask ? (activeSubsetName ?? `${response.n_cells_tested.toLocaleString()} cells`) : null)
       // Auto-expand first group
       if (response.results.length > 0) {
         setExpandedGroups(new Set([response.results[0].group]))
@@ -344,7 +377,7 @@ export default function MarkerGenesModal() {
     } finally {
       setIsRunning(false)
     }
-  }, [markerGenesColumn, selectedGroups, categories.length, topN, geneSubset, minInGroupFraction, maxOutGroupFraction, minFoldChange, activeSlot])
+  }, [markerGenesColumn, selectedGroups, categories.length, topN, geneSubset, minInGroupFraction, maxOutGroupFraction, minFoldChange, activeSlot, activeCellMask, activeSubsetName])
 
   const handleAddToGeneSets = useCallback(() => {
     if (!results || !markerGenesColumn) return
@@ -358,10 +391,10 @@ export default function MarkerGenesModal() {
 
     if (geneSets.length === 0) return
 
-    const folderName = `${markerGenesColumn} markers`
+    const folderName = resultScope ? `${markerGenesColumn} markers (${resultScope})` : `${markerGenesColumn} markers`
     addFolderToCategory('marker_genes', folderName, geneSets)
     setAddedToSets(true)
-  }, [results, markerGenesColumn, addFolderToCategory])
+  }, [results, resultScope, markerGenesColumn, addFolderToCategory])
 
   const toggleResultGroup = useCallback((group: string) => {
     setExpandedGroups((prev) => {
@@ -381,7 +414,12 @@ export default function MarkerGenesModal() {
 
   if (!isMarkerGenesModalOpen || !markerGenesColumn) return null
 
-  const canRun = selectedGroups.size >= 2 && !isRunning
+  // Under a mask, a checked group needs an active cell to count toward the two.
+  const nRunnableGroups = maskedCounts
+    ? [...selectedGroups].filter((g) => (maskedCounts.get(g) ?? 0) > 0).length
+    : selectedGroups.size
+  const canRun = nRunnableGroups >= 2 && !isRunning
+  const nActive = activeCellMask ? activeCellMask.reduce((n, b) => n + (b ? 1 : 0), 0) : 0
 
   return (
     <div style={styles.backdrop} onClick={handleClose}>
@@ -396,6 +434,14 @@ export default function MarkerGenesModal() {
         <div style={styles.body}>
           <div style={styles.label}>Column</div>
           <div style={styles.columnName}>{markerGenesColumn}</div>
+
+          {activeCellMask && (
+            <div style={styles.scopeNote}>
+              Scoped to the cell mask: {nActive.toLocaleString()} active cells
+              {activeSubsetName ? ` (${activeSubsetName})` : ''}. Each group is compared with the
+              rest of these cells; groups with none are left out.
+            </div>
+          )}
 
           {/* Group selection */}
           <div style={styles.label}>Select Groups (min 2)</div>
@@ -413,7 +459,7 @@ export default function MarkerGenesModal() {
             {categories.map((cat) => (
               <div
                 key={cat.value}
-                style={styles.groupItem}
+                style={{ ...styles.groupItem, ...(maskedCounts && !maskedCounts.get(cat.value) ? { opacity: 0.45 } : {}) }}
                 onClick={() => toggleGroup(cat.value)}
               >
                 <input
@@ -424,7 +470,9 @@ export default function MarkerGenesModal() {
                 />
                 <span>{cat.value}</span>
                 <span style={styles.groupCount}>
-                  {cat.count.toLocaleString()} cells
+                  {maskedCounts
+                    ? `${(maskedCounts.get(cat.value) ?? 0).toLocaleString()} of ${cat.count.toLocaleString()} cells`
+                    : `${cat.count.toLocaleString()} cells`}
                 </span>
               </div>
             ))}

@@ -13413,6 +13413,7 @@ class DataAdaptor:
         max_out_group_fraction: float | None = None,
         min_fold_change: float | None = None,
         gene_subset: str | list[str] | dict[str, Any] | None = None,
+        active_cell_indices: list[int] | None = None,
         _log: bool = True,
     ) -> dict[str, Any]:
         """Run one-vs-rest marker gene analysis using scanpy.
@@ -13428,6 +13429,8 @@ class DataAdaptor:
             max_out_group_fraction: Max fraction of cells outside group expressing the gene
             min_fold_change: Minimum fold change threshold
             gene_subset: Gene filtering specification (str column name, list of genes, or dict spec)
+            active_cell_indices: The browser's cell mask. "The rest" in
+                one-vs-rest is the rest of these cells, not of the dataset.
 
         Returns:
             Dictionary with obs_column, results (per-group gene lists), and params
@@ -13444,12 +13447,15 @@ class DataAdaptor:
         if not pd.api.types.is_categorical_dtype(dtype) and not pd.api.types.is_string_dtype(dtype):
             raise ValueError(f"Column '{obs_column}' is not categorical (dtype: {dtype})")
 
+        cell_idx = self._validate_cell_indices(active_cell_indices)
+        cells = slice(None) if cell_idx is None else cell_idx
+
         # Resolve gene subset
         if gene_subset is not None or self._visible_gene_mask is not None:
             gene_mask, subset_type, _ = self._resolve_gene_mask(gene_subset)
-            work_adata = self.adata[:, gene_mask].copy()
+            work_adata = self.adata[cells, gene_mask].copy()
         else:
-            work_adata = self.adata.copy()
+            work_adata = self.adata[cells].copy()
             subset_type = 'all'
 
         # Ensure the column is categorical
@@ -13458,7 +13464,10 @@ class DataAdaptor:
 
         # If groups specified, subset to only those cells
         if groups is not None:
-            all_categories = list(work_adata.obs[obs_column].cat.categories)
+            # Checked against the live column: copying a masked view has
+            # already dropped the categories with no active cell, and the
+            # modal lists every category, masked out or not.
+            all_categories = list(pd.Categorical(self.adata.obs[obs_column]).categories)
             invalid = [g for g in groups if g not in all_categories]
             if invalid:
                 raise ValueError(f"Groups not found in column '{obs_column}': {invalid}")
@@ -13466,11 +13475,26 @@ class DataAdaptor:
             work_adata = work_adata[mask].copy()
             # Remove unused categories after subsetting
             work_adata.obs[obs_column] = work_adata.obs[obs_column].cat.remove_unused_categories()
+        elif cell_idx is not None:
+            # A category with no cell in the mask is not a group here.
+            work_adata.obs[obs_column] = work_adata.obs[obs_column].cat.remove_unused_categories()
 
         # Validate we have at least 2 groups
         n_groups = len(work_adata.obs[obs_column].cat.categories)
         if n_groups < 2:
-            raise ValueError(f"Need at least 2 groups for marker gene analysis, got {n_groups}")
+            where = ' among the active cells' if cell_idx is not None else ''
+            raise ValueError(f"Need at least 2 groups for marker gene analysis, got {n_groups}{where}")
+
+        # scanpy refuses the whole call when any group has a single cell, and a
+        # mask produces such groups easily. Test the rest; the singletons are
+        # reported below with no markers.
+        counts = work_adata.obs[obs_column].value_counts()
+        singletons = [str(g) for g, n in counts.items() if n < 2]
+        tested_groups = [str(g) for g in work_adata.obs[obs_column].cat.categories if str(g) not in singletons]
+        if len(tested_groups) < 2:
+            raise ValueError(
+                f"Need at least 2 groups with 2 or more cells for marker gene analysis, got {len(tested_groups)}"
+            )
 
         # Run rank_genes_groups (one-vs-rest). use_raw=False so we test against
         # the in-session adata.X (which the user has been preprocessing), not
@@ -13481,6 +13505,7 @@ class DataAdaptor:
         sc.tl.rank_genes_groups(
             work_adata,
             groupby=obs_column,
+            groups=tested_groups if singletons else 'all',
             method='wilcoxon',
             use_raw=False,
             key_added='marker_genes',
@@ -13502,6 +13527,9 @@ class DataAdaptor:
         result_groups = []
         for group in work_adata.obs[obs_column].cat.categories:
             group_str = str(group)
+            if group_str in singletons:
+                result_groups.append({'group': group_str, 'genes': []})
+                continue
             try:
                 if has_filters:
                     df = sc.get.rank_genes_groups_df(work_adata, group=group_str, key='marker_genes_filtered')
@@ -13545,13 +13573,14 @@ class DataAdaptor:
             }, {
                 'n_groups': len(result_groups),
                 'total_genes': sum(len(g['genes']) for g in result_groups),
-            })
+            }, subset=cell_idx)
 
         return {
             'obs_column': obs_column,
             'results': result_groups,
             'gene_subset_type': subset_type,
             'n_genes_tested': work_adata.n_vars,
+            'n_cells_tested': work_adata.n_obs,
         }
 
     # ------------------------------------------------------------------

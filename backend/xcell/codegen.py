@@ -614,6 +614,17 @@ REGISTRY: dict[str, ActionSpec] = {
             f"{_n(r.get('total_genes'))} genes across {_n(r.get('n_groups'))} groups."
         ),
     ),
+    'stemfinder': ActionSpec(
+        label='Differentiation (stemFinder)', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase('prepare_stemfinder'),
+        summary=lambda p, r: (
+            f"PyStemFinder scores ({', '.join(p.get('metrics') or [])}) from "
+            f"{_n(r.get('n_markers_used'))} markers"
+            + (f", k = {_n(r.get('n_neighbors'))}" if r.get('n_neighbors') else '')
+            + f" → {', '.join(f'`{c}`' for c in (r.get('columns') or []))} "
+            f"for {_n(r.get('n_cells_scored'))} cells."
+        ),
+    ),
     'transfer_obs_labels': ActionSpec(
         label='Transfer labels', fidelity=XCELL, imports=XCELL_API,
         code=_direct('transfer_obs_labels',

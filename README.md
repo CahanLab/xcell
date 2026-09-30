@@ -265,6 +265,17 @@ warn outright if you point them at a z-scored layer.
   so an expression map and a spatial one sit side by side instead of
   overwriting each other; the name is editable.
 
+  **Differentiation (stemFinder)** (after PCA) scores how differentiated each
+  cell is with [PyStemFinder](https://github.com/CahanLab/PyStemFinder): less
+  differentiated cells vary more in their cell cycle gene expression than their
+  neighbours do. It writes `stemfinder` (lower = less differentiated, like
+  pseudotime), `stemfinder_raw` and `diffometer` to `.obs`, optionally with a
+  cell-cycle expression and an expressed-TF baseline, and can rank a
+  categorical column's groups by median score. The neighbourhood is a kNN
+  graph with k = √n built for the run (or an existing graph), and the cell
+  mask scopes it. PyStemFinder is in the default environment; an environment
+  installed before it was added shows install instructions instead.
+
 ### 6. View Clustering Results
 
 - In **Cell Manager**, select the `leiden` column to color by cluster

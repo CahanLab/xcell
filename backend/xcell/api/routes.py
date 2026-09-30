@@ -4597,6 +4597,57 @@ def cluster_gene_set_route(req: ClusterGeneSetRequest, dataset: str | None = Que
     return {"clusters": clusters}
 
 
+# --- PyStemFinder differentiation scores (optional dependency) ---
+
+class StemFinderRequest(BaseModel):
+    metrics: list[str] | None = None
+    markers: list[str] | None = None
+    species: str | None = None
+    method: str = 'gini'
+    threshold: float = 0.0
+    binarize_on: str = 'scaled'
+    weight_by: str = 'equal'
+    include_self: bool = True
+    graph: str = 'build'
+    use_rep: str = 'X_pca'
+    n_pcs: int | None = 32
+    n_neighbors: int | None = None
+    graph_key: str | None = None
+    layer: str | None = None
+    suffix: str = ''
+    summary_by: str | None = None
+    active_cell_indices: list[int] | None = None
+
+
+@router.get("/stemfinder/status")
+def stemfinder_status(dataset: str | None = Query(None)):
+    """Whether PyStemFinder is installed, plus this dataset's pickers.
+
+    Always 200 — "not installed" is a state the UI renders, not an error.
+    """
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.stemfinder_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/stemfinder", status_code=202)
+def run_stemfinder(request: StemFinderRequest, dataset: str | None = Query(None)):
+    """Score differentiation with PyStemFinder (cancellable background task)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_stemfinder(**request.model_dump())
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- PySingleCellNet cell-type classification (optional dependency) ---
 
 class PyscnInspectRequest(BaseModel):

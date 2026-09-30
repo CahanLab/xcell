@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useStore, GeneSet, GeneSetCategory, GeneSetFolder, GeneSetCategoryType } from '../store'
 import { useGeneSearch, useGeneBrowse, useDataActions, useObsSummaries, appendDataset, fetchVarIdentifierColumns, swapVarIndex, refreshSchema, pollTask } from '../hooks/useData'
 import { exportFolderAsJson, exportFolderAsGmt, exportFolderAsCsv } from '../utils/exportGeneSets'
-import HighlightOverlayPanel from './HighlightOverlayPanel'
+import HighlightOverlayPanel, { LayerRow } from './HighlightOverlayPanel'
 import VarColumnsSection from './VarColumnsSection'
 import CombineGeneSetsModal from './CombineGeneSetsModal'
 import BivariateAxisPicker, { AxisKind, resolveBivariateAxis } from './BivariateAxisPicker'
@@ -15,7 +15,7 @@ import { ScoreGeneSetsModal } from './ScoreGeneSetsModal'
 import { MESSAGES } from '../messages'
 import { copyText } from '../lib/clipboard'
 import { setKey, countGeneSets } from '../lib/geneSetManager'
-import { findGeneSetLayer, findGeneSetLayers, geneSetLayerKey, GENE_SET_LAYER_DEFAULTS } from '../lib/highlightLayers'
+import { findGeneSetLayer, findGeneSetLayers, geneSetLayerKey, highlightButtonAction, GENE_SET_LAYER_DEFAULTS } from '../lib/highlightLayers'
 
 const API_BASE = '/api'
 
@@ -804,6 +804,26 @@ function GeneSearch({ onColorByGene, selectedSearchGenes, setSelectedSearchGenes
   )
 }
 
+/** Keep a gesture inside the 🖍 tuning strip (the opacity thumb) from
+ *  becoming a native drag of the set's folder: folders are draggable, and the
+ *  browser starts their drag from any descendant, so the slider never moves.
+ *  Their draggability is restored on mouseup. */
+function holdAncestorDrag(e: React.MouseEvent<HTMLElement>) {
+  const held: HTMLElement[] = []
+  for (let el = e.currentTarget.parentElement; el; el = el.parentElement) {
+    if (el.draggable) {
+      el.draggable = false
+      held.push(el)
+    }
+  }
+  if (!held.length) return
+  const restore = () => {
+    held.forEach((el) => { el.draggable = true })
+    window.removeEventListener('mouseup', restore, true)
+  }
+  window.addEventListener('mouseup', restore, true)
+}
+
 // New component for rendering gene sets within the category system
 function CategoryGeneSetComponent({
   geneSet,
@@ -811,7 +831,7 @@ function CategoryGeneSetComponent({
   folderId,
   onColorByGene,
   onColorBySet,
-  onToggleHighlight,
+  onAddHighlight,
   activeGenes,
 }: {
   geneSet: GeneSet
@@ -819,7 +839,7 @@ function CategoryGeneSetComponent({
   folderId?: string
   onColorByGene: (gene: string) => void
   onColorBySet: (genes: string[], geneSetName?: string, genesDown?: string[]) => void
-  onToggleHighlight: (geneSet: GeneSet) => Promise<void>
+  onAddHighlight: (geneSet: GeneSet) => Promise<boolean>
   activeGenes: string[]
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -852,6 +872,23 @@ function CategoryGeneSetComponent({
   const highlightLayers = useStore((s) => s.highlightLayers)
   const highlightLayer = useMemo(() => findGeneSetLayer(highlightLayers, geneSet), [highlightLayers, geneSet])
   const [highlightBusy, setHighlightBusy] = useState(false)
+  const updateHighlightLayer = useStore((s) => s.updateHighlightLayer)
+  const removeHighlightLayer = useStore((s) => s.removeHighlightLayer)
+  // The 🖍 tuning strip: threshold and opacity without a trip to the Color tab.
+  const [tuneOpen, setTuneOpen] = useState(false)
+  const highlighted = highlightLayer !== null
+  useEffect(() => { if (!highlighted) setTuneOpen(false) }, [highlighted])
+  const handleHighlightClick = async () => {
+    const action = highlightButtonAction(highlighted, tuneOpen)
+    if (action === 'open') { setTuneOpen(true); return }
+    if (action === 'close') { setTuneOpen(false); return }
+    setHighlightBusy(true)
+    try {
+      if (await onAddHighlight(geneSet)) setTuneOpen(true)
+    } finally {
+      setHighlightBusy(false)
+    }
+  }
   const geneMaskConfig = useStore((s) => s.geneMaskConfig)
   const visibleGeneNameSet = useMemo<Set<string> | null>(() => {
     if (!geneMaskConfig?.active || !geneMaskConfig.visibleGeneNames) return null
@@ -1096,16 +1133,13 @@ function CategoryGeneSetComponent({
             }}
             disabled={highlightBusy || geneSet.genes.length === 0}
             aria-label="Highlight overlay"
-            aria-pressed={!!highlightLayer}
-            onClick={async (e) => {
-              e.stopPropagation()
-              setHighlightBusy(true)
-              try { await onToggleHighlight(geneSet) } finally { setHighlightBusy(false) }
-            }}
+            aria-pressed={highlighted}
+            aria-expanded={tuneOpen}
+            onClick={(e) => { e.stopPropagation(); void handleHighlightClick() }}
             title={geneSet.genes.length === 0 ? 'Empty set'
               : highlightBusy ? 'Adding…'
-              : highlightLayer ? `Highlighted in ${highlightLayer.color} — click to remove`
-              : `Highlight this set over the current color (Color → Highlight to adjust)${geneSet.genesDown?.length ? '. Scores the \u2191 genes only, as the Color tab does' : ''}`}
+              : highlightLayer ? (tuneOpen ? 'Hide the highlight controls' : 'Highlighted — tune its threshold and opacity, or remove it')
+              : `Highlight this set over the current color, then tune its threshold and opacity${geneSet.genesDown?.length ? '. Scores the \u2191 genes only, as the Color tab does' : ''}`}
           >
             🖍️
           </button>
@@ -1197,6 +1231,17 @@ function CategoryGeneSetComponent({
           <span style={{ color: '#888', fontSize: '10px' }}>{expanded ? '▼' : '▶'}</span>
         </div>
       </div>
+      {tuneOpen && highlightLayer && (
+        <div style={{ padding: '0 6px 6px' }} onClick={(e) => e.stopPropagation()} onMouseDownCapture={holdAncestorDrag}>
+          <LayerRow
+            layer={highlightLayer}
+            label="Highlight"
+            onUpdate={(patch) => updateHighlightLayer(highlightLayer.id, patch)}
+            onRemove={() => findGeneSetLayers(useStore.getState().highlightLayers, geneSet)
+              .forEach((l) => removeHighlightLayer(l.id))}
+          />
+        </div>
+      )}
       {expanded && geneSet.genes.length > 0 && (
         <div style={styles.geneList}>
           {(visibleGeneNameSet
@@ -1293,7 +1338,7 @@ function GeneSetFolderComponent({
   categoryType,
   onColorByGene,
   onColorBySet,
-  onToggleHighlight,
+  onAddHighlight,
   activeGenes,
   allowAddSet,
 }: {
@@ -1301,7 +1346,7 @@ function GeneSetFolderComponent({
   categoryType: GeneSetCategoryType
   onColorByGene: (gene: string) => void
   onColorBySet: (genes: string[], geneSetName?: string, genesDown?: string[]) => void
-  onToggleHighlight: (geneSet: GeneSet) => Promise<void>
+  onAddHighlight: (geneSet: GeneSet) => Promise<boolean>
   activeGenes: string[]
   allowAddSet?: boolean
 }) {
@@ -1557,7 +1602,7 @@ function GeneSetFolderComponent({
               folderId={folder.id}
               onColorByGene={onColorByGene}
               onColorBySet={onColorBySet}
-              onToggleHighlight={onToggleHighlight}
+              onAddHighlight={onAddHighlight}
               activeGenes={activeGenes}
             />
           ))}
@@ -1686,7 +1731,7 @@ function GeneSetCategoryComponent({
   category,
   onColorByGene,
   onColorBySet,
-  onToggleHighlight,
+  onAddHighlight,
   activeGenes,
   onAddNewSet,
   onAddNewFolder,
@@ -1694,7 +1739,7 @@ function GeneSetCategoryComponent({
   category: GeneSetCategory
   onColorByGene: (gene: string) => void
   onColorBySet: (genes: string[], geneSetName?: string, genesDown?: string[]) => void
-  onToggleHighlight: (geneSet: GeneSet) => Promise<void>
+  onAddHighlight: (geneSet: GeneSet) => Promise<boolean>
   activeGenes: string[]
   onAddNewSet?: () => void
   onAddNewFolder?: () => void
@@ -1767,7 +1812,7 @@ function GeneSetCategoryComponent({
               categoryType={category.type}
               onColorByGene={onColorByGene}
               onColorBySet={onColorBySet}
-              onToggleHighlight={onToggleHighlight}
+              onAddHighlight={onAddHighlight}
               activeGenes={activeGenes}
               allowAddSet={category.type === 'manual'}
             />
@@ -1780,7 +1825,7 @@ function GeneSetCategoryComponent({
               categoryType={category.type}
               onColorByGene={onColorByGene}
               onColorBySet={onColorBySet}
-              onToggleHighlight={onToggleHighlight}
+              onAddHighlight={onAddHighlight}
               activeGenes={activeGenes}
             />
           ))}
@@ -1849,27 +1894,24 @@ export default function GenePanel() {
     colorByGenes(genes, undefined, geneSetName, genesDown)
   }, [colorByGenes])
 
-  // The row's 🖍: what Color → Highlight → + Gene set does, in one click, and
-  // a second click takes it off. Layers are read at click time so a layer
-  // removed in the Color tab is not toggled from a stale list.
+  // The row's 🖍: what Color → Highlight → + Gene set does, in one click; the
+  // row then shows the layer's threshold and opacity (removal is there too).
+  // Layers are read at click time so a layer added in the Color tab is found.
   // A row's busy flag dies with the row (a folder collapsed mid-fetch) and
   // the same set can sit in two rows, so in-flight adds are tracked here.
   const pendingHighlights = useRef(new Set<string>())
-  const handleToggleHighlight = useCallback(async (geneSet: GeneSet) => {
-    const existing = findGeneSetLayers(useStore.getState().highlightLayers, geneSet)
-    if (existing.length) {
-      existing.forEach((l) => removeHighlightLayer(l.id))
-      return
-    }
+  // Resolves true once the set has a layer (already, or newly added).
+  const handleAddHighlight = useCallback(async (geneSet: GeneSet): Promise<boolean> => {
+    if (findGeneSetLayers(useStore.getState().highlightLayers, geneSet).length) return true
     const key = geneSetLayerKey(geneSet)
-    if (pendingHighlights.current.has(key)) return
+    if (pendingHighlights.current.has(key)) return false
     pendingHighlights.current.add(key)
     try {
-      await addGeneSetHighlight(geneSet.genes, geneSet.name, GENE_SET_LAYER_DEFAULTS)
+      return (await addGeneSetHighlight(geneSet.genes, geneSet.name, GENE_SET_LAYER_DEFAULTS)) !== null
     } finally {
       pendingHighlights.current.delete(key)
     }
-  }, [addGeneSetHighlight, removeHighlightLayer])
+  }, [addGeneSetHighlight])
 
   // Flatten gene sets for bivariate selection
   const allGeneSets = flattenGeneSets(geneSetCategories)
@@ -2299,7 +2341,7 @@ export default function GenePanel() {
               category={cat}
               onColorByGene={colorByGene}
               onColorBySet={handleColorBySet}
-              onToggleHighlight={handleToggleHighlight}
+              onAddHighlight={handleAddHighlight}
               activeGenes={selectedGenes}
               onAddNewSet={catType === 'manual' ? () => setGeneSetManager({ tab: 'new', dest: { cat: 'manual', folderId: null } }) : undefined}
               onAddNewFolder={catType === 'manual' ? () => setShowNewFolderInput(true) : undefined}

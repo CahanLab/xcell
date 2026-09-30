@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { HIGHLIGHT_PALETTE, findGeneSetLayer, findGeneSetLayers, geneSetLayerKey, highlightSkipReason, nextHighlightColor } from './highlightLayers'
+import { HIGHLIGHT_PALETTE, findGeneSetLayer, findGeneSetLayers, geneSetLayerKey, highlightButtonAction, highlightSkipReason, nextHighlightColor } from './highlightLayers'
 import type { HighlightLayer } from '../store'
 
 // The gene-set row's highlight toggle: it must find the layer it added (to
@@ -105,5 +105,22 @@ describe('nextHighlightColor', () => {
   it('compares colours case-insensitively', () => {
     const layers = [geneLayer('a', 'x', ['g'], HIGHLIGHT_PALETTE[0].toUpperCase())]
     expect(nextHighlightColor(layers)).toBe(HIGHLIGHT_PALETTE[1])
+  })
+})
+
+describe('highlightButtonAction', () => {
+  // The row's 🖍: add the layer and open its tuning strip; once shown, the
+  // button opens and closes the strip, whose × removes the layer.
+  it('adds a set that is not highlighted', () => {
+    expect(highlightButtonAction(false, false)).toBe('add')
+    expect(highlightButtonAction(false, true)).toBe('add')
+  })
+
+  it('opens the tuning strip of a highlighted set', () => {
+    expect(highlightButtonAction(true, false)).toBe('open')
+  })
+
+  it('closes an open strip rather than removing the layer', () => {
+    expect(highlightButtonAction(true, true)).toBe('close')
   })
 })

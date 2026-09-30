@@ -69,3 +69,11 @@ export function highlightSkipReason(data: {
   }
   return null
 }
+
+/** What the gene-set row's 🖍 does. Not shown: add the layer (and open its
+ *  tuning strip). Shown: open or close the strip — removing lives on the
+ *  strip's ×, so tuning a threshold is never one misclick from losing it. */
+export function highlightButtonAction(highlighted: boolean, tuneOpen: boolean): 'add' | 'open' | 'close' {
+  if (!highlighted) return 'add'
+  return tuneOpen ? 'close' : 'open'
+}

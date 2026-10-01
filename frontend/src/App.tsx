@@ -25,6 +25,7 @@ import LocalizeModal from './components/LocalizeModal'
 import MergeSpotsModal from './components/MergeSpotsModal'
 import DownsampleModal from './components/DownsampleModal'
 import StemFinderModal from './components/StemFinderModal'
+import PseudotimeModal from './components/PseudotimeModal'
 import LigRecModal from './components/LigRecModal'
 import NeighborhoodModal from './components/NeighborhoodModal'
 import GeneNmfModal from './components/GeneNmfModal'
@@ -2234,6 +2235,7 @@ export default function App() {
       <MergeSpotsModal />
       <DownsampleModal />
       <StemFinderModal />
+      <PseudotimeModal />
       <LigRecModal />
       <NeighborhoodModal />
       <GeneNmfModal />

@@ -4971,14 +4971,13 @@ class DataAdaptor:
         for k in self.adata.obsm.keys():
             if k.startswith(f'X_pca_{name}_') and k not in pc_subsets:
                 pc_subsets.append(k)
+        # Diffusion maps and pseudotimes are known only by what was recorded:
+        # no file predates the record for them, and matching by name would
+        # claim a dataset-level map for a subset named like its graph
+        # ('spatial' would take X_diffmap_spatial, and its cascade delete
+        # would remove it).
         diffmaps = recorded_keys('diffmap')
-        for k in self.adata.obsm.keys():
-            if (k == f'X_diffmap_{name}' or k.startswith(f'X_diffmap_{name}_')) and k not in diffmaps:
-                diffmaps.append(k)
         dpts = recorded_keys('dpt')
-        for c in self.adata.obs.columns:
-            if (c == f'dpt_pseudotime_{name}' or c.startswith(f'dpt_pseudotime_{name}_')) and c not in dpts:
-                dpts.append(c)
         return {
             'hvg': hvg if hvg in self.adata.var.columns else None,
             'pca': pca if pca in self.adata.obsm else None,
@@ -9202,6 +9201,7 @@ class DataAdaptor:
             'graph_key': used_graph,
             'n_comps': int(n_comps),
             'evals': evals,
+            'n_stationary': int(res['n_stationary']),
             'symmetrized': bool(res['symmetrized']),
             'cell_subset': subset_name,
         })
@@ -9219,6 +9219,7 @@ class DataAdaptor:
             'view_dims': res['view_dims'],
             'n_cells_used': res['n_cells_used'],
             'n_isolated': res['n_isolated'],
+            'n_fragment_cells': res['n_fragment_cells'],
             'n_components': res['n_components'],
             'component_sizes': res['component_sizes'][:10],
             'symmetrized': res['symmetrized'],
@@ -9252,12 +9253,14 @@ class DataAdaptor:
                 'graph_key': str(entry.get('graph_key') or 'connectivities'),
                 'evals': np.asarray(entry.get('evals', []), dtype=np.float32),
                 'cell_subset': entry.get('cell_subset') or None,
+                'n_stationary': entry.get('n_stationary'),
             }
         elif key == 'X_diffmap' and 'diffmap_evals' in self.adata.uns:
             info = {
                 'graph_key': self._default_graph_key(),
                 'evals': np.asarray(self.adata.uns['diffmap_evals'], dtype=np.float32),
                 'cell_subset': None,
+                'n_stationary': None,
             }
         else:
             raise ValueError(f"'{key}' is not a diffusion map (no eigenvalues are recorded "
@@ -9283,6 +9286,9 @@ class DataAdaptor:
             except (KeyError, ValueError):
                 continue
             evals = info['evals']
+            n_stat = info['n_stationary']
+            if n_stat is None:
+                n_stat = diffusion.count_stationary(evals)
             maps.append({
                 'key': key,
                 'graph_key': info['graph_key'],
@@ -9290,8 +9296,8 @@ class DataAdaptor:
                 'n_cells': int((~np.isnan(info['X']).any(axis=1)).sum()),
                 'cell_subset': info['cell_subset'],
                 'eigenvalues': [float(v) for v in evals],
-                'n_stationary': diffusion.count_stationary(evals),
-                'view_dims': diffusion.view_dims(evals),
+                'n_stationary': int(n_stat),
+                'view_dims': diffusion.view_dims(evals, int(n_stat)),
             })
         numeric = [c for c in self.adata.obs.columns
                    if pd.api.types.is_numeric_dtype(self.adata.obs[c].dtype)]

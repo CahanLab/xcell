@@ -408,3 +408,54 @@ def test_a_diffmap_on_a_selection_replays_it():
     code = "\n".join(t.code)
     assert "active_cell_indices=SELECTIONS['step_" in code
     assert not any("whole dataset" in w for w in t.warnings)
+
+
+# --- fragmented graphs and name collisions (from review) ------------------------
+
+def _islands(n_islands=20, per=15, gap=100.0):
+    """Cells in tight, far-apart islands: a radius graph falls into one piece each."""
+    rng = np.random.default_rng(2)
+    centres = np.column_stack([np.arange(n_islands) * gap, np.zeros(n_islands)])
+    coords = np.vstack([c + rng.normal(0, 1.0, (per, 2)) for c in centres])
+    ad = anndata.AnnData(X=csr_matrix(rng.random((coords.shape[0], 5)).astype(np.float32)))
+    ad.obsm["spatial"] = coords
+    return DataAdaptor("x.h5ad", adata=ad)
+
+
+def test_a_radius_graph_in_many_pieces_is_a_400_with_advice(monkeypatch):
+    import time
+    a = _islands()
+    a.run_spatial_neighbors(coord_type="generic", radius=10.0)
+    c = _client(monkeypatch, a)
+    t = time.time()
+    res = c.post("/api/scanpy/diffmap", json={"graph_key": "spatial_connectivities", "n_comps": 15})
+    assert res.status_code == 400
+    assert "20 disconnected pieces" in res.json()["detail"]
+    assert "subset" in res.json()["detail"]
+    assert time.time() - t < 5
+    assert "X_diffmap_spatial" not in a.adata.obsm
+
+
+def test_a_radius_graph_in_few_pieces_maps_each():
+    a = _islands(n_islands=3, per=40)
+    a.run_spatial_neighbors(coord_type="generic", radius=10.0)
+    r = a.run_diffmap(n_comps=8, graph_key="spatial_connectivities")
+    assert r["n_components"] == 3 and r["n_stationary"] == 3
+    assert r["view_dims"] == [3, 4]
+    assert np.isfinite(a.adata.obsm["X_diffmap_spatial"]).all()
+    json.dumps(r, allow_nan=False)
+
+
+def test_a_subset_named_like_a_graph_does_not_claim_its_maps():
+    a = _adaptor()
+    a.run_spatial_neighbors(n_neighs=6, coord_type="generic")
+    a.run_diffmap(n_comps=6, graph_key="spatial_connectivities")      # dataset-level
+    a.run_dpt("X_diffmap_spatial", root_mode="cells", root_cells=[0])
+    a.create_cell_subset("spatial", list(range(30)))
+    summary = next(s for s in a.list_cell_subsets() if s["name"] == "spatial")
+    assert summary["derived"]["diffmap"] == []
+    assert summary["derived"]["dpt"] == []
+    out = a.delete_cell_subset("spatial", drop_derived=True)
+    assert "X_diffmap_spatial" in a.adata.obsm
+    assert "dpt_pseudotime_spatial" in a.adata.obs
+    assert "X_diffmap_spatial" not in out["dropped"]

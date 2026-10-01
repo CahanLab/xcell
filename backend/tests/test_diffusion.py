@@ -13,6 +13,7 @@ import anndata
 import numpy as np
 import pytest
 import scanpy as sc
+from scipy import sparse
 from scipy.sparse import csr_matrix
 
 from xcell import diffusion as dm
@@ -255,3 +256,110 @@ def test_root_from_cells_rejects_cells_all_without_coordinates():
     evals = np.array([1.0, 0.9, 0.8], dtype=np.float32)
     with pytest.raises(ValueError, match="coordinates"):
         dm.root_from_cells(X, evals, [1], n_dcs=3)
+
+
+# --- fragmented and bipartite graphs ------------------------------------------
+# Found in review on real graph shapes: a radius spatial graph or a scattered
+# subset's slice falls into many pieces, and two-cell pieces, trees and square
+# grids are bipartite (an eigenvalue of -1). scanpy picks eigenpairs by
+# magnitude, so those -1s crowd out the informative components, silently.
+
+def _pair():
+    return csr_matrix(np.array([[0, 1], [1, 0]], dtype=np.float32))
+
+
+def _path(n):
+    return sparse.diags([np.ones(n - 1), np.ones(n - 1)], [-1, 1], format="csr", dtype=np.float32)
+
+
+def _ring(n):
+    W = _path(n).tolil()
+    W[0, n - 1] = W[n - 1, 0] = 1
+    return W.tocsr()
+
+
+def _grid(side):
+    """A 4-neighbour square grid: bipartite, like squidpy's grid graph."""
+    n = side * side
+    W = sparse.lil_matrix((n, n), dtype=np.float32)
+    for i in range(side):
+        for j in range(side):
+            k = i * side + j
+            if j + 1 < side:
+                W[k, k + 1] = W[k + 1, k] = 1
+            if i + 1 < side:
+                W[k, k + side] = W[k + side, k] = 1
+    return W.tocsr()
+
+
+def test_small_fragments_are_left_out_like_isolated_cells():
+    big = _knn(n=200).obsp["connectivities"]
+    W = sparse.block_diag([big] + [_pair()] * 9, format="csr")
+    res = dm.diffusion_map(W, n_comps=15)
+    assert np.isfinite(res["X"][:200]).all()
+    assert np.isnan(res["X"][200:]).all()
+    assert res["n_fragment_cells"] == 18
+    assert res["n_components"] == 1
+    assert res["view_dims"] == [1, 2]
+    assert any("fragment" in w for w in res["warnings"])
+
+
+def test_bipartite_pieces_do_not_crowd_out_the_map():
+    # 12-cell paths are bipartite and too big to be fragments.
+    big = _knn(n=300).obsp["connectivities"]
+    W = sparse.block_diag([big] + [_path(12)] * 8, format="csr")
+    res = dm.diffusion_map(W, n_comps=15)
+    assert res["n_components"] == 9
+    assert res["n_stationary"] == 9
+    assert (res["evals"] > 0).all()
+    assert res["view_dims"] == [9, 10]
+
+
+def test_a_square_grid_gives_smooth_axes_not_checkerboards():
+    res = dm.diffusion_map(_grid(25), n_comps=10)
+    assert (res["evals"] > 0).all()
+    assert res["view_dims"] == [1, 2]
+
+
+def test_a_graph_in_more_pieces_than_components_is_refused_quickly():
+    import time
+    W = sparse.block_diag([_ring(13)] * 20, format="csr")
+    t = time.time()
+    with pytest.raises(ValueError, match="20 disconnected"):
+        dm.diffusion_map(W, n_comps=15)
+    assert time.time() - t < 5
+
+
+def test_a_graph_of_fragments_only_is_refused():
+    W = sparse.block_diag([_pair()] * 10, format="csr")
+    with pytest.raises(ValueError, match="fragment"):
+        dm.diffusion_map(W, n_comps=5)
+
+
+def test_an_eigensolver_failure_is_a_value_error(monkeypatch):
+    from scipy.sparse.linalg import ArpackNoConvergence
+
+    def no_convergence(*args, **kwargs):
+        raise ArpackNoConvergence("ARPACK error -1: No convergence", np.array([]), np.array([]))
+
+    monkeypatch.setattr(sc.tl, "diffmap", no_convergence)
+    with pytest.raises(ValueError, match="converge"):
+        dm.diffusion_map(_knn().obsp["connectivities"], n_comps=6)
+
+
+def test_dpt_on_a_map_with_fragments_left_out():
+    big = _knn(n=200).obsp["connectivities"]
+    W = sparse.block_diag([big] + [_pair()] * 3, format="csr")
+    res_map = dm.diffusion_map(W, n_comps=8)
+    res = dm.dpt_pseudotime(W, res_map["X"], res_map["evals"], root=0, n_dcs=8)
+    assert np.isfinite(res["pseudotime"][:200]).all()
+    assert np.isnan(res["pseudotime"][200:]).all()
+
+
+def test_a_long_trajectory_is_not_mistaken_for_a_second_piece():
+    # The curve's DC1 has λ ≈ 0.9996, above scanpy's 0.9994 stationary cut:
+    # counting by that threshold would open the plot past the main axis.
+    res = dm.diffusion_map(_knn(n=300).obsp["connectivities"], n_comps=6)
+    assert res["evals"][1] >= dm.STATIONARY_EVAL
+    assert res["n_stationary"] == 1
+    assert res["view_dims"] == [1, 2]

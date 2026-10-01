@@ -46,6 +46,24 @@ graphs that are not a scanpy kNN — all three were reproduced, not guessed:
    saved subset (one section, one lineage) already gives a connected graph, and
    stitching per-component eigenvectors yields axes that are not comparable.
 
+4. **Fragmented and bipartite graphs** (added after review). A radius
+   spatial graph or a scattered subset's slice of the kNN falls into many
+   pieces; ARPACK then stalls on the repeated eigenvalue 1 and fails (a 500
+   after 15–100 s). Two-cell pieces, trees and 4-neighbour square grids are
+   bipartite, contributing eigenvalues of −1, and scanpy's largest-*magnitude*
+   selection lets them crowd out every informative component — silently. →
+   pieces of fewer than 10 cells are *fragments*, left out like isolated cells
+   (NaN, with a warning); a graph with at least as many remaining pieces as
+   requested components is refused up front (400, with what to do); a
+   connected graph keeps scanpy's call unless it returned a negative
+   eigenvalue; a multi-piece graph, or that case, takes each piece's own
+   top eigenpairs by value and merges them — exact for a block-diagonal
+   matrix, and each stationary column is one piece's indicator. ARPACK errors
+   become 400s. The stationary count is the number of pieces, not scanpy's
+   λ ≥ 0.9994 cut, which a long trajectory's DC1 (λ ≈ 0.9996) also passes.
+   **[decision]** 10 cells: a handful of cells carries no diffusion structure
+   worth an axis, and each piece costs a stationary column.
+
 Negative weights are rejected (400): the transition matrix is undefined.
 
 ## Backend

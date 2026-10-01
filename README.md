@@ -280,9 +280,10 @@ warn outright if you point them at a z-scored layer.
   diffusion components (`X_diffmap`, `X_diffmap_spatial`, `X_diffmap_<subset>`).
   The plot opens on DC1 × DC2 — DC0 is the stationary state, as in scanpy.
   On the spatial graph the leading components are smooth axes across the
-  tissue. Cells with no edges in the graph get no coordinates, an asymmetric
-  graph (squidpy's kNN spatial graph) is symmetrised, and a disconnected one
-  is reported. **Pseudotime (DPT)** then computes diffusion pseudotime on a
+  tissue. Cells with no edges in the graph, and pieces of fewer than 10
+  cells, get no coordinates; an asymmetric graph (squidpy's kNN spatial
+  graph) is symmetrised; a disconnected one is reported, and one in more
+  pieces than components is refused with what to do instead. **Pseudotime (DPT)** then computes diffusion pseudotime on a
   map from a root you pick: the most potent cell by stemFinder, a column's
   lowest or highest cell, the centre of a cell group, the current selection,
   or a tip of a diffusion component. It writes `dpt_pseudotime` (named after

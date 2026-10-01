@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useStore } from '../store'
-import { appendDataset, refreshSchema, useObsSummaries } from '../hooks/useData'
+import { appendDataset, refreshCellSubsets, refreshSchema, useObsSummaries } from '../hooks/useData'
 import { datasetIdentity } from '../lib/datasetIdentity'
 import { dptBlocker, dptOutputName, dptParams, type DptInputs, type RootMode } from '../lib/diffusion'
 
@@ -40,6 +40,7 @@ interface Result {
   n_cells: number
   n_unreachable: number
   warnings: string[]
+  cell_subset?: string
 }
 
 /** The radio list. The two component tips share one entry with an end picker. */
@@ -215,6 +216,9 @@ export default function PseudotimeModal() {
       // A new .obs column: both the schema and the Cell Manager lists.
       await refreshSchema()
       refreshObsSummaries()
+      // The subset tree lists a subset's pseudotimes; it refetches on scanpy
+      // history, which this tool does not write to.
+      if (res.cell_subset) void refreshCellSubsets()
       // A re-run into the same column keeps the column name, so the cached
       // colouring must be dropped for the new values to be fetched.
       setColorBy(null)

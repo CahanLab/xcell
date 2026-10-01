@@ -183,6 +183,10 @@ interface CategoryDef {
 }
 
 // Scanpy function definitions organized by category
+// Operations that run on a chosen kNN graph and name their output after it
+// (X_umap_spatial, leiden_spatial, X_diffmap_spatial).
+const GRAPH_NAMED_OPS: ReadonlySet<string> = new Set(['umap', 'leiden', 'diffmap'])
+
 const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
   preprocessing: {
     label: 'Preprocess',
@@ -346,6 +350,23 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
           { name: 'resolution', label: 'Resolution', type: 'number', default: 0.5, description: 'Higher = more clusters' },
           { name: 'key_added', label: 'Column name', type: 'text', default: 'leiden', description: 'Name for cluster labels' },
         ],
+      },
+      diffmap: {
+        label: 'Diffusion map',
+        description: 'Diffusion components of any cell-cell graph (Haghverdi et al. 2015): smooth axes along continuous processes such as differentiation, or along the tissue when run on the spatial graph. DC0 is the stationary state; the plot opens on DC1 × DC2. Isolated cells get no coordinates, and a disconnected graph is reported. Pseudotime (DPT) runs on the result.',
+        prerequisites: ['neighbors'],
+        params: [
+          { name: 'graph_key', label: 'kNN graph', type: 'graph_select', default: '', emptyLabel: 'Dataset default graph', description: 'Which cell-cell graph to diffuse over: the expression kNN, the spatial graph, a Combine Neighbors result, or a subset’s own graph.' },
+          { name: 'key_added', label: 'Embedding name', type: 'text', default: '', description: 'obsm key for the result. Blank uses the name derived from the graph (X_diffmap, X_diffmap_spatial, …).' },
+          { name: 'n_comps', label: 'Components', type: 'number', default: 15, description: 'Diffusion components to compute, including the stationary DC0 (at least 3).' },
+        ],
+      },
+      dpt: {
+        label: 'Pseudotime (DPT)',
+        description: 'Diffusion pseudotime (Haghverdi et al. 2016) on a diffusion map, from a root you choose: the most potent cell by stemFinder, a column’s lowest or highest cell, a cell group, the current selection, or a tip of a diffusion component. Opens the Pseudotime tool.',
+        prerequisites: [],
+        custom: true,
+        params: [],
       },
       combine_neighbors: {
         label: 'Combine Neighbors',
@@ -857,7 +878,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setEnrichmentSource, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, setStemFinderModalOpen, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, activeSubsetName, setActiveSubsetName, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setEnrichmentSource, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, setStemFinderModalOpen, setPseudotimeModalOpen, setEmbeddingDims, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, activeSubsetName, setActiveSubsetName, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -1038,7 +1059,7 @@ export default function ScanpyModal() {
   // Load layer + graph lists when any function that consumes them is selected.
   useEffect(() => {
     const needsLayers = ['smooth', 'gene_pca', 'gene_neighbors', 'build_gene_graph', 'sum_counts_by_pattern', 'sum_counts_by_species'].includes(selectedFunction)
-    const needsGraphs = ['smooth', 'umap', 'leiden'].includes(selectedFunction)
+    const needsGraphs = ['smooth', 'umap', 'leiden', 'diffmap'].includes(selectedFunction)
     if (!needsLayers && !needsGraphs) return
     if (needsLayers) {
       fetch(appendDataset(`${API_BASE}/scanpy/layers`))
@@ -1058,8 +1079,8 @@ export default function ScanpyModal() {
   // their own. autoNameRef holds what we last filled in; if the field still
   // matches, it is ours to replace.
   useEffect(() => {
-    if (selectedFunction !== 'umap' && selectedFunction !== 'leiden') return
-    const base = selectedFunction === 'umap' ? 'X_umap' : 'leiden'
+    if (!GRAPH_NAMED_OPS.has(selectedFunction)) return
+    const base = selectedFunction === 'umap' ? 'X_umap' : selectedFunction === 'diffmap' ? 'X_diffmap' : 'leiden'
     const graphKey = (paramValues.graph_key as string) || ''
     const suffix = availableGraphs.find((g) => g.key === graphKey)?.suffix ?? ''
     // On a cell mask the result carries the subset's name (saved, or the
@@ -1075,7 +1096,7 @@ export default function ScanpyModal() {
       ? (suffix && suffix !== subsetName ? `${base}_${subsetName}_${suffix}` : `${base}_${subsetName}`)
       : suffix
         ? `${base}_${suffix}`
-        : (selectedFunction === 'umap' ? '' : base)
+        : (selectedFunction === 'leiden' ? base : '')
 
     // Replaceable when blank, when it is still what we last wrote, or when it
     // is the untouched default — Leiden's field starts at 'leiden' rather than
@@ -1095,7 +1116,7 @@ export default function ScanpyModal() {
   const userChoseGraphRef = useRef(false)
   useEffect(() => { userChoseGraphRef.current = false; userChoseRepRef.current = false }, [selectedFunction])
   useEffect(() => {
-    if (selectedFunction !== 'umap' && selectedFunction !== 'leiden') return
+    if (!GRAPH_NAMED_OPS.has(selectedFunction)) return
     if (userChoseGraphRef.current) return
     // On a saved subset its own graph is the expression kNN of exactly the
     // cells about to be embedded or clustered, so it is the default.
@@ -1149,8 +1170,7 @@ export default function ScanpyModal() {
     // spatial-only dataset — the case the picker exists for — has no
     // expression kNN at all, so the backend check would refuse a run it now
     // accepts.
-    if ((selectedFunction === 'umap' || selectedFunction === 'leiden') &&
-        (paramValues.graph_key as string)) {
+    if (GRAPH_NAMED_OPS.has(selectedFunction) && (paramValues.graph_key as string)) {
       setPrereqStatus({ satisfied: true, missing: [] })
       return
     }
@@ -1584,7 +1604,13 @@ export default function ScanpyModal() {
 
       // Build result message
       let message = 'Completed successfully'
-      if (data.split_by !== undefined && data.groups !== undefined) {
+      if (selectedFunction === 'diffmap' && data.embedding_name) {
+        const [vx, vy] = (data.view_dims as number[] | undefined) ?? [1, 2]
+        const notes = (data.warnings as string[] | undefined) ?? []
+        message = `Diffusion map → .obsm["${data.embedding_name}"]: ${data.n_comps} components over ` +
+          `${Number(data.n_cells_used).toLocaleString()} cells; showing DC${vx} × DC${vy}.` +
+          (notes.length ? ` ${notes.join(' ')}` : '')
+      } else if (data.split_by !== undefined && data.groups !== undefined) {
         // Split HVG: the counts are the result, so say them rather than "done".
         const groups = data.groups as Record<string, { n_highly_variable: number; n_cells: number }>
         const per = Object.entries(groups)
@@ -1746,7 +1772,7 @@ export default function ScanpyModal() {
       addScanpyAction(actionRecord)
 
       // Refresh schema if data shape may have changed
-      if (['filter_genes', 'exclude_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize', 'embedding_from_obs', 'sum_counts_by_pattern', 'sum_counts_by_species', 'add_var_species_column', 'rename_genes', 'assign_species', 'add_var_boolean', 'calculate_qc_metrics'].includes(selectedFunction)) {
+      if (['filter_genes', 'exclude_genes', 'filter_cells', 'pca', 'umap', 'leiden', 'diffmap', 'cluster_genes', 'spatial_autocorr', 'highly_variable_genes', 'contourize', 'embedding_from_obs', 'sum_counts_by_pattern', 'sum_counts_by_species', 'add_var_species_column', 'rename_genes', 'assign_species', 'add_var_boolean', 'calculate_qc_metrics'].includes(selectedFunction)) {
         await refreshSchema()
         // Also refresh obs summaries so Cell Manager shows new/updated columns (e.g. leiden clusters, contour levels)
         refreshObsSummaries()
@@ -1767,8 +1793,14 @@ export default function ScanpyModal() {
       }
 
       // Invalidate cached embedding so it re-fetches (e.g. new UMAP coordinates)
-      if (['umap', 'pca', 'filter_cells', 'embedding_from_obs'].includes(selectedFunction)) {
+      if (['umap', 'pca', 'filter_cells', 'embedding_from_obs', 'diffmap'].includes(selectedFunction)) {
         setEmbedding(null)
+        // A diffusion map opens on its first informative pair (past DC0, and
+        // past every stationary component of a disconnected graph). Set before
+        // selecting, so the first fetch already asks for those columns.
+        if (selectedFunction === 'diffmap' && data.embedding_name && Array.isArray(data.view_dims)) {
+          setEmbeddingDims(data.embedding_name, data.view_dims[0], data.view_dims[1])
+        }
         // Auto-select the newly created embedding (important when dataset had none initially)
         if (data.embedding_name) {
           setSelectedEmbedding(data.embedding_name)
@@ -1803,7 +1835,7 @@ export default function ScanpyModal() {
       setIsRunning(false)
       setActiveTaskId(null)
     }
-  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, activeSubsetName, subsetDraft, setActiveSubsetName, resetActiveCells, clearSelection, setExpressionData, setBivariateData, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setActiveTaskId])
+  }, [functionDef, isRunning, prereqStatus, selectedFunction, paramValues, selectedGeneColumns, geneSubsetOperation, addScanpyAction, refreshSchema, activeCellMask, activeSubsetName, subsetDraft, setActiveSubsetName, resetActiveCells, clearSelection, setExpressionData, setBivariateData, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, setEmbeddingDims, selectedGenes, setActiveTaskId])
 
   const handleCancel = useCallback(async () => {
     if (activeTaskId) {
@@ -2933,6 +2965,13 @@ export default function ScanpyModal() {
               onClick={() => { setMergeSpotsModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Merge Spots tool…
+            </button>
+          ) : selectedFunction === 'dpt' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setPseudotimeModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open Pseudotime tool…
             </button>
           ) : selectedFunction === 'stemfinder' ? (
             <button

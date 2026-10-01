@@ -503,12 +503,13 @@ function SubsetChipView({ chip, onShowEmbedding, onColorBy, refineInto, onRefine
   const title =
     chip.kind === 'embedding' ? 'Show this embedding'
     : chip.kind === 'leiden' ? 'Color cells by this clustering'
+    : chip.kind === 'pseudotime' ? 'Color cells by this pseudotime'
     : chip.kind === 'lines' || chip.kind === 'territories'
       ? (chip.embedding ? `Drawn on ${chip.embedding} — click to show it` : 'Drawn on this subset\'s embeddings')
     : chip.key ?? chip.label
   const onClick = () => {
     if (chip.kind === 'embedding' && chip.key) onShowEmbedding(chip.key)
-    else if (chip.kind === 'leiden' && chip.key) onColorBy(chip.key)
+    else if ((chip.kind === 'leiden' || chip.kind === 'pseudotime') && chip.key) onColorBy(chip.key)
     else if ((chip.kind === 'lines' || chip.kind === 'territories') && chip.embedding) onShowEmbedding(chip.embedding)
   }
   return (

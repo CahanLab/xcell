@@ -3289,6 +3289,81 @@ def run_leiden(request: LeidenRequest, dataset: str | None = Query(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class DiffmapRequest(BaseModel):
+    n_comps: int = 15
+    graph_key: str | None = None
+    key_added: str | None = None
+    active_cell_indices: list[int] | None = None
+    #: A named cell subset: the map goes to X_diffmap_<name>.
+    cell_subset: str | None = None
+
+
+@router.post("/scanpy/diffmap")
+def run_diffmap(request: DiffmapRequest, dataset: str | None = Query(None)):
+    """Diffusion map of any connectivity graph (default: the expression kNN)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.run_diffmap(
+            n_comps=request.n_comps,
+            graph_key=request.graph_key,
+            key_added=request.key_added,
+            active_cell_indices=request.active_cell_indices,
+            cell_subset=request.cell_subset,
+        )
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scanpy/diffmaps")
+def list_diffmaps(dataset: str | None = Query(None)):
+    """Diffusion maps DPT can run on, and the potency columns that can root it."""
+    adaptor = get_adaptor(dataset)
+    return adaptor.list_diffmaps()
+
+
+class DptRequest(BaseModel):
+    diffmap_key: str = 'X_diffmap'
+    n_dcs: int = 10
+    #: cells | obs_min | obs_max | group | dc_min | dc_max
+    root_mode: str = 'cells'
+    root_cells: list[int] | None = None
+    root_column: str | None = None
+    root_value: str | None = None
+    root_component: int = 1
+    key_added: str | None = None
+
+
+@router.post("/scanpy/dpt")
+def run_dpt(request: DptRequest, dataset: str | None = Query(None)):
+    """Diffusion pseudotime from a chosen root on an existing diffusion map."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.run_dpt(
+            diffmap_key=request.diffmap_key,
+            n_dcs=request.n_dcs,
+            root_mode=request.root_mode,
+            root_cells=request.root_cells,
+            root_column=request.root_column,
+            root_value=request.root_value,
+            root_component=request.root_component,
+            key_added=request.key_added,
+        )
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/scanpy/pca_loadings")
 def get_pca_loadings(
     top_n: int = Query(10, ge=1, le=500),

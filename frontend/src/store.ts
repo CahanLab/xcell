@@ -3,6 +3,7 @@ import { transformPoints, shapeOverlapsHull, type ShapeAffine } from './utils/sh
 import { sortGeneSetInCategory } from './lib/geneSetOps'
 import { sectionForCut } from './lib/territoryGeometry'
 import { pickSecondEmbedding, pickPreferredEmbedding } from './lib/pickSecondEmbedding'
+import { isDiffmapKey, defaultDiffmapDims } from './lib/diffusion'
 import type { PCASubsetSummary } from './lib/pcaSubsets'
 export { pickPreferredEmbedding }
 import { loadedSlots, slotAfterUnload, moveItem, paneGrid, activeSlotFrom } from './lib/datasetSlots'
@@ -950,6 +951,7 @@ interface AppState {
   isMergeSpotsModalOpen: boolean
   isDownsampleModalOpen: boolean
   isStemFinderModalOpen: boolean
+  isPseudotimeModalOpen: boolean
   isMultiContourModalOpen: boolean
   isTerritoryPanelOpen: boolean
   isAssignTerritoriesOpen: boolean
@@ -1238,6 +1240,7 @@ interface AppState {
   setMergeSpotsModalOpen: (open: boolean) => void
   setDownsampleModalOpen: (open: boolean) => void
   setStemFinderModalOpen: (open: boolean) => void
+  setPseudotimeModalOpen: (open: boolean) => void
   setMultiContourModalOpen: (open: boolean) => void
   setDefineSectionsOpen: (open: boolean) => void
   setTerritoryPanelOpen: (open: boolean) => void
@@ -1513,6 +1516,7 @@ export const useStore = create<AppState>((set, get) => {
     isMergeSpotsModalOpen: false,
     isDownsampleModalOpen: false,
     isStemFinderModalOpen: false,
+    isPseudotimeModalOpen: false,
     isMultiContourModalOpen: false,
     isDefineSectionsOpen: false,
     isLigRecModalOpen: false,
@@ -1646,7 +1650,16 @@ export const useStore = create<AppState>((set, get) => {
       }))),
 
     clearAllHighlights: () => set(dsUpdate({ highlightLayers: [] })),
-    setSelectedEmbedding: (name) => set(dsUpdate({ selectedEmbedding: name })),
+    // A diffusion map nobody has chosen axes on opens on DC1 × DC2: its column 0
+    // is the stationary state, flat on a connected graph.
+    setSelectedEmbedding: (name) => set(dsUpdateFn((state) => {
+      const patch: Partial<DatasetState> = { selectedEmbedding: name }
+      if (name && isDiffmapKey(name) && !state.embeddingDims[name]) {
+        const dims = defaultDiffmapDims(state.schema?.embedding_dims?.[name] ?? 0)
+        if (dims) patch.embeddingDims = { ...state.embeddingDims, [name]: { ...dims, z: undefined } }
+      }
+      return patch
+    })),
     setSelectedColorColumn: (name) => set(dsUpdate({ selectedColorColumn: name })),
     setColorMode: (mode) => set(dsUpdate({ colorMode: mode })),
 
@@ -2670,6 +2683,7 @@ export const useStore = create<AppState>((set, get) => {
     setMergeSpotsModalOpen: (open) => set({ isMergeSpotsModalOpen: open }),  // global
     setDownsampleModalOpen: (open) => set({ isDownsampleModalOpen: open }),  // global
     setStemFinderModalOpen: (open) => set({ isStemFinderModalOpen: open }),  // global
+    setPseudotimeModalOpen: (open) => set({ isPseudotimeModalOpen: open }),  // global
     setMultiContourModalOpen: (open) => set({ isMultiContourModalOpen: open }),  // global
     setDefineSectionsOpen: (open) => set({ isDefineSectionsOpen: open }),  // global
     isTerritoryPanelOpen: false,

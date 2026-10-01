@@ -8,12 +8,12 @@
  */
 import type { CellSubsetInfo } from './cellSubsets'
 
-export type SubsetChipKind = 'step' | 'embedding' | 'leiden' | 'lines' | 'territories'
+export type SubsetChipKind = 'step' | 'embedding' | 'leiden' | 'pseudotime' | 'lines' | 'territories'
 
 export interface SubsetChip {
   kind: SubsetChipKind
   label: string
-  /** The key a click acts on: an .obsm name for an embedding, an .obs column for leiden. */
+  /** The key a click acts on: an .obsm name for an embedding, an .obs column for leiden / pseudotime. */
   key?: string
   /** For decoration chips: the embedding to switch to so the drawing is visible. */
   embedding?: string
@@ -37,6 +37,8 @@ export function subsetChips(s: CellSubsetInfo): SubsetChip[] {
   if (d.graph) out.push({ kind: 'step', label: 'kNN', key: d.graph })
   for (const k of d.umap) out.push({ kind: 'embedding', label: k, key: k })
   for (const c of d.leiden) out.push({ kind: 'leiden', label: c, key: c })
+  for (const k of d.diffmap) out.push({ kind: 'embedding', label: k, key: k })
+  for (const c of d.dpt) out.push({ kind: 'pseudotime', label: c, key: c })
   const where = decorationEmbedding(s)
   const nLines = s.decorations.lines.length
   const nTerr = s.decorations.territories.length
@@ -53,7 +55,7 @@ export function dropSummary(s: CellSubsetInfo): string {
   if (d.pca) parts.push(d.pca)
   parts.push(...d.pca_subsets)
   if (d.graph) parts.push(d.graph)
-  parts.push(...d.umap, ...d.leiden)
+  parts.push(...d.umap, ...d.leiden, ...d.diffmap, ...d.dpt)
   const nLines = s.decorations.lines.length
   const nTerr = s.decorations.territories.length
   if (nLines > 0) parts.push(count(nLines, 'shape', 'shapes'))

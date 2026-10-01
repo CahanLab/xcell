@@ -26,6 +26,8 @@ const base = (over: Partial<CellSubsetInfo> = {}): CellSubsetInfo => ({
     umap: ['X_umap_chondro'],
     leiden: ['leiden_chondro'],
     pca_subsets: ['X_pca_chondro_noPC1'],
+    diffmap: [],
+    dpt: [],
   },
   embeddings: ['X_pca_chondro', 'X_pca_chondro_noPC1', 'X_umap_chondro'],
   decorations: { lines: ['ridge', 'r2'], territories: ['zones'] },
@@ -33,7 +35,7 @@ const base = (over: Partial<CellSubsetInfo> = {}): CellSubsetInfo => ({
 })
 
 const empty = base({
-  derived: { hvg: null, pca: null, graph: null, umap: [], leiden: [], pca_subsets: [] },
+  derived: { hvg: null, pca: null, graph: null, umap: [], leiden: [], pca_subsets: [], diffmap: [], dpt: [] },
   embeddings: [],
   decorations: { lines: [], territories: [] },
 })
@@ -67,6 +69,24 @@ describe('subsetChips', () => {
 
   it('is empty for a subset with nothing computed', () => {
     expect(subsetChips(empty)).toEqual([])
+  })
+})
+
+describe('diffusion maps and pseudotime in the tree', () => {
+  const withDiffusion = base({
+    derived: { ...base().derived, diffmap: ['X_diffmap_chondro'], dpt: ['dpt_pseudotime_chondro'] },
+    decorations: { lines: [], territories: [] },
+  })
+
+  it('shows a diffusion map as an embedding and a pseudotime as a column to colour by', () => {
+    const chips = subsetChips(withDiffusion)
+    expect(chips.find((c) => c.label === 'X_diffmap_chondro')).toMatchObject({ kind: 'embedding', key: 'X_diffmap_chondro' })
+    expect(chips.find((c) => c.label === 'dpt_pseudotime_chondro')).toMatchObject({ kind: 'pseudotime', key: 'dpt_pseudotime_chondro' })
+  })
+
+  it('names them in what a delete with results removes', () => {
+    expect(dropSummary(withDiffusion)).toContain('X_diffmap_chondro')
+    expect(dropSummary(withDiffusion)).toContain('dpt_pseudotime_chondro')
   })
 })
 

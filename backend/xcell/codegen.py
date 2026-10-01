@@ -379,6 +379,19 @@ def _code_leiden(step: Step) -> list[str]:
     return [call[:-1] + f', obsp={_lit(graph_key)})']
 
 
+def _code_diffmap(step: Step) -> list[str]:
+    """xcell's call: isolated cells and symmetrisation are its own, not scanpy's.
+
+    A named subset scopes itself; an ad-hoc selection is replayed from the
+    sidecar, so the notebook maps the same cells.
+    """
+    p = step.params
+    args = _splat(p, ('n_comps', 'graph_key', 'key_added', 'cell_subset'))
+    if not p.get('cell_subset'):
+        args += _selection_arg(step)
+    return [f'{ADAPTOR}.run_diffmap({args.lstrip(", ")})']
+
+
 # --- the registry ---------------------------------------------------------
 
 REGISTRY: dict[str, ActionSpec] = {
@@ -508,6 +521,27 @@ REGISTRY: dict[str, ActionSpec] = {
             + (f" over `{p['graph_key']}`" if p.get('graph_key') else '')
             + f" → {_n(r.get('n_clusters'))} clusters in "
             f"`.obs['{p.get('key_added', 'leiden')}']`."
+        ),
+    ),
+
+    'diffmap': ActionSpec(
+        label='Diffusion map', fidelity=XCELL, imports=XCELL_API,
+        code=_code_diffmap, replays_selection=True,
+        summary=lambda p, r: (
+            f"Diffusion map with {_n(p.get('n_comps'))} components"
+            + (f" over `{p['graph_key']}`" if p.get('graph_key') else '')
+            + f" → `.obsm['{r.get('embedding_name', 'X_diffmap')}']`"
+            + (f"; {_n(r.get('n_isolated'))} isolated cells left out" if r.get('n_isolated') else '')
+            + '.'
+        ),
+    ),
+    'dpt': ActionSpec(
+        label='Diffusion pseudotime', fidelity=XCELL, imports=XCELL_API,
+        code=_direct('run_dpt', ('diffmap_key', 'n_dcs', 'root_mode', 'root_cells', 'key_added')),
+        summary=lambda p, r: (
+            f"Diffusion pseudotime on `{p.get('diffmap_key')}` from "
+            f"{r.get('root_rule', 'the chosen root')} (cell `{r.get('root_name')}`) → "
+            f"`.obs['{r.get('key_added', p.get('key_added'))}']`."
         ),
     ),
 

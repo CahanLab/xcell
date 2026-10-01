@@ -16,6 +16,8 @@ export interface CellSubsetDerived {
   umap: string[]          // every UMAP the subset owns (one per graph it was run over)
   leiden: string[]
   pca_subsets: string[]   // X_pca_<name>_<suffix> — PCs dropped from its own PCA
+  diffmap: string[]       // X_diffmap_<name>[_<graph>]
+  dpt: string[]           // dpt_pseudotime_<name>… computed on those maps
 }
 
 /** How a subset came to be; the embedding is the one on screen when it was
@@ -51,7 +53,7 @@ export interface CellSubsetInfo {
  * (normalize, log1p, filter, QC…) acts on the cells in place and keeps sending
  * the mask as ad-hoc indices. */
 export const SUBSET_SCOPED_OPS: ReadonlySet<string> = new Set([
-  'highly_variable_genes', 'pca', 'neighbors', 'umap', 'leiden',
+  'highly_variable_genes', 'pca', 'neighbors', 'umap', 'leiden', 'diffmap',
 ])
 
 /** The backend's rule: runs of anything but [A-Za-z0-9_] become one '_',
@@ -104,6 +106,7 @@ export const subsetPcaKey = (name: string) => `X_pca_${name}`
 export const subsetGraphKey = (name: string) => `${name}_connectivities`
 export const subsetUmapKey = (name: string) => `X_umap_${name}`
 export const subsetLeidenKey = (name: string) => `leiden_${name}`
+export const subsetDiffmapKey = (name: string) => `X_diffmap_${name}`
 export const subsetHvgColumn = (name: string) => `highly_variable__${name}`
 
 /** What a scoped operation writes, and what it would have overwritten. */
@@ -119,6 +122,8 @@ export function scopedOutput(op: string, name: string): { writes: string; spares
       return { writes: `.obsm["${subsetUmapKey(name)}"]`, spares: '.obsm["X_umap"]' }
     case 'leiden':
       return { writes: `.obs["${subsetLeidenKey(name)}"]`, spares: '.obs["leiden"]' }
+    case 'diffmap':
+      return { writes: `.obsm["${subsetDiffmapKey(name)}"]`, spares: '.obsm["X_diffmap"]' }
     default:
       return null
   }
@@ -133,5 +138,7 @@ export function derivedBadges(d: CellSubsetDerived): string[] {
   for (const key of d.pca_subsets) out.push(key)
   for (const key of d.umap) out.push(key)
   for (const col of d.leiden) out.push(col)
+  for (const key of d.diffmap) out.push(key)
+  for (const col of d.dpt) out.push(col)
   return out
 }

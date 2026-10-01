@@ -367,3 +367,32 @@ def _unique_in_order(values: np.ndarray) -> list:
         if v not in seen:
             seen[v] = None
     return list(seen)
+
+
+def potency_columns(columns: Sequence[str]) -> list[dict[str, str]]:
+    """The .obs columns that say which cell is least differentiated, and how.
+
+    Recognised by the names this module writes, with or without a run's
+    suffix. ``stemfinder`` runs like pseudotime (lowest = least
+    differentiated); ``stemfinder_raw`` and ``diffometer`` the other way. The
+    two baselines (cell-cycle mean, expressed TFs) are not potency scores and
+    are left out. Ordered stemFinder first, the tool's headline metric.
+    """
+    def named(col: str, base: str) -> bool:
+        return col == base or col.startswith(base + '_')
+
+    found: list[tuple[int, dict[str, str]]] = []
+    for col in columns:
+        col = str(col)
+        if named(col, 'stemfinder_cc_mean') or named(col, 'stemfinder_n_TFs'):
+            continue
+        if named(col, 'stemfinder_raw'):
+            found.append((1, {'column': col, 'direction': 'max',
+                              'label': 'higher = less differentiated'}))
+        elif named(col, 'stemfinder'):
+            found.append((0, {'column': col, 'direction': 'min',
+                              'label': 'lower = less differentiated'}))
+        elif named(col, 'diffometer'):
+            found.append((2, {'column': col, 'direction': 'max',
+                              'label': 'higher = less differentiated'}))
+    return [entry for _, entry in sorted(found, key=lambda x: x[0])]

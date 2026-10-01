@@ -56,6 +56,10 @@ describe('scoped outputs', () => {
     expect(scopedOutput('neighbors', 'chondro')?.writes).toBe('.obsp["chondro_connectivities"]')
     expect(scopedOutput('highly_variable_genes', 'chondro')?.writes).toBe('.var["highly_variable__chondro"]')
     expect(scopedOutput('umap', 'chondro')?.writes).toBe('.obsm["X_umap_chondro"]')
+    expect(scopedOutput('diffmap', 'chondro')).toEqual({
+      writes: '.obsm["X_diffmap_chondro"]', spares: '.obsm["X_diffmap"]',
+    })
+    expect(SUBSET_SCOPED_OPS.has('diffmap')).toBe(true)
   })
 
   it('has nothing to say about operations the subset does not scope', () => {
@@ -65,8 +69,13 @@ describe('scoped outputs', () => {
   })
 
   it('summarises what has been derived', () => {
-    expect(derivedBadges({ hvg: 'highly_variable__c', pca: 'X_pca_c', graph: null, umap: ['X_umap_c', 'X_umap_c_alt'], leiden: ['leiden_c'], pca_subsets: ['X_pca_c_noPC1'] }))
+    expect(derivedBadges({ hvg: 'highly_variable__c', pca: 'X_pca_c', graph: null, umap: ['X_umap_c', 'X_umap_c_alt'], leiden: ['leiden_c'], pca_subsets: ['X_pca_c_noPC1'], diffmap: [], dpt: [] }))
       .toEqual(['HVG', 'PCA', 'X_pca_c_noPC1', 'X_umap_c', 'X_umap_c_alt', 'leiden_c'])
-    expect(derivedBadges({ hvg: null, pca: null, graph: null, umap: [], leiden: [], pca_subsets: [] })).toEqual([])
+    expect(derivedBadges({ hvg: null, pca: null, graph: null, umap: [], leiden: [], pca_subsets: [], diffmap: [], dpt: [] })).toEqual([])
+  })
+
+  it('lists diffusion maps and pseudotimes after the clusterings', () => {
+    expect(derivedBadges({ hvg: null, pca: null, graph: null, umap: [], leiden: ['leiden_c'], pca_subsets: [], diffmap: ['X_diffmap_c'], dpt: ['dpt_pseudotime_c'] }))
+      .toEqual(['leiden_c', 'X_diffmap_c', 'dpt_pseudotime_c'])
   })
 })

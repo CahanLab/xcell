@@ -665,3 +665,35 @@ describe('a large import lands collapsed', () => {
     expect(folders.find((f) => f.name === 'huge')?.expanded).toBe(false)
   })
 })
+
+describe('a diffusion map opens past its stationary column', () => {
+  // X_diffmap's column 0 is the stationary state (constant on a connected
+  // graph), so the default first-two-columns view would plot a flat line.
+  const withMaps = () => useStore.getState().setSchema({
+    ...PRIMARY,
+    embeddings: [...PRIMARY.embeddings, 'X_diffmap', 'X_diffmap_flat'],
+    embedding_dims: { X_diffmap: 15, X_diffmap_flat: 2 },
+  })
+
+  it('shows DC1 × DC2 the first time a map is selected', () => {
+    withMaps()
+    useStore.getState().setSelectedEmbedding('X_diffmap')
+    expect(useStore.getState().selectedEmbedding).toBe('X_diffmap')
+    expect(useStore.getState().embeddingDims['X_diffmap']).toEqual({ x: 1, y: 2, z: undefined })
+  })
+
+  it('keeps axes the user already chose', () => {
+    withMaps()
+    useStore.getState().setEmbeddingDims('X_diffmap', 2, 3)
+    useStore.getState().setSelectedEmbedding('X_diffmap')
+    expect(useStore.getState().embeddingDims['X_diffmap']).toEqual({ x: 2, y: 3, z: undefined })
+  })
+
+  it('leaves a two-column map and other embeddings alone', () => {
+    withMaps()
+    useStore.getState().setSelectedEmbedding('X_diffmap_flat')
+    useStore.getState().setSelectedEmbedding('X_pca')
+    expect(useStore.getState().embeddingDims['X_diffmap_flat']).toBeUndefined()
+    expect(useStore.getState().embeddingDims['X_pca']).toBeUndefined()
+  })
+})

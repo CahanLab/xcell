@@ -11,7 +11,7 @@ const subset = (over: Partial<CellSubsetInfo> = {}): CellSubsetInfo => ({
   name: 'chondro', obs_key: 'subset_chondro', n_cells: 500, n_total: 1000,
   created_at: null, description: null, parent: null, children: [], depth: 0,
   origin: { kind: 'selection', embedding: 'X_umap' }, steps: {},
-  derived: { hvg: null, pca: 'X_pca_chondro', graph: null, umap: ['X_umap_chondro'], leiden: [], pca_subsets: [] },
+  derived: { hvg: null, pca: 'X_pca_chondro', graph: null, umap: ['X_umap_chondro'], leiden: [], pca_subsets: [], diffmap: [], dpt: [] },
   embeddings: ['X_pca_chondro', 'X_umap_chondro'],
   decorations: { lines: [], territories: [] },
   ...over,

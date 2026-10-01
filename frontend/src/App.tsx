@@ -55,6 +55,7 @@ import { NewSessionDialog, ClearGeneSetsDialog } from './components/SessionDialo
 import { LayerScaleBadge, layerOptionLabel, type LayerInfo } from './components/LayerScaleInfo'
 import { MESSAGES } from './messages'
 import { buildCrumbs } from './lib/pathCrumbs'
+import { isDiffmapKey, diffmapAxisLabel } from './lib/diffusion'
 import { assertJsonResponse } from './lib/foreignServer'
 
 const styles = {
@@ -408,7 +409,9 @@ function DimensionPicker() {
   const cur = embeddingDims[selectedEmbedding] ?? { x: 0, y: 1 }
   const names = schema.score_matrices?.[selectedEmbedding]
   const isPca = /pca/i.test(selectedEmbedding)
-  const label = (i: number) => names?.[i] ?? (isPca ? `PC${i + 1}` : `dim ${i + 1}`)
+  const isDiffmap = isDiffmapKey(selectedEmbedding)
+  const label = (i: number) => names?.[i]
+    ?? (isPca ? `PC${i + 1}` : isDiffmap ? diffmapAxisLabel(i) : `dim ${i + 1}`)
   const opts = Array.from({ length: ncols }, (_, i) => i)
   const sel: React.CSSProperties = {
     padding: '3px 6px', fontSize: '11px', backgroundColor: '#0f3460', color: '#eee',

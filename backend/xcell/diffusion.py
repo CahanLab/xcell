@@ -90,6 +90,18 @@ def prepare_graph(conn) -> PreparedGraph:
     )
 
 
+def count_stationary(evals) -> int:
+    """How many leading components are stationary (one per component)."""
+    return int((np.asarray(evals) >= STATIONARY_EVAL).sum())
+
+
+def view_dims(evals) -> list[int]:
+    """The first two informative columns — what to put on the plot's axes."""
+    n = int(np.asarray(evals).size)
+    first = min(max(count_stationary(evals), 1), max(n - 2, 0))
+    return [first, first + 1]
+
+
 def _scanpy_frame(W: sparse.csr_matrix):
     """An AnnData carrying only the graph, the way scanpy's tools read it."""
     import anndata
@@ -131,9 +143,8 @@ def diffusion_map(conn, n_comps: int = 15, random_state: int = 0) -> dict:
     X = np.full((n, n_comps), np.nan, dtype=np.float32)
     X[g.kept] = np.asarray(ad.obsm['X_diffmap'], dtype=np.float32)
 
-    n_stationary = int((evals >= STATIONARY_EVAL).sum())
-    first = min(max(n_stationary, 1), n_comps - 2)
-    view_dims = [first, first + 1]
+    n_stationary = count_stationary(evals)
+    dims = view_dims(evals)
 
     warnings: list[str] = []
     if g.n_isolated:
@@ -148,7 +159,7 @@ def diffusion_map(conn, n_comps: int = 15, random_state: int = 0) -> dict:
         warnings.append(
             f"The graph has {g.n_components} disconnected components (sizes {shown}{more}); "
             f"the first {n_stationary} diffusion components only tell them apart. "
-            f"View DC{view_dims[0]} × DC{view_dims[1]}, or run on a subset that is one component.")
+            f"View DC{dims[0]} × DC{dims[1]}, or run on a subset that is one component.")
 
     return {
         'X': X,
@@ -160,7 +171,7 @@ def diffusion_map(conn, n_comps: int = 15, random_state: int = 0) -> dict:
         'n_components': g.n_components,
         'component_sizes': g.component_sizes,
         'n_stationary': n_stationary,
-        'view_dims': view_dims,
+        'view_dims': dims,
         'warnings': warnings,
     }
 
@@ -189,7 +200,7 @@ def dpt_pseudotime(conn, X, evals, root: int, n_dcs: int = 10) -> dict:
     n_dcs = int(min(max(int(n_dcs), 2), X.shape[1]))
 
     cells = np.flatnonzero(covered)
-    sub = conn if cells.size == n else conn.tocsr()[cells][:, cells]
+    sub = conn if cells.size == n else sparse.csr_matrix(conn)[cells][:, cells]
     g = prepare_graph(sub)
     if g.n_isolated:
         raise ValueError("The graph has changed since this diffusion map was computed "

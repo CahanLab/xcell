@@ -72,6 +72,7 @@ def test_listing_reports_each_subset_with_its_live_cell_count():
     assert names['rest']['n_cells'] == 3
     assert names['chondro']['derived'] == {
         'hvg': None, 'pca': None, 'graph': None, 'umap': [], 'leiden': [], 'pca_subsets': [],
+        'diffmap': [], 'dpt': [],
     }
 
 
@@ -368,6 +369,8 @@ def test_the_listing_reports_what_has_been_derived():
         'umap': ['X_umap_chondro'],
         'leiden': ['leiden_chondro', 'leiden_chondro_r2'],
         'pca_subsets': [],
+        'diffmap': [],
+        'dpt': [],
     }
 
 

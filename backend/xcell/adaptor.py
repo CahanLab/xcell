@@ -686,6 +686,20 @@ def _default_output_name(base: str, graph_key: str | None) -> str:
     return f'{base}_{suffix}' if suffix else base
 
 
+def _dpt_output_name(diffmap_key: str) -> str:
+    """Where a pseudotime goes by default: named after the map it came from.
+
+    'X_diffmap' -> 'dpt_pseudotime' (scanpy's column), 'X_diffmap_spatial' ->
+    'dpt_pseudotime_spatial', 'X_diffmap_chondro' -> 'dpt_pseudotime_chondro',
+    so each map's pseudotime sits next to it and a subset's never lands on
+    the dataset's own column.
+    """
+    if diffmap_key.startswith('X_diffmap'):
+        return 'dpt_pseudotime' + diffmap_key[len('X_diffmap'):]
+    tail = diffmap_key[2:] if diffmap_key.startswith('X_') else diffmap_key
+    return f'dpt_pseudotime_{tail}'
+
+
 def _subset_output_name(base: str, subset_name: str, graph_key: str | None) -> str:
     """Where a run on a named cell subset writes by default.
 
@@ -721,6 +735,12 @@ SUBSET_OBS_PREFIX = 'subset_'
 # already work. A JSON string, since ragged point lists do not survive h5ad as
 # nested uns.
 LINES_UNS = 'xcell_lines_json'
+
+# Diffusion maps and the pseudotimes computed on them. An .obsm array carries
+# neither its eigenvalues nor the graph it came from, and scanpy's own
+# uns['diffmap_evals'] has room for one map; DPT needs both, for any map.
+DIFFMAP_UNS = 'xcell_diffmaps'
+DPT_UNS = 'xcell_dpt'
 _LINE_DEFAULTS: dict[str, Any] = {
     'dimX': 0, 'dimY': 1, 'smoothedPoints': None, 'drawType': 'pencil',
     'closed': False, 'visible': True, 'strokeColor': '#4ecdc4',
@@ -4882,9 +4902,9 @@ class DataAdaptor:
     ) -> None:
         """Write what a scoped operation just produced into the registry.
 
-        ``hvg`` / ``pca`` / ``graph`` have one output per subset; ``umap`` and
-        ``leiden`` are keyed by output name so a re-run overwrites and a run
-        over another graph sits beside the first; ``pca_subsets`` keeps the
+        ``hvg`` / ``pca`` / ``graph`` have one output per subset; ``umap``,
+        ``leiden``, ``diffmap`` and ``dpt`` are keyed by output name so a re-run
+        overwrites and a run over another graph sits beside the first; ``pca_subsets`` keeps the
         dropped PCs. Only flat scalars are kept — the notebook already gets
         the full params from the analysis record.
         """
@@ -4898,7 +4918,7 @@ class DataAdaptor:
                  if v is None or isinstance(v, (str, int, float, bool, np.generic))}
         if step in ('hvg', 'pca', 'graph'):
             derived[step] = {'key': key, 'params': clean}
-        elif step in ('umap', 'leiden'):
+        elif step in ('umap', 'leiden', 'diffmap', 'dpt'):
             derived.setdefault(step, {})[key] = clean
         elif step == 'pca_subsets':
             derived.setdefault('pca_subsets', {})[key] = dict(extra or {})
@@ -4915,7 +4935,7 @@ class DataAdaptor:
         for step in ('hvg', 'pca', 'graph'):
             if (derived.get(step) or {}).get('key') == key:
                 derived.pop(step)
-        for step in ('umap', 'leiden', 'pca_subsets'):
+        for step in ('umap', 'leiden', 'pca_subsets', 'diffmap', 'dpt'):
             if isinstance(derived.get(step), dict):
                 derived[step].pop(key, None)
         entry['derived'] = derived
@@ -4951,6 +4971,14 @@ class DataAdaptor:
         for k in self.adata.obsm.keys():
             if k.startswith(f'X_pca_{name}_') and k not in pc_subsets:
                 pc_subsets.append(k)
+        diffmaps = recorded_keys('diffmap')
+        for k in self.adata.obsm.keys():
+            if (k == f'X_diffmap_{name}' or k.startswith(f'X_diffmap_{name}_')) and k not in diffmaps:
+                diffmaps.append(k)
+        dpts = recorded_keys('dpt')
+        for c in self.adata.obs.columns:
+            if (c == f'dpt_pseudotime_{name}' or c.startswith(f'dpt_pseudotime_{name}_')) and c not in dpts:
+                dpts.append(c)
         return {
             'hvg': hvg if hvg in self.adata.var.columns else None,
             'pca': pca if pca in self.adata.obsm else None,
@@ -4958,6 +4986,8 @@ class DataAdaptor:
             'umap': [k for k in umaps if k in self.adata.obsm],
             'leiden': [c for c in leidens if c in self.adata.obs.columns],
             'pca_subsets': [k for k in pc_subsets if k in self.adata.obsm],
+            'diffmap': [k for k in diffmaps if k in self.adata.obsm],
+            'dpt': [c for c in dpts if c in self.adata.obs.columns],
         }
 
     def _subset_summary(
@@ -4970,7 +5000,8 @@ class DataAdaptor:
         parent = entry.get('parent')
         origin = entry.get('origin')
         derived = self._subset_derived_keys(name, entry)
-        embeddings = ([derived['pca']] if derived['pca'] else []) + derived['pca_subsets'] + derived['umap']
+        embeddings = (([derived['pca']] if derived['pca'] else []) + derived['pca_subsets']
+                      + derived['umap'] + derived['diffmap'])
         return {
             'name': name,
             'obs_key': SUBSET_OBS_PREFIX + name,
@@ -5138,6 +5169,14 @@ class DataAdaptor:
             for col in derived['leiden']:
                 del self.adata.obs[col]
                 dropped.append(col)
+            for k in derived['diffmap']:
+                del self.adata.obsm[k]
+                self._forget_registered(DIFFMAP_UNS, k)
+                dropped.append(k)
+            for col in derived['dpt']:
+                del self.adata.obs[col]
+                self._forget_registered(DPT_UNS, col)
+                dropped.append(col)
 
             # Shapes and territories drawn on an embedding that is gone have
             # no coordinates left to live in, so they go with it.
@@ -5242,6 +5281,7 @@ class DataAdaptor:
             'neighbors': ['pca'],
             'umap': ['neighbors'],
             'leiden': ['neighbors'],
+            'diffmap': ['neighbors'],
             'pca_loadings': ['pca_with_loadings'],
             # Gene analysis
             'gene_pca': [],
@@ -9059,6 +9099,342 @@ class DataAdaptor:
             self._subset_record_step(subset_name, 'leiden', name, {
                 'resolution': resolution, 'graph_key': graph_key})
         self._log_action('leiden', params, result, subset=cell_indices)
+        return result
+
+    # =========================================================================
+    # Diffusion maps and pseudotime
+    # =========================================================================
+
+    def _default_graph_key(self) -> str:
+        """The graph ``uns['neighbors']`` points at: what UMAP and Leiden use
+        when no graph is chosen."""
+        entry = self.adata.uns.get('neighbors')
+        if isinstance(entry, Mapping):
+            key = entry.get('connectivities_key')
+            if isinstance(key, str) and key in self.adata.obsp:
+                return key
+        return 'connectivities'
+
+    def _registered(self, uns_key: str) -> dict[str, dict[str, Any]]:
+        reg = self.adata.uns.get(uns_key)
+        if not isinstance(reg, Mapping):
+            return {}
+        return {str(k): dict(v) for k, v in self._plain(reg).items() if isinstance(v, Mapping)}
+
+    def _register(self, uns_key: str, key: str, entry: Mapping[str, Any]) -> None:
+        reg = self._registered(uns_key)
+        # h5ad cannot write None; an absent key reads the same.
+        reg[key] = {k: v for k, v in entry.items() if v is not None}
+        self.adata.uns[uns_key] = reg
+
+    def _forget_registered(self, uns_key: str, key: str) -> None:
+        reg = self._registered(uns_key)
+        if reg.pop(key, None) is None:
+            return
+        if reg:
+            self.adata.uns[uns_key] = reg
+        else:
+            self.adata.uns.pop(uns_key, None)
+
+    def run_diffmap(
+        self,
+        n_comps: int = 15,
+        graph_key: str | None = None,
+        key_added: str | None = None,
+        active_cell_indices: list[int] | None = None,
+        cell_subset: str | None = None,
+    ) -> dict[str, Any]:
+        """Diffusion map of any connectivity graph in .obsp.
+
+        Scope and naming follow :meth:`run_umap`: ``X_diffmap`` on the default
+        graph, ``X_diffmap_<graph>`` on another, ``X_diffmap_<subset>[_<graph>]``
+        on a named subset (whose own graph is used when none is chosen), NaN
+        outside a scoped run. The layout is scanpy's — column 0 is the
+        stationary state — and see :mod:`xcell.diffusion` for what happens to
+        isolated cells, asymmetric graphs and disconnected components.
+
+        Returns:
+            Dict with embedding_name, eigenvalues, view_dims (the first
+            informative pair of columns), the graph's isolated cells and
+            components, and human-readable warnings.
+        """
+        from scipy import sparse as sp
+        from xcell import diffusion
+
+        cell_indices, subset_name = self._resolve_cell_scope(cell_subset, active_cell_indices)
+        if subset_name is not None and not graph_key:
+            own_graph = f'{subset_name}_connectivities'
+            if own_graph in self.adata.obsp:
+                graph_key = own_graph
+        if graph_key:
+            self._require_graph(graph_key)
+            used_graph = graph_key
+        else:
+            prereq = self.check_prerequisites('diffmap')
+            if not prereq['satisfied']:
+                raise ValueError(f"Prerequisites not met: {prereq['missing']} — "
+                                 "run Neighbors first, or choose a graph.")
+            used_graph = self._default_graph_key()
+            self._require_graph(used_graph)
+
+        name = (key_added or '').strip()
+        if not name:
+            name = (_subset_output_name('X_diffmap', subset_name, graph_key)
+                    if subset_name is not None
+                    else _default_output_name('X_diffmap', graph_key))
+        if (name in self.adata.obsm and name != 'X_diffmap'
+                and name not in self._registered(DIFFMAP_UNS)):
+            raise ValueError(f"'{name}' already holds another embedding; choose a different name.")
+
+        W = self.adata.obsp[used_graph]
+        if cell_indices is not None:
+            W = sp.csr_matrix(W)[cell_indices][:, cell_indices]
+        res = diffusion.diffusion_map(W, n_comps=n_comps)
+
+        if cell_indices is not None:
+            X = np.full((self.n_cells, res['X'].shape[1]), np.nan, dtype=np.float32)
+            X[cell_indices] = res['X']
+        else:
+            X = res['X']
+        self.adata.obsm[name] = X
+        evals = np.asarray(res['evals'], dtype=np.float32)
+        self._register(DIFFMAP_UNS, name, {
+            'graph_key': used_graph,
+            'n_comps': int(n_comps),
+            'evals': evals,
+            'symmetrized': bool(res['symmetrized']),
+            'cell_subset': subset_name,
+        })
+        if name == 'X_diffmap':
+            # scanpy's own slot, so sc.tl.dpt works on an exported file.
+            self.adata.uns['diffmap_evals'] = evals
+
+        result = {
+            'status': 'completed',
+            'embedding_name': name,
+            'n_comps': int(n_comps),
+            'graph_key': graph_key,
+            'eigenvalues': [float(v) for v in evals],
+            'n_stationary': res['n_stationary'],
+            'view_dims': res['view_dims'],
+            'n_cells_used': res['n_cells_used'],
+            'n_isolated': res['n_isolated'],
+            'n_components': res['n_components'],
+            'component_sizes': res['component_sizes'][:10],
+            'symmetrized': res['symmetrized'],
+            'warnings': res['warnings'],
+        }
+        params: dict[str, Any] = {'n_comps': int(n_comps)}
+        if graph_key:
+            params['graph_key'] = graph_key
+        if name != 'X_diffmap':
+            params['key_added'] = name
+        if subset_name is not None:
+            params['cell_subset'] = subset_name
+            result['cell_subset'] = subset_name
+            self._subset_record_step(subset_name, 'diffmap', name, {
+                'n_comps': int(n_comps), 'graph_key': graph_key})
+        self._log_action('diffmap', params, result, subset=cell_indices)
+        return result
+
+    def _diffmap_info(self, key: str) -> dict[str, Any]:
+        """A diffusion map's coordinates, eigenvalues, graph and scope.
+
+        xcell's own maps are in the registry. A bare ``X_diffmap`` with
+        ``uns['diffmap_evals']`` is one scanpy wrote, so it is read as
+        scanpy's default graph over every cell.
+        """
+        if key not in self.adata.obsm:
+            raise KeyError(f"No diffusion map '{key}'. Run Diffusion map first.")
+        entry = self._registered(DIFFMAP_UNS).get(key)
+        if entry is not None:
+            info = {
+                'graph_key': str(entry.get('graph_key') or 'connectivities'),
+                'evals': np.asarray(entry.get('evals', []), dtype=np.float32),
+                'cell_subset': entry.get('cell_subset') or None,
+            }
+        elif key == 'X_diffmap' and 'diffmap_evals' in self.adata.uns:
+            info = {
+                'graph_key': self._default_graph_key(),
+                'evals': np.asarray(self.adata.uns['diffmap_evals'], dtype=np.float32),
+                'cell_subset': None,
+            }
+        else:
+            raise ValueError(f"'{key}' is not a diffusion map (no eigenvalues are recorded "
+                             "for it). Run Diffusion map to make one.")
+        X = np.asarray(self._obsm_array(key), dtype=np.float32)
+        if X.ndim != 2 or X.shape[1] != info['evals'].size:
+            raise ValueError(f"'{key}' has {X.shape[-1]} columns but {info['evals'].size} "
+                             "eigenvalues are recorded; re-run the diffusion map.")
+        info['X'] = X
+        return info
+
+    def list_diffmaps(self) -> dict[str, Any]:
+        """The diffusion maps DPT can run on, and the columns that can root it."""
+        from xcell import diffusion, stemfinder
+
+        keys = [k for k in self._registered(DIFFMAP_UNS) if k in self.adata.obsm]
+        if 'X_diffmap' in self.adata.obsm and 'X_diffmap' not in keys:
+            keys.insert(0, 'X_diffmap')
+        maps = []
+        for key in keys:
+            try:
+                info = self._diffmap_info(key)
+            except (KeyError, ValueError):
+                continue
+            evals = info['evals']
+            maps.append({
+                'key': key,
+                'graph_key': info['graph_key'],
+                'n_comps': int(evals.size),
+                'n_cells': int((~np.isnan(info['X']).any(axis=1)).sum()),
+                'cell_subset': info['cell_subset'],
+                'eigenvalues': [float(v) for v in evals],
+                'n_stationary': diffusion.count_stationary(evals),
+                'view_dims': diffusion.view_dims(evals),
+            })
+        numeric = [c for c in self.adata.obs.columns
+                   if pd.api.types.is_numeric_dtype(self.adata.obs[c].dtype)]
+        return {'diffmaps': maps, 'potency': stemfinder.potency_columns(numeric)}
+
+    def _dpt_root(
+        self, X: np.ndarray, evals: np.ndarray, n_dcs: int, mode: str,
+        root_cells: list[int] | None, root_column: str | None,
+        root_value: str | None, root_component: int,
+    ) -> tuple[int, str]:
+        """The root cell a mode picks, and how to say what it was.
+
+        Every mode only considers cells the map covers: a subset's map has no
+        coordinates elsewhere, and a root there would have no pseudotime.
+        """
+        from xcell import diffusion
+
+        covered = ~np.isnan(X).any(axis=1)
+        if mode == 'cells':
+            if not root_cells:
+                raise ValueError("Choose at least one root cell.")
+            idx = [int(i) for i in root_cells]
+            root = diffusion.root_from_cells(X, evals, idx, n_dcs)
+            if len(idx) == 1:
+                return root, f"cell `{self.adata.obs_names[root]}`"
+            return root, f"the centre of {len(idx)} chosen cells"
+
+        if mode in ('obs_min', 'obs_max', 'group'):
+            if not root_column or root_column not in self.adata.obs.columns:
+                raise ValueError(f"No .obs column '{root_column}' (missing).")
+            col = self.adata.obs[root_column]
+            if mode == 'group':
+                if root_value is None or str(root_value) == '':
+                    raise ValueError("Choose the group to start from.")
+                members = np.flatnonzero((col.astype(str).to_numpy() == str(root_value)) & covered)
+                if members.size == 0:
+                    raise ValueError(f"No cell this diffusion map covers has "
+                                     f"{root_column} = {root_value}.")
+                root = diffusion.root_from_cells(X, evals, members, n_dcs)
+                return root, f"the centre of `{root_column}` = {root_value}"
+            if not pd.api.types.is_numeric_dtype(col.dtype):
+                raise ValueError(f"'{root_column}' is not numeric; use a cell group instead.")
+            vals = np.asarray(col.to_numpy(dtype=float, na_value=np.nan), dtype=float)
+            vals[~covered | ~np.isfinite(vals)] = np.nan
+            if np.isnan(vals).all():
+                raise ValueError(f"No cell this diffusion map covers has a value in '{root_column}'.")
+            if mode == 'obs_min':
+                return int(np.nanargmin(vals)), f"the lowest `{root_column}`"
+            return int(np.nanargmax(vals)), f"the highest `{root_column}`"
+
+        if mode in ('dc_min', 'dc_max'):
+            c = int(root_component)
+            if not 0 <= c < X.shape[1]:
+                raise ValueError(f"There is no diffusion component {c}; this map has "
+                                 f"DC0–DC{X.shape[1] - 1}.")
+            vals = X[:, c]
+            if mode == 'dc_min':
+                return int(np.nanargmin(vals)), f"the low end of DC{c}"
+            return int(np.nanargmax(vals)), f"the high end of DC{c}"
+
+        raise ValueError(f"Unknown root_mode '{mode}'; use cells, obs_min, obs_max, "
+                         "group, dc_min or dc_max.")
+
+    def run_dpt(
+        self,
+        diffmap_key: str = 'X_diffmap',
+        n_dcs: int = 10,
+        root_mode: str = 'cells',
+        root_cells: list[int] | None = None,
+        root_column: str | None = None,
+        root_value: str | None = None,
+        root_component: int = 1,
+        key_added: str | None = None,
+    ) -> dict[str, Any]:
+        """Diffusion pseudotime from a chosen root on an existing diffusion map.
+
+        Root modes: ``cells`` (one cell, or the centre of several),
+        ``obs_min`` / ``obs_max`` of a numeric column (stemFinder's
+        ``stemfinder`` runs like pseudotime, so its lowest cell is the most
+        potent), ``group`` (the centre of a category), ``dc_min`` /
+        ``dc_max`` (a tip of a diffusion component). The record keeps the
+        resolved root cell, so a replay starts from the same cell whatever
+        picked it. Re-running into the same column overwrites it.
+        """
+        from xcell import diffusion
+
+        info = self._diffmap_info(diffmap_key)
+        X, evals, graph_key = info['X'], info['evals'], info['graph_key']
+        if graph_key not in self.adata.obsp:
+            raise ValueError(f"The graph '{graph_key}' this diffusion map was computed on no "
+                             "longer exists; re-run the diffusion map.")
+        n_used = int(min(max(int(n_dcs), 2), X.shape[1]))
+        root, rule = self._dpt_root(X, evals, n_used, root_mode, root_cells,
+                                    root_column, root_value, root_component)
+
+        name = (key_added or '').strip() or _dpt_output_name(diffmap_key)
+        if (name in self.adata.obs.columns and not name.startswith('dpt_pseudotime')
+                and name not in self._registered(DPT_UNS)):
+            raise ValueError(f"'{name}' is already an .obs column; choose a different name.")
+
+        res = diffusion.dpt_pseudotime(self.adata.obsp[graph_key], X, evals, root, n_used)
+        pt = res['pseudotime']
+        self.adata.obs[name] = pt
+        root_name = str(self.adata.obs_names[root])
+        self._register(DPT_UNS, name, {
+            'diffmap_key': diffmap_key,
+            'n_dcs': int(res['n_dcs']),
+            'root_index': int(root),
+            'root_name': root_name,
+            'root_rule': rule,
+        })
+        if name == 'dpt_pseudotime' and diffmap_key == 'X_diffmap':
+            # scanpy's own slot: sc.tl.dpt on the exported file finds the root.
+            self.adata.uns['iroot'] = int(root)
+
+        warnings: list[str] = []
+        if res['n_unreachable']:
+            warnings.append(f"{res['n_unreachable']} cells are in parts of the graph the root "
+                            "cannot reach, so they have no pseudotime.")
+        result: dict[str, Any] = {
+            'status': 'completed',
+            'key_added': name,
+            'diffmap_key': diffmap_key,
+            'n_dcs': int(res['n_dcs']),
+            'root_index': int(root),
+            'root_name': root_name,
+            'root_rule': rule,
+            'n_cells': int(np.isfinite(pt).sum()),
+            'n_unreachable': int(res['n_unreachable']),
+            'warnings': warnings,
+        }
+        subset = info['cell_subset']
+        if subset:
+            result['cell_subset'] = subset
+            self._subset_record_step(subset, 'dpt', name, {
+                'diffmap_key': diffmap_key, 'n_dcs': int(res['n_dcs']), 'root_name': root_name})
+        self._log_action('dpt', {
+            'diffmap_key': diffmap_key,
+            'n_dcs': int(res['n_dcs']),
+            'root_mode': 'cells',
+            'root_cells': [int(root)],
+            'key_added': name,
+        }, result)
         return result
 
     # =========================================================================

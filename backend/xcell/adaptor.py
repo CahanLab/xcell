@@ -4958,19 +4958,31 @@ class DataAdaptor:
         squidpy's spatial_connectivities, or a recorded key another tool has
         since overwritten.
         """
+        # Every subset listing runs this, so it reads structure rather than
+        # copying: a million-cell graph's COO form or a PCA's outside rows is
+        # hundreds of MB.
+        from scipy import sparse  # noqa: PLC0415
+
         outside = ~np.asarray(mask, dtype=bool)
         if where == 'obsp':
             g = self.adata.obsp[key]
-            if hasattr(g, 'tocoo'):
-                coo = g.tocoo()
-                rows, cols = coo.row[coo.data != 0], coo.col[coo.data != 0]
-            else:
-                rows, cols = np.nonzero(np.asarray(g))
-            return not (outside[rows] | outside[cols]).any()
+            if sparse.issparse(g):
+                g = g.tocsr()
+                return not (np.diff(g.indptr)[outside].any() or outside[g.indices].any())
+            dense = np.asarray(g)
+            return not (dense[outside].any() or dense[:, outside].any())
         if where == 'obsm':
-            vals = np.asarray(self.adata.obsm[key])[outside]
-            return vals.dtype.kind in 'fc' and bool(np.isnan(vals).all())
+            # A subset's embedding is NaN in every column outside it; the
+            # first column is evidence enough.
+            arr = np.asarray(self.adata.obsm[key])
+            if arr.ndim != 2 or arr.shape[1] == 0 or arr.dtype.kind not in 'fc':
+                return False
+            return bool(np.isnan(arr[:, 0][outside]).all())
         vals = self.adata.obs[key][outside]
+        if isinstance(vals.dtype, pd.CategoricalDtype):
+            cats = list(vals.cat.categories)
+            allowed = [-1] + ([cats.index('unassigned')] if 'unassigned' in cats else [])
+            return bool(np.isin(vals.cat.codes.to_numpy(), allowed).all())
         return bool((vals.isna() | (vals.astype(object) == 'unassigned')).all())
 
     def _subset_key_clash(self, name: str, mask: np.ndarray | None) -> str | None:

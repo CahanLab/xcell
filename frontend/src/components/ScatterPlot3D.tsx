@@ -15,6 +15,7 @@ import {
 } from '../store'
 import { useCellColor } from '../lib/cellColors'
 import { pointsInLassoScreen } from '../lib/lasso3d'
+import { zoomLimits } from '../lib/viewFit'
 
 // 3D sibling of ScatterPlot: renders the embedding as an orbitable point cloud
 // using deck.gl's OrbitView. Deliberately mirrors ScatterPlot's ScatterplotLayer
@@ -134,13 +135,13 @@ export default function ScatterPlot3D({
       bounds.maxY - bounds.minY,
       bounds.maxZ - bounds.minZ,
     ) || 1
+    const zoom = Math.log2(600 / span) - 1
     setViewState({
       target: [cx, cy, cz],
-      zoom: Math.log2(600 / span) - 1,
+      zoom,
       rotationX: 30,      // tilt down ~30° for a legible default 3D angle
       rotationOrbit: 30,  // spin ~30° around the orbit (Y) axis
-      minZoom: -10,
-      maxZoom: 10,
+      ...zoomLimits(zoom),
     })
   }, [embedding.name, bounds, viewState])
 

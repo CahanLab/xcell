@@ -8,6 +8,7 @@ import { transformPoints, meanOf, convexHull, shapeOverlapsHull, type Pt } from 
 import { SnapshotLayer, renderSnapshotToCanvas } from './SnapshotPanel'
 import { layerWeightFn, useCellColor } from '../lib/cellColors'
 import { pickScaleBar } from '../lib/scaleBar'
+import { boundsOf, fitView } from '../lib/viewFit'
 import { appendDataset } from '../hooks/useData'
 import { faceColor, polygonPath } from '../lib/territoryGeometry'
 
@@ -377,31 +378,7 @@ export default function ScatterPlot({
   const selectedSet = useMemo(() => new Set(selectedCellIndices), [selectedCellIndices])
 
   // Compute bounds from embedding only (so view doesn't reset on color/mask changes)
-  const bounds = useMemo(() => {
-    const coords = embedding.coordinates
-
-    if (coords.length === 0) {
-      return { minX: 0, maxX: 1, minY: 0, maxY: 1 }
-    }
-
-    let minX = Infinity, maxX = -Infinity
-    let minY = Infinity, maxY = -Infinity
-    for (const [x, y] of coords) {
-      if (x < minX) minX = x
-      if (x > maxX) maxX = x
-      if (y < minY) minY = y
-      if (y > maxY) maxY = y
-    }
-
-    const padX = (maxX - minX) * 0.05
-    const padY = (maxY - minY) * 0.05
-    return {
-      minX: minX - padX,
-      maxX: maxX + padX,
-      minY: minY - padY,
-      maxY: maxY + padY,
-    }
-  }, [embedding])
+  const bounds = useMemo(() => boundsOf(embedding.coordinates), [embedding])
 
   // Compute data, filtering out masked cells if showMaskedCells is false, and applying sort order
   const data = useMemo(() => {
@@ -467,18 +444,7 @@ export default function ScatterPlot({
       return
     }
     lastEmbeddingRef.current = embedding.name
-    const width = bounds.maxX - bounds.minX
-    const height = bounds.maxY - bounds.minY
-    const centerX = (bounds.minX + bounds.maxX) / 2
-    const centerY = (bounds.minY + bounds.maxY) / 2
-    const zoom = Math.log2(Math.min(800 / width, 600 / height)) - 1
-
-    setViewState({
-      target: [centerX, centerY, 0],
-      zoom,
-      minZoom: -10,
-      maxZoom: 10,
-    } as OrthographicViewState)
+    setViewState(fitView(bounds, 800, 600) as OrthographicViewState)
   }, [embedding.name, bounds, viewState])
 
   const view = useMemo(() => {

@@ -268,3 +268,38 @@ def test_availability_reports_absence_with_install_instructions(monkeypatch):
 def test_availability_reports_the_version():
     a = sf.availability()
     assert a["available"] is True and a["version"]
+
+
+# ---------- column names ----------
+# A suffix is appended to each base name, and 'stemfinder' is a prefix of the
+# other bases: suffix 'raw' would write stemFinder's score to 'stemfinder_raw',
+# the raw score's own name — overwriting an unsuffixed run's raw score and
+# reading back as "higher = less differentiated", the wrong way round.
+
+def test_column_names_suffix_every_base_a_metric_writes():
+    assert sf.column_names(["stemfinder", "diffometer"], "k50") == {
+        "stemfinder": "stemfinder_k50", "stemfinder_raw": "stemfinder_raw_k50",
+        "diffometer": "diffometer_k50",
+    }
+    assert sf.column_names(["cc_mean"], "") == {"stemfinder_cc_mean": "stemfinder_cc_mean"}
+
+
+@pytest.mark.parametrize("suffix", ["raw", "raw_counts", "cc_mean", "n_TFs_v2"])
+def test_a_suffix_that_reads_back_as_another_score_is_refused(suffix):
+    with pytest.raises(ValueError, match=f"stemfinder_{suffix}"):
+        sf.column_names(["stemfinder"], suffix)
+
+
+def test_a_suffix_is_refused_only_where_it_can_be_misread():
+    # diffOmeter and the baselines have no shorter base to collide with.
+    assert sf.column_names(["diffometer", "cc_mean"], "raw") == {
+        "diffometer": "diffometer_raw", "stemfinder_cc_mean": "stemfinder_cc_mean_raw",
+    }
+    # A word that merely starts with the letters is a different token.
+    assert sf.column_names(["stemfinder"], "rawcounts")["stemfinder"] == "stemfinder_rawcounts"
+
+
+def test_potency_reads_every_written_name_back_to_its_metric():
+    names = sf.column_names(["stemfinder", "diffometer", "cc_mean", "n_tfs"], "v2")
+    potency = {p["column"]: p["direction"] for p in sf.potency_columns(list(names.values()))}
+    assert potency == {"stemfinder_v2": "min", "stemfinder_raw_v2": "max", "diffometer_v2": "max"}

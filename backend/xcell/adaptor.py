@@ -14140,6 +14140,7 @@ class DataAdaptor:
                 )
 
         clean = re.sub(r'[^A-Za-z0-9_]+', '_', str(suffix or '')).strip('_')
+        out_names = sf.column_names(metrics, clean)
         labels = (self.adata.obs[summary_by].astype(object).to_numpy()[cells]
                   if summary_by is not None else None)
         n_obs = self.n_cells
@@ -14174,7 +14175,7 @@ class DataAdaptor:
                 raise ValueError("The dataset's cells changed while stemFinder ran; run it again.")
             scores = result['scores']
             order = [c for m in metrics for c in sf.METRIC_COLUMNS[m] if c in scores]
-            columns = [f'{c}_{clean}' if clean else c for c in order]
+            columns = [out_names[c] for c in order]
             for base, name in zip(order, columns):
                 full = np.full(n_obs, np.nan, dtype=np.float64)
                 full[cells] = scores[base]

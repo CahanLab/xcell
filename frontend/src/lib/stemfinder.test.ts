@@ -96,6 +96,15 @@ describe('stemFinderBlocker', () => {
     expect(stemFinderBlocker({ ...base, metrics: new Set(['n_tfs']), graph: 'existing', graphKey: '' })).toBeNull()
   })
 
+  it('refuses a suffix that would write stemFinder over another score’s column', () => {
+    // stemfinder + '_raw' is the raw score's own name; the backend refuses it too.
+    expect(stemFinderBlocker({ ...base, suffix: 'raw' })).toMatch(/stemfinder_raw/)
+    expect(stemFinderBlocker({ ...base, suffix: ' raw counts ' })).toMatch(/stemfinder_raw_counts/)
+    expect(stemFinderBlocker({ ...base, suffix: 'n_TFs' })).toMatch(/stemfinder_n_TFs/)
+    expect(stemFinderBlocker({ ...base, suffix: 'rawcounts' })).toBeNull()
+    expect(stemFinderBlocker({ ...base, metrics: new Set(['diffometer']), suffix: 'raw' })).toBeNull()
+  })
+
   it('needs a numeric threshold', () => {
     expect(stemFinderBlocker({ ...base, threshold: 'abc' })).toMatch(/threshold/i)
     expect(stemFinderBlocker({ ...base, threshold: '-0.5' })).toBeNull()

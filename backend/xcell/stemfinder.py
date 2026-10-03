@@ -369,6 +369,40 @@ def _unique_in_order(values: np.ndarray) -> list:
     return list(seen)
 
 
+# Longest first: 'stemfinder' is a prefix of three other bases.
+_BASES = sorted({c for cols in METRIC_COLUMNS.values() for c in cols}, key=len, reverse=True)
+
+
+def column_base(col: str) -> str | None:
+    """The base column (a :data:`METRIC_COLUMNS` name) ``col`` was written as,
+    with or without a run's suffix; None for anything else."""
+    for base in _BASES:
+        if col == base or col.startswith(base + '_'):
+            return base
+    return None
+
+
+def column_names(metrics: Sequence[str], suffix: str) -> dict[str, str]:
+    """Base column → the name a run with ``suffix`` (already key-safe) writes.
+
+    Refuses a suffix that makes a name read back as another score's: 'raw'
+    turns stemFinder's ``stemfinder`` into ``stemfinder_raw``, which would
+    overwrite an unsuffixed run's raw score and be read as one — higher = less
+    differentiated, the opposite of what the column holds.
+    """
+    names = {base: f'{base}_{suffix}' if suffix else base
+             for m in metrics for base in METRIC_COLUMNS[m]}
+    for base, name in names.items():
+        other = column_base(name)
+        if other != base:
+            raise ValueError(
+                f"Suffix '{suffix}' would name the {base} column '{name}', which reads as "
+                f"the {other} column. Pick a suffix that does not start with "
+                "'raw', 'cc_mean' or 'n_TFs'."
+            )
+    return names
+
+
 def potency_columns(columns: Sequence[str]) -> list[dict[str, str]]:
     """The .obs columns that say which cell is least differentiated, and how.
 
@@ -378,21 +412,16 @@ def potency_columns(columns: Sequence[str]) -> list[dict[str, str]]:
     two baselines (cell-cycle mean, expressed TFs) are not potency scores and
     are left out. Ordered stemFinder first, the tool's headline metric.
     """
-    def named(col: str, base: str) -> bool:
-        return col == base or col.startswith(base + '_')
-
+    potency = {
+        'stemfinder': (0, 'min', 'lower = less differentiated'),
+        'stemfinder_raw': (1, 'max', 'higher = less differentiated'),
+        'diffometer': (2, 'max', 'higher = less differentiated'),
+    }
     found: list[tuple[int, dict[str, str]]] = []
     for col in columns:
         col = str(col)
-        if named(col, 'stemfinder_cc_mean') or named(col, 'stemfinder_n_TFs'):
-            continue
-        if named(col, 'stemfinder_raw'):
-            found.append((1, {'column': col, 'direction': 'max',
-                              'label': 'higher = less differentiated'}))
-        elif named(col, 'stemfinder'):
-            found.append((0, {'column': col, 'direction': 'min',
-                              'label': 'lower = less differentiated'}))
-        elif named(col, 'diffometer'):
-            found.append((2, {'column': col, 'direction': 'max',
-                              'label': 'higher = less differentiated'}))
+        base = column_base(col)
+        if base in potency:
+            rank, direction, label = potency[base]
+            found.append((rank, {'column': col, 'direction': direction, 'label': label}))
     return [entry for _, entry in sorted(found, key=lambda x: x[0])]

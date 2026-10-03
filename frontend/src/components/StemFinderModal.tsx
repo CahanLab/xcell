@@ -15,7 +15,7 @@ import { appendDataset, cancelTask, pollTask, refreshSchema, useObsSummaries } f
 import { flattenGeneSets } from './GenePanel'
 import { datasetIdentity } from '../lib/datasetIdentity'
 import { indicesFromMask } from '../lib/cellSubsets'
-import { STEM_METRICS, stemFinderBlocker, stemFinderParams, type StemMetric, type StemFinderInputs } from '../lib/stemfinder'
+import { STEM_METRICS, cleanSuffix, stemFinderBlocker, stemFinderParams, type StemMetric, type StemFinderInputs } from '../lib/stemfinder'
 
 interface GraphInfo { key: string; label: string; n_edges: number }
 
@@ -385,7 +385,7 @@ export default function StemFinderModal() {
                 <input style={{ ...dark.input, width: 120 }} value={suffix} placeholder="none" onChange={(e) => setSuffix(e.target.value)} />
                 <span style={{ fontSize: 10.5, color: suffix.trim() || !activeCellMask ? '#666' : '#e9a23b' }}>
                   {suffix.trim()
-                    ? `→ stemfinder_${suffix.trim().replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')}`
+                    ? `→ stemfinder_${cleanSuffix(suffix)}`
                     : activeCellMask
                       ? 'overwrites stemfinder, diffometer, …; cells outside the mask become empty'
                       : 'overwrites stemfinder, diffometer, …'}

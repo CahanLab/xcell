@@ -9,6 +9,7 @@ import { SnapshotLayer, renderSnapshotToCanvas } from './SnapshotPanel'
 import { layerWeightFn, useCellColor } from '../lib/cellColors'
 import { pickScaleBar } from '../lib/scaleBar'
 import { boundsOf, fitView } from '../lib/viewFit'
+import { cellsInPolygon, packPositions } from '../lib/embeddingCoverage'
 import { appendDataset } from '../hooks/useData'
 import { faceColor, polygonPath } from '../lib/territoryGeometry'
 
@@ -256,19 +257,6 @@ function CoordinateGrid({
       })}
     </svg>
   )
-}
-
-// Point-in-polygon using ray casting algorithm
-function pointInPolygon(x: number, y: number, polygon: [number, number][]): boolean {
-  let inside = false
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i][0], yi = polygon[i][1]
-    const xj = polygon[j][0], yj = polygon[j][1]
-    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
-      inside = !inside
-    }
-  }
-  return inside
 }
 
 export default function ScatterPlot({
@@ -794,14 +782,7 @@ export default function ScatterPlot({
         return
       }
 
-      // Find all points inside the polygon
-      const selectedIndices: number[] = []
-      for (let i = 0; i < embedding.coordinates.length; i++) {
-        const [x, y] = embedding.coordinates[i]
-        if (pointInPolygon(x, y, lassoPoints)) {
-          selectedIndices.push(i)
-        }
-      }
+      const selectedIndices = cellsInPolygon(embedding.coordinates, lassoPoints)
 
       // Hold Shift to add to existing selection instead of replacing
       onSelectionComplete(selectedIndices, e.shiftKey)
@@ -821,13 +802,7 @@ export default function ScatterPlot({
         return
       }
 
-      const selectedIndices: number[] = []
-      for (let i = 0; i < embedding.coordinates.length; i++) {
-        const [x, y] = embedding.coordinates[i]
-        if (pointInPolygon(x, y, lassoPoints)) {
-          selectedIndices.push(i)
-        }
-      }
+      const selectedIndices = cellsInPolygon(embedding.coordinates, lassoPoints)
       setLassoPoints([])
 
       if (selectedIndices.length > 0) {
@@ -882,13 +857,7 @@ export default function ScatterPlot({
         setCursorPoint(null)
         return
       }
-      const selectedIndices: number[] = []
-      for (let i = 0; i < embedding.coordinates.length; i++) {
-        const [x, y] = embedding.coordinates[i]
-        if (pointInPolygon(x, y, selectPolygonPoints)) {
-          selectedIndices.push(i)
-        }
-      }
+      const selectedIndices = cellsInPolygon(embedding.coordinates, selectPolygonPoints)
       onSelectionComplete(selectedIndices, e.shiftKey)
       setSelectPolygonPoints([])
       setCursorPoint(null)
@@ -1244,15 +1213,7 @@ export default function ScatterPlot({
   // phantom vertical line at X=0 with Y values that match other cells' X
   // values (see frontend/repro.html for a minimal reproducer). Binary
   // attributes bypass the affected code path entirely.
-  const positionsBuf = useMemo(() => {
-    const buf = new Float32Array(data.length * 2)
-    for (let i = 0; i < data.length; i++) {
-      const p = data[i].position
-      buf[i * 2] = p[0]
-      buf[i * 2 + 1] = p[1]
-    }
-    return buf
-  }, [data])
+  const positionsBuf = useMemo(() => packPositions(data.map((d) => d.position)), [data])
 
   const layers = [
     new ScatterplotLayer({

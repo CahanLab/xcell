@@ -728,6 +728,12 @@ _GRAPH_META_KEY = '_xcell_graph'
 # connectivities / X_umap / leiden are never overwritten by a sub-clustering.
 CELL_SUBSETS_UNS = 'xcell_cell_subsets'
 SUBSET_OBS_PREFIX = 'subset_'
+# A subset's graph entry goes to uns[<name>], and its graph-named results
+# (X_umap_<name>, leiden_<name>) are what a dataset run over a graph called
+# <name> writes. These are the names the dataset's own chain, squidpy, and
+# Visium (its images, in uns['spatial']) write — possibly after the subset is
+# saved, so the keys being absent today does not make the name safe.
+RESERVED_SUBSET_NAMES = frozenset({'spatial', 'neighbors', 'pca', 'umap', 'leiden', 'hvg'})
 
 # Drawn shapes and lines. They belong to an embedding (``embeddingName``) and
 # used to live only in the browser, reaching this key at export time; now the
@@ -4942,10 +4948,61 @@ class DataAdaptor:
         registry[name] = entry
         self.adata.uns[CELL_SUBSETS_UNS] = registry
 
-    def _subset_derived_keys(self, name: str, entry: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def _confined_to(self, mask: np.ndarray, where: str, key: str) -> bool:
+        """Whether ``.<where>[key]`` holds values only for the subset's cells.
+
+        A subset's own results do — its graph has no edge leaving it, its
+        embeddings are NaN outside it, its Leiden labels 'unassigned' — and a
+        dataset result under the same name does not. That is the test of
+        ownership when names are shared: a subset called 'spatial' and
+        squidpy's spatial_connectivities, or a recorded key another tool has
+        since overwritten.
+        """
+        outside = ~np.asarray(mask, dtype=bool)
+        if where == 'obsp':
+            g = self.adata.obsp[key]
+            if hasattr(g, 'tocoo'):
+                coo = g.tocoo()
+                rows, cols = coo.row[coo.data != 0], coo.col[coo.data != 0]
+            else:
+                rows, cols = np.nonzero(np.asarray(g))
+            return not (outside[rows] | outside[cols]).any()
+        if where == 'obsm':
+            vals = np.asarray(self.adata.obsm[key])[outside]
+            return vals.dtype.kind in 'fc' and bool(np.isnan(vals).all())
+        vals = self.adata.obs[key][outside]
+        return bool((vals.isna() | (vals.astype(object) == 'unassigned')).all())
+
+    def _subset_key_clash(self, name: str, mask: np.ndarray | None) -> str | None:
+        """A key the subset's results would overwrite without owning it, or None.
+
+        A subset writes its graph to ``obsp['<name>_connectivities']`` /
+        ``['<name>_distances']`` and scanpy's entry to ``uns['<name>']``. With
+        no ``mask`` (a name not saved yet) any existing key is someone else's;
+        with one, the subset's own graph and its entry are not a clash.
+        """
+        graph = name + _CONN_SUFFIX
+        for key in (graph, f'{name}_distances'):
+            if key in self.adata.obsp and (mask is None or not self._confined_to(mask, 'obsp', key)):
+                return f".obsp['{key}']"
+        meta = self.adata.uns.get(name)
+        own_meta = (mask is not None and isinstance(meta, Mapping)
+                    and meta.get('connectivities_key') == graph)
+        if name in self.adata.uns and not own_meta:
+            return f".uns['{name}']"
+        return None
+
+    def _subset_derived_keys(
+        self, name: str, entry: Mapping[str, Any] | None = None, mask: np.ndarray | None = None,
+    ) -> dict[str, Any]:
         """What exists of this subset's results: the recorded keys, plus
         anything the naming convention finds (files from before the record),
-        filtered to keys that are actually there."""
+        filtered to keys that are actually there and hold only its cells.
+
+        ``mask`` is the subset's membership, for a caller that has already
+        dropped its column."""
+        if mask is None:
+            mask = self.adata.obs[SUBSET_OBS_PREFIX + name].values.astype(bool)
         derived = (entry or {}).get('derived') or {}
 
         def recorded(step: str) -> str | None:
@@ -4978,15 +5035,22 @@ class DataAdaptor:
         # would remove it).
         diffmaps = recorded_keys('diffmap')
         dpts = recorded_keys('dpt')
+
+        def own(where: str, key: str) -> bool:
+            store = {'obsm': self.adata.obsm, 'obsp': self.adata.obsp}.get(where, self.adata.obs.columns)
+            return key in store and self._confined_to(mask, where, key)
+
         return {
+            # A .var column has no cells to check; the double underscore is
+            # no dataset key's shape.
             'hvg': hvg if hvg in self.adata.var.columns else None,
-            'pca': pca if pca in self.adata.obsm else None,
-            'graph': graph if graph in self.adata.obsp else None,
-            'umap': [k for k in umaps if k in self.adata.obsm],
-            'leiden': [c for c in leidens if c in self.adata.obs.columns],
-            'pca_subsets': [k for k in pc_subsets if k in self.adata.obsm],
-            'diffmap': [k for k in diffmaps if k in self.adata.obsm],
-            'dpt': [c for c in dpts if c in self.adata.obs.columns],
+            'pca': pca if own('obsm', pca) else None,
+            'graph': graph if own('obsp', graph) else None,
+            'umap': [k for k in umaps if own('obsm', k)],
+            'leiden': [c for c in leidens if own('obs', c)],
+            'pca_subsets': [k for k in pc_subsets if own('obsm', k)],
+            'diffmap': [k for k in diffmaps if own('obsm', k)],
+            'dpt': [c for c in dpts if own('obs', c)],
         }
 
     def _subset_summary(
@@ -4998,7 +5062,7 @@ class DataAdaptor:
         mask = self.adata.obs[SUBSET_OBS_PREFIX + name].values.astype(bool)
         parent = entry.get('parent')
         origin = entry.get('origin')
-        derived = self._subset_derived_keys(name, entry)
+        derived = self._subset_derived_keys(name, entry, mask)
         embeddings = (([derived['pca']] if derived['pca'] else []) + derived['pca_subsets']
                       + derived['umap'] + derived['diffmap'])
         return {
@@ -5063,6 +5127,14 @@ class DataAdaptor:
         if not overwrite and (clean in registry or key in self.adata.obs.columns):
             raise ValueError(
                 f"A subset named '{clean}' already exists. Choose another name or overwrite it.")
+        if clean not in registry:
+            # Re-saving a subset over itself keeps the keys it already owns.
+            clash = (f".uns['{clean}']" if clean in RESERVED_SUBSET_NAMES
+                     else self._subset_key_clash(clean, None))
+            if clash:
+                raise ValueError(
+                    f"A subset named '{clean}' would write its results over {clash}, which belongs "
+                    "to the dataset. Choose another name.")
 
         if parent is not None:
             parent = self._sanitize_subset_name(parent)
@@ -5122,7 +5194,7 @@ class DataAdaptor:
         """Remove a subset; optionally everything computed on it too — its
         results, and the shapes and territories drawn on its embeddings."""
         clean = self._sanitize_subset_name(name)
-        self._subset_mask(clean)  # KeyError if unknown
+        mask = self._subset_mask(clean)  # KeyError if unknown
         dropped: list[str] = []
         dropped_lines: list[str] = []
         dropped_territories: list[str] = []
@@ -5143,7 +5215,7 @@ class DataAdaptor:
         self.adata.uns[CELL_SUBSETS_UNS] = registry
 
         if drop_derived:
-            derived = self._subset_derived_keys(clean, gone)
+            derived = self._subset_derived_keys(clean, gone, mask)
             if derived['hvg']:
                 del self.adata.var[derived['hvg']]
                 dropped.append(derived['hvg'])
@@ -5153,11 +5225,17 @@ class DataAdaptor:
                 self.adata.varm.pop(f'PCs_{clean}', None)
                 self.adata.uns.pop(f'pca_{clean}', None)
             if derived['graph']:
-                for k in (derived['graph'], f'{clean}_distances'):
-                    if k in self.adata.obsp:
-                        del self.adata.obsp[k]
-                        dropped.append(k)
-                self.adata.uns.pop(clean, None)
+                del self.adata.obsp[derived['graph']]
+                dropped.append(derived['graph'])
+                partner = f'{clean}_distances'
+                if partner in self.adata.obsp and self._confined_to(mask, 'obsp', partner):
+                    del self.adata.obsp[partner]
+                    dropped.append(partner)
+                # Only scanpy's entry for this graph: uns['spatial'] is where
+                # Visium keeps its images.
+                meta = self.adata.uns.get(clean)
+                if isinstance(meta, Mapping) and meta.get('connectivities_key') == derived['graph']:
+                    del self.adata.uns[clean]
             for k in derived['pca_subsets']:
                 del self.adata.obsm[k]
                 self.adata.varm.pop('PCs_' + k[len('X_pca_'):], None)
@@ -5209,7 +5287,15 @@ class DataAdaptor:
         """
         if cell_subset:
             clean = self._sanitize_subset_name(cell_subset)
-            return np.where(self._subset_mask(clean))[0], clean
+            mask = self._subset_mask(clean)
+            # A subset saved before its name was checked at creation.
+            clash = self._subset_key_clash(clean, mask)
+            if clash:
+                raise ValueError(
+                    f"Subset '{clean}' shares its name with {clash}, which holds the dataset's own "
+                    "results, so this run would overwrite them. Save its cells as a subset with "
+                    "another name and run it there.")
+            return np.where(mask)[0], clean
         return self._validate_cell_indices(active_cell_indices), None
 
     def _validate_cell_indices(

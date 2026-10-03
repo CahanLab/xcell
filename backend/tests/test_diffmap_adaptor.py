@@ -451,7 +451,11 @@ def test_a_subset_named_like_a_graph_does_not_claim_its_maps():
     a.run_spatial_neighbors(n_neighs=6, coord_type="generic")
     a.run_diffmap(n_comps=6, graph_key="spatial_connectivities")      # dataset-level
     a.run_dpt("X_diffmap_spatial", root_mode="cells", root_cells=[0])
-    a.create_cell_subset("spatial", list(range(30)))
+    with pytest.raises(ValueError, match="spatial"):
+        a.create_cell_subset("spatial", list(range(30)))
+    # A file saved before the name was refused can still hold one.
+    a.adata.obs["subset_spatial"] = np.arange(N) < 30
+    a.adata.uns["xcell_cell_subsets"] = {"spatial": {"obs_key": "subset_spatial"}}
     summary = next(s for s in a.list_cell_subsets() if s["name"] == "spatial")
     assert summary["derived"]["diffmap"] == []
     assert summary["derived"]["dpt"] == []

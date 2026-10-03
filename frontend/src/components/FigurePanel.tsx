@@ -4,6 +4,7 @@ import { ScatterplotLayer } from '@deck.gl/layers'
 import { OrthographicView, OrthographicViewState } from '@deck.gl/core'
 import { Figure, FigurePanel as PanelType, HighlightLayer, HighlightSource, useStore } from '../store'
 import { appendDataset } from '../hooks/useData'
+import { boundsOf, fitView, zoomLimits } from '../lib/viewFit'
 import { getColorFromScale, getBivariateColor, resolveCategoryPalette, hexToRgb } from '../lib/cellColors'
 
 // Build a per-cell weight function for a HighlightLayer. Mirrors the
@@ -165,20 +166,7 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
   }, [panel.colorMode, panel.selectedGenes, panel.selectedColorColumn, panel.expressionTransform, panel.bivariateSet1, panel.bivariateSet2, panel.bivariateGene1, panel.bivariateGene2])
 
   // Bounds from the snapshotted coordinates — used for default viewState.
-  const bounds = useMemo(() => {
-    const coords = figure.coordinates
-    if (coords.length === 0) return { minX: 0, maxX: 1, minY: 0, maxY: 1 }
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
-    for (const [x, y] of coords) {
-      if (x < minX) minX = x
-      if (x > maxX) maxX = x
-      if (y < minY) minY = y
-      if (y > maxY) maxY = y
-    }
-    const padX = (maxX - minX) * 0.05
-    const padY = (maxY - minY) * 0.05
-    return { minX: minX - padX, maxX: maxX + padX, minY: minY - padY, maxY: maxY + padY }
-  }, [figure.coordinates])
+  const bounds = useMemo(() => boundsOf(figure.coordinates), [figure.coordinates])
 
   // Build deck.gl data — each entry is a renderable cell with position + the
   // ORIGINAL adata cell index (for color lookup) preserved. When the panel has
@@ -317,22 +305,17 @@ export default function FigurePanel({ figure, panel, staticView = false }: Props
 
   // Shared viewState: read from figure, write back when user pans/zooms.
   const viewState: OrthographicViewState = useMemo(() => {
+    // Lazy default: fit to bounds, for the typical figure-panel size (~400×400
+    // logical px). The zoom limits follow the fit even under a shared zoom.
+    const fit = fitView(bounds, 400, 400)
     if (figure.sharedZoom !== null && figure.sharedTargetX !== null && figure.sharedTargetY !== null) {
       return {
         target: [figure.sharedTargetX, figure.sharedTargetY, 0],
         zoom: figure.sharedZoom,
-        minZoom: -10,
-        maxZoom: 10,
+        ...zoomLimits(fit.zoom),
       } as OrthographicViewState
     }
-    // Lazy default: fit to bounds. Compute a reasonable zoom for the
-    // typical figure-panel size (~400×400 logical px).
-    const width = bounds.maxX - bounds.minX
-    const height = bounds.maxY - bounds.minY
-    const centerX = (bounds.minX + bounds.maxX) / 2
-    const centerY = (bounds.minY + bounds.maxY) / 2
-    const zoom = Math.log2(Math.min(400 / width, 400 / height)) - 1
-    return { target: [centerX, centerY, 0], zoom, minZoom: -10, maxZoom: 10 } as OrthographicViewState
+    return fit as OrthographicViewState
   }, [figure.sharedZoom, figure.sharedTargetX, figure.sharedTargetY, bounds])
 
   // Initialize shared viewState on first render if it hasn't been set.

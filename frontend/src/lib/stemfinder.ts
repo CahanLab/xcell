@@ -41,6 +41,14 @@ export interface StemFinderInputs {
   graphCount?: number
 }
 
+/** The suffix as the backend writes it: runs of other characters become '_'. */
+export const cleanSuffix = (s: string) => s.trim().replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')
+
+// 'stemfinder' is a prefix of the other scores' names, so suffix 'raw' would
+// write stemFinder's score to 'stemfinder_raw', the raw score's own column.
+// Mirrors stemfinder.column_names, which refuses the run.
+const OTHER_SCORE_TAILS = ['raw', 'cc_mean', 'n_TFs']
+
 const needsGraph = (m: ReadonlySet<StemMetric>) => m.has('stemfinder') || m.has('diffometer')
 const needsMarkers = (m: ReadonlySet<StemMetric>) => needsGraph(m) || m.has('cc_mean')
 
@@ -75,6 +83,10 @@ export function stemFinderParams(i: StemFinderInputs): Record<string, unknown> {
 /** Why Run is disabled, or null when it can run. */
 export function stemFinderBlocker(i: StemFinderInputs): string | null {
   if (i.metrics.size === 0) return 'Pick at least one metric.'
+  const suffix = cleanSuffix(i.suffix)
+  if (i.metrics.has('stemfinder') && OTHER_SCORE_TAILS.some((t) => suffix === t || suffix.startsWith(`${t}_`))) {
+    return `Suffix would write stemFinder to stemfinder_${suffix}, another score's column name. Pick one not starting with raw, cc_mean or n_TFs.`
+  }
   if (needsMarkers(i.metrics) && i.markerSource === 'gene_set' && !(i.geneSetGenes && i.geneSetGenes.length)) {
     return 'Pick a gene set with genes in it, or use the cell-cycle markers.'
   }

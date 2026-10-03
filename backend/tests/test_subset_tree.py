@@ -249,6 +249,99 @@ def test_deleting_with_results_drops_every_recorded_umap():
     assert {'X_umap_chondro', 'X_umap_chondro_alt'} <= set(out['dropped'])
 
 
+# --- a subset owns a key only if it covers only the subset's cells -------------
+# A subset's graph is <name>_connectivities with scanpy's entry at uns[<name>],
+# and a dataset-level run over squidpy's graph writes X_umap_spatial /
+# leiden_spatial. So a subset named 'spatial' shares every one of those names
+# with the dataset — and Visium keeps its images in uns['spatial'].
+
+def _spatial_dataset(a):
+    """The dataset's own spatial graph, with a UMAP and Leiden run over it."""
+    rng = np.random.default_rng(1)
+    a.adata.obsm['spatial'] = rng.random((a.n_cells, 2)) * 100
+    a.adata.uns['spatial'] = {'lib1': {'scalefactors': {'spot_diameter_fullres': 1.0}}}
+    a.run_spatial_neighbors(n_neighs=6, coord_type='generic')
+    a.run_umap(graph_key='spatial_connectivities')
+    a.run_leiden(resolution=1.0, graph_key='spatial_connectivities')
+    assert {'X_umap_spatial'} <= set(a.adata.obsm) and 'leiden_spatial' in a.adata.obs
+
+
+def _legacy_subset(a, name, idx):
+    """Register a subset as a file saved before names were checked can hold it."""
+    mask = np.zeros(a.n_cells, dtype=bool)
+    mask[idx] = True
+    a.adata.obs['subset_' + name] = mask
+    reg = a._subset_registry()
+    reg[name] = {'obs_key': 'subset_' + name, 'created_at': '', 'description': ''}
+    a.adata.uns['xcell_cell_subsets'] = reg
+
+
+def test_a_subset_named_spatial_does_not_claim_the_datasets_spatial_results():
+    a = _adaptor(); _global_pipeline(a); _spatial_dataset(a)
+    _legacy_subset(a, 'spatial', ACTIVE)
+    s = _subset(a, 'spatial')
+    assert s['derived']['graph'] is None
+    assert s['derived']['umap'] == [] and s['derived']['leiden'] == [] and s['embeddings'] == []
+    out = a.delete_cell_subset('spatial', drop_derived=True)
+    assert out['dropped'] == ['subset_spatial']
+    assert {'spatial_connectivities', 'spatial_distances'} <= set(a.adata.obsp)
+    assert a.adata.uns['spatial'] == {'lib1': {'scalefactors': {'spot_diameter_fullres': 1.0}}}
+    assert 'X_umap_spatial' in a.adata.obsm and 'leiden_spatial' in a.adata.obs
+
+
+def test_a_recorded_graph_another_tool_has_since_overwritten_is_not_dropped():
+    a = _adaptor(); _global_pipeline(a)
+    _legacy_subset(a, 'spatial', ACTIVE)
+    a.run_neighbors(n_neighbors=5, cell_subset='spatial')
+    assert a.adata.uns['xcell_cell_subsets']['spatial']['derived']['graph']['key'] == 'spatial_connectivities'
+    # squidpy writes its graph to the same keys, over every cell.
+    a.adata.obsm['spatial'] = np.random.default_rng(1).random((a.n_cells, 2)) * 100
+    a.run_spatial_neighbors(n_neighs=6, coord_type='generic')
+    out = a.delete_cell_subset('spatial', drop_derived=True)
+    assert 'spatial_connectivities' not in out['dropped']
+    assert {'spatial_connectivities', 'spatial_distances'} <= set(a.adata.obsp)
+
+
+def test_a_subsets_own_graph_from_before_the_record_is_still_dropped():
+    a = _adaptor(); _global_pipeline(a)
+    a.create_cell_subset('chondro', ACTIVE); _chain(a, 'chondro')
+    a.adata.uns['xcell_cell_subsets']['chondro'].pop('derived')
+    assert _subset(a, 'chondro')['derived']['graph'] == 'chondro_connectivities'
+    out = a.delete_cell_subset('chondro', drop_derived=True)
+    assert {'chondro_connectivities', 'chondro_distances'} <= set(out['dropped'])
+    assert 'chondro' not in a.adata.uns
+    assert 'connectivities' in a.adata.obsp and 'neighbors' in a.adata.uns
+
+
+@pytest.mark.parametrize('name', ['spatial', 'neighbors', 'umap', 'pca'])
+def test_a_new_subset_may_not_take_a_name_its_results_would_overwrite(name):
+    a = _adaptor(); _global_pipeline(a)
+    with pytest.raises(ValueError, match=name):
+        a.create_cell_subset(name, ACTIVE)
+    assert 'subset_' + name not in a.adata.obs
+
+
+def test_resaving_a_subset_over_itself_is_not_a_clash():
+    a = _adaptor(); _global_pipeline(a)
+    a.create_cell_subset('chondro', ACTIVE); _chain(a, 'chondro')
+    assert a.create_cell_subset('chondro', ACTIVE, overwrite=True)['name'] == 'chondro'
+    a.run_neighbors(n_neighbors=6, cell_subset='chondro')  # its own graph: re-runs freely
+
+
+def test_a_scoped_run_refuses_to_overwrite_what_the_subset_does_not_own():
+    a = _adaptor(); _global_pipeline(a); _spatial_dataset(a)
+    _legacy_subset(a, 'spatial', ACTIVE)
+    graph = a.adata.obsp['spatial_connectivities'].copy()
+    umap = a.adata.obsm['X_umap_spatial'].copy()
+    with pytest.raises(ValueError, match="spatial_connectivities"):
+        a.run_neighbors(n_neighbors=5, cell_subset='spatial')
+    with pytest.raises(ValueError, match="spatial_connectivities"):
+        a.run_umap(cell_subset='spatial')
+    assert (a.adata.obsp['spatial_connectivities'] != graph).nnz == 0
+    np.testing.assert_array_equal(a.adata.obsm['X_umap_spatial'], umap)
+    assert a.adata.uns['spatial'] == {'lib1': {'scalefactors': {'spot_diameter_fullres': 1.0}}}
+
+
 # --- shapes and lines persist; decorations resolve by embedding ---------------
 
 LINE = {'id': 'line_1', 'name': 'ridge', 'embeddingName': 'X_umap_chondro', 'dimX': 0, 'dimY': 1,

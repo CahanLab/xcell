@@ -243,6 +243,18 @@ def test_suffix_names_every_column():
 
 
 @needs_psf
+def test_a_suffix_that_collides_with_the_raw_score_is_refused_before_it_runs():
+    a = _adaptor()
+    _run(a)  # an unsuffixed run whose stemfinder_raw a 'raw' run would overwrite
+    before = a.adata.obs["stemfinder_raw"].copy()
+    with pytest.raises(ValueError, match="stemfinder_raw"):
+        a.prepare_stemfinder(markers=MARKERS, suffix="raw")
+    pd.testing.assert_series_equal(a.adata.obs["stemfinder_raw"], before)
+    # Where nothing can be misread, the same suffix is fine.
+    assert _run(a, metrics=["diffometer"], suffix="raw")["columns"] == ["diffometer_raw"]
+
+
+@needs_psf
 def test_summary_by_ranks_groups_least_differentiated_first():
     r = _run(_adaptor(), summary_by="pop")
     assert [g["group"] for g in r["summary"]] == ["hi", "lo"]

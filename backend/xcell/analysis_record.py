@@ -16,6 +16,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from xcell import provenance
+
 # Above this many cells we keep the count but drop the index list. A selection
 # is worth carrying — it is the difference between documenting a subset and
 # preserving it — but 50k int32 indices is already ~400 KB of JSON per step,
@@ -63,6 +65,9 @@ class Step:
     n_active: int | None = None
     n_total: int | None = None
     selection: list[int] | None = None
+    # The xcell build that ran it (provenance.build_label): a record outlives
+    # the version that started it. None for steps recorded before the stamp.
+    xcell: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +81,7 @@ class Step:
             'n_active': self.n_active,
             'n_total': self.n_total,
             'selection': self.selection,
+            'xcell': self.xcell,
         }
 
     @classmethod
@@ -91,6 +97,7 @@ class Step:
             n_active=d.get('n_active'),
             n_total=d.get('n_total'),
             selection=d.get('selection'),
+            xcell=d.get('xcell'),
         )
 
 
@@ -166,6 +173,7 @@ class AnalysisRecord:
             n_active=n_active,
             n_total=n_total,
             selection=kept,
+            xcell=provenance.build_label(),
         )
         self.steps.append(step)
         return step

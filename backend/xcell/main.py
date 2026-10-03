@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from xcell.adaptor import DataAdaptor
 from xcell.api.routes import router, set_adaptor
-from xcell import __version__
+from xcell import __version__, provenance
 from xcell import config as user_config
 
 app = FastAPI(
@@ -71,6 +71,7 @@ def root():
     return {
         "name": "XCell",
         "version": __version__,
+        "build": provenance.build_label(),
         "docs": "/docs",
         "api": "/api/schema",
     }

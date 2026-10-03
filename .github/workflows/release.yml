@@ -1,0 +1,36 @@
+# Publishes a GitHub release when a version tag is pushed.
+#
+# The tag comes from `pixi run release X.Y.Z` (scripts/release.py), which has
+# already run the backend and frontend suites, bumped every version file and
+# rolled CHANGELOG.md before tagging. This job only checks that the tag names
+# the version in the files and publishes that version's changelog section, so
+# it needs nothing but the standard-library Python on the runner.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag names the version in the files
+        run: python3 scripts/release.py check-tag "$GITHUB_REF_NAME"
+
+      - name: Release notes from CHANGELOG.md
+        run: python3 scripts/release.py notes "$GITHUB_REF_NAME" > release-notes.md
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          --verify-tag
+          --title "xcell ${GITHUB_REF_NAME#v}"
+          --notes-file release-notes.md

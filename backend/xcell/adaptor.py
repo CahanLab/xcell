@@ -3765,6 +3765,24 @@ class DataAdaptor:
 
         return projections
 
+    @staticmethod
+    def _export_provenance() -> dict[str, str]:
+        """``uns['xcell_provenance']``: the build that wrote an export. Strings
+        only, and an unknown commit is left out — h5ad cannot store None."""
+        import datetime
+
+        from xcell import provenance
+
+        info = provenance.build_info()
+        stamp = {
+            'version': info['version'],
+            'build': provenance.build_label(info),
+            'exported_at': datetime.datetime.now().isoformat(timespec='seconds'),
+        }
+        if info['commit']:
+            stamp['commit'] = info['commit']
+        return stamp
+
     def prepare_export_with_lines(self) -> anndata.AnnData:
         """Prepare AnnData for export, including line data.
 
@@ -3779,7 +3797,8 @@ class DataAdaptor:
 
         Also stores the analysis record as a JSON string in
         .uns['xcell_analysis_record'], so an exported dataset carries its own
-        provenance and re-opening it continues the history.
+        provenance and re-opening it continues the history, and the build
+        that wrote it in .uns['xcell_provenance'].
 
         Returns:
             Copy of adata with lines, projections and the analysis record added
@@ -3795,6 +3814,7 @@ class DataAdaptor:
                 frame.index.name = None
 
         adata_export.uns[self.ANALYSIS_RECORD_UNS_KEY] = self._serialize_record()
+        adata_export.uns['xcell_provenance'] = self._export_provenance()
 
         if not self._drawn_lines:
             return adata_export

@@ -4855,6 +4855,7 @@ def _record_payload(adaptor: DataAdaptor) -> dict[str, Any]:
             "figure_ids": step.figure_ids,
             "n_active": step.n_active,
             "n_total": step.n_total,
+            "xcell": step.xcell,
             "in_report": step.index >= record.report_start,
         })
     return {

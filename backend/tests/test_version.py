@@ -40,6 +40,15 @@ def test_frontend_version_matches_backend():
     assert pkg['version'] == xcell.__version__
 
 
+@pytest.mark.skipif(not (REPO / 'frontend' / 'package-lock.json').exists(),
+                    reason='frontend not present in this checkout')
+def test_frontend_lockfile_version_matches_backend():
+    # npm copies package.json's version into the lockfile twice; `npm ci`
+    # does not complain when they drift, so nothing else would notice.
+    lock = json.loads((REPO / 'frontend' / 'package-lock.json').read_text())
+    assert lock['version'] == lock['packages']['']['version'] == xcell.__version__
+
+
 @pytest.mark.skipif(not (REPO / 'pixi.toml').exists(), reason='no pixi manifest')
 def test_pixi_workspace_version_matches_backend():
     assert _toml_version(REPO / 'pixi.toml') == xcell.__version__

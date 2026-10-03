@@ -68,6 +68,15 @@ depends-on = ["install-frontend"]
 cmd = "uvicorn xcell.main:app --reload"
 cwd = "backend"
 
+[tasks.version]
+# The version, and a check that every file stating it agrees.
+cmd = "python scripts/release.py version"
+
+[tasks.release]
+# `pixi run release 0.2.0`: check, test, bump, commit and tag locally.
+# Publishing is the push it prints; see "Releases" in the README.
+cmd = "python scripts/release.py prepare"
+
 [feature.dev.dependencies]
 pytest = ">=7.0"
 httpx = ">=0.25"

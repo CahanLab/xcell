@@ -16,6 +16,7 @@ import binascii
 import datetime
 from typing import Any
 
+from xcell import provenance
 from xcell.analysis_record import AnalysisRecord, Figure, Step
 from xcell.codegen import EXACT, MANUAL, XCELL, FIGURE_HELPERS, TranslatedStep, translate
 
@@ -143,6 +144,25 @@ def report_counts(record: AnalysisRecord) -> dict[str, int]:
     return _counts(_translated(record))
 
 
+def _recorded_by(pairs: list[tuple[Step, TranslatedStep]]) -> str:
+    """The build that recorded the narrated steps ('0.2.0'), or each build
+    with the steps it ran when a record spans several — numbered as the
+    notebook numbers them. Empty when no step says."""
+    runs: list[list[Any]] = []  # [label, first step, last step]
+    for n, (step, _) in enumerate(pairs, start=1):
+        if runs and runs[-1][0] == step.xcell:
+            runs[-1][2] = n
+        else:
+            runs.append([step.xcell, n, n])
+    if not runs or (len(runs) == 1 and runs[0][0] is None):
+        return ''
+    if len(runs) == 1:
+        return runs[0][0]
+    parts = [f"{label or 'an unrecorded version'} "
+             f"({f'step {a}' if a == b else f'steps {a}–{b}'})" for label, a, b in runs]
+    return ', '.join(parts[:-1]) + ' and ' + parts[-1]
+
+
 def _header(record: AnalysisRecord, pairs: list[tuple[Step, TranslatedStep]]) -> str:
     c = _counts(pairs)
     title = record.title.strip() or 'xcell analysis record'
@@ -156,9 +176,11 @@ def _header(record: AnalysisRecord, pairs: list[tuple[Step, TranslatedStep]]) ->
     if src.get('n_cells') is not None and src.get('n_genes') is not None:
         shape = f" ({src['n_cells']:,} cells x {src['n_genes']:,} genes)"
     stamp = datetime.date.today().isoformat()
+    by = _recorded_by(pairs)
+    by = f' {by}' if by else ''
 
     out += [
-        f'> Recorded by [xcell](https://github.com/CahanLab/xcell) on {stamp} '
+        f'> Recorded by [xcell](https://github.com/CahanLab/xcell){by} on {stamp} '
         f'from `{where}`{shape}.',
         '>',
         f'> **{c["total"]} step{"" if c["total"] == 1 else "s"}.** '
@@ -323,7 +345,13 @@ def to_notebook(
                 'name': 'python3',
             },
             'language_info': {'name': 'python'},
-            'xcell': {'generated': datetime.datetime.now().isoformat()},
+            # The build that rendered it, whose API the code cells call; the
+            # header names the builds that recorded the steps.
+            'xcell': {
+                'generated': datetime.datetime.now().isoformat(),
+                'version': provenance.build_info()['version'],
+                'build': provenance.build_label(),
+            },
         },
         'nbformat': 4,
         'nbformat_minor': 5,

@@ -143,6 +143,30 @@ pixi install      # refresh dependencies if they changed
 
 Then restart the two `pixi run` commands.
 
+### Releases
+
+`git pull` follows `main`, which moves ahead of the last release. Tagged
+releases are listed on the [Releases](https://github.com/CahanLab/xcell/releases)
+page, each with its changelog; to run one instead:
+
+```bash
+git fetch --tags
+git checkout v0.2.0   # a release tag; `git checkout main` returns to the latest
+pixi install
+```
+
+The version is shown under the title (hover it for the commit). Every analysis
+step records the build that ran it, and exported h5ad files and notebooks say
+which build wrote them: `0.2.0` for a release, `0.2.0+g1a2b3c4` for a commit
+after it (`.dirty` if it had uncommitted changes).
+
+**Cutting a release** (maintainers): `pixi run release 0.2.0` checks that you are
+on a clean `main`, runs the backend and frontend test suites, sets the version
+in every file that states it, moves the changelog's *Unreleased* section under
+the new version, then commits and tags — all locally. `git push origin main v0.2.0`
+publishes it: the release workflow checks the tag and creates the GitHub release
+from that changelog section. `pixi run version` prints the current version.
+
 > **Loading `.rds` files** is optional and needs R with the Seurat and SeuratDisk
 > packages installed separately — SeuratDisk is not available as a conda package.
 >

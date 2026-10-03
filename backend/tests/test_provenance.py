@@ -153,3 +153,15 @@ def test_the_backend_reports_its_build():
     body = TestClient(app).get('/').json()
     assert body['version'] == xcell.__version__
     assert body['build'] == provenance.build_label()
+
+
+def test_the_record_route_shows_each_steps_build(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from xcell.api import routes
+    from xcell.main import app
+    a = _adaptor()
+    a._log_action('log1p', {}, {'status': 'completed'})
+    monkeypatch.setattr(routes, 'get_adaptor', lambda dataset=None: a)
+    steps = TestClient(app).get('/api/record').json()['steps']
+    assert steps and all(s['xcell'] == provenance.build_label() for s in steps)

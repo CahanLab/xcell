@@ -9,7 +9,7 @@
 
 [workspace]
 name = "xcell"
-version = "0.1.0"
+version = "0.2.0"
 description = "Modern web app for scRNA-seq and spatial transcriptomics exploration"
 channels = ["conda-forge"]
 # Solved for all listed platforms at `pixi install` time. If the solve fails

@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- **GO slims as importable libraries (Genes → Sets → Library → Gene Ontology).** The Gene Ontology source now lists, beside *GO annotations*, three slim libraries: the GO Consortium's *generic* slim (140 terms), the Alliance of Genome Resources *AGR* slim (53 terms) for human and mouse, and MGI's *mouse* slim (45 terms) for mouse. A slim is a `subset:` tag on terms inside go-basic.obo, so each library is built from the ontology and GAF already on disk — one set per slim term with ancestors included and no size cap (the ~2,000-gene terms are the point of a slim) — and only downloads the two files if they are not there; refetching *GO annotations* is still what refreshes them. MGI's own GO-slim page defines its categories with OR/EXCLUDING combinations that, as the page says, standard tools cannot apply, so the mouse slim here is the one MGI distributes through GO. On mouse the generic slim gives 133 sets (7 of its terms have no annotated mouse gene). Catalogues that are code rather than a download (GO, MGI GXD, OmniPath) are no longer served from the cached catalogue file, which would have hidden a library added in a newer build for up to the 7-day TTL. `go_semantic.slim_sets`; 7 backend tests.
+
 ## [0.2.0] - 2026-10-05
 
 ### Added

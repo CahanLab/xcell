@@ -25,6 +25,8 @@ namespace: biological_process
 id: GO:0001501
 name: skeletal system development
 namespace: biological_process
+subset: goslim_generic
+subset: goslim_mouse
 is_a: GO:0008150 ! biological_process
 
 [Term]
@@ -51,11 +53,13 @@ is_obsolete: true
 id: GO:0005576
 name: extracellular region
 namespace: cellular_component
+subset: goslim_generic
 
 [Term]
 id: GO:0006096
 name: glycolytic process
 namespace: biological_process
+subset: goslim_agr
 is_a: GO:0008150 ! biological_process
 
 [Typedef]
@@ -106,6 +110,33 @@ def test_parse_obo_reads_parents_along_is_a_and_part_of_only_and_drops_obsolete(
     assert onto['alt']['GO:9999999'] == 'GO:0002062'
     assert onto['namespace']['GO:0005576'] == 'cellular_component'
     assert onto['name']['GO:0001501'] == 'skeletal system development'
+
+
+def test_parse_obo_keeps_slim_subset_tags():
+    onto = gos.parse_obo(OBO)
+    assert onto['subsets']['GO:0001501'] == {'goslim_generic', 'goslim_mouse'}
+    assert onto['subsets']['GO:0005576'] == {'goslim_generic'}
+    assert 'GO:0002062' not in onto['subsets']
+    assert onto['slims'] == ['goslim_agr', 'goslim_generic', 'goslim_mouse']
+
+
+def test_slim_sets_are_the_closed_slim_terms_without_size_bounds():
+    onto = gos.parse_obo(OBO)
+    gaf = gos.parse_gaf(_gaf_text().splitlines(), 'mouse')
+    sets = gos.slim_sets(onto, gaf, 'goslim_generic')
+    by = {s['name']: s for s in sets}
+    # Four genes with ancestors included — term_sets' min of 5 would drop it; a slim keeps it.
+    assert by['skeletal system development (GO:0001501, BP)']['genes'] == ['Col1a1', 'Col2a1', 'Runx2', 'Sox9']
+    assert by['extracellular region (GO:0005576, CC)']['genes'] == ['Actb', 'Gapdh']
+    assert set(by) == {'skeletal system development (GO:0001501, BP)', 'extracellular region (GO:0005576, CC)'}
+    assert by['extracellular region (GO:0005576, CC)']['url'] == 'https://www.ebi.ac.uk/QuickGO/term/GO:0005576'
+    assert 'goslim_generic' in by['extracellular region (GO:0005576, CC)']['description']
+    assert [s['name'] for s in gos.slim_sets(onto, gaf, 'goslim_mouse')] == ['skeletal system development (GO:0001501, BP)']
+    # A slim term with no annotated gene (and no annotated descendant) is not an empty set.
+    gaf2 = {'annotations': {'Sox9': {'GO:0002062'}}, 'aspects': {}, 'date': ''}
+    assert [s['name'] for s in gos.slim_sets(onto, gaf2, 'goslim_agr')] == []
+    with pytest.raises(ValueError, match='goslim_yeast'):
+        gos.slim_sets(onto, gaf, 'goslim_yeast')
 
 
 def test_parse_gaf_skips_not_and_foreign_databases():

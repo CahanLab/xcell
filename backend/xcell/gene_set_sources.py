@@ -23,7 +23,10 @@ Three sources behind one interface:
   (in situ, blot and RNA-seq assays). Mouse only.
 * **GO** — the ontology and a species' GAF from the GO Consortium, kept as
   raw files for :mod:`go_semantic` (the gene map's GO channel) and also
-  offered as sets, one per term with ancestors included.
+  offered as sets, one per term with ancestors included. The GO slims
+  (generic, AGR, and MGI's mouse slim) are further libraries built from the
+  same two files — a slim is a ``subset:`` tag inside go-basic.obo, so they
+  cost no extra download.
 
 A fetched library is written as one JSON file under :func:`cache_dir`
 (``$XDG_CACHE_HOME/xcell/gene_set_sources/<source>/<species>/<id>.json``,
@@ -203,6 +206,10 @@ class Source:
     description = ''
     url = ''
     kind = 'library'  # or 'query'
+    #: True when ``catalogue`` is code rather than a download. Such a catalogue
+    #: is never served from the cached file, or a library added in a newer
+    #: build would stay hidden until the TTL on the file ran out.
+    static_catalogue = False
 
     def catalogue(self, species: str) -> list[dict[str, Any]]:
         raise NotImplementedError
@@ -487,6 +494,7 @@ class STRINGSource(Source):
 
 class OmniPathSource(Source):
     id = 'omnipath'
+    static_catalogue = True
     name = 'OmniPath'
     description = 'CollecTRI transcription-factor regulons (signed) and curated ligand–receptor pairs'
     url = 'https://omnipathdb.org/'
@@ -642,6 +650,7 @@ class OmniPathSource(Source):
 
 class MGISource(Source):
     id = 'mgi'
+    static_catalogue = True
     name = 'MGI GXD'
     description = 'Mouse Gene Expression Database: genes detected in each anatomical structure, one library per Theiler stage'
     url = 'https://www.informatics.jax.org/expression.shtml'
@@ -738,10 +747,25 @@ class MGISource(Source):
 class GOSource(Source):
     id = 'go'
     name = 'Gene Ontology'
-    description = 'The ontology and a species\' annotations (GAF): GO terms as sets, and the files the gene map\'s GO channel needs'
+    description = ('The ontology and a species\' annotations (GAF): GO terms as sets, the GO slims, '
+                   'and the files the gene map\'s GO channel needs')
     url = 'https://geneontology.org/'
+    static_catalogue = True
 
     LIBRARY_ID = 'annotations'
+    #: library id → (go-basic.obo subset name, species it is offered for, name, description).
+    #: Every slim here must be one the GO Consortium carries as ``subset:`` tags in
+    #: go-basic.obo (the full list is ``ontology/subsets/`` on current.geneontology.org);
+    #: the mouse one is MGI's, distributed through GO.
+    SLIMS: dict[str, tuple[str, tuple[str, ...], str, str]] = {
+        'slim_generic': ('goslim_generic', SPECIES, 'GO slim: generic',
+                         'The GO Consortium\'s generic slim: ~140 broad terms across the three aspects, for any species.'),
+        'slim_agr': ('goslim_agr', SPECIES, 'GO slim: AGR',
+                     'The Alliance of Genome Resources slim (~50 terms), the one behind the gene-page ribbons.'),
+        'slim_mouse': ('goslim_mouse', ('mouse',), 'GO slim: mouse (MGI)',
+                       'Mouse Genome Informatics\' mouse slim (~45 terms), as distributed by the GO Consortium.'),
+    }
+    SLIM_URL = 'https://current.geneontology.org/ontology/subsets/'
 
     def _entry_for(self, species: str) -> dict[str, Any]:
         return _entry(
@@ -752,20 +776,38 @@ class GOSource(Source):
             species, url=self.url,
         )
 
+    def _slim_entry(self, library_id: str, species: str) -> dict[str, Any]:
+        subset, _, name, desc = self.SLIMS[library_id]
+        return _entry(
+            self.id, library_id, name,
+            f'{desc} One set per slim term with ancestors included, no size cap; built from the GO annotation '
+            'files already on disk, downloaded once if they are not.',
+            species, url=f'{self.SLIM_URL}{subset}.obo',
+        )
+
     def catalogue(self, species: str) -> list[dict[str, Any]]:
         check_species(species)
-        return [self._entry_for(species)]
+        return [self._entry_for(species)] + [
+            self._slim_entry(lid, species) for lid, (_, for_species, _, _) in self.SLIMS.items()
+            if species in for_species
+        ]
 
     def validate_library(self, library_id: str, species: str) -> dict[str, Any]:
         check_species(species)
-        if library_id != self.LIBRARY_ID:
-            raise ValueError(f"'{library_id}' is not a GO library; the only one is '{self.LIBRARY_ID}'")
-        return self._entry_for(species)
+        if library_id == self.LIBRARY_ID:
+            return self._entry_for(species)
+        if library_id in self.SLIMS:
+            if species not in self.SLIMS[library_id][1]:
+                raise ValueError(f"'{library_id}' is offered for {', '.join(self.SLIMS[library_id][1])} only"
+                                 f" — choose the mouse species")
+            return self._slim_entry(library_id, species)
+        raise ValueError(f"'{library_id}' is not a GO library; expected '{self.LIBRARY_ID}' or one of "
+                         f"{', '.join(self.SLIMS)}")
 
-    def fetch(self, library_id: str, species: str, report: Report) -> dict[str, Any]:
+    @staticmethod
+    def _download_files(species: str, report: Report) -> None:
         from xcell import go_semantic as gos  # noqa: PLC0415
 
-        entry = self.validate_library(library_id, species)
         gos.go_dir().mkdir(parents=True, exist_ok=True)
         report(0.02, 'Downloading go-basic.obo (~30 MB)…')
         obo = fetch_bytes(gos.OBO_URL, timeout=600)
@@ -777,17 +819,27 @@ class GOSource(Source):
         tmp = gos.gaf_path(species).with_suffix('.gz.tmp')
         tmp.write_bytes(gaf)
         tmp.replace(gos.gaf_path(species))
+
+    def fetch(self, library_id: str, species: str, report: Report) -> dict[str, Any]:
+        from xcell import go_semantic as gos  # noqa: PLC0415
+
+        entry = self.validate_library(library_id, species)
+        slim = self.SLIMS[library_id][0] if library_id in self.SLIMS else None
+        # The annotations library is the refresh path and always downloads; a
+        # slim reuses what is on disk so three slims are not three downloads.
+        if slim is None or not (gos.obo_path().is_file() and gos.gaf_path(species).is_file()):
+            self._download_files(species, report)
         report(0.6, 'Reading the ontology…')
         onto = gos.load_ontology()
         report(0.75, 'Reading the annotations…')
         ann = gos.load_gaf(species)
         report(0.85, 'Building term sets…')
-        sets = gos.term_sets(onto, ann)
+        sets = gos.slim_sets(onto, ann, slim) if slim else gos.term_sets(onto, ann)
         report(1.0, 'Done')
         version = ' · '.join(v for v in (onto.get('version') or '', f"GAF {ann.get('date')}" if ann.get('date') else '') if v)
         return {
             'source': self.id, 'id': library_id, 'name': entry['name'], 'description': entry['description'],
-            'species': species, 'version': version or None, 'url': self.url, 'sets': sets,
+            'species': species, 'version': version or None, 'url': entry['url'], 'sets': sets,
             'files': {'obo': str(gos.obo_path()), 'gaf': str(gos.gaf_path(species))},
         }
 
@@ -884,7 +936,7 @@ def catalogue(source_id: str, species: str, *, refresh: bool = False) -> list[di
     check_species(species)
     path = _catalogue_path(source_id, species)
     entries: list[dict[str, Any]] | None = None
-    if not refresh and path.is_file():
+    if not refresh and not src.static_catalogue and path.is_file():
         age = time.time() - path.stat().st_mtime
         if age < _catalogue_ttl_days() * 86400:
             try:

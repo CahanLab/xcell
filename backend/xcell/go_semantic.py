@@ -65,16 +65,21 @@ def gaf_path(species: str) -> Path:
 # --- parsing -----------------------------------------------------------------
 
 def parse_obo(text: str) -> dict[str, Any]:
-    """``{'parents', 'namespace', 'name', 'alt', 'version'}`` from go-basic.obo.
+    """``{'parents', 'namespace', 'name', 'alt', 'subsets', 'slims', 'version'}`` from go-basic.obo.
 
     Obsolete terms are dropped; ``alt_id`` maps old ids onto the live term so
     a GAF that still uses one resolves. Only ``is_a`` and ``part_of`` become
-    parents (see :data:`PROPAGATING`).
+    parents (see :data:`PROPAGATING`). ``subsets`` is ``{term: {subset}}`` for
+    the terms that carry a ``subset:`` tag — the GO slims live in the ontology
+    file this way, so no separate download defines them — and ``slims`` is the
+    sorted list of ``goslim_*`` names seen.
     """
     parents: dict[str, set[str]] = {}
     namespace: dict[str, str] = {}
     names: dict[str, str] = {}
     alt: dict[str, str] = {}
+    subsets: dict[str, set[str]] = {}
+    slims: set[str] = set()
     version = ''
     cur: dict[str, Any] | None = None
 
@@ -87,6 +92,9 @@ def parse_obo(text: str) -> dict[str, Any]:
         names[tid] = cur.get('name', '')
         for a in cur.get('alt', ()):
             alt[a] = tid
+        if cur.get('subsets'):
+            subsets[tid] = set(cur['subsets'])
+            slims.update(x for x in cur['subsets'] if x.startswith('goslim_'))
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -95,7 +103,7 @@ def parse_obo(text: str) -> dict[str, Any]:
             continue
         if line == '[Term]':
             flush()
-            cur = {'parents': [], 'alt': []}
+            cur = {'parents': [], 'alt': [], 'subsets': []}
             continue
         if line.startswith('['):  # [Typedef] and anything else ends a term
             flush()
@@ -115,6 +123,8 @@ def parse_obo(text: str) -> dict[str, Any]:
             cur['obsolete'] = True
         elif key == 'alt_id':
             cur['alt'].append(value)
+        elif key == 'subset':
+            cur['subsets'].append(value.split('!', 1)[0].strip())
         elif key == 'is_a':
             cur['parents'].append(value.split('!', 1)[0].strip())
         elif key == 'relationship':
@@ -122,7 +132,8 @@ def parse_obo(text: str) -> dict[str, Any]:
             if rel in PROPAGATING:
                 cur['parents'].append(target.split('!', 1)[0].strip())
     flush()
-    return {'parents': parents, 'namespace': namespace, 'name': names, 'alt': alt, 'version': version}
+    return {'parents': parents, 'namespace': namespace, 'name': names, 'alt': alt,
+            'subsets': subsets, 'slims': sorted(slims), 'version': version}
 
 
 def parse_gaf(lines, species: str) -> dict[str, Any]:
@@ -332,15 +343,9 @@ def availability(species: str | None = None) -> dict[str, Any]:
 
 # --- library sets from the closed annotations ---------------------------------
 
-def term_sets(ontology: dict[str, Any], gaf: dict[str, Any], *, min_genes: int = 5,
-              max_genes: int = 500) -> list[dict[str, Any]]:
-    """One gene set per term whose closed membership fits the size bounds.
-
-    Ancestors included, so "collagen fibril organization" carries the genes of
-    its children too. The bounds drop the roots (every gene) and the leaves
-    with one or two genes, which is the usual enrichment convention.
-    """
-    parents, namespace, names, alt = ontology['parents'], ontology['namespace'], ontology['name'], ontology['alt']
+def closed_members(ontology: dict[str, Any], gaf: dict[str, Any]) -> dict[str, set[str]]:
+    """``{term: genes}`` with ancestors included — the annotation closure."""
+    parents, namespace, alt = ontology['parents'], ontology['namespace'], ontology['alt']
     cache: dict[str, frozenset[str]] = {}
     members: dict[str, set[str]] = {}
     for sym, terms in gaf['annotations'].items():
@@ -351,18 +356,52 @@ def term_sets(ontology: dict[str, Any], gaf: dict[str, Any], *, min_genes: int =
                 acc |= ancestors(parents, t, cache)
         for t in acc:
             members.setdefault(t, set()).add(sym)
-    short = {'biological_process': 'BP', 'molecular_function': 'MF', 'cellular_component': 'CC'}
-    out: list[dict[str, Any]] = []
-    for t, genes in members.items():
-        if not (min_genes <= len(genes) <= max_genes):
-            continue
-        asp = short.get(namespace.get(t, ''), '')
-        out.append({
-            'name': f"{names.get(t, t)} ({t}, {asp})" if asp else f"{names.get(t, t)} ({t})",
-            'description': f"{ASPECTS_LONG.get(asp, asp)} · {len(genes)} genes with ancestors included",
-            'genes': sorted(genes),
-            'url': f'https://www.ebi.ac.uk/QuickGO/term/{t}',
-        })
+    return members
+
+
+_SHORT_ASPECT = {'biological_process': 'BP', 'molecular_function': 'MF', 'cellular_component': 'CC'}
+
+
+def _term_set(ontology: dict[str, Any], term: str, genes: set[str], note: str) -> dict[str, Any]:
+    asp = _SHORT_ASPECT.get(ontology['namespace'].get(term, ''), '')
+    name = ontology['name'].get(term, term)
+    return {
+        'name': f"{name} ({term}, {asp})" if asp else f"{name} ({term})",
+        'description': f"{ASPECTS_LONG.get(asp, asp)} · {len(genes)} genes with ancestors included{note}",
+        'genes': sorted(genes),
+        'url': f'https://www.ebi.ac.uk/QuickGO/term/{term}',
+    }
+
+
+def term_sets(ontology: dict[str, Any], gaf: dict[str, Any], *, min_genes: int = 5,
+              max_genes: int = 500) -> list[dict[str, Any]]:
+    """One gene set per term whose closed membership fits the size bounds.
+
+    Ancestors included, so "collagen fibril organization" carries the genes of
+    its children too. The bounds drop the roots (every gene) and the leaves
+    with one or two genes, which is the usual enrichment convention.
+    """
+    out = [_term_set(ontology, t, genes, '')
+           for t, genes in closed_members(ontology, gaf).items() if min_genes <= len(genes) <= max_genes]
+    out.sort(key=lambda s: s['name'].lower())
+    return out
+
+
+def slim_sets(ontology: dict[str, Any], gaf: dict[str, Any], slim: str) -> list[dict[str, Any]]:
+    """One gene set per term of a GO slim (``goslim_generic``, ``goslim_mouse`` …).
+
+    Same closure as :func:`term_sets` but restricted to the slim's terms and
+    with no size bounds: a slim is a few dozen deliberately broad terms, and
+    a term with thousands of genes is the point, not a defect. Only a term no
+    annotated gene reaches is left out. This is what ``map2slim`` computes.
+    """
+    if slim not in ontology.get('slims', ()):
+        known = ', '.join(ontology.get('slims', ())) or 'none'
+        raise ValueError(f"'{slim}' is not a slim in this ontology file; it defines: {known}")
+    members = closed_members(ontology, gaf)
+    subsets = ontology['subsets']
+    out = [_term_set(ontology, t, members[t], f' · {slim}')
+           for t in subsets if slim in subsets[t] and members.get(t)]
     out.sort(key=lambda s: s['name'].lower())
     return out
 

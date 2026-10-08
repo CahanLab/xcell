@@ -180,6 +180,9 @@ namespace: biological_process
 id: GO:0001501
 name: skeletal system development
 namespace: biological_process
+subset: goslim_generic
+subset: goslim_agr
+subset: goslim_mouse
 is_a: GO:0008150 ! biological_process
 
 [Term]
@@ -249,11 +252,58 @@ def test_go_fetch_downloads_both_files_and_builds_term_sets(monkeypatch):
     assert gss.availability()['cached'][0]['source'] == 'go'
 
 
-def test_go_catalogue_is_one_library_per_species():
+def test_go_catalogue_is_annotations_plus_slims():
     src = gss.GOSource()
-    assert [c['id'] for c in src.catalogue('human')] == ['annotations']
+    assert [c['id'] for c in src.catalogue('human')] == ['annotations', 'slim_generic', 'slim_agr']
+    assert [c['id'] for c in src.catalogue('mouse')] == ['annotations', 'slim_generic', 'slim_agr', 'slim_mouse']
+    assert src.validate_library('slim_mouse', 'mouse')['name'] == 'GO slim: mouse (MGI)'
+    with pytest.raises(ValueError, match='mouse'):
+        src.validate_library('slim_mouse', 'human')
     with pytest.raises(ValueError):
         src.validate_library('bp', 'mouse')
+
+
+def _write_go_files():
+    gos.go_dir().mkdir(parents=True, exist_ok=True)
+    gos.obo_path().write_text(OBO)
+    gos.gaf_path('mouse').write_bytes(gzip.compress(GAF.encode()))
+    gos._ontology_cache.clear(); gos._gaf_cache.clear(); gos._space_cache.clear()
+
+
+def test_go_slim_fetch_reuses_the_files_on_disk():
+    # The autouse fixture makes any fetch an AssertionError, so this passing means no download.
+    _write_go_files()
+    lib = gss.fetch_library('go', 'slim_mouse', 'mouse')
+    assert lib['version'] == 'releases/2026-07-26 · GAF 2026-05-21'
+    assert [s['name'] for s in lib['sets']] == ['skeletal system development (GO:0001501, BP)']
+    assert lib['sets'][0]['genes'] == ['Col1a1', 'Col2a1', 'Runx2', 'Sox9']
+    assert lib['files'] == {'obo': str(gos.obo_path()), 'gaf': str(gos.gaf_path('mouse'))}
+    cached = gss.catalogue('go', 'mouse')
+    assert {c['id']: c['cached'] for c in cached} == {
+        'annotations': False, 'slim_generic': False, 'slim_agr': False, 'slim_mouse': True}
+
+
+def test_go_slim_fetch_downloads_the_files_when_absent(monkeypatch):
+    urls = []
+
+    def fake_bytes(url, **kw):
+        urls.append(url)
+        return OBO.encode() if url.endswith('.obo') else gzip.compress(GAF.encode())
+    monkeypatch.setattr(gss, 'fetch_bytes', fake_bytes)
+    lib = gss.fetch_library('go', 'slim_generic', 'mouse')
+    assert urls == [gos.OBO_URL, gos.GAF_URLS['mouse']]
+    assert [s['name'] for s in lib['sets']] == ['skeletal system development (GO:0001501, BP)']
+
+
+def test_static_catalogues_are_not_served_from_a_stale_cache_file():
+    # A source whose catalogue is code, not a download, must show a library added
+    # in a newer build at once — not after the 7-day TTL on the cached file.
+    path = gss._catalogue_path('go', 'mouse')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({'fetched_at': gss._now(), 'entries': [gss.GOSource()._entry_for('mouse')]}))
+    assert [c['id'] for c in gss.catalogue('go', 'mouse')] == ['annotations', 'slim_generic', 'slim_agr', 'slim_mouse']
+    assert gss.GOSource.static_catalogue and gss.MGISource.static_catalogue and gss.OmniPathSource.static_catalogue
+    assert not gss.MSigDBSource.static_catalogue and not gss.EnrichrSource.static_catalogue
 
 
 def test_new_sources_are_registered_and_reported():

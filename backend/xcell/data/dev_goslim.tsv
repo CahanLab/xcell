@@ -1,0 +1,233 @@
+level	parent	go_id	name	mouse_genes	cross
+coarse		GO:0007389	pattern specification process	486	
+fine	GO:0007389	GO:0009952	anterior/posterior pattern specification	233	
+fine	GO:0007389	GO:0009953	dorsal/ventral pattern formation	95	
+fine	GO:0007389	GO:0060972	left/right pattern formation	145	
+fine	GO:0007389	GO:0009954	proximal/distal pattern formation	38	
+fine	GO:0007389	GO:0035282	segmentation	111	
+fine	GO:0007389	GO:0001756	somitogenesis	71	
+fine	GO:0007389	GO:0061053	somite development	87	x
+fine	GO:0007389	GO:0021532	neural tube patterning	41	
+coarse		GO:0045165	cell fate commitment	285	
+fine	GO:0045165	GO:0001708	cell fate specification	96	
+fine	GO:0045165	GO:0001709	cell fate determination	41	
+fine	GO:0045165	GO:0048663	neuron fate commitment	80	
+fine	GO:0045165	GO:0001710	mesodermal cell fate commitment	11	
+fine	GO:0045165	GO:0001711	endodermal cell fate commitment	13	
+fine	GO:0045165	GO:0001712	ectodermal cell fate commitment	3	
+coarse		GO:0019827	stem cell population maintenance	152	
+fine	GO:0019827	GO:0035019	somatic stem cell population maintenance	49	
+fine	GO:0019827	GO:0072089	stem cell proliferation	44	x
+fine	GO:0019827	GO:0048863	stem cell differentiation	205	x
+coarse		GO:0007369	gastrulation	172	
+fine	GO:0007369	GO:0001704	formation of primary germ layer	119	
+fine	GO:0007369	GO:0090009	primitive streak formation	12	
+fine	GO:0007369	GO:0001707	mesoderm formation	72	
+fine	GO:0007369	GO:0001706	endoderm formation	50	
+fine	GO:0007369	GO:0007498	mesoderm development	116	x
+fine	GO:0007369	GO:0007492	endoderm development	86	x
+fine	GO:0007369	GO:0007398	ectoderm development	18	x
+fine	GO:0007369	GO:0030903	notochord development	23	x
+fine	GO:0007369	GO:0060026	convergent extension	16	x
+coarse		GO:0001824	blastocyst development	157	
+fine	GO:0001824	GO:0001825	blastocyst formation	60	
+fine	GO:0001824	GO:0001826	inner cell mass cell differentiation	10	
+fine	GO:0001824	GO:0001829	trophectodermal cell differentiation	24	
+fine	GO:0001824	GO:0141064	zygotic genome activation	1	x
+coarse		GO:0002009	morphogenesis of an epithelium	578	
+fine	GO:0002009	GO:0061138	morphogenesis of a branching epithelium	207	
+fine	GO:0002009	GO:0002011	morphogenesis of an epithelial sheet	60	
+fine	GO:0002009	GO:0060562	epithelial tube morphogenesis	386	
+fine	GO:0002009	GO:0001736	establishment of planar polarity	30	
+fine	GO:0002009	GO:0003383	apical constriction	6	x
+coarse		GO:0060485	mesenchyme development	257	
+fine	GO:0060485	GO:0048762	mesenchymal cell differentiation	188	
+fine	GO:0060485	GO:0001837	epithelial to mesenchymal transition	89	
+fine	GO:0060485	GO:0060231	mesenchymal to epithelial transition	16	x
+fine	GO:0060485	GO:0072132	mesenchyme morphogenesis	57	
+coarse		GO:0016477	cell migration	1032	
+fine	GO:0016477	GO:0001764	neuron migration	173	
+fine	GO:0016477	GO:0001755	neural crest cell migration	61	
+fine	GO:0016477	GO:0090497	mesenchymal cell migration	63	
+fine	GO:0016477	GO:0043542	endothelial cell migration	84	
+fine	GO:0016477	GO:0010631	epithelial cell migration	26	
+fine	GO:0016477	GO:0008354	primordial germ cell migration	9	
+fine	GO:0016477	GO:0001667	ameboidal-type cell migration	147	
+fine	GO:0016477	GO:0060326	cell chemotaxis	222	
+coarse		GO:0008283	cell population proliferation	678	
+fine	GO:0008283	GO:0050673	epithelial cell proliferation	128	
+fine	GO:0008283	GO:0061351	neural precursor cell proliferation	107	
+fine	GO:0008283	GO:0010463	mesenchymal cell proliferation	17	
+fine	GO:0008283	GO:0048144	fibroblast proliferation	13	
+fine	GO:0008283	GO:0001935	endothelial cell proliferation	32	
+fine	GO:0008283	GO:0060038	cardiac muscle cell proliferation	19	
+coarse		GO:0048589	developmental growth	553	
+fine	GO:0048589	GO:0035265	organ growth	117	
+fine	GO:0048589	GO:0060560	developmental growth involved in morphogenesis	162	
+fine	GO:0048589	GO:0035264	multicellular organism growth	171	
+fine	GO:0048589	GO:0048675	axon extension	42	
+fine	GO:0048589	GO:0042246	tissue regeneration	81	
+coarse		GO:1902742	apoptotic process involved in development	30	
+fine	GO:1902742	GO:0060561	apoptotic process involved in morphogenesis	18	
+fine	GO:1902742	GO:0051402	neuron apoptotic process	91	x
+coarse		union	developmental signaling pathways	747	
+fine	union	GO:0060070	canonical Wnt signaling pathway	89	
+fine	union	GO:0035567	non-canonical Wnt signaling pathway	39	
+fine	union	GO:0030509	BMP signaling pathway	91	
+fine	union	GO:0007179	transforming growth factor beta receptor signaling pathway	102	
+fine	union	GO:0032924	activin receptor signaling pathway	30	
+fine	union	GO:0038092	nodal signaling pathway	12	
+fine	union	GO:0007219	Notch signaling pathway	115	
+fine	union	GO:0008543	fibroblast growth factor receptor signaling pathway	52	
+fine	union	GO:0007224	smoothened signaling pathway	97	
+fine	union	GO:0048384	retinoic acid receptor signaling pathway	31	
+fine	union	GO:0035329	hippo signaling	29	
+fine	union	GO:0048013	ephrin receptor signaling pathway	43	
+fine	union	GO:0007173	epidermal growth factor receptor signaling pathway	65	
+fine	union	GO:0048008	platelet-derived growth factor receptor signaling pathway	43	
+fine	union	GO:0048010	vascular endothelial growth factor receptor signaling pathway	29	
+fine	union	GO:0048009	insulin-like growth factor receptor signaling pathway	31	
+coarse		GO:0030198	extracellular matrix organization	301	
+fine	GO:0030198	GO:0030199	collagen fibril organization	71	
+fine	GO:0030198	GO:0071711	basement membrane organization	41	
+coarse		GO:0007155	cell adhesion	813	
+fine	GO:0007155	GO:0098609	cell-cell adhesion	569	
+fine	GO:0007155	GO:0007160	cell-matrix adhesion	143	
+fine	GO:0007155	GO:0045216	cell-cell junction organization	179	x
+coarse		GO:0006325	chromatin organization	865	
+fine	GO:0006325	GO:0040029	epigenetic regulation of gene expression	333	
+fine	GO:0006325	GO:0006338	chromatin remodeling	694	
+fine	GO:0006325	GO:0034728	nucleosome organization	85	
+fine	GO:0006325	GO:0043045	epigenetic programming of gene expression	45	
+fine	GO:0006325	GO:0071514	genomic imprinting	29	
+coarse		GO:0007399	nervous system development	2296	
+fine	GO:0007399	GO:0021915	neural tube development	197	
+fine	GO:0007399	GO:0021953	central nervous system neuron differentiation	262	
+fine	GO:0007399	GO:0097485	neuron projection guidance	265	
+fine	GO:0007399	GO:0042063	gliogenesis	298	
+fine	GO:0007399	GO:0007416	synapse assembly	131	
+fine	GO:0007399	GO:0016358	dendrite development	158	
+fine	GO:0007399	GO:0008366	axon ensheathment	159	
+fine	GO:0007399	GO:0021537	telencephalon development	333	
+fine	GO:0007399	GO:0030902	hindbrain development	198	
+fine	GO:0007399	GO:0021510	spinal cord development	121	
+fine	GO:0007399	GO:0030900	forebrain development	489	
+coarse		GO:0014032	neural crest cell development	87	
+fine	GO:0014032	GO:0014033	neural crest cell differentiation	98	x
+fine	GO:0014032	GO:0001755	neural crest cell migration	61	
+fine	GO:0014032	GO:0048484	enteric nervous system development	16	x
+fine	GO:0014032	GO:0048485	sympathetic nervous system development	24	x
+fine	GO:0014032	GO:0030318	melanocyte differentiation	22	x
+coarse		GO:0072359	circulatory system development	1035	
+fine	GO:0072359	GO:0003007	heart morphogenesis	303	
+fine	GO:0072359	GO:0003205	cardiac chamber development	204	
+fine	GO:0072359	GO:0003151	outflow tract morphogenesis	88	
+fine	GO:0072359	GO:0003170	heart valve development	70	
+fine	GO:0072359	GO:0035050	embryonic heart tube development	97	
+fine	GO:0072359	GO:0048738	cardiac muscle tissue development	225	
+fine	GO:0072359	GO:0001525	angiogenesis	298	
+fine	GO:0072359	GO:0001570	vasculogenesis	92	
+fine	GO:0072359	GO:0060840	artery development	124	
+fine	GO:0072359	GO:0060976	coronary vasculature development	81	
+fine	GO:0072359	GO:0001945	lymph vessel development	29	
+coarse		GO:0030097	hemopoiesis	857	
+fine	GO:0030097	GO:0002244	hematopoietic progenitor cell differentiation	149	
+fine	GO:0030097	GO:0060216	definitive hemopoiesis	22	
+fine	GO:0030097	GO:0060215	primitive hemopoiesis	9	
+fine	GO:0030097	GO:0030218	erythrocyte differentiation	136	
+fine	GO:0030097	GO:0030219	megakaryocyte differentiation	35	
+fine	GO:0030097	GO:0002573	myeloid leukocyte differentiation	180	
+fine	GO:0030097	GO:0030098	lymphocyte differentiation	332	
+fine	GO:0030097	GO:0030225	macrophage differentiation	54	
+coarse		GO:0001501	skeletal system development	560	
+fine	GO:0001501	GO:0051216	cartilage development	192	
+fine	GO:0001501	GO:0002062	chondrocyte differentiation	89	
+fine	GO:0001501	GO:0060348	bone development	243	
+fine	GO:0001501	GO:0001649	osteoblast differentiation	122	x
+fine	GO:0001501	GO:0001958	endochondral ossification	40	
+fine	GO:0001501	GO:0001957	intramembranous ossification	6	x
+fine	GO:0001501	GO:0072498	embryonic skeletal joint development	15	
+fine	GO:0001501	GO:0036022	limb joint morphogenesis	8	x
+fine	GO:0001501	GO:0030282	bone mineralization	67	x
+coarse		GO:0061061	muscle structure development	567	
+fine	GO:0061061	GO:0007519	skeletal muscle tissue development	168	
+fine	GO:0061061	GO:0045445	myoblast differentiation	43	
+fine	GO:0061061	GO:0014902	myotube differentiation	88	
+fine	GO:0061061	GO:0035914	skeletal muscle cell differentiation	70	
+fine	GO:0061061	GO:0055007	cardiac muscle cell differentiation	127	
+fine	GO:0061061	GO:0051145	smooth muscle cell differentiation	56	
+fine	GO:0061061	GO:0030239	myofibril assembly	70	
+coarse		GO:0072001	renal system development	383	
+fine	GO:0072001	GO:0060993	kidney morphogenesis	103	
+fine	GO:0072001	GO:0072073	kidney epithelium development	163	
+fine	GO:0072001	GO:0001656	metanephros development	91	
+fine	GO:0072001	GO:0001823	mesonephros development	109	
+fine	GO:0072001	GO:0072006	nephron development	162	
+fine	GO:0072001	GO:0001657	ureteric bud development	101	
+fine	GO:0072001	GO:0032835	glomerulus development	67	
+coarse		GO:0060541	respiratory system development	287	
+fine	GO:0060541	GO:0030324	lung development	250	
+fine	GO:0060541	GO:0060425	lung morphogenesis	65	
+fine	GO:0060541	GO:0048286	lung alveolus development	70	
+fine	GO:0060541	GO:0060428	lung epithelium development	47	
+fine	GO:0060541	GO:0060438	trachea development	24	
+coarse		GO:0055123	digestive system development	166	
+fine	GO:0055123	GO:0048565	digestive tract development	151	
+fine	GO:0055123	GO:0048546	digestive tract morphogenesis	56	
+fine	GO:0055123	GO:0001889	liver development	167	x
+fine	GO:0055123	GO:0031016	pancreas development	92	x
+fine	GO:0055123	GO:0062094	stomach development	4	
+fine	GO:0055123	GO:0060575	intestinal epithelial cell differentiation	27	
+fine	GO:0055123	GO:0030878	thyroid gland development	34	x
+fine	GO:0055123	GO:0048538	thymus development	61	x
+coarse		GO:0048732	gland development	530	
+fine	GO:0048732	GO:0030879	mammary gland development	171	
+fine	GO:0048732	GO:0030850	prostate gland development	51	
+fine	GO:0048732	GO:0021983	pituitary gland development	41	
+fine	GO:0048732	GO:0007431	salivary gland development	40	
+fine	GO:0048732	GO:0030325	adrenal gland development	31	
+coarse		GO:0008544	epidermis development	369	
+fine	GO:0008544	GO:0009913	epidermal cell differentiation	213	
+fine	GO:0008544	GO:0030216	keratinocyte differentiation	128	
+fine	GO:0008544	GO:0001942	hair follicle development	99	
+fine	GO:0008544	GO:0061436	establishment of skin barrier	48	
+fine	GO:0008544	GO:0031424	keratinization	43	
+coarse		GO:0007423	sensory organ development	732	
+fine	GO:0007423	GO:0048593	camera-type eye morphogenesis	165	
+fine	GO:0007423	GO:0060041	retina development in camera-type eye	212	
+fine	GO:0007423	GO:0002088	lens development in camera-type eye	88	
+fine	GO:0007423	GO:0001754	eye photoreceptor cell differentiation	68	
+fine	GO:0007423	GO:0042472	inner ear morphogenesis	131	
+fine	GO:0007423	GO:0060113	inner ear receptor cell differentiation	91	
+fine	GO:0007423	GO:0090102	cochlea development	63	
+coarse		union	craniofacial development	316	
+fine	union	GO:0060324	face development	63	
+fine	union	GO:0060021	roof of mouth development	104	
+fine	union	GO:0060037	pharyngeal system development	34	
+fine	union	GO:0042476	odontogenesis	134	
+fine	union	GO:0048701	embryonic cranial skeleton morphogenesis	53	
+fine	union	GO:0042474	middle ear morphogenesis	27	
+coarse		GO:0061458	reproductive system development	370	
+fine	GO:0061458	GO:0008406	gonad development	282	
+fine	GO:0061458	GO:0008584	male gonad development	177	
+fine	GO:0061458	GO:0008585	female gonad development	128	
+fine	GO:0061458	GO:0007530	sex determination	30	x
+fine	GO:0061458	GO:0007281	germ cell development	524	x
+fine	GO:0061458	GO:0048806	genitalia development	52	
+coarse		GO:0060173	limb development	225	
+fine	GO:0060173	GO:0060174	limb bud formation	9	
+fine	GO:0060173	GO:0030326	embryonic limb morphogenesis	148	
+fine	GO:0060173	GO:0042733	embryonic digit morphogenesis	75	
+fine	GO:0060173	GO:0035136	forelimb morphogenesis	47	
+fine	GO:0060173	GO:0035137	hindlimb morphogenesis	47	
+coarse		GO:0001890	placenta development	197	
+fine	GO:0001890	GO:0001892	embryonic placenta development	117	
+fine	GO:0001890	GO:0001893	maternal placenta development	44	
+fine	GO:0001890	GO:0060707	trophoblast giant cell differentiation	18	
+fine	GO:0001890	GO:0060711	labyrinthine layer development	62	
+fine	GO:0001890	GO:0060674	placenta blood vessel development	40	
+coarse		GO:0061448	connective tissue development	276	
+fine	GO:0061448	GO:0060612	adipose tissue development	69	
+fine	GO:0061448	GO:0045444	fat cell differentiation	157	x
+fine	GO:0061448	GO:0050873	brown fat cell differentiation	45	x
+fine	GO:0061448	GO:0035989	tendon development	6	

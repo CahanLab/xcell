@@ -47,7 +47,6 @@ fine	GO:0060485	GO:0060231	mesenchymal to epithelial transition	16	x
 fine	GO:0060485	GO:0072132	mesenchyme morphogenesis	57	
 coarse		GO:0016477	cell migration	1032	
 fine	GO:0016477	GO:0001764	neuron migration	173	
-fine	GO:0016477	GO:0001755	neural crest cell migration	61	
 fine	GO:0016477	GO:0090497	mesenchymal cell migration	63	
 fine	GO:0016477	GO:0043542	endothelial cell migration	84	
 fine	GO:0016477	GO:0010631	epithelial cell migration	26	
@@ -70,23 +69,23 @@ fine	GO:0048589	GO:0042246	tissue regeneration	81
 coarse		GO:1902742	apoptotic process involved in development	30	
 fine	GO:1902742	GO:0060561	apoptotic process involved in morphogenesis	18	
 fine	GO:1902742	GO:0051402	neuron apoptotic process	91	x
-coarse		union	developmental signaling pathways	747	
-fine	union	GO:0060070	canonical Wnt signaling pathway	89	
-fine	union	GO:0035567	non-canonical Wnt signaling pathway	39	
-fine	union	GO:0030509	BMP signaling pathway	91	
-fine	union	GO:0007179	transforming growth factor beta receptor signaling pathway	102	
-fine	union	GO:0032924	activin receptor signaling pathway	30	
-fine	union	GO:0038092	nodal signaling pathway	12	
-fine	union	GO:0007219	Notch signaling pathway	115	
-fine	union	GO:0008543	fibroblast growth factor receptor signaling pathway	52	
-fine	union	GO:0007224	smoothened signaling pathway	97	
-fine	union	GO:0048384	retinoic acid receptor signaling pathway	31	
-fine	union	GO:0035329	hippo signaling	29	
-fine	union	GO:0048013	ephrin receptor signaling pathway	43	
-fine	union	GO:0007173	epidermal growth factor receptor signaling pathway	65	
-fine	union	GO:0048008	platelet-derived growth factor receptor signaling pathway	43	
-fine	union	GO:0048010	vascular endothelial growth factor receptor signaling pathway	29	
-fine	union	GO:0048009	insulin-like growth factor receptor signaling pathway	31	
+coarse		union:signaling	developmental signaling pathways	747	
+fine	union:signaling	GO:0060070	canonical Wnt signaling pathway	89	
+fine	union:signaling	GO:0035567	non-canonical Wnt signaling pathway	39	
+fine	union:signaling	GO:0030509	BMP signaling pathway	91	
+fine	union:signaling	GO:0007179	transforming growth factor beta receptor signaling pathway	102	
+fine	union:signaling	GO:0032924	activin receptor signaling pathway	30	
+fine	union:signaling	GO:0038092	nodal signaling pathway	12	
+fine	union:signaling	GO:0007219	Notch signaling pathway	115	
+fine	union:signaling	GO:0008543	fibroblast growth factor receptor signaling pathway	52	
+fine	union:signaling	GO:0007224	smoothened signaling pathway	97	
+fine	union:signaling	GO:0048384	retinoic acid receptor signaling pathway	31	
+fine	union:signaling	GO:0035329	hippo signaling	29	
+fine	union:signaling	GO:0048013	ephrin receptor signaling pathway	43	
+fine	union:signaling	GO:0007173	epidermal growth factor receptor signaling pathway	65	
+fine	union:signaling	GO:0048008	platelet-derived growth factor receptor signaling pathway	43	
+fine	union:signaling	GO:0048010	vascular endothelial growth factor receptor signaling pathway	29	
+fine	union:signaling	GO:0048009	insulin-like growth factor receptor signaling pathway	31	
 coarse		GO:0030198	extracellular matrix organization	301	
 fine	GO:0030198	GO:0030199	collagen fibril organization	71	
 fine	GO:0030198	GO:0071711	basement membrane organization	41	
@@ -201,13 +200,13 @@ fine	GO:0007423	GO:0001754	eye photoreceptor cell differentiation	68
 fine	GO:0007423	GO:0042472	inner ear morphogenesis	131	
 fine	GO:0007423	GO:0060113	inner ear receptor cell differentiation	91	
 fine	GO:0007423	GO:0090102	cochlea development	63	
-coarse		union	craniofacial development	316	
-fine	union	GO:0060324	face development	63	
-fine	union	GO:0060021	roof of mouth development	104	
-fine	union	GO:0060037	pharyngeal system development	34	
-fine	union	GO:0042476	odontogenesis	134	
-fine	union	GO:0048701	embryonic cranial skeleton morphogenesis	53	
-fine	union	GO:0042474	middle ear morphogenesis	27	
+coarse		union:craniofacial	craniofacial development	316	
+fine	union:craniofacial	GO:0060324	face development	63	
+fine	union:craniofacial	GO:0060021	roof of mouth development	104	
+fine	union:craniofacial	GO:0060037	pharyngeal system development	34	
+fine	union:craniofacial	GO:0042476	odontogenesis	134	
+fine	union:craniofacial	GO:0048701	embryonic cranial skeleton morphogenesis	53	
+fine	union:craniofacial	GO:0042474	middle ear morphogenesis	27	
 coarse		GO:0061458	reproductive system development	370	
 fine	GO:0061458	GO:0008406	gonad development	282	
 fine	GO:0061458	GO:0008584	male gonad development	177	

@@ -17,8 +17,8 @@ One table, `backend/xcell/data/dev_goslim.tsv`, is the source of truth:
 | column | meaning |
 |---|---|
 | `level` | `coarse` or `fine` |
-| `parent` | for a fine row, the GO id of its coarse term (or `union`) |
-| `go_id` | the term, or `union` for a coarse row that has no single GO term |
+| `parent` | for a fine row, the id of its coarse row (a GO id or `union:<id>`) |
+| `go_id` | the term, or `union:<id>` for a coarse row that has no single GO term (`union:signaling`, `union:craniofacial`) |
 | `name` | the GO name, checked against go-basic.obo at build time so a wrong id fails loudly |
 | `mouse_genes` | informational, rewritten by the build: closed membership on the MGI GAF |
 | `cross` | `x` when a fine term is not a GO descendant of its coarse term; must be set deliberately |
@@ -37,7 +37,7 @@ Two axes, both as coarse rows **[decision]**:
   reproductive, limb, placenta, connective tissue.
 
 A coarse set is the GO term's closed membership (ancestors included, as in
-`go_semantic.closed_members`), or for a `union` row the union of its fine sets.
+`go_semantic.closed_members`), or for a `union:` row the union of its fine sets.
 A fine set is its term's closed membership. **No size bounds** at either level:
 a slim is curated, and the build *reports* sizes rather than enforcing them.
 
@@ -47,6 +47,14 @@ liver development under digestive; the pathways under the signaling union).
 Then the folder shows the term but the coarse set does not contain its genes.
 The build refuses a non-descendant without the `x` flag, so every such
 placement is a recorded choice. 29 of the 200 draft fine rows are cross-links.
+
+**Regulators are not in a pathway set unless annotated to it.** The closure
+follows `is_a` and `part_of`, as GO's own tools do; *regulation of smoothened
+signaling pathway* does not propagate into *smoothened signaling pathway*. So
+the Hedgehog set has Shh, Ihh, Smo, Gli1–3 and Sufu but not Ptch1 or Hhip, and
+the canonical Wnt set has Axin2 and Apc but not Dkk1. **[decision]** Kept GO's
+convention, because a user comparing the slim against the GO library expects
+the same sets; the signaling bundles are where inhibitors live by role.
 
 **Signaling pathways are in** (Patrick, 2026-10-08), as GO's pathway terms:
 canonical and non-canonical Wnt, BMP, TGF-beta, activin, nodal, Notch, FGF,

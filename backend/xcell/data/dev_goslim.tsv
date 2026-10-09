@@ -102,6 +102,7 @@ fine	GO:0006325	GO:0043045	epigenetic programming of gene expression	45
 fine	GO:0006325	GO:0071514	genomic imprinting	29	
 coarse		GO:0007399	nervous system development	2296	
 fine	GO:0007399	GO:0021915	neural tube development	197	
+fine	GO:0007399	GO:0001841	neural tube formation	131	
 fine	GO:0007399	GO:0021953	central nervous system neuron differentiation	262	
 fine	GO:0007399	GO:0097485	neuron projection guidance	265	
 fine	GO:0007399	GO:0042063	gliogenesis	298	

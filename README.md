@@ -379,6 +379,9 @@ it.
 - Create gene sets manually in Gene Manager
 - Import gene lists from files
 - Browse and import from MSigDB, Enrichr and STRING with the **Library** button (below)
+- Import the curated bundles shipped with xcell (**Import** in the Genes panel): the developmental
+  signaling pathways by role, and the developmental GO slim at coarse and fine depth for mouse and
+  human. How the slim was derived, term by term, is in `docs/dev-goslim.md`.
 
 ### Importing from MSigDB, Enrichr and STRING
 
@@ -392,6 +395,9 @@ source:
 - **Enrichr** — 228 libraries (GO, Reactome, KEGG, WikiPathways, PanglaoDB,
   CellMarker, Tabula Muris, …). Most are human-symbol libraries; they work on
   mouse data through case-insensitive matching.
+- **Gene Ontology** — the ontology and a species' annotations as one library (every term with
+  5–500 genes, ancestors included), plus the GO slims: generic, AGR, and MGI's mouse slim. Fetching
+  the annotations also switches on the GO channel of the gene map.
 - **STRING** — not a library but a query: type seed genes or pick one of your
   gene sets, and each seed becomes a set of its interaction partners
   (combined score above the threshold you set).

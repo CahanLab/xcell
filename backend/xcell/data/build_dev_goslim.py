@@ -3,7 +3,8 @@
 Run this to regenerate ``gene_sets/dev_goslim_{coarse,fine}_{mouse,human}.json``
 beside it. ``dev_goslim.tsv`` is the source of truth: a curated GO slim for
 developmental biology at two depths, with the fine terms nested under the
-coarse ones. The design note is ``docs/superpowers/specs/2026-10-08-dev-goslim-design.md``.
+coarse ones. ``docs/dev-goslim.md`` records the derivation for users of the lists;
+the design note is ``docs/superpowers/specs/2026-10-08-dev-goslim-design.md``.
 
 Table columns::
 
@@ -187,7 +188,7 @@ def build(rows: list[dict[str, Any]], onto: dict[str, Any], gaf: dict[str, Any],
                 add(f, members.get(f['go_id'], set()), folder=c['name'], under=c)
     return {
         'name': f'Developmental GO slim, {level} ({species})',
-        'description': f'{DESCRIPTION[level]} Built from {release}.',
+        'description': f'{DESCRIPTION[level]} Built from {release}. Derivation: docs/dev-goslim.md in the xcell repository.',
         'sets': sets,
         'empty': empty,
     }

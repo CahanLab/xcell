@@ -1,6 +1,6 @@
 {
  "name": "Developmental GO slim, fine (mouse)",
- "description": "A GO slim for developmental biology, fine depth: one folder per coarse term, holding its narrower terms (chondrocyte differentiation under skeletal, left/right pattern formation under pattern specification, the named pathways under signaling), each the GO term's annotated genes with descendants included. Sized for scoring cells. A folder may hold a term from elsewhere in GO when biology puts it there (osteoblast differentiation under skeletal). Built from GO releases/2026-07-26, mouse GAF 2026-01-05.",
+ "description": "A GO slim for developmental biology, fine depth: one folder per coarse term, holding its narrower terms (chondrocyte differentiation under skeletal, left/right pattern formation under pattern specification, the named pathways under signaling), each the GO term's annotated genes with descendants included. Sized for scoring cells. A folder may hold a term from elsewhere in GO when biology puts it there (osteoblast differentiation under skeletal). Built from GO releases/2026-07-26, mouse GAF 2026-01-05. Derivation: docs/dev-goslim.md in the xcell repository.",
  "sets": [
   {
    "name": "anterior/posterior pattern specification (GO:0009952)",

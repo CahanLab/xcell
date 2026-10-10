@@ -1,6 +1,6 @@
 {
  "name": "Developmental GO slim, coarse (mouse)",
- "description": "A GO slim for developmental biology, coarse depth: one set per major developmental process or organ system (pattern specification, cell fate commitment, gastrulation, the signaling pathways, nervous, circulatory, skeletal, limb, …), each the GO term's annotated genes with descendants included. Sized for enrichment of markers and DE lists. The fine bundle nests 3–11 narrower terms under each of these. Built from GO releases/2026-07-26, mouse GAF 2026-01-05.",
+ "description": "A GO slim for developmental biology, coarse depth: one set per major developmental process or organ system (pattern specification, cell fate commitment, gastrulation, the signaling pathways, nervous, circulatory, skeletal, limb, …), each the GO term's annotated genes with descendants included. Sized for enrichment of markers and DE lists. The fine bundle nests 3–11 narrower terms under each of these. Built from GO releases/2026-07-26, mouse GAF 2026-01-05. Derivation: docs/dev-goslim.md in the xcell repository.",
  "sets": [
   {
    "name": "pattern specification process (GO:0007389)",

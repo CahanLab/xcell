@@ -300,6 +300,23 @@ warn outright if you point them at a z-scored layer.
   mask scopes it. PyStemFinder is in the default environment; an environment
   installed before it was added shows install instructions instead.
 
+  **CNV inference** infers copy-number gains and losses from expression,
+  inferCNV-style: each gene is compared with reference (normal) cells you
+  tick from a categorical column, clipped, averaged in windows of 100 genes
+  along each chromosome, and centred per cell. Cells with the same gains and
+  losses are then clustered into clones (Leiden on the CNV profile, or Ward
+  cut into a fixed number), named by rising CNV burden so `clone_1` is the
+  quietest; with a reference, the result table shows how much of it each
+  clone holds. Gene positions come from the shipped GENCODE tables (human
+  GRCh38, mouse GRCm39; matched by Ensembl ID or symbol) or from two `.var`
+  columns. It writes `X_<key>` (cells × windows), a per-chromosome score
+  matrix `X_<key>_chrom` for colouring the embedding by one chromosome,
+  `<key>_score` and `<key>_clone`, and *Heatmap figure…* saves a CNV
+  heatmap (Figures tab) of cells grouped by clone. Without a reference the
+  all-cell mean stands in, which hides events every cell shares. X and Y are
+  left out unless asked for, since a reference of the other sex reads as a
+  whole-chromosome event.
+
   **Diffusion map** takes the same **kNN graph** choice and writes the
   diffusion components (`X_diffmap`, `X_diffmap_spatial`, `X_diffmap_<subset>`).
   The plot opens on DC1 × DC2 — DC0 is the stationary state, as in scanpy.

@@ -124,6 +124,15 @@ def test_too_few_placed_genes_is_refused():
         a.prepare_cnv(**DEFAULTS)
 
 
+def test_key_may_not_take_over_an_existing_obsm():
+    a = _adaptor()
+    a.adata.obsm['X_umap'] = np.zeros((N_CELLS, 2), dtype=np.float32)
+    with pytest.raises(ValueError, match='X_umap'):
+        a.prepare_cnv(**{**DEFAULTS, 'key': 'umap'})
+    _run(a, key='tumor')
+    _run(a, key='tumor')     # a CNV run's own key can be replaced
+
+
 def test_shipped_table_path_needs_the_species_table():
     a = _adaptor()
     with pytest.raises(ValueError, match='zebrafish'):

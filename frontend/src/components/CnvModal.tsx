@@ -450,8 +450,9 @@ export default function CnvModal() {
               {status.keys.length > 0 && !result && (
                 <div style={{ ...dark.notice, marginTop: 10, border: '1px solid #0f3460', color: '#aaa' }}>
                   Stored runs: {status.keys.map((k) => (
-                    <button key={k} style={{ ...dark.chip, marginLeft: 6 }} onClick={() => makeFigure(k, `${k}_clone`)}
-                            title={`Save a CNV heatmap figure of ${k}, grouped by ${k}_clone`}>
+                    <button key={k} style={{ ...dark.chip, marginLeft: 6 }}
+                            onClick={() => makeFigure(k, schema?.obs_dtypes?.[`${k}_clone`] ? `${k}_clone` : null)}
+                            title={`Save a CNV heatmap figure of ${k}${schema?.obs_dtypes?.[`${k}_clone`] ? `, grouped by ${k}_clone` : ''}`}>
                       {k}: heatmap figure…
                     </button>
                   ))}

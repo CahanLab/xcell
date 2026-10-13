@@ -14508,6 +14508,8 @@ class DataAdaptor:
         from xcell import layer_scale  # noqa: PLC0415
 
         key = self._sanitize_subset_name(key)
+        if f'X_{key}' in self.adata.obsm and key not in self._cnv_store():
+            raise ValueError(f"obsm['X_{key}'] already exists and is not a CNV result; choose another key.")
         if cluster not in cnv_mod.CLUSTER_METHODS:
             raise ValueError(f"cluster must be one of {cnv_mod.CLUSTER_METHODS}, got '{cluster}'.")
         source = self._resolve_source_matrix(layer)

@@ -235,6 +235,10 @@ def plan_windows(order: list[dict[str, Any]], window: int, step: int,
             spans = [(0, n)]
         else:
             spans = [(s, s + window) for s in range(0, n - window + 1, step)]
+            # The regular grid stops short of the end whenever (n − window) is
+            # not a multiple of step; one last window keeps the tail genes in.
+            if spans[-1][1] < n:
+                spans.append((n - window, n))
         for lo, hi in spans:
             windows.append({
                 'chromosome': entry['chromosome'],
@@ -347,9 +351,13 @@ def chromosome_means(M: np.ndarray, chromosomes: list[dict[str, Any]]) -> np.nda
 
 def _pca(M: np.ndarray, n_pcs: int, seed: int) -> np.ndarray:
     from sklearn.decomposition import PCA  # noqa: PLC0415
-    n = int(max(1, min(int(n_pcs), M.shape[0] - 1, M.shape[1])))
-    return PCA(n_components=n, svd_solver='arpack', random_state=int(seed)).fit_transform(
-        np.asarray(M, dtype=np.float64))
+    M = np.asarray(M, dtype=np.float64)
+    # arpack needs n_components strictly below both dimensions; with one or
+    # two windows there is nothing to reduce, so cluster the matrix itself.
+    n = int(min(int(n_pcs), M.shape[0] - 1, M.shape[1] - 1))
+    if n < 1:
+        return M
+    return PCA(n_components=n, svd_solver='arpack', random_state=int(seed)).fit_transform(M)
 
 
 def _rank_by_score(labels: np.ndarray, score: np.ndarray) -> np.ndarray:

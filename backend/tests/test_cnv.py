@@ -106,6 +106,16 @@ def test_plan_windows_counts_and_short_chromosome():
     assert list(windows[1]['gene_idx']) == list(range(10, 40))
 
 
+def test_plan_windows_covers_the_chromosome_tail():
+    # 95 genes, window 30, step 10: the regular windows end at gene 90, so a
+    # final window over genes 65..95 keeps the last five in the picture.
+    order = [{'chromosome': 'chr1', 'indices': np.arange(95), 'starts': np.arange(95)}]
+    windows, chromosomes = cnv.plan_windows(order, window=30, step=10)
+    assert chromosomes[0]['size'] == (95 - 30) // 10 + 2
+    assert list(windows[-1]['gene_idx']) == list(range(65, 95))
+    assert windows[-1]['end'] == 94
+
+
 def test_plan_windows_window_must_exceed_step():
     order = [{'chromosome': 'chr1', 'indices': np.arange(50), 'starts': np.arange(50)}]
     with pytest.raises(ValueError):
@@ -218,6 +228,17 @@ def test_cluster_clones_refuses_hierarchical_on_huge_input():
     M = np.zeros((cnv.HIERARCHICAL_MAX_CELLS + 1, 3), dtype=np.float32)
     with pytest.raises(ValueError, match='leiden'):
         cnv.cluster_clones(M, method='hierarchical', resolution=1.0, n_clusters=2, n_pcs=2, seed=0)
+
+
+def test_cluster_clones_with_very_few_windows():
+    # Fewer windows than PCs (a huge window, or one window per chromosome):
+    # PCA must not ask for more components than the matrix can give.
+    rng = np.random.default_rng(0)
+    M = np.vstack([rng.normal(0, 0.05, (40, 2)), rng.normal(1, 0.05, (40, 2))]).astype(np.float32)
+    out = cnv.cluster_clones(M, method='leiden', resolution=0.3, n_clusters=2, n_pcs=30, seed=0)
+    assert out.shape == (80,)
+    one = cnv.cluster_clones(M[:, :1], method='hierarchical', resolution=1.0, n_clusters=2, n_pcs=30, seed=0)
+    assert set(one) == {0, 1}
 
 
 def test_cluster_clones_unknown_method():

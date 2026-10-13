@@ -22,6 +22,7 @@ const LABEL_WIDTH = 96
 const GROUP_BAR_WIDTH = 8
 const CHROM_LABEL_HEIGHT = 22
 const MIN_ROW_HEIGHT = 2
+const MIN_CELL_WIDTH = 1.5
 const MAX_ROW_HEIGHT = 14
 const MAX_HEIGHT = 700
 
@@ -75,8 +76,10 @@ export const CnvHeatmapFigure = forwardRef<HTMLCanvasElement, CnvHeatmapFigurePr
   const groups = uniqueGroups(data)
   const hasGroups = groups.length > 0
   const left = LABEL_WIDTH + (hasGroups ? GROUP_BAR_WIDTH + 2 : 0)
-  const heatmapWidth = Math.max(100, containerWidth - left - 20)
-  const cellWidth = nCols ? heatmapWidth / nCols : 1
+  // Fill the container, but never below MIN_CELL_WIDTH per window: a narrow
+  // pane scrolls sideways rather than collapsing 500 windows into 100 px.
+  const cellWidth = nCols ? Math.max(MIN_CELL_WIDTH, (containerWidth - left - 20) / nCols) : 1
+  const heatmapWidth = cellWidth * nCols
   // Rows shrink to fit a tall matrix; a 400-row heatmap is still readable at 2 px.
   const rowHeight = nRows ? Math.max(MIN_ROW_HEIGHT, Math.min(MAX_ROW_HEIGHT, Math.floor(MAX_HEIGHT / nRows))) : MAX_ROW_HEIGHT
   const matrixHeight = nRows * rowHeight

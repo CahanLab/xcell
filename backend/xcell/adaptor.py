@@ -6735,7 +6735,8 @@ class DataAdaptor:
     # ------------------------------------------------------------------
     FIGURES_UNS_KEY = 'xcell_figures'
     FIGURES_SEQ_KEY = 'xcell_figures_seq'
-    FIGURE_KINDS = ('enrichment_heatmap', 'enrichment_network', 'composition_barplot', 'expression_heatmap')
+    FIGURE_KINDS = ('enrichment_heatmap', 'enrichment_network', 'composition_barplot', 'expression_heatmap',
+                    'cnv_heatmap')
     _FIGURE_PARAM_KEYS = {
         'enrichment_heatmap': ('value', 'padj_max', 'top_n', 'direction', 'collapse_jaccard', 'row_order',
                                'col_order', 'colormap', 'vmax', 'show_values', 'label_max_chars', 'cell_size'),
@@ -6743,6 +6744,7 @@ class DataAdaptor:
                                'node_size_by', 'edge_width_by', 'label_max_chars', 'colormap'),
         'composition_barplot': ('order', 'share_of', 'normalize', 'min_cells', 'show_values'),
         'expression_heatmap': ('cell_ordering', 'gene_ordering', 'aggregate_gene_sets', 'n_bins'),
+        'cnv_heatmap': ('row_mode', 'max_rows', 'group_order', 'vmax', 'colormap'),
     }
 
     def _figure_store(self) -> dict[str, str]:
@@ -6801,6 +6803,15 @@ class DataAdaptor:
             return {'gene_sets': [{'name': str(s.get('name', '')), 'genes': [str(g) for g in s['genes']]} for s in sets],
                     'obs_column': obs_column, 'line_name': line_name, 'transform': transform,
                     **self._figure_cell_inputs(inputs)}
+        if kind == 'cnv_heatmap':
+            key = inputs.get('key')
+            if not key or key not in self._cnv_store():
+                raise ValueError(f"inputs.key must name a stored CNV result (got {key!r}); "
+                                 f"have {sorted(self._cnv_store()) or 'none'}")
+            obs_column = inputs.get('obs_column') or None
+            if obs_column and obs_column not in self.adata.obs.columns:
+                raise ValueError(f"inputs.obs_column '{obs_column}' is not an .obs column")
+            return {'key': str(key), 'obs_column': obs_column, **self._figure_cell_inputs(inputs)}
         raise ValueError(f"Unknown figure kind '{kind}'; expected one of {', '.join(self.FIGURE_KINDS)}")
 
     def _figure_cell_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
@@ -6885,7 +6896,23 @@ class DataAdaptor:
                 out.append(step.index)
         return out
 
+    @staticmethod
+    def _check_cnv_params(params: dict[str, Any]) -> None:
+        from xcell import cnv as cnv_mod  # noqa: PLC0415
+        if params.get('row_mode') not in cnv_mod.ROW_MODES:
+            raise ValueError(f"row_mode must be one of {cnv_mod.ROW_MODES}")
+        if params.get('group_order') not in cnv_mod.GROUP_ORDERS:
+            raise ValueError(f"group_order must be one of {cnv_mod.GROUP_ORDERS}")
+        if int(params.get('max_rows') or 0) < 1:
+            raise ValueError('max_rows must be at least 1')
+        vmax = params.get('vmax')
+        if vmax is not None and not float(vmax) > 0:
+            raise ValueError('vmax must be positive, or null for automatic')
+
     def _default_figure_title(self, kind: str, inputs: dict[str, Any]) -> str:
+        if kind == 'cnv_heatmap':
+            by = f" by {inputs['obs_column']}" if inputs.get('obs_column') else ''
+            return f"CNV heatmap: {inputs['key']}{by}"
         if kind in ('enrichment_heatmap', 'enrichment_network'):
             keys = inputs['enrichment_keys']
             store = self._enrichment_store()
@@ -6924,6 +6951,8 @@ class DataAdaptor:
             if 'cell_ordering' not in (params or {}):
                 merged['cell_ordering'] = self._compatible_ordering(clean_inputs, str(merged.get('cell_ordering', 'none')))
             self._check_heatmap_params(clean_inputs, merged)
+        if kind == 'cnv_heatmap':
+            self._check_cnv_params(merged)
         now = datetime.now(timezone.utc).isoformat(timespec='seconds')
         store = self._enrichment_store()
         input_ids = {}
@@ -7010,6 +7039,8 @@ class DataAdaptor:
             if delta:
                 if record['kind'] == 'expression_heatmap':
                     self._check_heatmap_params(record['inputs'], {**record['params'], **delta})
+                if record['kind'] == 'cnv_heatmap':
+                    self._check_cnv_params({**record['params'], **delta})
                 record['params'].update(delta)
                 changes['params'] = delta
         if len(changes) > 1:
@@ -7139,6 +7170,31 @@ class DataAdaptor:
                 obs_column=inp.get('obs_column'), line_name=inp.get('line_name'),
                 gene_ordering=str(params.get('gene_ordering', 'as_provided')), n_bins=int(params.get('n_bins', 0)),
                 transform=inp.get('transform'), cell_indices=self._figure_cells(inp))
+            out['figure_id'] = figure_id
+            out['kind'] = kind
+            return out
+        if kind == 'cnv_heatmap':
+            from xcell import cnv as cnv_mod  # noqa: PLC0415
+            inp = record['inputs']
+            self._check_cnv_params(params)
+            key = inp['key']
+            obsm_key = f'X_{key}'
+            if key not in self._cnv_store() or obsm_key not in self.adata.obsm:
+                raise FigureInputMissing(f"CNV result '{key}' no longer exists; the figure cannot be drawn")
+            if inp.get('obs_column') and inp['obs_column'] not in self.adata.obs.columns:
+                raise FigureInputMissing(f"Column '{inp['obs_column']}' no longer exists; the figure cannot be drawn")
+            M = np.asarray(self.adata.obsm[obsm_key], dtype=np.float32)
+            groups = self.adata.obs[inp['obs_column']].astype(object).to_numpy() if inp.get('obs_column') else None
+            cells = self._figure_cells(inp)
+            if cells is not None:
+                M = M[cells]
+                groups = groups[cells] if groups is not None else None
+            out = cnv_mod.heatmap_data(
+                M, groups=groups, group_order=str(params['group_order']), row_mode=str(params['row_mode']),
+                max_rows=int(params['max_rows']), vmax=params.get('vmax'),
+                chromosomes=self._cnv_store()[key]['chromosomes'])
+            out['colormap'] = params.get('colormap', 'rdbu')
+            out['cnv_key'] = key
             out['figure_id'] = figure_id
             out['kind'] = kind
             return out
@@ -14338,6 +14394,327 @@ class DataAdaptor:
             self._log_action('stemfinder', params, {
                 'columns': columns, 'n_cells_scored': out['n_cells_scored'],
                 'n_markers_used': out['n_markers_used'], 'n_neighbors': k,
+            }, subset=cell_idx)
+            return out
+
+        return compute_fn, apply_fn
+
+    # ------------------------------------------------------------------
+    # CNV inference (inferCNV-style) and clone calling
+    # ------------------------------------------------------------------
+
+    CNV_UNS_KEY = 'xcell_cnv'
+
+    def _cnv_store(self) -> dict[str, dict[str, Any]]:
+        """Stored CNV run records, parsed. JSON strings in uns, like enrichment."""
+        raw = self.adata.uns.get(self.CNV_UNS_KEY)
+        out: dict[str, dict[str, Any]] = {}
+        if isinstance(raw, Mapping):
+            for k, v in raw.items():
+                try:
+                    out[str(k)] = json.loads(v) if isinstance(v, str) else dict(v)
+                except (TypeError, ValueError):
+                    continue
+        return out
+
+    def cnv_results(self) -> list[dict[str, Any]]:
+        """Summaries of every stored CNV run (no per-window detail)."""
+        out = []
+        for key, rec in self._cnv_store().items():
+            out.append({k: rec.get(k) for k in (
+                'key', 'n_windows', 'n_genes_used', 'n_cells', 'reference', 'clone_column', 'score_column',
+                'chromosome_matrix', 'clones', 'params', 'created_at', 'positions_source', 'species')})
+            out[-1]['chromosomes'] = [c['name'] for c in rec.get('chromosomes', [])]
+            out[-1]['key'] = key
+        return out
+
+    def cnv_status(self) -> dict[str, Any]:
+        """What the CNV modal needs: species guess, candidate position columns,
+        categorical columns for a reference, layers, scale, existing runs."""
+        from xcell import cnv as cnv_mod  # noqa: PLC0415
+        from xcell import layer_scale  # noqa: PLC0415
+
+        var_columns = []
+        for c in self.adata.var.columns:
+            dt = self.adata.var[c].dtype
+            kind = ('numeric' if pd.api.types.is_numeric_dtype(dt) and not pd.api.types.is_bool_dtype(dt)
+                    else 'category' if isinstance(dt, pd.CategoricalDtype) or pd.api.types.is_object_dtype(dt)
+                    or pd.api.types.is_string_dtype(dt) else None)
+            if kind:
+                var_columns.append({'name': str(c), 'kind': kind})
+        obs_categorical = []
+        for c in self.adata.obs.columns:
+            col = self.adata.obs[c]
+            if isinstance(col.dtype, pd.CategoricalDtype):
+                cats = [str(x) for x in col.cat.categories]
+            elif pd.api.types.is_object_dtype(col.dtype) or pd.api.types.is_string_dtype(col.dtype):
+                cats = sorted(str(x) for x in col.dropna().unique())
+            else:
+                continue
+            if 0 < len(cats) <= 200:
+                obs_categorical.append({'name': str(c), 'categories': cats})
+        tables = [sp for sp in cnv_mod.SPECIES if (cnv_mod._DATA / f'gene_positions_{sp}.tsv.gz').exists()]
+        return {
+            'n_cells': int(self.n_cells),
+            'n_genes': int(self.n_genes),
+            'species': self.guess_species().get('species'),
+            'table_species': tables,
+            'var_columns': var_columns,
+            'obs_categorical': obs_categorical,
+            'layers': sorted(str(k) for k in self.adata.layers.keys()),
+            'x_scale': layer_scale.assess_matrix_scale(self.adata.X)['verdict'],
+            'keys': sorted(self._cnv_store()),
+            'hierarchical_max_cells': cnv_mod.HIERARCHICAL_MAX_CELLS,
+        }
+
+    def prepare_cnv(
+        self,
+        key: str = 'cnv',
+        species: str | None = None,
+        chromosome_column: str | None = None,
+        start_column: str | None = None,
+        reference_column: str | None = None,
+        reference_categories: list[str] | None = None,
+        include_xy: bool = False,
+        min_mean: float = 0.1,
+        lfc_clip: float = 3.0,
+        window: int = 100,
+        step: int = 10,
+        center_cells: bool = True,
+        noise_threshold: float = 1.5,
+        cluster: str = 'leiden',
+        resolution: float = 1.0,
+        n_clusters: int = 4,
+        n_pcs: int = 30,
+        seed: int = 0,
+        layer: str | None = None,
+        active_cell_indices: list[int] | None = None,
+    ) -> tuple[Callable[..., dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
+        """Infer CNVs from expression and call clones; see :mod:`xcell.cnv`.
+
+        Gene positions come from ``chromosome_column`` + ``start_column`` in
+        ``.var``, else from the shipped table for ``species`` (guessed from
+        the gene names when not given). ``reference_categories`` of
+        ``reference_column`` are the normal cells; with none, the mean over
+        all analysed cells stands in. Writes ``obsm['X_<key>']`` (cells ×
+        windows), ``obsm['X_<key>_chrom']`` (cells × chromosomes, registered
+        as a score matrix), ``obs['<key>_score']``, ``obs['<key>_clone']``
+        (unless ``cluster='none'``) and ``uns['xcell_cnv'][key]``. A run
+        under an existing key replaces it.
+        """
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        from xcell import cnv as cnv_mod  # noqa: PLC0415
+        from xcell import layer_scale  # noqa: PLC0415
+
+        key = self._sanitize_subset_name(key)
+        if f'X_{key}' in self.adata.obsm and key not in self._cnv_store():
+            raise ValueError(f"obsm['X_{key}'] already exists and is not a CNV result; choose another key.")
+        if cluster not in cnv_mod.CLUSTER_METHODS:
+            raise ValueError(f"cluster must be one of {cnv_mod.CLUSTER_METHODS}, got '{cluster}'.")
+        source = self._resolve_source_matrix(layer)
+        verdict = layer_scale.assess_matrix_scale(source)['verdict']
+        if verdict == 'z_scored':
+            raise ValueError("The expression is scaled / z-scored; CNV inference needs counts or "
+                             "log-normalized values. Pick a layer that holds them.")
+        cell_idx = self._validate_cell_indices(active_cell_indices)
+        cells = np.arange(self.n_cells) if cell_idx is None else np.asarray(cell_idx, dtype=int)
+        var_names = [str(v) for v in self.adata.var_names]
+        warnings_out: list[str] = []
+
+        # Positions.
+        if chromosome_column or start_column:
+            for name, col in (('chromosome_column', chromosome_column), ('start_column', start_column)):
+                if not col:
+                    raise ValueError(f'{name} is required when positions come from .var columns')
+                if col not in self.adata.var.columns:
+                    raise ValueError(f"{name} '{col}' is not a .var column")
+            positions = cnv_mod.positions_from_columns(
+                var_names, self.adata.var[chromosome_column].tolist(), self.adata.var[start_column].tolist())
+            match = {'var_columns': len(positions), 'unmatched': len(var_names) - len(positions)}
+            positions_source = 'var_columns'
+            species = species or self.guess_species().get('species')
+            include = (cnv_mod.chromosome_list(species, include_xy) if species in cnv_mod.AUTOSOMES
+                       else cnv_mod.chromosomes_present(positions, include_xy))
+        else:
+            species = species or self.guess_species().get('species')
+            if species is None:
+                raise ValueError('Could not tell the species from the gene names. Pick one, or name the .var '
+                                 'columns that hold each gene\'s chromosome and start.')
+            table = cnv_mod.load_positions(species)
+            positions, match = cnv_mod.match_positions(var_names, table)
+            positions_source = f'gencode_{species}'
+            include = cnv_mod.chromosome_list(species, include_xy)
+        order = cnv_mod.gene_order(positions, var_names, include)
+        n_placed = int(sum(len(o['indices']) for o in order))
+        if n_placed < 100:
+            raise ValueError(f'Only {n_placed} of {len(var_names):,} genes have positions on the included '
+                             f'chromosomes ({match}); CNV inference needs at least 100. Check the species or '
+                             'the position columns.')
+
+        # Expression: log-normalized once over the whole matrix, then filter
+        # genes by mean expression over the analysed cells.
+        L = cnv_mod.log_normalize(source, verdict)
+        if verdict in ('unknown', 'binary', 'empty', 'log_transformed'):
+            warnings_out.append(f'Could not tell the expression scale ({layer_scale.SCALE_LABELS[verdict]}); '
+                                'it was read as log-normalized.')
+        placed_cols = np.concatenate([o['indices'] for o in order])
+        Lc = L[cells]
+        means = np.asarray(Lc[:, placed_cols].mean(axis=0)).ravel()
+        keep_gene = means >= float(min_mean)
+        n_filtered = int((~keep_gene).sum())
+        kept = set(placed_cols[keep_gene].tolist())
+        order = [{**o, 'indices': o['indices'][np.isin(o['indices'], list(kept))],
+                  'starts': o['starts'][np.isin(o['indices'], list(kept))]} for o in order]
+        order = [o for o in order if len(o['indices'])]
+        gene_cols = np.concatenate([o['indices'] for o in order]) if order else np.zeros(0, dtype=int)
+        if gene_cols.size < 100:
+            raise ValueError(f'Only {gene_cols.size} placed genes pass min_mean = {min_mean} in the analysed cells '
+                             f'({n_placed} had positions); lower min_mean.')
+        windows, chromosomes = cnv_mod.plan_windows(order, window=int(window), step=int(step))
+        Ls = Lc[:, gene_cols]
+        dense = not hasattr(Ls, 'toarray')
+
+        # Reference.
+        ref_means = None
+        ref_mask_local = None
+        reference = None
+        group_labels = None
+        if reference_column:
+            if reference_column not in self.adata.obs.columns:
+                raise ValueError(f"reference_column '{reference_column}' is not an .obs column")
+            col = self.adata.obs[reference_column].astype(object).astype(str).to_numpy()
+            cats = [str(c) for c in (reference_categories or [])]
+            if not cats:
+                raise ValueError('reference_categories is required with reference_column')
+            present = set(col)
+            missing = [c for c in cats if c not in present]
+            if missing:
+                raise ValueError(f"reference_categories not in '{reference_column}': {missing}")
+            local = col[cells]
+            rows = []
+            for c in cats:
+                m = local == c
+                if not m.any():
+                    raise ValueError(f"Reference category '{c}' has no cells inside the active cell mask.")
+                sub = Ls[m]
+                rows.append(np.asarray(sub.mean(axis=0)).ravel())
+            ref_means = np.vstack(rows)
+            ref_mask_local = np.isin(local, cats)
+            group_labels = local
+            reference = {'column': reference_column, 'categories': cats}
+        else:
+            ref_means = np.asarray(Ls.mean(axis=0)).reshape(1, -1)
+            warnings_out.append('No reference cells were given, so each gene is compared with the mean over all '
+                                'analysed cells. Events shared by every cell are invisible; the clone with the '
+                                'lowest CNV score is not necessarily normal.')
+        if cluster == 'hierarchical' and cells.size > cnv_mod.HIERARCHICAL_MAX_CELLS:
+            raise ValueError(f'Hierarchical clustering of {cells.size:,} cells needs an n×n distance matrix; '
+                             f'above {cnv_mod.HIERARCHICAL_MAX_CELLS:,} cells use leiden.')
+
+        def get_rows(idx: np.ndarray) -> np.ndarray:
+            sub = Ls[idx]
+            return np.asarray(sub) if dense else sub.toarray()
+
+        chrom_names = [c['name'] for c in chromosomes]
+        n_obs = self.n_cells
+        params = {
+            'key': key, 'species': species, 'chromosome_column': chromosome_column, 'start_column': start_column,
+            'reference_column': reference_column, 'reference_categories': list(reference_categories or []) or None,
+            'include_xy': bool(include_xy), 'min_mean': float(min_mean), 'lfc_clip': float(lfc_clip),
+            'window': int(window), 'step': int(step), 'center_cells': bool(center_cells),
+            'noise_threshold': float(noise_threshold), 'cluster': cluster, 'resolution': float(resolution),
+            'n_clusters': int(n_clusters), 'n_pcs': int(n_pcs), 'seed': int(seed), 'layer': layer,
+        }
+
+        def compute_fn(report: Callable[[float, str], None] | None = None) -> dict[str, Any]:
+            report = report or (lambda f, m=None: None)
+            report(0.05, f'Smoothing {gene_cols.size:,} genes into {len(windows):,} windows')
+            M = cnv_mod.infer(get_rows, np.arange(cells.size), windows, ref_means, lfc_clip=float(lfc_clip),
+                              center_cells=bool(center_cells), report=report)
+            M = cnv_mod.apply_noise_threshold(M, float(noise_threshold))
+            score = cnv_mod.cnv_score(M)
+            chrom = cnv_mod.chromosome_means(M, chromosomes)
+            clones = None
+            summary = None
+            if cluster != 'none':
+                report(0.75, f'Calling clones ({cluster})')
+                clones = cnv_mod.cluster_clones(M, method=cluster, resolution=float(resolution),
+                                                n_clusters=int(n_clusters), n_pcs=int(n_pcs), seed=int(seed))
+                summary = cnv_mod.clone_summary(clones, score, chrom, chrom_names, ref_mask=ref_mask_local,
+                                                group_labels=group_labels)
+            report(0.95, 'Writing results')
+            return {'M': M, 'score': score, 'chrom': chrom, 'clones': clones, 'summary': summary}
+
+        def apply_fn(result: dict[str, Any]) -> dict[str, Any]:
+            if self.n_cells != n_obs:
+                raise ValueError("The dataset's cells changed while CNV inference ran; run it again.")
+            M = result['M']
+            full = np.full((n_obs, M.shape[1]), np.nan, dtype=np.float32)
+            full[cells] = M
+            self.adata.obsm[f'X_{key}'] = full
+            chrom_full = np.full((n_obs, len(chrom_names)), np.nan, dtype=np.float64)
+            chrom_full[cells] = result['chrom']
+            chrom_key = f'X_{key}_chrom'
+            self.adata.obsm[chrom_key] = chrom_full
+            reg = self.adata.uns.get('xcell_score_matrices')
+            reg = dict(reg) if isinstance(reg, dict) else {}
+            reg[chrom_key] = {'columns': list(chrom_names), 'source': 'cnv', 'key': key}
+            self.adata.uns['xcell_score_matrices'] = reg
+            score_col = f'{key}_score'
+            score_full = np.full(n_obs, np.nan, dtype=np.float64)
+            score_full[cells] = result['score']
+            self.adata.obs[score_col] = score_full
+            clone_col = None
+            if result['clones'] is not None:
+                clone_col = f'{key}_clone'
+                names = [f'clone_{i + 1}' for i in range(int(result['clones'].max()) + 1)]
+                labels = np.full(n_obs, 'unassigned', dtype=object)
+                labels[cells] = [names[k] for k in result['clones']]
+                cats = names + (['unassigned'] if cell_idx is not None else [])
+                self.adata.obs[clone_col] = pd.Categorical(labels, categories=cats)
+                palette = cnv_mod.CLONE_PALETTE
+                self.adata.uns[f'{clone_col}_colors'] = [palette[i % len(palette)] for i in range(len(names))] + (
+                    ['#808080'] if cell_idx is not None else [])
+            elif f'{key}_clone' in self.adata.obs.columns:
+                # A re-run without clustering must not leave last time's clones under this key.
+                del self.adata.obs[f'{key}_clone']
+                self.adata.uns.pop(f'{key}_clone_colors', None)
+            summary = result['summary']
+            if summary is not None:
+                for row in summary:
+                    row['name'] = f"clone_{row['clone'] + 1}"
+            record = {
+                'key': key,
+                'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'params': params,
+                'species': species,
+                'positions_source': positions_source,
+                'position_matches': match,
+                'n_genes_placed': n_placed,
+                'n_genes_filtered': n_filtered,
+                'n_genes_used': int(gene_cols.size),
+                'n_windows': len(windows),
+                'n_cells': int(cells.size),
+                'reference': reference,
+                'windows': [{k: v for k, v in w.items() if k != 'gene_idx'} for w in windows],
+                'chromosomes': chromosomes,
+                'score_column': score_col,
+                'clone_column': clone_col,
+                'chromosome_matrix': chrom_key,
+                'clones': summary,
+                'warnings': warnings_out,
+            }
+            store = self.adata.uns.get(self.CNV_UNS_KEY)
+            store = dict(store) if isinstance(store, Mapping) else {}
+            store[key] = json.dumps(record)
+            self.adata.uns[self.CNV_UNS_KEY] = store
+            out = {k: v for k, v in record.items() if k != 'windows'}
+            out['matrix'] = f'X_{key}'
+            self._log_action('cnv', params, {
+                'key': key, 'n_genes_used': out['n_genes_used'], 'n_windows': out['n_windows'],
+                'n_cells': out['n_cells'], 'n_clones': len(summary) if summary else 0,
+                'score_column': score_col, 'clone_column': clone_col,
             }, subset=cell_idx)
             return out
 

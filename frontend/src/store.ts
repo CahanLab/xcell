@@ -951,6 +951,7 @@ interface AppState {
   isMergeSpotsModalOpen: boolean
   isDownsampleModalOpen: boolean
   isStemFinderModalOpen: boolean
+  isCnvModalOpen: boolean
   isPseudotimeModalOpen: boolean
   isMultiContourModalOpen: boolean
   isTerritoryPanelOpen: boolean
@@ -1240,6 +1241,7 @@ interface AppState {
   setMergeSpotsModalOpen: (open: boolean) => void
   setDownsampleModalOpen: (open: boolean) => void
   setStemFinderModalOpen: (open: boolean) => void
+  setCnvModalOpen: (open: boolean) => void
   setPseudotimeModalOpen: (open: boolean) => void
   setMultiContourModalOpen: (open: boolean) => void
   setDefineSectionsOpen: (open: boolean) => void
@@ -1516,6 +1518,7 @@ export const useStore = create<AppState>((set, get) => {
     isMergeSpotsModalOpen: false,
     isDownsampleModalOpen: false,
     isStemFinderModalOpen: false,
+    isCnvModalOpen: false,
     isPseudotimeModalOpen: false,
     isMultiContourModalOpen: false,
     isDefineSectionsOpen: false,
@@ -2683,6 +2686,7 @@ export const useStore = create<AppState>((set, get) => {
     setMergeSpotsModalOpen: (open) => set({ isMergeSpotsModalOpen: open }),  // global
     setDownsampleModalOpen: (open) => set({ isDownsampleModalOpen: open }),  // global
     setStemFinderModalOpen: (open) => set({ isStemFinderModalOpen: open }),  // global
+    setCnvModalOpen: (open) => set({ isCnvModalOpen: open }),  // global
     setPseudotimeModalOpen: (open) => set({ isPseudotimeModalOpen: open }),  // global
     setMultiContourModalOpen: (open) => set({ isMultiContourModalOpen: open }),  // global
     setDefineSectionsOpen: (open) => set({ isDefineSectionsOpen: open }),  // global

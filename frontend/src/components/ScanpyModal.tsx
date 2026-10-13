@@ -382,6 +382,13 @@ const SCANPY_FUNCTIONS: Record<string, CategoryDef> = {
         custom: true,
         params: [],
       },
+      cnv: {
+        label: 'CNV inference',
+        description: 'Infer copy-number gains and losses from expression (inferCNV-style): expression relative to reference cells, smoothed along each chromosome, then clustered into clones. Writes X_cnv, a per-cell CNV score and clone labels to the dataset, scoped to the cell mask. Opens the CNV tool.',
+        prerequisites: [],
+        custom: true,
+        params: [],
+      },
       compare_cells: {
         label: 'Compare Cells',
         description: 'Compare cell groups: differential expression (2 groups) or marker genes (3+ groups)',
@@ -878,7 +885,7 @@ interface BooleanColumn {
 }
 
 export default function ScanpyModal() {
-  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setEnrichmentSource, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, setStemFinderModalOpen, setPseudotimeModalOpen, setEmbeddingDims, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, activeSubsetName, setActiveSubsetName, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
+  const { isScanpyModalOpen, setScanpyModalOpen, setMultiContourModalOpen, setDefineSectionsOpen, setLigRecModalOpen, setNeighborhoodModalOpen, setTerritoryPanelOpen, setAssignTerritoriesOpen, setGeneNmfModalOpen, setMetaProgramsModalOpen, setEnrichmentSource, setLocalizeModalOpen, setMergeSpotsModalOpen, setDownsampleModalOpen, setStemFinderModalOpen, setCnvModalOpen, setPseudotimeModalOpen, setEmbeddingDims, schema, setSchema, scanpyActionHistory, addScanpyAction, activeCellMask, activeSubsetName, setActiveSubsetName, resetActiveCells, refreshObsSummaries, setColorBy, setEmbedding, setSelectedEmbedding, selectedGenes, setExpressionData, setBivariateData, clearSelection } = useStore()
   const activeTaskId = useStore((state) => state.activeTaskId)
   const setActiveTaskId = useStore((state) => state.setActiveTaskId)
   const setComparisonGroup1 = useStore((state) => state.setComparisonGroup1)
@@ -2979,6 +2986,13 @@ export default function ScanpyModal() {
               onClick={() => { setStemFinderModalOpen(true); setScanpyModalOpen(false) }}
             >
               Open Differentiation tool…
+            </button>
+          ) : selectedFunction === 'cnv' ? (
+            <button
+              style={styles.runButton}
+              onClick={() => { setCnvModalOpen(true); setScanpyModalOpen(false) }}
+            >
+              Open CNV tool…
             </button>
           ) : selectedFunction === 'downsample' ? (
             <button

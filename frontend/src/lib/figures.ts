@@ -2,13 +2,14 @@
  *  shapes each renderer draws, colour ramps, filenames and PNG rasterising.
  *  Kept free of React so the contract is unit-testable. */
 
-export type FigureKind = 'enrichment_heatmap' | 'enrichment_network' | 'composition_barplot' | 'expression_heatmap'
+export type FigureKind = 'enrichment_heatmap' | 'enrichment_network' | 'composition_barplot' | 'expression_heatmap' | 'cnv_heatmap'
 
 export const FIGURE_KIND_LABELS: Record<FigureKind, string> = {
   enrichment_heatmap: 'Enrichment heatmap',
   enrichment_network: 'Enrichment network',
   composition_barplot: 'Composition barplot',
   expression_heatmap: 'Expression heatmap',
+  cnv_heatmap: 'CNV heatmap',
 }
 
 export interface FigureProvenance {
@@ -82,11 +83,24 @@ export interface ExpressionHeatmapData {
   n_genes_hidden?: number
 }
 
+/** Rows (cells binned within a group, or one row per group) × genome windows. */
+export interface CnvHeatmapData {
+  matrix: number[][]
+  row_labels: string[]
+  row_groups: (string | null)[]
+  /** Chromosomes: contiguous runs of windows. */
+  column_groups: { name: string; start: number; size: number }[]
+  n_cells: number
+  vmax: number
+  colormap: string
+  cnv_key: string
+}
+
 /** Every data payload names the figure and kind it was computed for, so the
  *  view never has to guess what it is drawing. */
 export interface FigureDataTag { figure_id?: string; kind?: FigureKind }
 
-export type FigureData = (EnrichmentHeatmapData | EnrichmentNetworkData | CrosstabData | ExpressionHeatmapData) & FigureDataTag
+export type FigureData = (EnrichmentHeatmapData | EnrichmentNetworkData | CrosstabData | ExpressionHeatmapData | CnvHeatmapData) & FigureDataTag
 
 export interface BarplotConfigLike {
   columnA: string
@@ -154,6 +168,8 @@ export interface CanvasLegend {
   /** Gradient stops, left to right, as CSS colours. */
   gradient: string[]
   gradientLabel: string
+  /** Text after the label; defaults to '0 … 1'. */
+  gradientRange?: string
   groups: { name: string; color: string }[]
 }
 
@@ -188,7 +204,7 @@ export function canvasToPngBlob(canvas: HTMLCanvasElement, opts: { scale?: numbe
     ctx.fillRect(8, y0, 100, 10)
     ctx.fillStyle = '#aaa'
     ctx.font = '10px sans-serif'
-    ctx.fillText(`${opts.legend.gradientLabel}  0 … 1`, 114, y0 + 9)
+    ctx.fillText(`${opts.legend.gradientLabel}  ${opts.legend.gradientRange ?? '0 … 1'}`, 114, y0 + 9)
     opts.legend.groups.forEach((grp, i) => {
       const y = y0 + 16 + i * 14
       ctx.fillStyle = grp.color
@@ -209,6 +225,7 @@ export function defaultTitle(kind: FigureKind, inputs: Record<string, unknown>, 
     return `Enrichment ${what}: ${keys.map((k) => labelsByKey[k] ?? k).join('; ')}`
   }
   if (kind === 'composition_barplot') return `Composition of ${String(inputs.column_a)} by ${String(inputs.column_b)}`
+  if (kind === 'cnv_heatmap') return `CNV heatmap: ${String(inputs.key)}${inputs.obs_column ? ` by ${String(inputs.obs_column)}` : ''}`
   const sets = (inputs.gene_sets as { name: string }[] | undefined) ?? []
   return `Expression heatmap: ${sets.slice(0, 3).map((s) => s.name).join(', ')}`
 }

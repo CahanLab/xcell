@@ -14,6 +14,7 @@ const BACKEND_DEFAULTS: Record<string, Record<string, unknown>> = {
   },
   composition_barplot: { order: 'category', share_of: null, normalize: true, min_cells: 0, show_values: false },
   expression_heatmap: { cell_ordering: 'category', gene_ordering: 'as_provided', aggregate_gene_sets: false, n_bins: 50 },
+  cnv_heatmap: { row_mode: 'cells', max_rows: 400, group_order: 'cnv_score', vmax: null, colormap: 'rdbu' },
 }
 
 describe('FIGURE_SCHEMAS', () => {

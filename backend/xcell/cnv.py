@@ -37,6 +37,13 @@ HIERARCHICAL_MAX_CELLS = 20_000
 #: Cells per chunk when densifying the gene-filtered matrix.
 CHUNK = 2000
 KNN = 15
+#: Clone colors: tab20 without the pale pairs, so neighbours in a legend differ.
+CLONE_PALETTE = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f',
+                 '#bcbd22', '#17becf', '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5', '#c49c94',
+                 '#f7b6d2', '#c7c7c7', '#dbdb8d', '#9edae5']
+#: Expression scales that are linear and need normalize + log1p first.
+_LINEAR_VERDICTS = ('raw_counts', 'normalized_linear')
+TARGET_SUM = 1e4
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +58,41 @@ def chromosome_list(species: str, include_xy: bool = False) -> list[str]:
     if include_xy:
         out += ['chrX', 'chrY']
     return out
+
+
+def chromosomes_present(positions: dict[str, tuple[str, int, int]], include_xy: bool = False) -> list[str]:
+    """Karyotype order for positions of unknown species: numbered
+    chromosomes ascending, then X and Y when asked; anything else dropped."""
+    names = {rec[0] for rec in positions.values()}
+    numbered = sorted((int(n[3:]) for n in names if n[3:].isdigit()))
+    out = [f'chr{i}' for i in numbered]
+    if include_xy:
+        out += [c for c in ('chrX', 'chrY') if c in names]
+    return out
+
+
+def log_normalize(X, verdict: str):
+    """Log-normalized copy of ``X`` (sparse stays sparse).
+
+    Linear input is normalized to :data:`TARGET_SUM` per cell and log1p'd;
+    log-scale input is returned as a copy. Done once over the whole matrix
+    rather than per chunk because the per-cell totals need every gene.
+    """
+    from scipy import sparse  # noqa: PLC0415
+    if sparse.issparse(X):
+        M = sparse.csr_matrix(X, dtype=np.float64, copy=True)
+        if verdict in _LINEAR_VERDICTS:
+            totals = np.asarray(M.sum(axis=1), dtype=np.float64).ravel()
+            totals[totals == 0] = 1.0
+            rows = np.repeat(np.arange(M.shape[0]), np.diff(M.indptr))
+            M.data = np.log1p(M.data / totals[rows] * TARGET_SUM)
+        return M
+    M = np.array(X, dtype=np.float64, copy=True)
+    if verdict in _LINEAR_VERDICTS:
+        totals = M.sum(axis=1, keepdims=True)
+        totals[totals == 0] = 1.0
+        M = np.log1p(M / totals * TARGET_SUM)
+    return M
 
 
 def _norm_chrom(value: Any) -> str | None:

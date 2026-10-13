@@ -667,6 +667,19 @@ REGISTRY: dict[str, ActionSpec] = {
             f"for {_n(r.get('n_cells_scored'))} cells."
         ),
     ),
+    'cnv': ActionSpec(
+        label='CNV inference', fidelity=XCELL, imports=XCELL_API,
+        code=_two_phase_on_selection('prepare_cnv'), replays_selection=True,
+        summary=lambda p, r: (
+            f"Inferred CNVs ({_n(r.get('n_genes_used'))} genes in {_n(r.get('n_windows'))} windows, "
+            f"window {_n(p.get('window'))}, step {_n(p.get('step'))}"
+            + (f", reference `{p.get('reference_column')}` = {', '.join(p.get('reference_categories') or [])}"
+               if p.get('reference_column') else ', no reference')
+            + f") → `X_{p.get('key')}`, `{r.get('score_column')}`"
+            + (f", {_n(r.get('n_clones'))} clones in `{r.get('clone_column')}`" if r.get('clone_column') else '')
+            + f" for {_n(r.get('n_cells'))} cells."
+        ),
+    ),
     'transfer_obs_labels': ActionSpec(
         label='Transfer labels', fidelity=XCELL, imports=XCELL_API,
         code=_direct('transfer_obs_labels',

@@ -244,6 +244,12 @@ figures:
     gene_ordering: as_provided
     aggregate_gene_sets: false
     n_bins: 50
+  cnv_heatmap:
+    row_mode: cells                 # cells (binned within each group) | groups (one mean row per group)
+    max_rows: 400                   # rows across all groups; each group gets rows in proportion, at least one
+    group_order: cnv_score          # cnv_score (quietest group first) | category
+    vmax: null                      # symmetric colour limit; null = 99th percentile of |value|
+    colormap: rdbu                  # rdbu|prgn|roma
 
 # ---------------------------------------------------------------------------
 # Cluster gene sets modal.

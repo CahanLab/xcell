@@ -4723,6 +4723,62 @@ def run_stemfinder(request: StemFinderRequest, dataset: str | None = Query(None)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- CNV inference and clone calling ---
+
+class CnvRequest(BaseModel):
+    key: str = 'cnv'
+    species: str | None = None
+    chromosome_column: str | None = None
+    start_column: str | None = None
+    reference_column: str | None = None
+    reference_categories: list[str] | None = None
+    include_xy: bool = False
+    min_mean: float = 0.1
+    lfc_clip: float = 3.0
+    window: int = 100
+    step: int = 10
+    center_cells: bool = True
+    noise_threshold: float = 1.5
+    cluster: str = 'leiden'
+    resolution: float = 1.0
+    n_clusters: int = 4
+    n_pcs: int = 30
+    seed: int = 0
+    layer: str | None = None
+    active_cell_indices: list[int] | None = None
+
+
+@router.get("/cnv/status")
+def cnv_status(dataset: str | None = Query(None)):
+    """Species guess, position-column candidates, reference columns, stored runs."""
+    adaptor = get_adaptor(dataset)
+    try:
+        return adaptor.cnv_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cnv/results")
+def cnv_results(dataset: str | None = Query(None)):
+    return {"results": get_adaptor(dataset).cnv_results()}
+
+
+@router.post("/cnv", status_code=202)
+def run_cnv(request: CnvRequest, dataset: str | None = Query(None)):
+    """Infer CNVs and call clones (cancellable background task)."""
+    adaptor = get_adaptor(dataset)
+    try:
+        compute_fn, apply_fn = adaptor.prepare_cnv(**request.model_dump())
+        task_id = task_manager.submit(compute_fn, apply_fn)
+        return {"task_id": task_id, "status": "running"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- PySingleCellNet cell-type classification (optional dependency) ---
 
 class PyscnInspectRequest(BaseModel):

@@ -316,3 +316,20 @@ def test_run_route_is_a_task_and_bad_input_is_400():
     out = c.get('/api/cnv/results').json()['results']
     assert [r['key'] for r in out] == ['cnv'] and 'windows' not in out[0]   # summary, not the whole record
     assert out[0]['n_windows'] == st['result']['n_windows']
+
+
+# ---------- persistence ----------
+
+def test_results_survive_an_h5ad_round_trip(tmp_path):
+    a = _adaptor()
+    _run(a)
+    a.create_figure('cnv_heatmap', inputs={'key': 'cnv', 'obs_column': 'cnv_clone'})
+    path = tmp_path / 'out.h5ad'
+    a.adata.write_h5ad(path)
+    b = DataAdaptor('x.h5ad', adata=anndata.read_h5ad(path))
+    assert [r['key'] for r in b.cnv_results()] == ['cnv']
+    assert b.adata.obsm['X_cnv'].shape == a.adata.obsm['X_cnv'].shape
+    assert list(b.adata.obs['cnv_clone'].cat.categories) == list(a.adata.obs['cnv_clone'].cat.categories)
+    fig = b.list_figures()[0]
+    data = b.figure_data(fig['id'])
+    assert data['kind'] == 'cnv_heatmap' and len(data['column_groups']) == N_CHROM

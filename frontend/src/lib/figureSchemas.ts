@@ -74,6 +74,13 @@ export const FIGURE_SCHEMAS: Record<FigureKind, ParamField[]> = {
     { name: 'aggregate_gene_sets', label: 'Aggregate gene sets', type: 'bool' },
     { name: 'n_bins', label: 'Bins', type: 'int', min: 0, max: 1000 },
   ],
+  cnv_heatmap: [
+    { name: 'row_mode', label: 'Rows', type: 'select', options: [{ value: 'cells', label: 'cells, binned within each group' }, { value: 'groups', label: 'one mean row per group' }] },
+    { name: 'max_rows', label: 'Max rows', type: 'int', min: 1, max: 2000, help: 'Rows across all groups; each group gets rows in proportion to its size, at least one.' },
+    { name: 'group_order', label: 'Group order', type: 'select', options: [{ value: 'cnv_score', label: 'by CNV score (quietest first)' }, { value: 'category', label: 'category order' }] },
+    { name: 'vmax', label: 'Colour limit (±)', type: 'nullable-number', min: 0, step: 0.1, help: 'Blank = the 99th percentile of |value|.' },
+    { name: 'colormap', label: 'Colours', type: 'select', options: COLORMAP_OPTIONS },
+  ],
 }
 
 /** Turn form strings into what the backend expects: ints rounded and

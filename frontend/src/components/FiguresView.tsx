@@ -6,7 +6,7 @@ import {
 import {
   FIGURE_KIND_LABELS, figureFilename, svgToPngBlob, canvasToPngBlob, blobToBase64, downloadBlob, paramsToBarplotConfig,
   type FigureRecord, type FigureSummary, type FigureData, type EnrichmentHeatmapData, type EnrichmentNetworkData,
-  type CrosstabData, type ExpressionHeatmapData,
+  type CrosstabData, type ExpressionHeatmapData, type CnvHeatmapData,
 } from '../lib/figures'
 import { FIGURE_SCHEMAS, coerceParams, type ParamField } from '../lib/figureSchemas'
 import { standaloneSvg, downloadText } from '../lib/svgExport'
@@ -14,6 +14,7 @@ import EnrichmentHeatmapFigure from './figures/EnrichmentHeatmapFigure'
 import EnrichmentNetworkFigure from './figures/EnrichmentNetworkFigure'
 import CompositionBarplotFigure from './figures/CompositionBarplotFigure'
 import ExpressionHeatmapFigure, { heatmapLegendFor } from './figures/ExpressionHeatmapFigure'
+import CnvHeatmapFigure, { cnvHeatmapLegendFor } from './figures/CnvHeatmapFigure'
 import NewFigureModal from './figures/NewFigureModal'
 
 /** The Figures tab: a gallery of saved figure records (uns['xcell_figures']),
@@ -225,17 +226,18 @@ export default function FiguresView() {
     setForm({ ...record.params }); setTitle(record.title); setCaption(record.caption ?? '')
   }, [record])
 
-  const isCanvasKind = record?.kind === 'expression_heatmap'
+  const isCanvasKind = record?.kind === 'expression_heatmap' || record?.kind === 'cnv_heatmap'
 
   // The heatmap is a canvas (a genes × bins matrix is too many cells for SVG), so it exports as PNG only.
   const renderPng = useCallback(async (scale: number): Promise<Blob> => {
     if (isCanvasKind) {
       if (!canvasRef.current || !data) throw new Error('The figure has not drawn yet')
-      return canvasToPngBlob(canvasRef.current, { scale, title, legend: heatmapLegendFor(data as ExpressionHeatmapData), background: BG })
+      const legend = record?.kind === 'cnv_heatmap' ? cnvHeatmapLegendFor(data as CnvHeatmapData) : heatmapLegendFor(data as ExpressionHeatmapData)
+      return canvasToPngBlob(canvasRef.current, { scale, title, legend, background: BG })
     }
     if (!svgRef.current) throw new Error('The figure has not drawn yet')
     return svgToPngBlob(svgRef.current, scale, BG)
-  }, [isCanvasKind, data, title])
+  }, [isCanvasKind, data, title, record?.kind])
 
   const exportSvg = useCallback(() => {
     if (!svgRef.current || !record || isCanvasKind) return
@@ -306,6 +308,11 @@ export default function FiguresView() {
       <EnrichmentNetworkFigure ref={svgRef} data={data as EnrichmentNetworkData} params={coerced} title={title} width={plotWidth} height={Math.max(360, Math.round(plotWidth * 0.66))} background={BG} />
     ) : record.kind === 'composition_barplot' ? (
       <CompositionBarplotFigure ref={svgRef} data={data as CrosstabData} config={paramsToBarplotConfig(coerced)} width={plotWidth} height={Math.max(360, Math.round(plotWidth * 0.6))} title={title} legend="inline" background={BG} />
+    ) : record.kind === 'cnv_heatmap' ? (
+      <div>
+        <div style={{ fontSize: '13px', color: '#eee', fontWeight: 600, marginBottom: '6px' }}>{title}</div>
+        <CnvHeatmapFigure ref={canvasRef} data={data as CnvHeatmapData} legends="inline" />
+      </div>
     ) : (
       <div>
         <div style={{ fontSize: '13px', color: '#eee', fontWeight: 600, marginBottom: '6px' }}>{title}</div>

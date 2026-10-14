@@ -46,11 +46,12 @@ interface Result {
   positions_source: string
   position_matches: Record<string, number>
   n_genes_placed: number
+  n_genes_lineage_excluded?: number
   n_genes_filtered: number
   n_genes_used: number
   n_windows: number
   n_cells: number
-  reference: { column: string; categories: string[] } | null
+  reference: { column: string; categories: string[]; counts?: Record<string, number>; bounds_categories?: string[]; pooled?: boolean } | null
   chromosomes: { name: string; start: number; size: number }[]
   score_column: string
   clone_column: string | null
@@ -152,6 +153,8 @@ export default function CnvModal() {
   const [lfcClip, setLfcClip] = useState(CNV_DEFAULTS.lfcClip)
   const [noiseThreshold, setNoiseThreshold] = useState(CNV_DEFAULTS.noiseThreshold)
   const [centerCells, setCenterCells] = useState(true)
+  const [excludeLineageGenes, setExcludeLineageGenes] = useState(true)
+  const [minReferenceCells, setMinReferenceCells] = useState(CNV_DEFAULTS.minReferenceCells)
   const [layer, setLayer] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -209,6 +212,7 @@ export default function CnvModal() {
   const inputs: CnvInputs = {
     key, positions, species, chromosomeColumn, startColumn, referenceColumn, referenceCategories, includeXY,
     cluster, resolution, nClusters, nPcs, window: window_, step, minMean, lfcClip, noiseThreshold, centerCells, layer,
+    excludeLineageGenes, minReferenceCells,
     activeCellIndices: null,   // filled at Run; O(n) is not worth paying every render
     tableSpecies: status?.table_species,
     nCells: activeCellMask ? nActive : status?.n_cells,
@@ -436,6 +440,15 @@ export default function CnvModal() {
                     <input type="checkbox" checked={centerCells} onChange={(e) => setCenterCells(e.target.checked)} />
                     Centre each cell at its median window value
                   </label>
+                  <label style={{ ...dark.row, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={excludeLineageGenes} onChange={(e) => setExcludeLineageGenes(e.target.checked)} />
+                    Exclude immunoglobulin, T-cell receptor and MHC genes
+                  </label>
+                  <div style={dark.hint}>Clonally rearranged, lineage-restricted loci read as focal events in every plasma, B or T cell.</div>
+                  <div style={dark.row}>
+                    A reference category needs ≥ <input style={dark.input} value={minReferenceCells} onChange={(e) => setMinReferenceCells(e.target.value)} /> cells to set the bounds
+                  </div>
+                  <div style={dark.hint}>Smaller categories still count as reference cells; their noisy means would widen the bounds and hide real events. If none qualifies, all reference cells are pooled.</div>
                   <div style={dark.row}>
                     Expression
                     <select style={dark.select} value={layer} onChange={(e) => setLayer(e.target.value)}>
@@ -465,7 +478,9 @@ export default function CnvModal() {
                 <div style={{ ...dark.notice, marginTop: 10, background: 'rgba(78,205,196,0.08)', color: '#bfeae6' }}>
                   {result.n_genes_used.toLocaleString()} genes in {result.n_windows.toLocaleString()} windows over{' '}
                   {result.chromosomes.length} chromosomes, for {result.n_cells.toLocaleString()} cells
-                  {result.n_genes_filtered ? ` (${result.n_genes_filtered.toLocaleString()} placed genes below the expression floor)` : ''}.
+                  {result.n_genes_filtered || result.n_genes_lineage_excluded
+                    ? ` (${[result.n_genes_filtered ? `${result.n_genes_filtered.toLocaleString()} placed genes below the expression floor` : '', result.n_genes_lineage_excluded ? `${result.n_genes_lineage_excluded.toLocaleString()} Ig/TCR/MHC genes excluded` : ''].filter(Boolean).join(', ')})`
+                    : ''}.
                   {' '}Positions: {result.positions_source.replace('_', ' ')}.
                   {result.warnings.map((w) => (
                     <div key={w} style={{ marginTop: 6, color: '#e9a23b' }}>{w}</div>

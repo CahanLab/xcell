@@ -316,3 +316,35 @@ def test_shipped_mouse_table_has_actb_on_chr5():
 def test_load_positions_unknown_species():
     with pytest.raises(ValueError):
         cnv.load_positions('zebrafish')
+
+
+# ---------- benchmark-driven additions (2026-10-13) ----------
+
+def test_lineage_gene_mask_matches_ig_tcr_hla_but_not_lookalikes():
+    human = ['IGHG1', 'IGHV3-23', 'IGKC', 'IGLC2', 'IGLV1-40', 'IGHE', 'TRAC', 'TRBV7-2', 'TRBC1', 'HLA-A', 'HLA-DRB1',
+             'IGHMBP2', 'IGF1R', 'IGLL1', 'TRAF1', 'MYC', 'HLAA']
+    m = cnv.lineage_gene_mask(human, 'human')
+    assert m.tolist() == [True] * 11 + [False] * 6
+    mouse = ['Ighm', 'Igkc', 'Iglv1', 'Trac', 'Trbv13-2', 'H2-Ab1', 'Ighmbp2', 'Traf1', 'Igf2']
+    assert cnv.lineage_gene_mask(mouse, 'mouse').tolist() == [True] * 6 + [False] * 3
+    # Unknown species: both pattern sets apply.
+    assert cnv.lineage_gene_mask(['IGKC', 'Igkc', 'Actb'], None).tolist() == [True, True, False]
+
+
+def test_select_reference_groups_drops_small_categories_and_pools_when_none_is_big_enough():
+    assert cnv.select_reference_groups({'B': 635, 'NK': 513, 'T': 44, 'Mono': 13}, 50) == (['B', 'NK'], False)
+    assert cnv.select_reference_groups({'Endothelial': 4, 'Melanocytes': 8, 'Myofibroblasts': 21}, 50) == ([], True)
+    # One category is always used as is: a single mean has no bounds to distort.
+    assert cnv.select_reference_groups({'normal': 7}, 50) == (['normal'], False)
+    assert cnv.select_reference_groups({'a': 50, 'b': 49}, 50) == (['a'], False)
+
+
+def test_cluster_clones_ranks_by_the_given_score():
+    M, labels, chromosomes = _matrix()
+    out = cnv.cluster_clones(M, method='leiden', resolution=0.5, n_clusters=4, n_pcs=10, seed=0)
+    # Rank by an inverted score: the normal cells must now come last.
+    inv = -cnv.cnv_score(M)
+    out_inv = cnv.cluster_clones(M, method='leiden', resolution=0.5, n_clusters=4, n_pcs=10, seed=0, score=inv)
+    assert (labels[out == 0] == 'normal').mean() > 0.9
+    assert (labels[out_inv == out_inv.max()] == 'normal').mean() > 0.9
+    assert len(set(out)) == len(set(out_inv))

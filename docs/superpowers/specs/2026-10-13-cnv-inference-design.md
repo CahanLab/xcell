@@ -28,14 +28,18 @@ Given log-normalized expression and gene positions:
    then upper-cased symbol. Species comes from `guess_species` unless given.
 3. **Gene filter.** Genes with a position on an included chromosome
    (default: autosomes only; X and Y excluded as inferCNVpy does, because a
-   sex-mismatched reference reads as a whole-chromosome event) and with mean
-   log expression at or above `min_mean` (default 0.1) across the cells
-   being analysed.
+   sex-mismatched reference reads as a whole-chromosome event), not an
+   immunoglobulin / TCR / MHC gene (`exclude_lineage_genes`, default on),
+   and with mean log expression at or above `min_mean` (default 0.02,
+   lowered from 0.1 by the benchmark) across the cells being analysed.
 4. **Reference.** `reference_column` + `reference_categories`: the cells in
    those categories define normal expression. With one category, each
    gene's reference mean is subtracted. With several, inferCNVpy's bounds
    rule: a value between the lowest and highest category mean becomes 0,
-   otherwise the nearest bound is subtracted. With no reference, the mean
+   otherwise the nearest bound is subtracted. Only categories with at least
+   `min_reference_cells` (default 50) cells set the bounds; smaller ones
+   remain reference cells, and when none qualifies all reference cells are
+   pooled into one mean (with a warning). With no reference, the mean
    over all analysed cells is subtracted (works when most cells are normal
    or CNVs vary between clones; stated in the modal).
 5. **Clip** to ±`lfc_clip` (default 3).
@@ -49,9 +53,9 @@ Given log-normalized expression and gene positions:
    standard deviation are set to 0 (default 1.5; 0 disables).
 9. **Score.** `cnv_score` = mean |x| over windows per cell.
 10. **Clones.** `cluster`: `leiden` (default), `hierarchical`, or `none`.
-    PCA of the window matrix (`n_pcs`, default 30, clamped), then Leiden
-    on an exact kNN graph (k = 15, `resolution` default 1.0) or Ward
-    linkage cut at `n_clusters` (default 4). Clones are renamed by rising
+    PCA of the *un-thresholded* window matrix (`n_pcs`, default 30,
+    clamped), then Leiden on an exact kNN graph (k = 15, `resolution`
+    default 0.5) or Ward linkage cut at `n_clusters` (default 4). Clones are renamed by rising
     mean `cnv_score`: `clone_1` is the quietest. Per-clone summary: cell
     count, mean score, fraction of reference cells, dominant
     `reference_column` category, mean CNV per chromosome.
@@ -140,3 +144,9 @@ Browser run on a real dataset. No local tumor dataset is known, so a
 synthetic one with planted CNVs is written from a real mouse dataset's
 genes (`ad_Grosswendt_demo.h5ad`) to exercise the shipped position table;
 clones must appear in the heatmap and on the embedding.
+
+## Benchmark (added 2026-10-13)
+
+Defaults and the four method changes above (raw-matrix clustering, the
+expression floor, the resolution, the reference floor, lineage genes) come
+from `docs/measurements/2026-10-13-cnv-benchmark.md`.

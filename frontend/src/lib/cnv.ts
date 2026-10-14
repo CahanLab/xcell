@@ -27,6 +27,10 @@ export interface CnvInputs {
   lfcClip: string
   noiseThreshold: string
   centerCells: boolean
+  /** Drop immunoglobulin / TCR / MHC genes before smoothing. */
+  excludeLineageGenes: boolean
+  /** A reference category needs this many cells to set the bounds. */
+  minReferenceCells: string
   /** '' = adata.X */
   layer: string
   activeCellIndices: number[] | null
@@ -36,8 +40,11 @@ export interface CnvInputs {
   hierarchicalMaxCells?: number
 }
 
+// Mirrors DataAdaptor.prepare_cnv; the benchmark (docs/measurements/2026-10-13-cnv-benchmark.md)
+// set minMean 0.02 and resolution 0.5.
 export const CNV_DEFAULTS = {
-  window: '100', step: '10', minMean: '0.1', lfcClip: '3', noiseThreshold: '1.5', resolution: '1', nClusters: '4', nPcs: '30',
+  window: '100', step: '10', minMean: '0.02', lfcClip: '3', noiseThreshold: '1.5', resolution: '0.5', nClusters: '4', nPcs: '30',
+  minReferenceCells: '50',
 }
 
 /** The key as the backend writes it: runs of other characters become '_'. */
@@ -63,6 +70,8 @@ export function cnvParams(i: CnvInputs): Record<string, unknown> {
     resolution: num(i.resolution, 1),
     n_clusters: int(i.nClusters, 4),
     n_pcs: int(i.nPcs, 30),
+    min_reference_cells: int(i.minReferenceCells, 50),
+    exclude_lineage_genes: i.excludeLineageGenes,
   }
   if (i.positions === 'columns') {
     p.chromosome_column = i.chromosomeColumn
@@ -97,5 +106,6 @@ export function cnvBlocker(i: CnvInputs): string | null {
   }
   if (i.cluster === 'hierarchical' && int(i.nClusters, 0) < 1) return 'Ask for at least one clone.'
   if (!(num(i.lfcClip, 0) > 0)) return 'The clip must be positive.'
+  if (int(i.minReferenceCells, 0) < 1) return 'A reference category needs at least one cell to set the bounds.'
   return null
 }

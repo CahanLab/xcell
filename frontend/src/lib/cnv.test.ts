@@ -13,6 +13,7 @@ const base: CnvInputs = {
   cluster: 'leiden',
   ...CNV_DEFAULTS,
   centerCells: true,
+  excludeLineageGenes: true,
   layer: '',
   activeCellIndices: null,
   tableSpecies: ['human', 'mouse'],
@@ -27,7 +28,7 @@ describe('cnvParams', () => {
     expect('chromosome_column' in p).toBe(false)
     expect(p.reference_column).toBe('cell_type')
     expect(p.reference_categories).toEqual(['T cell', 'Fibroblast'])
-    expect(p).toMatchObject({ window: 100, step: 10, min_mean: 0.1, lfc_clip: 3, noise_threshold: 1.5, cluster: 'leiden', resolution: 1, n_clusters: 4, n_pcs: 30, center_cells: true, include_xy: false, key: 'cnv' })
+    expect(p).toMatchObject({ window: 100, step: 10, min_mean: 0.02, lfc_clip: 3, noise_threshold: 1.5, cluster: 'leiden', resolution: 0.5, n_clusters: 4, n_pcs: 30, center_cells: true, include_xy: false, key: 'cnv', min_reference_cells: 50, exclude_lineage_genes: true })
     expect('layer' in p).toBe(false)
     expect('active_cell_indices' in p).toBe(false)
   })
@@ -49,6 +50,13 @@ describe('cnvParams', () => {
     expect(cnvParams({ ...base, key: ' tumor run 2 ' }).key).toBe('tumor_run_2')
     expect(cnvParams({ ...base, key: '!!!' }).key).toBe('cnv')
     expect(cleanKey('a-b')).toBe('a_b')
+  })
+
+  it('sends the lineage-gene switch and the reference floor', () => {
+    const p = cnvParams({ ...base, excludeLineageGenes: false, minReferenceCells: '20' })
+    expect(p.exclude_lineage_genes).toBe(false)
+    expect(p.min_reference_cells).toBe(20)
+    expect(cnvBlocker({ ...base, minReferenceCells: '0' })).toMatch(/reference/)
   })
 
   it('coerces numbers and keeps the selection and layer', () => {

@@ -22,6 +22,10 @@ import gzip
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+import re
+
+from collections.abc import Mapping
+
 import numpy as np
 
 _DATA = Path(__file__).resolve().parent / 'data'
@@ -34,6 +38,13 @@ ROW_MODES = ('cells', 'groups')
 #: Ward linkage holds an n×n distance matrix; above this many cells it is
 #: gigabytes, and Leiden answers the same question in seconds.
 HIERARCHICAL_MAX_CELLS = 20_000
+# A reference category with fewer cells than this does not set the bounds of
+# the multi-reference rule. Benchmark (docs/measurements/2026-10-13-cnv-benchmark.md):
+# on the MM199 myeloma sample a 44-cell "T cell" category that was really
+# plasma-cell doublets widened the bounds enough to hide every tumor event per
+# cell (AUROC 0.46 vs 0.95 without it); noisy means of small groups bias the
+# min/max outward even when they are clean.
+MIN_REFERENCE_CELLS = 50
 #: Cells per chunk when densifying the gene-filtered matrix.
 CHUNK = 2000
 KNN = 15
@@ -69,6 +80,40 @@ def chromosomes_present(positions: dict[str, tuple[str, int, int]], include_xy: 
     if include_xy:
         out += [c for c in ('chrX', 'chrY') if c in names]
     return out
+
+
+# Immunoglobulin, T-cell receptor and MHC loci. Their expression is
+# lineage-restricted and, in lymphoid cells, clonally rearranged, so a window
+# holding IGH or IGK genes reads as a focal event in every plasma, B or T cell
+# and inflates the matrix-wide noise estimate (benchmark: MM199 tumor-vs-normal
+# AUROC 0.95 -> 0.97, SNU601 max F1 +0.013 when excluded). Lookalikes such as
+# IGHMBP2, IGF1R, TRAF1 must not match.
+LINEAGE_PATTERNS = {
+    'human': re.compile(r'^(IG[HKL][VDJCAGEM](\d+[A-Z]?)?(-\d+)*|TR[ABGD][VDJC](\d+[A-Z]?)?(-\d+)*|HLA-.+)$'),
+    'mouse': re.compile(r'^(Ig[hkl][vdjcagem](\d+[a-z]?)?(-\d+)*|Tr[abgd][vdjc](\d+[a-z]?)?(-\d+)*|H2-.+)$'),
+}
+
+
+def lineage_gene_mask(var_names: Sequence[str], species: str | None) -> np.ndarray:
+    """True for immunoglobulin / TCR / MHC genes (both species' patterns when unknown)."""
+    pats = [LINEAGE_PATTERNS[species]] if species in LINEAGE_PATTERNS else list(LINEAGE_PATTERNS.values())
+    return np.array([any(p.match(str(v)) for p in pats) for v in var_names], dtype=bool)
+
+
+def select_reference_groups(counts: Mapping[str, int], min_cells: int) -> tuple[list[str], bool]:
+    """Which reference categories set the bounds, and whether to pool instead.
+
+    Categories with at least ``min_cells`` cells define the bounds; smaller
+    ones stay reference cells but do not. A single category is used whatever
+    its size (one mean is subtracted, no bounds). When no category qualifies,
+    ``(all of them, True)`` means: pool every reference cell into one mean.
+    """
+    if len(counts) <= 1:
+        return list(counts), False
+    used = [c for c, n in counts.items() if int(n) >= int(min_cells)]
+    if not used:
+        return [], True
+    return used, False
 
 
 def log_normalize(X, verdict: str):
@@ -369,12 +414,15 @@ def _rank_by_score(labels: np.ndarray, score: np.ndarray) -> np.ndarray:
 
 
 def cluster_clones(M: np.ndarray, *, method: str, resolution: float, n_clusters: int, n_pcs: int,
-                   seed: int = 0) -> np.ndarray:
+                   seed: int = 0, score: np.ndarray | None = None) -> np.ndarray:
     """Clone labels (0..k−1, ranked by burden) from the window matrix.
 
     ``leiden``: PCA, exact kNN (k = 15), Leiden on the symmetrized graph.
     ``hierarchical``: Ward linkage on the PCA scores cut into ``n_clusters``
     — inferCNV's own grouping, for when a fixed number of clones is wanted.
+    Clones are ranked by ``score`` (default: ``cnv_score(M)``); the adaptor
+    clusters the *un-thresholded* matrix but ranks by the stored, thresholded
+    score so ``clone_1`` matches what the user sees.
     """
     if method not in ('leiden', 'hierarchical'):
         raise ValueError(f"Unknown clone method '{method}'; expected leiden or hierarchical.")
@@ -406,7 +454,7 @@ def cluster_clones(M: np.ndarray, *, method: str, resolution: float, n_clusters:
         sc.tl.leiden(ad, resolution=float(resolution), key_added='c', random_state=int(seed),
                      flavor='igraph', n_iterations=2, directed=False)
         labels = ad.obs['c'].astype(int).to_numpy()
-    return _rank_by_score(np.asarray(labels, dtype=int), cnv_score(M))
+    return _rank_by_score(np.asarray(labels, dtype=int), cnv_score(M) if score is None else np.asarray(score, dtype=float))
 
 
 def _finite(v: float) -> float | None:

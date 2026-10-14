@@ -163,7 +163,9 @@ def test_run_writes_matrix_scores_clones_and_record():
     rec = json.loads(ad.uns['xcell_cnv']['cnv'])
     assert rec['key'] == 'cnv' and len(rec['windows']) == r['n_windows']
     assert [c['name'] for c in rec['chromosomes']] == [f'chr{i}' for i in range(1, 7)]
-    assert rec['params']['window'] == 30 and rec['reference'] == {'column': 'group', 'categories': ['normal']}
+    assert rec['params']['window'] == 30
+    assert rec['reference'] == {'column': 'group', 'categories': ['normal'], 'counts': {'normal': 100},
+                                'bounds_categories': ['normal'], 'pooled': False}
     assert rec['clones'][0]['reference_fraction'] > 0.9
     assert r['clones'] == rec['clones']
     assert r['n_genes_used'] == N_CHROM * GENES_PER_CHROM - r['n_genes_filtered']
@@ -342,3 +344,76 @@ def test_results_survive_an_h5ad_round_trip(tmp_path):
     fig = b.list_figures()[0]
     data = b.figure_data(fig['id'])
     assert data['kind'] == 'cnv_heatmap' and len(data['column_groups']) == N_CHROM
+
+
+# ---------- benchmark-driven additions (2026-10-13) ----------
+
+def test_small_reference_categories_do_not_set_bounds():
+    # B (60 cells) is a reference category but below min_reference_cells, so it
+    # no longer hides its own chr4 loss inside the bounds.
+    a = _adaptor()
+    r = _run(a, reference_categories=['normal', 'B'], min_reference_cells=70)
+    rec = json.loads(a.adata.uns['xcell_cnv']['cnv'])
+    assert rec['reference']['categories'] == ['normal', 'B']
+    assert rec['reference']['bounds_categories'] == ['normal']
+    assert rec['reference']['pooled'] is False
+    assert any('B' in w and '70' in w for w in r['warnings'])
+    chrom = a.adata.obsm['X_cnv_chrom']
+    j = [c['name'] for c in rec['chromosomes']].index('chr4')
+    b = (a.adata.obs['group'] == 'B').to_numpy()
+    assert chrom[b, j].mean() < -0.1
+    # B cells still count as reference cells in the clone summary.
+    assert rec['clones'][0]['reference_fraction'] > 0.9
+
+
+def test_all_small_reference_categories_are_pooled():
+    a = _adaptor()
+    r = _run(a, reference_categories=['normal', 'B'], min_reference_cells=500)
+    rec = json.loads(a.adata.uns['xcell_cnv']['cnv'])
+    assert rec['reference']['bounds_categories'] == []
+    assert rec['reference']['pooled'] is True
+    assert any('pooled' in w.lower() for w in r['warnings'])
+    # A pooled mean is one reference row: A's chr2 gain is still found.
+    chrom = a.adata.obsm['X_cnv_chrom']
+    j = [c['name'] for c in rec['chromosomes']].index('chr2')
+    assert chrom[(a.adata.obs['group'] == 'A').to_numpy(), j].mean() > 0.1
+
+
+def test_lineage_genes_are_excluded_by_default():
+    ad = _adata()
+    names = list(ad.var_names)
+    names[5], names[200] = 'IGHG1', 'TRAC'
+    ad.var_names = names
+    a = DataAdaptor('x.h5ad', adata=ad)
+    r = _run(a)
+    assert r['n_genes_lineage_excluded'] == 2
+    assert r['n_genes_used'] == N_CHROM * GENES_PER_CHROM - 2 - r['n_genes_filtered']
+    a2 = DataAdaptor('x.h5ad', adata=_adata())
+    a2.adata.var_names = names
+    r2 = _run(a2, exclude_lineage_genes=False)
+    assert r2['n_genes_lineage_excluded'] == 0
+    assert r2['n_genes_used'] == N_CHROM * GENES_PER_CHROM - r2['n_genes_filtered']
+
+
+def test_clones_are_called_on_the_unthresholded_matrix():
+    # A noise threshold that zeroes everything leaves the stored matrix empty
+    # but must not destroy the clone structure.
+    from sklearn.metrics import adjusted_rand_score
+    a = _adaptor()
+    r = _run(a, noise_threshold=100.0)
+    assert np.all(a.adata.obsm['X_cnv'] == 0)
+    assert adjusted_rand_score(a.adata.obs['group'], a.adata.obs['cnv_clone']) > 0.9
+    assert r['n_clones'] if 'n_clones' in r else True
+
+
+def test_defaults_agree_between_adaptor_route_and_record():
+    import inspect
+    sig = inspect.signature(DataAdaptor.prepare_cnv)
+    req = routes.CnvRequest().model_dump()
+    for name, p in sig.parameters.items():
+        if name in req:
+            assert req[name] == p.default, name
+    assert sig.parameters['min_mean'].default == 0.02
+    assert sig.parameters['resolution'].default == 0.5
+    assert sig.parameters['min_reference_cells'].default == cnv.MIN_REFERENCE_CELLS == 50
+    assert sig.parameters['exclude_lineage_genes'].default is True

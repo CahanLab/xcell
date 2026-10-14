@@ -14476,21 +14476,33 @@ class DataAdaptor:
         reference_column: str | None = None,
         reference_categories: list[str] | None = None,
         include_xy: bool = False,
-        min_mean: float = 0.1,
+        min_mean: float = 0.02,
         lfc_clip: float = 3.0,
         window: int = 100,
         step: int = 10,
         center_cells: bool = True,
         noise_threshold: float = 1.5,
         cluster: str = 'leiden',
-        resolution: float = 1.0,
+        resolution: float = 0.5,
         n_clusters: int = 4,
         n_pcs: int = 30,
         seed: int = 0,
         layer: str | None = None,
         active_cell_indices: list[int] | None = None,
+        min_reference_cells: int = 50,
+        exclude_lineage_genes: bool = True,
     ) -> tuple[Callable[..., dict[str, Any]], Callable[[dict[str, Any]], dict[str, Any]]]:
         """Infer CNVs from expression and call clones; see :mod:`xcell.cnv`.
+
+        Defaults were set on the Schmid et al. 2025 benchmark subset
+        (docs/measurements/2026-10-13-cnv-benchmark.md): ``min_mean`` 0.02
+        keeps about as many genes as inferCNV's own filter (mean counts ≥ 0.1)
+        and raised max F1 on every dataset over 0.1; ``resolution`` 0.5 because 1.0 split 9k cells into 24 clones;
+        clones are called on the un-thresholded window matrix (the noise
+        threshold erased the between-patient structure: ARI 0.98 vs 0.54);
+        reference categories under ``min_reference_cells`` do not set bounds
+        (``cnv.MIN_REFERENCE_CELLS``); ``exclude_lineage_genes`` drops Ig /
+        TCR / MHC genes (``cnv.lineage_gene_mask``).
 
         Gene positions come from ``chromosome_column`` + ``start_column`` in
         ``.var``, else from the shipped table for ``species`` (guessed from
@@ -14547,6 +14559,13 @@ class DataAdaptor:
             include = cnv_mod.chromosome_list(species, include_xy)
         order = cnv_mod.gene_order(positions, var_names, include)
         n_placed = int(sum(len(o['indices']) for o in order))
+        n_lineage = 0
+        if exclude_lineage_genes:
+            lineage = cnv_mod.lineage_gene_mask(var_names, species)
+            n_lineage = int(sum(lineage[o['indices']].sum() for o in order))
+            order = [{**o, 'indices': o['indices'][~lineage[o['indices']]], 'starts': o['starts'][~lineage[o['indices']]]}
+                     for o in order]
+            order = [o for o in order if len(o['indices'])]
         if n_placed < 100:
             raise ValueError(f'Only {n_placed} of {len(var_names):,} genes have positions on the included '
                              f'chromosomes ({match}); CNV inference needs at least 100. Check the species or '
@@ -14592,17 +14611,31 @@ class DataAdaptor:
             if missing:
                 raise ValueError(f"reference_categories not in '{reference_column}': {missing}")
             local = col[cells]
-            rows = []
+            counts = {}
             for c in cats:
                 m = local == c
                 if not m.any():
                     raise ValueError(f"Reference category '{c}' has no cells inside the active cell mask.")
-                sub = Ls[m]
-                rows.append(np.asarray(sub.mean(axis=0)).ravel())
-            ref_means = np.vstack(rows)
+                counts[c] = int(m.sum())
+            bounds_cats, pooled = cnv_mod.select_reference_groups(counts, int(min_reference_cells))
             ref_mask_local = np.isin(local, cats)
+            if pooled:
+                ref_means = np.asarray(Ls[ref_mask_local].mean(axis=0)).reshape(1, -1)
+                warnings_out.append(
+                    f'Every reference category has fewer than {int(min_reference_cells)} cells '
+                    f'({", ".join(f"{c}: {n}" for c, n in counts.items())}), so all reference cells were pooled '
+                    'into one mean instead of the per-category bounds rule.')
+            else:
+                ref_means = np.vstack([np.asarray(Ls[local == c].mean(axis=0)).ravel() for c in bounds_cats])
+                small = [c for c in cats if c not in bounds_cats]
+                if small:
+                    warnings_out.append(
+                        f'Reference categories with fewer than {int(min_reference_cells)} cells do not set the '
+                        f'bounds: {", ".join(f"{c} ({counts[c]})" for c in small)}. They still count as reference '
+                        'cells. A small category\'s mean is noisy and widens the bounds, which hides real events.')
             group_labels = local
-            reference = {'column': reference_column, 'categories': cats}
+            reference = {'column': reference_column, 'categories': cats, 'counts': counts,
+                         'bounds_categories': bounds_cats, 'pooled': bool(pooled)}
         else:
             ref_means = np.asarray(Ls.mean(axis=0)).reshape(1, -1)
             warnings_out.append('No reference cells were given, so each gene is compared with the mean over all '
@@ -14625,22 +14658,27 @@ class DataAdaptor:
             'window': int(window), 'step': int(step), 'center_cells': bool(center_cells),
             'noise_threshold': float(noise_threshold), 'cluster': cluster, 'resolution': float(resolution),
             'n_clusters': int(n_clusters), 'n_pcs': int(n_pcs), 'seed': int(seed), 'layer': layer,
+            'min_reference_cells': int(min_reference_cells), 'exclude_lineage_genes': bool(exclude_lineage_genes),
         }
 
         def compute_fn(report: Callable[[float, str], None] | None = None) -> dict[str, Any]:
             report = report or (lambda f, m=None: None)
             report(0.05, f'Smoothing {gene_cols.size:,} genes into {len(windows):,} windows')
-            M = cnv_mod.infer(get_rows, np.arange(cells.size), windows, ref_means, lfc_clip=float(lfc_clip),
-                              center_cells=bool(center_cells), report=report)
-            M = cnv_mod.apply_noise_threshold(M, float(noise_threshold))
+            raw = cnv_mod.infer(get_rows, np.arange(cells.size), windows, ref_means, lfc_clip=float(lfc_clip),
+                                center_cells=bool(center_cells), report=report)
+            M = cnv_mod.apply_noise_threshold(raw, float(noise_threshold))
             score = cnv_mod.cnv_score(M)
             chrom = cnv_mod.chromosome_means(M, chromosomes)
             clones = None
             summary = None
             if cluster != 'none':
                 report(0.75, f'Calling clones ({cluster})')
-                clones = cnv_mod.cluster_clones(M, method=cluster, resolution=float(resolution),
-                                                n_clusters=int(n_clusters), n_pcs=int(n_pcs), seed=int(seed))
+                # The un-thresholded matrix keeps the weak, consistent shifts
+                # that separate clones; the threshold is for display and the
+                # per-cell score (benchmark: patient ARI 0.98 vs 0.54).
+                clones = cnv_mod.cluster_clones(raw, method=cluster, resolution=float(resolution),
+                                                n_clusters=int(n_clusters), n_pcs=int(n_pcs), seed=int(seed),
+                                                score=score)
                 summary = cnv_mod.clone_summary(clones, score, chrom, chrom_names, ref_mask=ref_mask_local,
                                                 group_labels=group_labels)
             report(0.95, 'Writing results')
@@ -14692,6 +14730,7 @@ class DataAdaptor:
                 'positions_source': positions_source,
                 'position_matches': match,
                 'n_genes_placed': n_placed,
+                'n_genes_lineage_excluded': n_lineage,
                 'n_genes_filtered': n_filtered,
                 'n_genes_used': int(gene_cols.size),
                 'n_windows': len(windows),

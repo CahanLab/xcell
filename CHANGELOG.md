@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-14
+
 - **CNV inference and clone calling (Analyze → Cells → CNV inference).** An inferCNV-style analysis for tumor data: log expression relative to reference (normal) cells you tick from a categorical column, clipped at ±3, averaged in windows of 100 genes every 10 along each chromosome, centred per cell, with inferCNV's dynamic noise threshold. Clones come from Leiden on the CNV profile or Ward linkage cut into a fixed number, named by rising CNV burden (`clone_1` is the quietest); the result table shows each clone's size, burden, share of the reference cells and dominant input group. Gene positions come from shipped GENCODE tables (human GRCh38, mouse GRCm39, `backend/xcell/data/gene_positions_*.tsv.gz`, built by `build_gene_positions.py`) matched by Ensembl ID or symbol, or from two `.var` columns. Writes `obsm['X_<key>']`, a registered per-chromosome score matrix `X_<key>_chrom`, `<key>_score` and `<key>_clone` (`unassigned` outside the cell mask), and `uns['xcell_cnv'][key]`. With several reference categories a gene within the range of their means counts as normal (infercnvpy's bounds rule); X and Y are excluded by default. Hierarchical clustering is refused above 20,000 cells.
   - **CNV heatmap figure** (new figure kind `cnv_heatmap`): cells binned within each group, or one mean row per group, × genome windows with chromosome separators, diverging colours, PNG export. *Heatmap figure…* in the modal saves one grouped by clone.
   - Pure `xcell/cnv.py` (no new dependencies); `prepare_cnv` background task; `GET /api/cnv/status`, `POST /api/cnv`, `GET /api/cnv/results`; `codegen` entry so the notebook export replays it.
@@ -534,5 +536,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 - Gene set export now includes genes from all categories and folders (previously only exported the legacy flat list, which was often empty).
 
-[Unreleased]: https://github.com/CahanLab/xcell/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/CahanLab/xcell/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/CahanLab/xcell/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CahanLab/xcell/releases/tag/v0.2.0

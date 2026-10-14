@@ -55,3 +55,6 @@ spatial-*.png
 repro-*.png
 step1-*.png
 xcell_*.png
+
+# infercnvpy baseline for the CNV benchmark, installed with pip --target
+backend/benchmarks/cnv/pylib/

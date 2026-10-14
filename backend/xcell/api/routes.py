@@ -4733,19 +4733,21 @@ class CnvRequest(BaseModel):
     reference_column: str | None = None
     reference_categories: list[str] | None = None
     include_xy: bool = False
-    min_mean: float = 0.1
+    min_mean: float = 0.02
     lfc_clip: float = 3.0
     window: int = 100
     step: int = 10
     center_cells: bool = True
     noise_threshold: float = 1.5
     cluster: str = 'leiden'
-    resolution: float = 1.0
+    resolution: float = 0.5
     n_clusters: int = 4
     n_pcs: int = 30
     seed: int = 0
     layer: str | None = None
     active_cell_indices: list[int] | None = None
+    min_reference_cells: int = 50
+    exclude_lineage_genes: bool = True
 
 
 @router.get("/cnv/status")

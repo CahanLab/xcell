@@ -315,7 +315,8 @@ warn outright if you point them at a z-scored layer.
   heatmap (Figures tab) of cells grouped by clone. Without a reference the
   all-cell mean stands in, which hides events every cell shares. X and Y are
   left out unless asked for, since a reference of the other sex reads as a
-  whole-chromosome event.
+  whole-chromosome event. The method and its defaults were checked against
+  scWGS and WES copy-number truth (`docs/measurements/2026-10-13-cnv-benchmark.md`).
 
   **Diffusion map** takes the same **kNN graph** choice and writes the
   diffusion components (`X_diffmap`, `X_diffmap_spatial`, `X_diffmap_<subset>`).
